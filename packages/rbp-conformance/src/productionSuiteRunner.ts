@@ -482,6 +482,7 @@ function markCaseError(
           at: record.at,
           line: record.line,
         })),
+        readinessTrace: diagnostics.readinessTrace.map((trace) => ({ ...trace })),
       },
     }),
   };

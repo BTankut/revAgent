@@ -23,6 +23,7 @@ export const REAL_TRIO_SUPERVISOR_SCHEMA = "rbp-real-trio-supervisor/v1" as cons
 export const REAL_TRIO_FAILURE_DIAGNOSTICS_SCHEMA =
   "rbp-real-trio-failure-diagnostics/v1" as const;
 const MAX_REAL_TRIO_DIAGNOSTIC_RECORDS = 16;
+const MAX_REAL_TRIO_READINESS_TRACE = 64;
 
 export interface RealTrioSupervisorCommand {
   readonly executable: string;
@@ -75,6 +76,17 @@ export interface RealTrioFailureDiagnostics {
   readonly gatewayAudits: readonly JsonObject[];
   /** Only schema-valid value-free worker observations are retained. */
   readonly bridgeTranscript: readonly ProcessTranscriptRecord[];
+  readonly readinessTrace: readonly RealTrioReadinessTrace[];
+}
+
+export interface RealTrioReadinessTrace {
+  readonly outcome: "VALID" | "NO_ROW" | "MULTIPLE" | "LEGACY" | "INVALID_BINDING" | "RSID_MISMATCH" | "MISSING_BATCH" | "INVALID_LIFECYCLE" | "ERROR_TYPE";
+  readonly fingerprint: string | null;
+  readonly rsidEqual: boolean | null;
+  readonly batchAtomicPresent: boolean;
+  readonly grantOrderHash: string | null;
+  readonly stableCount: number;
+  readonly resetReason: "initial" | "fingerprint_changed" | "invalid" | "error";
 }
 
 function boundedText(value: unknown, maximum: number): string | null {
@@ -158,6 +170,7 @@ export class RealTrioSessionReadinessPollError extends Error {
     readonly lastGatewayAudit: JsonObject | null = audits.at(-1) ?? null,
     /** Real C# carrier stdout/stderr retained without reading its private state. */
     readonly bridgeReceiveTranscript: readonly ProcessTranscriptRecord[] = [],
+    readonly readinessTrace: readonly RealTrioReadinessTrace[] = [],
   ) {
     super(message);
   }
@@ -172,8 +185,40 @@ export class RealTrioSessionReadinessPollError extends Error {
         .slice(-32)
         .map((audit) => redactGatewayAudit(audit)),
       bridgeTranscript: redactBridgeTranscript(this.bridgeReceiveTranscript),
+      readinessTrace: Object.freeze([...this.readinessTrace].slice(-MAX_REAL_TRIO_READINESS_TRACE)),
     });
   }
+}
+
+function hashPrefix(value: string): string {
+  return createHash("sha256").update(value).digest("hex").slice(0, 16);
+}
+
+function traceReadinessSnapshot(
+  snapshot: JsonObject,
+  expectedBinding: "wss" | "streamable_http_sse",
+  stableCount: number,
+  priorFingerprint: string | null,
+): RealTrioReadinessTrace {
+  const invalid = (outcome: Exclude<RealTrioReadinessTrace["outcome"], "VALID">, resetReason: "invalid" | "error" = "invalid"): RealTrioReadinessTrace => ({ outcome, fingerprint: null, rsidEqual: null, batchAtomicPresent: false, grantOrderHash: null, stableCount: 0, resetReason });
+  const rows = snapshot.sessions;
+  if (!Array.isArray(rows) || rows.length === 0) return invalid("NO_ROW");
+  if (rows.length !== 1) return invalid("MULTIPLE");
+  const row = rows[0];
+  if (!isObject(row) || row.namespace !== "gateway.rbp-session/v2" || !isObject(row.value) || row.value.schema !== "gateway.rbp-session/v2") return invalid("LEGACY");
+  const value = row.value;
+  if (typeof value.rsid !== "string" || !isObject(value.binding) || !isObject(value.lifecycle) || !isObject(value.lifecycle.sessionLifecycle)) return invalid("ERROR_TYPE", "error");
+  const binding = value.binding;
+  if (binding.binding !== expectedBinding) return invalid("INVALID_BINDING");
+  const lifecycle = value.lifecycle.sessionLifecycle;
+  if (typeof lifecycle.rsid !== "string" || lifecycle.rsid !== value.rsid) return invalid("RSID_MISMATCH");
+  if (!Array.isArray(binding.grantedCapabilities) || !binding.grantedCapabilities.every((item) => typeof item === "string")) return invalid("ERROR_TYPE", "error");
+  const grants = binding.grantedCapabilities as string[];
+  if (!grants.includes("batch_atomic")) return invalid("MISSING_BATCH");
+  if (typeof lifecycle.localSessionKey !== "string" || lifecycle.localSessionKey.length === 0 || lifecycle.phase !== "registered" || lifecycle.dispatchAllowed !== true) return invalid("INVALID_LIFECYCLE");
+  const fingerprint = hashPrefix(`${value.rsid}\u0000${lifecycle.localSessionKey}\u0000${grants.join("\u0001")}`);
+  const nextStable = fingerprint === priorFingerprint ? stableCount + 1 : 1;
+  return Object.freeze({ outcome: "VALID", fingerprint, rsidEqual: true, batchAtomicPresent: true, grantOrderHash: hashPrefix(grants.join("\u0001")), stableCount: nextStable, resetReason: priorFingerprint === null ? "initial" : fingerprint === priorFingerprint ? "initial" : "fingerprint_changed" });
 }
 
 /** Extracts the bounded, redacted real-process diagnostics through error wraps. */
@@ -347,15 +392,24 @@ export async function pollRbpSessionV2Readiness(
   const sleep = options.sleep ?? (async (milliseconds: number) => await new Promise<void>((resolve) => setTimeout(resolve, milliseconds)));
   const startedAt = now();
   const audits: JsonObject[] = [];
+  const trace: RealTrioReadinessTrace[] = [];
   let previous: string | null = null;
   let identicalObservations = 0;
   for (;;) {
     if (options.isBridgeExited()) {
-      throw new RealTrioSessionReadinessPollError("real trio bridge exited before session readiness", Object.freeze([...audits]));
+      throw new RealTrioSessionReadinessPollError("real trio bridge exited before session readiness", Object.freeze([...audits]), undefined, [], Object.freeze([...trace]));
     }
     const snapshot = await options.readSnapshot();
     if (audits.length === 32) audits.shift();
     audits.push(snapshot);
+    const classified = traceReadinessSnapshot(
+      snapshot,
+      options.expectedBinding,
+      identicalObservations,
+      previous,
+    );
+    if (trace.length === MAX_REAL_TRIO_READINESS_TRACE) trace.shift();
+    trace.push(classified);
     try {
       const current = readRbpSessionV2Readiness(snapshot, options.expectedBinding);
       const fingerprint = stableJson(current);
@@ -367,7 +421,7 @@ export async function pollRbpSessionV2Readiness(
       identicalObservations = 0;
     }
     if (now() - startedAt >= timeoutMs) {
-      throw new RealTrioSessionReadinessPollError("real trio session readiness timed out", Object.freeze([...audits]));
+      throw new RealTrioSessionReadinessPollError("real trio session readiness timed out", Object.freeze([...audits]), undefined, [], Object.freeze([...trace]));
     }
     await sleep(intervalMs);
   }
@@ -496,6 +550,7 @@ export async function startRealTrioSupervisor(input: RealTrioSupervisorLaunch): 
               error.audits,
               error.lastGatewayAudit,
               Object.freeze([...bridge.transcript]),
+              error.readinessTrace,
             );
           }
           throw error;

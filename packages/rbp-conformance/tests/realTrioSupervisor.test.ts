@@ -181,6 +181,54 @@ describe("WP-12 real-trio v2 session smoke reader", () => {
     })).rejects.toMatchObject({ message: expect.stringMatching(/bridge exited/u), audits: [] });
   });
 
+  it("traces alternating grant order as a stable-fingerprint reset without retaining grants", async () => {
+    let time = 0;
+    let reads = 0;
+    await expect(pollRbpSessionV2Readiness({
+      expectedBinding: "wss",
+      isBridgeExited: () => false,
+      readSnapshot: async () => {
+        reads += 1;
+        const snapshot = structuredClone(v2Snapshot);
+        if (reads % 2 === 0) snapshot.sessions[0]!.value.binding.grantedCapabilities.reverse();
+        return snapshot;
+      },
+      timeoutMs: 200,
+      intervalMs: 100,
+      now: () => time,
+      sleep: async (milliseconds) => { time += milliseconds; },
+    })).rejects.toSatisfy((error: unknown) =>
+      error instanceof RealTrioSessionReadinessPollError &&
+      error.readinessTrace.length === 3 &&
+      error.readinessTrace.every((trace) => trace.outcome === "VALID") &&
+      error.readinessTrace.some((trace) => trace.resetReason === "fingerprint_changed") &&
+      !JSON.stringify(error.readinessTrace).includes("batch_atomic"));
+  });
+
+  it("traces an invalid poll then records the reset without exposing values", async () => {
+    let time = 0;
+    let reads = 0;
+    await expect(pollRbpSessionV2Readiness({
+      expectedBinding: "wss",
+      isBridgeExited: () => false,
+      readSnapshot: async () => {
+        reads += 1;
+        if (reads === 1) return { sessions: [] };
+        const snapshot = structuredClone(v2Snapshot);
+        if (reads % 2 === 1) snapshot.sessions[0]!.value.binding.grantedCapabilities.reverse();
+        return snapshot;
+      },
+      timeoutMs: 300,
+      intervalMs: 100,
+      now: () => time,
+      sleep: async (milliseconds) => { time += milliseconds; },
+    })).rejects.toSatisfy((error: unknown) =>
+      error instanceof RealTrioSessionReadinessPollError &&
+      error.readinessTrace[0]?.outcome === "NO_ROW" &&
+      error.readinessTrace.slice(1).some((trace) => trace.outcome === "VALID") &&
+      !JSON.stringify(error.readinessTrace).includes("port:8080"));
+  });
+
   it("retains only bounded value-free worker observations and reduced Gateway audit on failure", () => {
     const error = new RealTrioSessionReadinessPollError(
       "readiness failed",

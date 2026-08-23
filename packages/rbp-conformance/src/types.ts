@@ -179,6 +179,15 @@ export interface SupervisedFailureDiagnostics {
     at: string;
     line: string;
   }>;
+  readinessTrace: Array<{
+    outcome: "VALID" | "NO_ROW" | "MULTIPLE" | "LEGACY" | "INVALID_BINDING" | "RSID_MISMATCH" | "MISSING_BATCH" | "INVALID_LIFECYCLE" | "ERROR_TYPE";
+    fingerprint: string | null;
+    rsidEqual: boolean | null;
+    batchAtomicPresent: boolean;
+    grantOrderHash: string | null;
+    stableCount: number;
+    resetReason: "initial" | "fingerprint_changed" | "invalid" | "error";
+  }>;
 }
 
 export interface CaseResult {

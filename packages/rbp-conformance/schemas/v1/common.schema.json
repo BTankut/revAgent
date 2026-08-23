@@ -631,7 +631,7 @@
                 "diagnostics": {
                   "type": "object",
                   "additionalProperties": false,
-                  "required": ["schemaVersion", "gatewayAudits", "bridgeTranscript"],
+                  "required": ["schemaVersion", "gatewayAudits", "bridgeTranscript", "readinessTrace"],
                   "properties": {
                     "schemaVersion": { "const": "rbp-real-trio-failure-diagnostics/v1" },
                     "gatewayAudits": {
@@ -675,6 +675,24 @@
                           "stream": { "const": "stderr" },
                           "at": { "type": "string", "maxLength": 64 },
                           "line": { "type": "string", "minLength": 1, "maxLength": 512 }
+                        }
+                      }
+                    },
+                    "readinessTrace": {
+                      "type": "array",
+                      "maxItems": 64,
+                      "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": ["outcome", "fingerprint", "rsidEqual", "batchAtomicPresent", "grantOrderHash", "stableCount", "resetReason"],
+                        "properties": {
+                          "outcome": { "enum": ["VALID", "NO_ROW", "MULTIPLE", "LEGACY", "INVALID_BINDING", "RSID_MISMATCH", "MISSING_BATCH", "INVALID_LIFECYCLE", "ERROR_TYPE"] },
+                          "fingerprint": { "type": ["string", "null"], "maxLength": 16 },
+                          "rsidEqual": { "type": ["boolean", "null"] },
+                          "batchAtomicPresent": { "type": "boolean" },
+                          "grantOrderHash": { "type": ["string", "null"], "maxLength": 16 },
+                          "stableCount": { "type": "integer", "minimum": 0 },
+                          "resetReason": { "enum": ["initial", "fingerprint_changed", "invalid", "error"] }
                         }
                       }
                     }
