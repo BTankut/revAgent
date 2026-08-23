@@ -597,8 +597,22 @@ class ControlledStoreHarness {
       this.#records.set(recordKey, next);
       return next;
     };
-    const nextEgressValue = { ...egressValue, fence: legacy.egressFence } as GatewayJsonValue;
-    const nextIndexValue = { ...indexValue, index: legacy.normalizedConflictIndex } as GatewayJsonValue;
+    // A v1 oracle may intentionally omit a historical field.  A normalized
+    // aggregate cannot encode `undefined`, so retain the currently proved v2
+    // member unless the mutator supplied a replacement.  This keeps fixture
+    // mutations valid v2 evidence rather than manufacturing malformed JSON.
+    const supplied = (key: string, fallback: unknown): unknown =>
+      Object.hasOwn(legacy, key) && legacy[key] !== undefined
+        ? legacy[key]
+        : fallback;
+    const nextEgressValue = {
+      ...egressValue,
+      fence: supplied("egressFence", egressValue.fence),
+    } as GatewayJsonValue;
+    const nextIndexValue = {
+      ...indexValue,
+      index: supplied("normalizedConflictIndex", indexValue.index),
+    } as GatewayJsonValue;
     const nextEgress = put(egressKey, egress, nextEgressValue);
     const nextIndex = put(indexKey, index, nextIndexValue);
     const digestValue = (value: GatewayJsonValue): `sha256:${string}` => tokenDigest(canonicalizeJson(value as JsonValue));
@@ -610,10 +624,34 @@ class ControlledStoreHarness {
     const nextRootValue = {
       ...rootValue,
       rootVersion: Number(rootValue.rootVersion) + 1,
-      identity: { userId: legacy.userId, deviceId: legacy.deviceId, seatId: legacy.seatId, identityAuthority: legacy.identityAuthority },
-      binding: { sessionBindingId: legacy.sessionBindingId, sessionVersion: legacy.sessionVersion, connectionId: legacy.connectionId, binding: legacy.binding, resumeTokenDigest: legacy.resumeTokenDigest, resumeExpiresAtMs: legacy.resumeExpiresAtMs, grantedCapabilities: legacy.grantedCapabilities },
-      lifecycle: { connectionLifecycle: legacy.connectionLifecycle, sessionLifecycle: legacy.sessionLifecycle, lastHeartbeatAtMs: legacy.lastHeartbeatAtMs, liveDocumentRoute: legacy.liveDocumentRoute, recordVersion: legacy.recordVersion, createdAtMs: legacy.createdAtMs, updatedAtMs: legacy.updatedAtMs },
-      sequence: { sequence: legacy.sequence, pending: legacy.pending },
+      identity: {
+        userId: supplied("userId", (rootValue.identity as GatewayJsonObject).userId),
+        deviceId: supplied("deviceId", (rootValue.identity as GatewayJsonObject).deviceId),
+        seatId: supplied("seatId", (rootValue.identity as GatewayJsonObject).seatId),
+        identityAuthority: supplied("identityAuthority", (rootValue.identity as GatewayJsonObject).identityAuthority),
+      },
+      binding: {
+        sessionBindingId: supplied("sessionBindingId", (rootValue.binding as GatewayJsonObject).sessionBindingId),
+        sessionVersion: supplied("sessionVersion", (rootValue.binding as GatewayJsonObject).sessionVersion),
+        connectionId: supplied("connectionId", (rootValue.binding as GatewayJsonObject).connectionId),
+        binding: supplied("binding", (rootValue.binding as GatewayJsonObject).binding),
+        resumeTokenDigest: supplied("resumeTokenDigest", (rootValue.binding as GatewayJsonObject).resumeTokenDigest),
+        resumeExpiresAtMs: supplied("resumeExpiresAtMs", (rootValue.binding as GatewayJsonObject).resumeExpiresAtMs),
+        grantedCapabilities: supplied("grantedCapabilities", (rootValue.binding as GatewayJsonObject).grantedCapabilities),
+      },
+      lifecycle: {
+        connectionLifecycle: supplied("connectionLifecycle", (rootValue.lifecycle as GatewayJsonObject).connectionLifecycle),
+        sessionLifecycle: supplied("sessionLifecycle", (rootValue.lifecycle as GatewayJsonObject).sessionLifecycle),
+        lastHeartbeatAtMs: supplied("lastHeartbeatAtMs", (rootValue.lifecycle as GatewayJsonObject).lastHeartbeatAtMs),
+        liveDocumentRoute: supplied("liveDocumentRoute", (rootValue.lifecycle as GatewayJsonObject).liveDocumentRoute),
+        recordVersion: supplied("recordVersion", (rootValue.lifecycle as GatewayJsonObject).recordVersion),
+        createdAtMs: supplied("createdAtMs", (rootValue.lifecycle as GatewayJsonObject).createdAtMs),
+        updatedAtMs: supplied("updatedAtMs", (rootValue.lifecycle as GatewayJsonObject).updatedAtMs),
+      },
+      sequence: {
+        sequence: supplied("sequence", (rootValue.sequence as GatewayJsonObject).sequence),
+        pending: supplied("pending", (rootValue.sequence as GatewayJsonObject).pending),
+      },
       childRefs: refs,
       childrenDigest: digestValue(refs as unknown as JsonValue),
     } as GatewayJsonValue;
@@ -850,19 +888,87 @@ function legacyResolutionFixture(label: string): GatewayJsonObject {
   };
 }
 
+/**
+ * Return the serving-session shape for legacy-proof fixtures without making a
+ * v2 aggregate look like an unmarked v1 source.  New registrations are
+ * already v2-authoritative; older cutover oracles still need the same fields
+ * in order to calculate a legacy recovery proof.
+ */
+function sessionForLegacyProof(
+  store: ControlledStoreHarness,
+  rsid: string,
+): GatewayJsonObject {
+  const v1 = store.snapshot().find(
+    (record) =>
+      record.namespace === "gateway.rbp-session/v1" &&
+      record.tenantId === TENANT_ID &&
+      record.key === rsid,
+  )?.value as GatewayJsonObject | undefined;
+  if (v1 !== undefined) return v1;
+
+  const root = store.snapshot().find(
+    (record) =>
+      record.namespace === GATEWAY_RBP_SESSION_V2_NAMESPACE &&
+      record.tenantId === TENANT_ID &&
+      record.key === rsid,
+  )?.value as GatewayJsonObject | undefined;
+  const egress = store.snapshot().find(
+    (record) =>
+      record.namespace === "gateway.rbp-session-egress/v2" &&
+      record.tenantId === TENANT_ID &&
+      record.key === `${rsid}/egress`,
+  )?.value as GatewayJsonObject | undefined;
+  const index = store.snapshot().find(
+    (record) =>
+      record.namespace === "gateway.rbp-session-conflict-index/v2" &&
+      record.tenantId === TENANT_ID &&
+      record.key === `${rsid}/conflict-index`,
+  )?.value as GatewayJsonObject | undefined;
+  if (root === undefined || egress === undefined || index === undefined) {
+    throw new Error(`missing serving-session fixture ${rsid}`);
+  }
+  return {
+    schema: "gateway.rbp-session/v1",
+    tenantId: TENANT_ID,
+    rsid,
+    ...(root.identity as GatewayJsonObject),
+    ...(root.binding as GatewayJsonObject),
+    ...(root.lifecycle as GatewayJsonObject),
+    ...(root.sequence as GatewayJsonObject),
+    evidence: [],
+    egressFence: egress.fence,
+    normalizedConflictIndex: index.index,
+  };
+}
+
+/** Seed only pre-marker authority: a v1 serving row and optional v1 recovery
+ * source.  No v2 root, child, or marker may survive this conversion. */
+function preMarker(
+  store: ControlledStoreHarness,
+  rsid: string,
+): GatewayJsonObject {
+  const legacy = sessionForLegacyProof(store, rsid);
+  for (const [namespace, key] of [
+    [GATEWAY_RBP_SESSION_V2_NAMESPACE, rsid],
+    [GATEWAY_RBP_SESSION_CUTOVER_V2_NAMESPACE, rsid],
+    ["gateway.rbp-session-egress/v2", `${rsid}/egress`],
+    ["gateway.rbp-session-conflict-index/v2", `${rsid}/conflict-index`],
+    ["gateway.hold-cutover/v1", rsid],
+  ] as const) {
+    store.remove(TENANT_ID, namespace, key);
+  }
+  store.seed(TENANT_ID, "gateway.rbp-session/v1", rsid, legacy);
+  return legacy;
+}
+
 function seedValidCutover(
   store: ControlledStoreHarness,
   rsid: string,
   mutate?: (value: Record<string, unknown>) => Record<string, unknown>,
 ): void {
   const nowMs = Date.now();
-  const session = store.snapshot().find(
-    (record) =>
-      record.namespace === "gateway.rbp-session/v1" &&
-      record.tenantId === TENANT_ID &&
-      record.key === rsid,
-  )?.value as GatewayJsonObject | undefined;
-  if (session === undefined || session.pending !== null) {
+  const session = sessionForLegacyProof(store, rsid);
+  if (session.pending !== null) {
     throw new Error("cutover fixture requires an idle durable session");
   }
   const recovery = store.snapshot().find(
@@ -930,12 +1036,18 @@ function seedValidCutover(
     state: "normalized_authoritative",
     cutoverAtMs: nowMs,
   };
-  store.seed(
-    TENANT_ID,
-    "gateway.hold-cutover/v1",
-    rsid,
-    (mutate?.(marker) ?? marker) as GatewayJsonValue,
+  const next = (mutate?.(marker) ?? marker) as GatewayJsonValue;
+  const existing = store.snapshot().find(
+    (record) =>
+      record.namespace === "gateway.hold-cutover/v1" &&
+      record.tenantId === TENANT_ID &&
+      record.key === rsid,
   );
+  if (existing === undefined) {
+    store.seed(TENANT_ID, "gateway.hold-cutover/v1", rsid, next);
+  } else {
+    store.rewrite(TENANT_ID, "gateway.hold-cutover/v1", rsid, () => next);
+  }
 }
 
 const CUTOVER_CORRUPTIONS: ReadonlyArray<[
@@ -1024,6 +1136,38 @@ describe("GatewayBridgeSessionAuthority durable unregister", () => {
     await expect(
       restarted.receive(fresh.connectionId, resume(session.rsid, session.resumeToken)),
     ).resolves.toBeUndefined();
+  });
+
+  it("atomically materializes v2 root, children, and marker from a pre-marker v1 source at startup", async () => {
+    const store = new ControlledStoreHarness();
+    const original = new GatewayBridgeSessionAuthority(store.createPort(), identity());
+    authorities.push(original);
+    await original.open();
+    const session = await register(original);
+    preMarker(store, session.rsid);
+    await original.close();
+    authorities.splice(authorities.indexOf(original), 1);
+
+    const restarted = new GatewayBridgeSessionAuthority(store.createPort(), identity());
+    authorities.push(restarted);
+    await restarted.open();
+
+    const records = store.snapshot();
+    expect(records.some((record) =>
+      record.namespace === GATEWAY_RBP_SESSION_V2_NAMESPACE && record.key === session.rsid,
+    )).toBe(true);
+    expect(records.some((record) =>
+      record.namespace === "gateway.rbp-session-egress/v2" && record.key === `${session.rsid}/egress`,
+    )).toBe(true);
+    expect(records.some((record) =>
+      record.namespace === "gateway.rbp-session-conflict-index/v2" && record.key === `${session.rsid}/conflict-index`,
+    )).toBe(true);
+    expect(records.some((record) =>
+      record.namespace === GATEWAY_RBP_SESSION_CUTOVER_V2_NAMESPACE && record.key === session.rsid,
+    )).toBe(true);
+    expect(records.some((record) =>
+      record.namespace === "gateway.rbp-session/v1" && record.key === session.rsid,
+    )).toBe(false);
   });
 
   it("never resumes an old token on the same socket or after restart", async () => {
