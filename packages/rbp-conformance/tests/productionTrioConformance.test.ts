@@ -1,5 +1,6 @@
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 
 import { describe, expect, it } from "vitest";
@@ -11,6 +12,12 @@ import {
 } from "../src/productionTrioConformance.js";
 
 const digest = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" as const;
+const workspaceRoot = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "..",
+  "..",
+  "..",
+);
 
 function attestation(): ProductionTrioRuntimeAttestation {
   return {
@@ -34,7 +41,7 @@ function attestation(): ProductionTrioRuntimeAttestation {
 }
 
 describe("WP-12 production Gateway/trio conformance boundary", () => {
-  it("pins exact production Gateway imports and rejects simulator/pre-production composition", () => {
+  it("pins exact production Gateway imports, bound real-worker credentials, and rejects simulator/pre-production composition", () => {
     const root = mkdtempSync(path.join(tmpdir(), "rbp-production-trio-"));
     for (const file of ["bridgeSession.ts", "rbpIngress.ts", "server.ts"]) {
       const directory = path.join(root, "packages", "gateway", "src");
@@ -50,6 +57,19 @@ describe("WP-12 production Gateway/trio conformance boundary", () => {
     writeFileSync(path.join(root, "packages", "gateway", "src", "productionConformanceHost.ts"), 'import "gateway-stub";\n', "utf8");
     expect(() => attestProductionGatewayModuleGraph({ repoRoot: root, hostSource: "packages/gateway/src/productionConformanceHost.ts" }))
       .toThrow(/forbidden/u);
+
+    const workerHost = readFileSync(path.join(
+      workspaceRoot,
+      "packages",
+      "bridge",
+      "tests",
+      "RevAgent.Bridge.RealWorkerHost",
+      "Program.cs",
+    ), "utf8");
+    expect(workerHost).toMatch(/new RbpGatewayHandshakeClient\(claims,/u);
+    expect(workerHost).toMatch(/new StreamableHttpRbpConnectionCycleFactory\(\s*claims,/u);
+    expect(workerHost).not.toMatch(/new RbpGatewayHandshakeClient\(enrollment,/u);
+    expect(workerHost).not.toMatch(/new StreamableHttpRbpConnectionCycleFactory\(\s*enrollment,/u);
   });
 
   it("requires loopback-only, redacted, durable, explicitly non-production evidence", () => {

@@ -102,11 +102,11 @@ internal static class Program
                 RbpHelloProfile.ArtifactResultCapability,
             };
             IRbpConnectionCycleFactory wss = new WssRbpConnectionCycleFactory(
-                new RbpGatewayHandshakeClient(enrollment, new WssGatewayBinding(new PinnedSocketFactory(options.CertificateSha256))));
+                new RbpGatewayHandshakeClient(claims, new WssGatewayBinding(new PinnedSocketFactory(options.CertificateSha256))));
             IRbpConnectionCycleFactory cycle = options.Binding == "wss"
                 ? wss
                 : new StreamableHttpRbpConnectionCycleFactory(
-                    enrollment, capabilities, new PinnedHttpFactory(options.CertificateSha256));
+                    claims, capabilities, new PinnedHttpFactory(options.CertificateSha256));
             var profile = new RbpHelloProfile(
                 "wp12-real-worker-host", "localhost", "test-only", Array.Empty<string>(), capabilities.ToArray());
             RbpConnectionCoordinator coordinator = WorkerGatewayComposition.CreateCoordinator(
