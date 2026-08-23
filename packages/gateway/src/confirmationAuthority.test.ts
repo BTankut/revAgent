@@ -140,6 +140,16 @@ describe("GatewayConfirmationAuthority durable pending actions", () => {
       identityMcpSessionId: null,
       nowMs: 1_775_000_000_000,
     });
+    const sameBearerOtherSessionBinding = Object.freeze({
+      ...baseBinding,
+      confirmationSessionId: "mcp-session-b",
+    });
+    const sameBearerOtherSessionScope = createEffectiveMcpRequestScopeV1({
+      principalKey: baseBinding.principalKey,
+      transportMcpSessionId: sameBearerOtherSessionBinding.confirmationSessionId,
+      identityMcpSessionId: null,
+      nowMs: 1_775_000_000_000,
+    });
     const [prefix, confirmationId, principalHash, sessionHash, secret] =
       issued.confirmToken.split(".");
     expect(prefix).toBe("rvc2");
@@ -161,6 +171,14 @@ describe("GatewayConfirmationAuthority durable pending actions", () => {
           effectiveMcpRequestScope: foreignScope,
         },
         "foreign_actor",
+      ],
+      [
+        issued.confirmToken,
+        {
+          binding: sameBearerOtherSessionBinding,
+          effectiveMcpRequestScope: sameBearerOtherSessionScope,
+        },
+        "foreign_session",
       ],
       [
         `rvc2.${confirmationId}.${principalHash}.${"0".repeat(64)}.${secret}`,

@@ -189,7 +189,12 @@ export interface NorthMcpEndpointOptions {
   readonly port?: number;
 }
 
-type EffectiveScopeObservationBoundary = "mode_a" | "resource";
+type EffectiveScopeObservationBoundary =
+  | "mode_a"
+  | "resource"
+  | "route"
+  | "dispatch"
+  | "result";
 
 /**
  * A deliberately non-enumerable, test-only hook. Production options have no
@@ -662,6 +667,10 @@ function createSessionServer(input: {
   readonly modeASession?: ModeADiscoverySession;
   readonly notifyToolsChanged: () => void;
   readonly effectiveMcpRequestScope: EffectiveMcpRequestScopeV1;
+  readonly observeEffectiveScope?: (
+    boundary: EffectiveScopeObservationBoundary,
+    scope: EffectiveMcpRequestScopeV1,
+  ) => void;
   readonly resourceAuthority?: Pick<
     GatewayResourceAuthority,
     "boundResult" | "readResource"
@@ -772,6 +781,10 @@ function createSessionServer(input: {
         }
         const mcpSessionId =
           input.effectiveMcpRequestScope.effectiveMcpSessionId;
+        input.observeEffectiveScope?.(
+          "dispatch",
+          input.effectiveMcpRequestScope,
+        );
         const outcome = await trackPromise(
           input.inflightOperations,
           dispatcher.dispatch({
@@ -794,6 +807,10 @@ function createSessionServer(input: {
                   "effective MCP route authority principal changed before dispatch",
                 );
               }
+              input.observeEffectiveScope?.(
+                "route",
+                input.effectiveMcpRequestScope,
+              );
               return input.invocationRouteFor(
                 Object.freeze({ ...input.authenticated, authContext }),
                 mcpSessionId,
@@ -810,6 +827,10 @@ function createSessionServer(input: {
           input.effectiveMcpRequestScope,
         );
         try {
+          input.observeEffectiveScope?.(
+            "result",
+            input.effectiveMcpRequestScope,
+          );
           const bounded = await input.resourceAuthority.boundResult({
             scope: resourceScope,
             effectiveMcpRequestScope: input.effectiveMcpRequestScope,
@@ -1038,6 +1059,8 @@ export function createNorthMcpHttpHandler(
         notifyToolsChanged: () => mcpHandler.notify.toolsChanged(),
         registry: options.registry,
         effectiveMcpRequestScope,
+        observeEffectiveScope: (boundary, scope) =>
+          observeEffectiveScopeForTest(options, boundary, scope),
         verifyRequestState: requestStateCodec.verify,
       });
     },

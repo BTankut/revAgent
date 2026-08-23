@@ -287,6 +287,23 @@ describe("GW-9 scoped artifact and result authority", () => {
     expect(objectGet).not.toHaveBeenCalled();
     expect(transact).not.toHaveBeenCalled();
 
+    const sameBearerOtherSession = Object.freeze({
+      ...scope,
+      mcpSessionId: "mcp-session-2",
+    });
+    comparisonSlots = [];
+    await expectResourceError(
+      authority.readResource(
+        sameBearerOtherSession,
+        effectiveScopeFor(sameBearerOtherSession),
+        new URL(ref.uri),
+      ),
+      "scope_denied",
+    );
+    expect(comparisonSlots).toEqual(["p", "s", "t", "a"]);
+    expect(objectGet).not.toHaveBeenCalled();
+    expect(transact).not.toHaveBeenCalled();
+
     const [key] = objectStore.keys();
     expect(key).toMatch(
       /^p:[0-9a-f]{64}\/s:[0-9a-f]{64}\/t:[0-9a-f]{64}\/a:[0-9a-f]{64}\/artifact_ref\/r:[0-9a-f]{64}$/u,
