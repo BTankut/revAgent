@@ -107,6 +107,8 @@ const DEFAULT_MAX_ACTIVE_SEAT_REASSIGNMENTS = 16;
 const MAX_CONFIGURED_ACTIVE_SEAT_REASSIGNMENTS = 256;
 const DEFAULT_SEAT_REASSIGNMENT_TIMEOUT_MS = 30_000;
 const MAX_SEAT_REASSIGNMENT_TIMEOUT_MS = 300_000;
+const DEFAULT_SEAT_REASSIGNMENT_CLOSE_DRAIN_TIMEOUT_MS = 5_000;
+const MAX_SEAT_REASSIGNMENT_CLOSE_DRAIN_TIMEOUT_MS = 60_000;
 const MAX_SEAT_REASSIGNMENT_ATTEMPTS = 2;
 const DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/u;
 const HOLD_ID_PATTERN = /^vh:[0-9a-f]{64}$/u;
@@ -188,6 +190,11 @@ interface SeatReassignmentOperation {
 
 interface SeatReassignmentAttemptState {
   attemptsStarted: number;
+  state:
+    | "active"
+    | "timed_out_cleanup_pending"
+    | "cancelled_cleanup_pending"
+    | "quarantined";
   readonly createdAtMs: number;
   readonly expiresAtMs: number;
   readonly lifecycleGeneration: number;
@@ -2102,6 +2109,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     SeatReassignmentTask
   >();
   readonly #seatReassignmentDrains = new Set<Promise<void>>();
+  readonly #seatReassignmentDrainTasks = new Set<SeatReassignmentTask>();
   readonly #revokedConnectionIds = new Set<string>();
   readonly #knownTenants = new Set<string>();
   readonly #tenantIdentitySnapshots = new Map<string, TenantIdentitySnapshot>();
@@ -2115,8 +2123,10 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
   readonly #wait: (milliseconds: number) => Promise<void>;
   readonly #maxActiveSeatReassignments: number;
   readonly #seatReassignmentTimeoutMs: number;
+  readonly #seatReassignmentCloseDrainTimeoutMs: number;
   #lifecycleState: BridgeLifecycleState = "closed";
   #lifecycleGeneration = 0;
+  #closeDrainTimedOut = false;
   #protocolStoreState: BridgeLifecycleResourceState = "closed";
   #identityState: BridgeLifecycleResourceState = "closed";
   #protocolStoreManagedBy: "bridge" | "identity" = "bridge";
@@ -2132,6 +2142,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       readonly wait?: (milliseconds: number) => Promise<void>;
       readonly maxActiveSeatReassignments?: number;
       readonly seatReassignmentTimeoutMs?: number;
+      readonly seatReassignmentCloseDrainTimeoutMs?: number;
     } = {},
   ) {
     this.#productionIdentity = asProductionIdentityAuthority(identity);
@@ -2149,6 +2160,9 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     this.#seatReassignmentTimeoutMs =
       options.seatReassignmentTimeoutMs ??
       DEFAULT_SEAT_REASSIGNMENT_TIMEOUT_MS;
+    this.#seatReassignmentCloseDrainTimeoutMs =
+      options.seatReassignmentCloseDrainTimeoutMs ??
+      DEFAULT_SEAT_REASSIGNMENT_CLOSE_DRAIN_TIMEOUT_MS;
     if (
       !isSafePositiveInteger(this.#maxActiveSeatReassignments) ||
       this.#maxActiveSeatReassignments >
@@ -2166,6 +2180,15 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         "seatReassignmentTimeoutMs must be a bounded positive integer",
       );
     }
+    if (
+      !isSafePositiveInteger(this.#seatReassignmentCloseDrainTimeoutMs) ||
+      this.#seatReassignmentCloseDrainTimeoutMs >
+        MAX_SEAT_REASSIGNMENT_CLOSE_DRAIN_TIMEOUT_MS
+    ) {
+      throw new TypeError(
+        "seatReassignmentCloseDrainTimeoutMs must be a bounded positive integer",
+      );
+    }
   }
 
   public lifecycle(): GatewayBridgeSessionLifecycleSnapshot {
@@ -2179,6 +2202,16 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
 
   public open(): Promise<void> {
     if (this.#lifecycleState === "open") return Promise.resolve();
+    if (this.#closeDrainTimedOut) {
+      return Promise.reject(
+        new GatewayRbpFault(
+          "unavailable",
+          "Gateway close must be retried after reassignment cleanup drains",
+          503,
+          1011,
+        ),
+      );
+    }
     if (this.#openPromise !== null) return this.#openPromise;
     if (this.#closePromise !== null) {
       return this.#closePromise.then(() => this.open());
@@ -2310,17 +2343,40 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     for (const task of [...this.#inFlightSeatReassignments.values()]) {
       this.#cancelSeatReassignmentTask(task);
     }
-    await Promise.allSettled([
+    const drain = Promise.allSettled([
       ...this.#receiveTails.values(),
       ...this.#sessionAuthorizationTails.values(),
       ...this.#tenantIdentityTails.values(),
       ...this.#tenantRevocationTails.values(),
       ...this.#seatReassignmentDrains,
     ]);
+    let closeDrainTimeout: ReturnType<typeof setTimeout> | null = null;
+    const reassignmentDrained = await Promise.race([
+      drain.then(() => true),
+      new Promise<false>((resolve) => {
+        closeDrainTimeout = setTimeout(
+          () => resolve(false),
+          this.#seatReassignmentCloseDrainTimeoutMs,
+        );
+      }),
+    ]);
+    if (closeDrainTimeout !== null) clearTimeout(closeDrainTimeout);
+    if (!reassignmentDrained) {
+      this.#closeDrainTimedOut = true;
+      this.#lifecycleState = "failed";
+      throw new GatewayRbpFault(
+        "unavailable",
+        "Gateway close timed out while reassignment cleanup remained active",
+        503,
+        1011,
+      );
+    }
+    this.#closeDrainTimedOut = false;
     this.#seatReassignmentOperations.clear();
     this.#seatReassignmentAttempts.clear();
     this.#inFlightSeatReassignments.clear();
     this.#seatReassignmentDrains.clear();
+    this.#seatReassignmentDrainTasks.clear();
     const connections = [...this.#connections.values()];
     const active = [...this.#active.values()];
     let shutdownError: unknown = null;
@@ -2618,7 +2674,15 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     if (this.#seatReassignmentOperations.get(key)?.token === operation.token) {
       this.#seatReassignmentOperations.delete(key);
     }
-    this.#seatReassignmentAttempts.delete(operation.token);
+    if (!this.#hasUnresolvedSeatReassignmentDrain(operation.token)) {
+      this.#seatReassignmentAttempts.delete(operation.token);
+    }
+  }
+
+  #hasUnresolvedSeatReassignmentDrain(token: string): boolean {
+    return [...this.#seatReassignmentDrainTasks].some(
+      (task) => task.operation.token === token && !task.drainSettled,
+    );
   }
 
   #pruneSeatReassignmentOperations(): void {
@@ -2626,7 +2690,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     for (const operation of this.#seatReassignmentOperations.values()) {
       const attempt = this.#seatReassignmentAttempts.get(operation.token);
       if (
-        this.#inFlightSeatReassignments.has(operation.token) ||
+        this.#hasUnresolvedSeatReassignmentDrain(operation.token) ||
         (attempt !== undefined && attempt.expiresAtMs >= nowMs)
       ) {
         continue;
@@ -2638,7 +2702,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       const oldest = [...this.#seatReassignmentOperations.values()]
         .filter(
           (operation) =>
-            !this.#inFlightSeatReassignments.has(operation.token),
+            !this.#hasUnresolvedSeatReassignmentDrain(operation.token),
         )
         .sort(
           (left, right) =>
@@ -2654,7 +2718,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     this.#pruneSeatReassignmentOperations();
     if (
       this.#lifecycleState !== "open" ||
-      this.#inFlightSeatReassignments.size >=
+      this.#seatReassignmentDrainTasks.size >=
         this.#maxActiveSeatReassignments ||
       this.#seatReassignmentOperations.size >=
         this.#maxActiveSeatReassignments * 4
@@ -2674,7 +2738,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
   ): SeatReassignmentTask {
     if (
       this.#lifecycleState !== "open" ||
-      this.#inFlightSeatReassignments.size >=
+      this.#seatReassignmentDrainTasks.size >=
         this.#maxActiveSeatReassignments ||
       attempt.lifecycleGeneration !== this.#lifecycleGeneration ||
       this.#inFlightSeatReassignments.has(operation.token)
@@ -2715,6 +2779,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     };
     this.#inFlightSeatReassignments.set(operation.token, task);
     this.#seatReassignmentDrains.add(drain);
+    this.#seatReassignmentDrainTasks.add(task);
     return task;
   }
 
@@ -2740,6 +2805,24 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     if (task.drainSettled) return;
     task.drainSettled = true;
     this.#seatReassignmentDrains.delete(task.drain);
+    this.#seatReassignmentDrainTasks.delete(task);
+    const attempt = this.#seatReassignmentAttempts.get(task.operation.token);
+    if (
+      attempt?.state === "timed_out_cleanup_pending" ||
+      attempt?.state === "cancelled_cleanup_pending"
+    ) {
+      attempt.state = "quarantined";
+    }
+    const key = identityIndexKey(
+      task.operation.tenantId,
+      task.operation.seatId,
+    );
+    if (
+      this.#seatReassignmentOperations.get(key)?.token !==
+      task.operation.token
+    ) {
+      this.#seatReassignmentAttempts.delete(task.operation.token);
+    }
     task.resolveDrain();
   }
 
@@ -2750,6 +2833,10 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     if (!task.cancelled) {
       task.cancelled = true;
       task.cancellationKind = kind;
+      const attempt = this.#seatReassignmentAttempts.get(task.operation.token);
+      if (attempt !== undefined) {
+        attempt.state = "cancelled_cleanup_pending";
+      }
       task.resolveCancellation();
     }
     this.#settleSeatReassignmentTask(task, "cancelled");
@@ -2978,6 +3065,17 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
           4403,
         );
       }
+      if (
+        attempt.state === "timed_out_cleanup_pending" ||
+        attempt.state === "cancelled_cleanup_pending"
+      ) {
+        throw new GatewayRbpFault(
+          "unavailable",
+          "seat reassignment cleanup is still draining",
+          503,
+          1011,
+        );
+      }
       const activeTask = this.#inFlightSeatReassignments.get(
         pendingReassignment.token,
       );
@@ -2991,6 +3089,8 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         };
       }
       let retryTask: SeatReassignmentTask;
+      const priorState = attempt.state;
+      attempt.state = "active";
       try {
         retryTask = this.#registerSeatReassignmentTask(
           pendingReassignment,
@@ -2998,6 +3098,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         );
       } catch (error) {
         attempt.attemptsStarted -= 1;
+        attempt.state = priorState;
         throw error;
       }
       return {
@@ -3175,6 +3276,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       this.#seatReassignmentOperations.set(seatKey, operation);
       const attempt: SeatReassignmentAttemptState = {
         attemptsStarted: 1,
+        state: "active",
         createdAtMs,
         expiresAtMs: Math.min(
           Number.MAX_SAFE_INTEGER,
@@ -3589,6 +3691,10 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     ]);
     if (timeoutHandle !== null) clearTimeout(timeoutHandle);
     if (first.kind === "timeout") {
+      const attempt = this.#seatReassignmentAttempts.get(operation.token);
+      if (attempt !== undefined) {
+        attempt.state = "timed_out_cleanup_pending";
+      }
       this.#settleSeatReassignmentTask(task, "quarantined");
       void cleanup.then(() => this.#finishSeatReassignmentDrain(task));
       throw new GatewayRbpFault(
@@ -3618,6 +3724,8 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       );
     }
     if (first.kind === "failed") {
+      const attempt = this.#seatReassignmentAttempts.get(operation.token);
+      if (attempt !== undefined) attempt.state = "quarantined";
       this.#settleSeatReassignmentTask(task, "quarantined");
       this.#finishSeatReassignmentDrain(task);
       throw first.error;
@@ -3702,6 +3810,10 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         },
       );
     } catch (error: unknown) {
+      const attempt = this.#seatReassignmentAttempts.get(operation.token);
+      if (attempt !== undefined && !task.cancelled) {
+        attempt.state = "quarantined";
+      }
       this.#settleSeatReassignmentTask(
         task,
         task.cancelled || this.#lifecycleState !== "open"
