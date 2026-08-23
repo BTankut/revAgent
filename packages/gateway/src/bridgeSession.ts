@@ -111,6 +111,10 @@ const GATEWAY_RBP_SESSION_V2_EGRESS_NAMESPACE =
 const GATEWAY_RBP_SESSION_V2_CONFLICT_INDEX_NAMESPACE =
   "gateway.rbp-session-conflict-index/v2" as const;
 export const GATEWAY_MUTATION_RESOLUTION_NAMESPACE = "gateway.mutation-resolution/v1" as const;
+/** Test-only observer for prequeue carrier-admission ordering. */
+export const TEST_RSID_CARRIER_RECEIVE_TAIL_OBSERVER = Symbol(
+  "revagent.gateway.test.rsid-carrier-receive-tail-observer",
+);
 
 const RESUME_LIFETIME_MS = 24 * 60 * 60 * 1_000;
 const INVOCATION_TIMEOUT_MS = 120_000;
@@ -267,6 +271,12 @@ interface SeatReassignmentTask {
   readonly drain: Promise<void>;
   readonly resolveDrain: () => void;
 }
+
+type CarrierReceiveTailObserver = (event: {
+  readonly stage: "denied_prequeue" | "tail_installed" | "tail_released";
+  readonly rsid: string;
+  readonly queuedBytes: number;
+}) => void;
 
 interface DurablePendingDispatch {
   readonly envelopeDigest: `sha256:${string}`;
@@ -2759,6 +2769,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
   readonly #waiters = new Map<string, PendingWaiter>();
   readonly #receiveTails = new Map<string, Promise<void>>();
   readonly #rsidCarrierReceiveTailBytes = new Map<string, number>();
+  readonly #carrierReceiveTailObserver: CarrierReceiveTailObserver | undefined;
   readonly #sessionAuthorizationTails = new Map<string, Promise<void>>();
   readonly #tenantIdentityTails = new Map<string, Promise<void>>();
   readonly #tenantRevocationTails = new Map<string, Promise<void>>();
@@ -2822,6 +2833,12 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
   ) {
     this.#sessionRepository = new SessionAggregateRepository(store);
     this.#resourceAuthority = options.resourceAuthority;
+    const carrierTailObserver = Object.getOwnPropertyDescriptor(
+      options,
+      TEST_RSID_CARRIER_RECEIVE_TAIL_OBSERVER,
+    )?.value;
+    this.#carrierReceiveTailObserver =
+      typeof carrierTailObserver === "function" ? carrierTailObserver : undefined;
     this.#productionIdentity = asProductionIdentityAuthority(identity);
     this.#clock = options.clock ?? Date.now;
     this.#instanceId = options.instanceId ?? gatewayUuidV7(this.#clock());
@@ -5749,6 +5766,9 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       await this.#receiveNow(connectionId, envelope);
       return;
     }
+    if (envelope.type === "partial" && envelope.payload.kind === "chunk") {
+      this.#assertCarrierPartialAdmissionBeforeQueue(connectionId, envelope);
+    }
     let carrierBytes = 0;
     let rsid: string | null = null;
     if (envelope.type === "partial" && envelope.payload.kind === "chunk") {
@@ -5766,6 +5786,11 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         );
       }
       this.#rsidCarrierReceiveTailBytes.set(rsid, queued + carrierBytes);
+      this.#carrierReceiveTailObserver?.({
+        stage: "tail_installed",
+        rsid,
+        queuedBytes: queued + carrierBytes,
+      });
     }
     const prior = this.#receiveTails.get(connectionId) ?? Promise.resolve();
     let release!: () => void;
@@ -5781,11 +5806,48 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         const remaining = (this.#rsidCarrierReceiveTailBytes.get(rsid) ?? 0) - carrierBytes;
         if (remaining > 0) this.#rsidCarrierReceiveTailBytes.set(rsid, remaining);
         else this.#rsidCarrierReceiveTailBytes.delete(rsid);
+        this.#carrierReceiveTailObserver?.({
+          stage: "tail_released",
+          rsid,
+          queuedBytes: Math.max(remaining, 0),
+        });
       }
       release();
       if (this.#receiveTails.get(connectionId) === tail) {
         this.#receiveTails.delete(connectionId);
       }
+    }
+  }
+
+  /** In-memory-only admission check; no decoder, tail, or durable state is touched. */
+  #assertCarrierPartialAdmissionBeforeQueue(
+    connectionId: string,
+    envelope: Extract<RbpEnvelope, { type: "partial"; rsid: string }>,
+  ): void {
+    const active = this.#active.get(envelope.rsid);
+    const connection = this.#connections.get(connectionId);
+    if (
+      active === undefined ||
+      connection === undefined ||
+      active.record.connectionId !== connectionId ||
+      active.tenantId !== connection.auth.actor.tenantId
+    ) {
+      return;
+    }
+    const partial = envelope.payload as { readonly stream_id: string };
+    const requiresArtifactCapability = partial.stream_id.startsWith("artifact:");
+    if (
+      !connection.grantedCapabilities.includes("chunked_results") ||
+      (requiresArtifactCapability &&
+        !connection.grantedCapabilities.includes("artifact_result_v1")) ||
+      !this.#carrierReady()
+    ) {
+      this.#carrierReceiveTailObserver?.({
+        stage: "denied_prequeue",
+        rsid: envelope.rsid,
+        queuedBytes: this.#rsidCarrierReceiveTailBytes.get(envelope.rsid) ?? 0,
+      });
+      throw new GatewayRbpFault("unsupported", "chunk carrier was not granted", 403, 4403);
     }
   }
 

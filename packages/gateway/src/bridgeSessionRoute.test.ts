@@ -17,6 +17,7 @@ import {
 import {
   GatewayBridgeSessionAuthority,
   GatewayRbpFault,
+  TEST_RSID_CARRIER_RECEIVE_TAIL_OBSERVER,
   type BridgeConnectionChannel,
 } from "./bridgeSession.js";
 import type { GatewayExecutorRequest, GatewayJsonObject } from "./dispatch.js";
@@ -587,10 +588,17 @@ describe("GatewayBridgeSessionAuthority live document routing", () => {
     const fixture = createRestartableTestStore();
     const objects = createMemoryObjectStore();
     const resources = new GatewayResourceAuthority({ protocolStore: fixture.store, objectStore: objects });
+    const tailEvents: Array<{ stage: string; queuedBytes: number }> = [];
+    const options = { resourceAuthority: resources };
+    Object.defineProperty(options, TEST_RSID_CARRIER_RECEIVE_TAIL_OBSERVER, {
+      value: (event: { readonly stage: string; readonly queuedBytes: number }) => {
+        tailEvents.push({ stage: event.stage, queuedBytes: event.queuedBytes });
+      },
+    });
     const created = new GatewayBridgeSessionAuthority(
       fixture.store,
       identity({ connectionCapabilities: ["chunked_results"] }),
-      { resourceAuthority: resources },
+      options,
     );
     authorities.push(created);
     await created.open();
@@ -622,6 +630,7 @@ describe("GatewayBridgeSessionAuthority live document routing", () => {
       row.namespace.startsWith("gateway.carrier") ||
       row.namespace === "gateway.resource-set/v1",
     )).toEqual([]);
+    expect(tailEvents).toEqual([{ stage: "denied_prequeue", queuedBytes: 0 }]);
 
     // The rejected artifact did not consume seq=1: a result-only chunk with
     // the same sequence is accepted under the independently granted chunk cap.
@@ -634,6 +643,11 @@ describe("GatewayBridgeSessionAuthority live document routing", () => {
       },
     })).resolves.toBeUndefined();
     expect(fixture.snapshot().records.filter((row) => row.namespace === "gateway.carrier-ack/v1")).toHaveLength(1);
+    expect(tailEvents).toEqual([
+      { stage: "denied_prequeue", queuedBytes: 0 },
+      { stage: "tail_installed", queuedBytes: 2 },
+      { stage: "tail_released", queuedBytes: 0 },
+    ]);
   });
 
   it("caps each rsid carrier tail at 8 MiB while keeping a heartbeat serviceable", async () => {
