@@ -2220,6 +2220,14 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     });
   }
 
+  /** Value-free live ownership evidence for bounded lifecycle oracles. */
+  public liveCardinality(): Readonly<{ connections: number; sessions: number }> {
+    return Object.freeze({
+      connections: this.#connections.size,
+      sessions: this.#active.size,
+    });
+  }
+
   public open(): Promise<void> {
     if (this.#lifecycleState === "open") return Promise.resolve();
     if (this.#closeDrainTimedOut) {

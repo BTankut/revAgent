@@ -2165,11 +2165,14 @@ describe("GW-12 production RBP ingress", () => {
     let nowMs = 0;
     let sweep!: () => void;
     const restartable = createRestartableTestStore();
-    const first = identity();
+    const first = identity(undefined, {
+      grantedConnectionCapabilities: ["transport_streamable_http"],
+    });
     const second = identity(undefined, {
       deviceToken: "device-token-second",
       deviceId: "device-gw12-second",
       tenantId: "tenant-gw12-second",
+      grantedConnectionCapabilities: ["transport_streamable_http"],
     });
     const multiDeviceIdentity: IdentityPort = {
       ...first,
@@ -2248,7 +2251,9 @@ describe("GW-12 production RBP ingress", () => {
 
   it("releases a reserved HTTP/SSE admission when authority open fails", async () => {
     const restartable = createRestartableTestStore();
-    const activeIdentity = identity();
+    const activeIdentity = identity(undefined, {
+      grantedConnectionCapabilities: ["transport_streamable_http"],
+    });
     const authority = new GatewayBridgeSessionAuthority(restartable.store, activeIdentity);
     const openConnection = vi.spyOn(authority, "openConnection");
     openConnection.mockRejectedValueOnce(new Error("synthetic opening failure"));
@@ -2279,8 +2284,13 @@ describe("GW-12 production RBP ingress", () => {
 
   it("fails closed and releases admission when identity drifts between reservation and authority binding", async () => {
     const restartable = createRestartableTestStore();
-    const first = identity();
-    const second = identity(undefined, { tenantId: "tenant-drift" });
+    const first = identity(undefined, {
+      grantedConnectionCapabilities: ["transport_streamable_http"],
+    });
+    const second = identity(undefined, {
+      tenantId: "tenant-drift",
+      grantedConnectionCapabilities: ["transport_streamable_http"],
+    });
     let authenticationCalls = 0;
     const driftingIdentity: IdentityPort = {
       ...first,
@@ -2323,7 +2333,9 @@ describe("GW-12 production RBP ingress", () => {
 
   it("disposes registered no-SSE overflow immediately and contains later terminal paths", async () => {
     const restartable = createRestartableTestStore();
-    const activeIdentity = identity();
+    const activeIdentity = identity(undefined, {
+      grantedConnectionCapabilities: ["transport_streamable_http"],
+    });
     const authority = new GatewayBridgeSessionAuthority(restartable.store, activeIdentity);
     let channel: BridgeConnectionChannel | null = null;
     const originalOpen = authority.openConnection.bind(authority);
@@ -2380,7 +2392,9 @@ describe("GW-12 production RBP ingress", () => {
 
   it("disposes a live HTTP/SSE entry on credential failure and keeps the tombstone terminal", async () => {
     const restartable = createRestartableTestStore();
-    const activeIdentity = identity();
+    const activeIdentity = identity(undefined, {
+      grantedConnectionCapabilities: ["transport_streamable_http"],
+    });
     const authority = new GatewayBridgeSessionAuthority(restartable.store, activeIdentity);
     const detach = vi.spyOn(authority, "detach");
     const ingress = createProductionRbpIngressHost({ authority });
@@ -2428,7 +2442,9 @@ describe("GW-12 production RBP ingress", () => {
 
   it("contains a racing HTTP/SSE detach rejection through the one disposer", async () => {
     const restartable = createRestartableTestStore();
-    const activeIdentity = identity();
+    const activeIdentity = identity(undefined, {
+      grantedConnectionCapabilities: ["transport_streamable_http"],
+    });
     const authority = new GatewayBridgeSessionAuthority(restartable.store, activeIdentity);
     const detach = vi.spyOn(authority, "detach").mockRejectedValue(new Error("synthetic detach failure"));
     const ingress = createProductionRbpIngressHost({ authority });
@@ -2484,7 +2500,9 @@ describe("GW-12 production RBP ingress", () => {
     let sweep!: () => void;
     let latest = { entries: -1, globalAdmissions: -1, tenantAdmissions: -1, deviceAdmissions: -1 };
     const restartable = createRestartableTestStore();
-    const activeIdentity = identity();
+    const activeIdentity = identity(undefined, {
+      grantedConnectionCapabilities: ["transport_streamable_http"],
+    });
     const authority = new GatewayBridgeSessionAuthority(restartable.store, activeIdentity);
     const detach = vi.spyOn(authority, "detach");
     const server = await startGatewayServer({
@@ -2527,7 +2545,19 @@ describe("GW-12 production RBP ingress", () => {
       const connectionId = response.headers.get("RBP-Connection-Id");
       if (connectionId === null) throw new Error("HTTP create omitted connection id");
       connectionIds.push(connectionId);
-      nowMs += 30_001;
+      await expect(
+        fetch(`${url}/${encodeURIComponent(connectionId)}/messages`, {
+          method: "POST",
+          headers: {
+            Authorization: "Bearer device-token",
+            Accept: "application/json",
+            "Content-Type": "application/json",
+            "X-RBP-Versions": "1",
+          },
+          body: JSON.stringify(registration()),
+        }),
+      ).resolves.toMatchObject({ status: 202 });
+      nowMs += 60_001;
       sweep();
     }
     expect(latest).toEqual({
@@ -2537,6 +2567,7 @@ describe("GW-12 production RBP ingress", () => {
       deviceAdmissions: 0,
     });
     await vi.waitFor(() => expect(detach).toHaveBeenCalledTimes(1_000), { timeout: 30_000 });
+    expect(authority.liveCardinality()).toStrictEqual({ connections: 0, sessions: 0 });
     for (const connectionId of connectionIds) {
       expect(() => authority.assertConnectionOutbound(connectionId)).toThrow(GatewayRbpFault);
     }
@@ -2544,7 +2575,9 @@ describe("GW-12 production RBP ingress", () => {
 
   it("enforces exact tenant and global HTTP/SSE caps, fair admission, and one detach per drain", async () => {
     const restartable = createRestartableTestStore();
-    const baseIdentity = identity();
+    const baseIdentity = identity(undefined, {
+      grantedConnectionCapabilities: ["transport_streamable_http"],
+    });
     const scopedIdentity: IdentityPort = {
       ...baseIdentity,
       async authenticateDevice(input) {
