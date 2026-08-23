@@ -24,6 +24,7 @@ import {
   type IdentityPort,
 } from "./authContext.js";
 import {
+  GATEWAY_RBP_SESSION_V2_NAMESPACE,
   GATEWAY_RBP_UNREGISTER_NAMESPACE,
   GatewayBridgeSessionAuthority,
   type BridgeConnectionChannel,
@@ -919,6 +920,35 @@ describe("GatewayBridgeSessionAuthority durable unregister", () => {
 
   afterEach(async () => {
     await Promise.all(authorities.splice(0).map(async (authority) => authority.close()));
+  });
+
+  it("makes a newly registered aggregate v2-authoritative without a v1 session row", async () => {
+    const restartable = createRestartableTestStore();
+    const authority = new GatewayBridgeSessionAuthority(restartable.store, identity());
+    authorities.push(authority);
+    await authority.open();
+    const session = await register(authority);
+
+    const records = restartable.snapshot().records;
+    expect(records.some((row) =>
+      row.namespace === "gateway.rbp-session/v1" && row.key === session.rsid,
+    )).toBe(false);
+    expect(records.some((row) =>
+      row.namespace === GATEWAY_RBP_SESSION_V2_NAMESPACE && row.key === session.rsid,
+    )).toBe(true);
+    expect(records.some((row) =>
+      row.namespace === "gateway.hold-cutover/v1" && row.key === session.rsid,
+    )).toBe(true);
+
+    await authority.close();
+    authorities.splice(authorities.indexOf(authority), 1);
+    const restarted = new GatewayBridgeSessionAuthority(restartable.restart(), identity());
+    authorities.push(restarted);
+    await restarted.open();
+    const fresh = await openConnection(restarted);
+    await expect(
+      restarted.receive(fresh.connectionId, resume(session.rsid, session.resumeToken)),
+    ).resolves.toBeUndefined();
   });
 
   it("never resumes an old token on the same socket or after restart", async () => {

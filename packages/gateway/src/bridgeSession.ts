@@ -70,6 +70,7 @@ import type {
 import { GATEWAY_RECOVERY_NAMESPACE } from "./recoveryAuthority.js";
 import type {
   GatewayProtocolStore,
+  StoreExpectation,
   StoreOutcome,
   StoreTransaction,
   StoredRecord,
@@ -91,6 +92,8 @@ export const GATEWAY_RBP_SESSION_NAMESPACE =
 export const GATEWAY_RBP_UNREGISTER_NAMESPACE =
   "gateway.rbp-unregister/v1" as const;
 export const GATEWAY_RBP_SESSION_V2_NAMESPACE = "gateway.rbp-session/v2" as const;
+const GATEWAY_RBP_SESSION_V2_EVIDENCE_NAMESPACE =
+  "gateway.rbp-session-evidence/v2" as const;
 export const GATEWAY_MUTATION_RESOLUTION_NAMESPACE = "gateway.mutation-resolution/v1" as const;
 
 const RESUME_LIFETIME_MS = 24 * 60 * 60 * 1_000;
@@ -319,6 +322,7 @@ interface DurableRbpSession {
 
 interface DurableRbpSessionV2 {
   readonly schema: typeof GATEWAY_RBP_SESSION_V2_NAMESPACE;
+  readonly generation: 2;
   readonly tenantId: string;
   readonly rsid: string;
   readonly identity: Pick<DurableRbpSession, "userId" | "deviceId" | "seatId" | "identityAuthority">;
@@ -330,6 +334,28 @@ interface DurableRbpSessionV2 {
     readonly counts: { readonly holds: number; readonly conflicts: number; readonly resolutions: number };
     readonly deletionReceipt: { readonly state: "retained"; readonly verifiedAtMs: number | null };
   };
+  /**
+   * The v2 root is the only session authority after its cutover marker exists.
+   * `snapshot` is deliberately reconstructed from the normalized root and
+   * children by the repository; it is never persisted in the v1 namespace.
+   */
+  readonly snapshot: DurableRbpSession;
+  readonly childRefs: readonly DurableSessionV2ChildRef[];
+  readonly childrenDigest: `sha256:${string}`;
+}
+
+interface DurableSessionV2ChildRef {
+  readonly namespace: typeof GATEWAY_RBP_SESSION_V2_EVIDENCE_NAMESPACE;
+  readonly key: string;
+  readonly digest: `sha256:${string}`;
+}
+
+interface DurableSessionV2EvidenceChild {
+  readonly schema: typeof GATEWAY_RBP_SESSION_V2_EVIDENCE_NAMESPACE;
+  readonly tenantId: string;
+  readonly rsid: string;
+  readonly invocationId: string;
+  readonly entry: DurableDispatchEvidence;
 }
 
 type DurableEgressOperation =
@@ -2120,6 +2146,237 @@ function terminalJournalRecords(
   return records;
 }
 
+function sessionV2EvidenceChildren(record: DurableRbpSession): readonly {
+  readonly key: string;
+  readonly value: DurableSessionV2EvidenceChild;
+  readonly ref: DurableSessionV2ChildRef;
+}[] {
+  return record.evidence.map((entry) => {
+    const invocationId = entry.journal?.journalRecords[0]?.binding.invocationId ?? entry.envelopeDigest;
+    const key = `${record.rsid}/${invocationId}`;
+    const value: DurableSessionV2EvidenceChild = {
+      schema: GATEWAY_RBP_SESSION_V2_EVIDENCE_NAMESPACE,
+      tenantId: record.tenantId,
+      rsid: record.rsid,
+      invocationId,
+      entry,
+    };
+    return { key, value, ref: { namespace: GATEWAY_RBP_SESSION_V2_EVIDENCE_NAMESPACE, key, digest: digest(canonicalizeJson(value as unknown as JsonValue)) } };
+  }).sort((left, right) => left.key.localeCompare(right.key));
+}
+
+/**
+ * Marker-gated v2 authority adapter.  Callers retain the narrow v1-shaped
+ * session transaction API while the adapter makes it impossible for a marked
+ * aggregate to read or stage the legacy session namespace.  This is kept
+ * private so no product surface can accidentally select an authority version.
+ */
+class SessionAggregateRepository {
+  /*
+   * Aggregate-owned v2 children are limited to invocation evidence in this
+   * slice.  WP-02/03 hold, conflict, resolution, tombstone and egress-fence
+   * records remain independent authority namespaces and are intentionally not
+   * copied or deleted here; treating them as a second partial aggregate would
+   * weaken their existing exact-key/tombstone race guards.  The v2 snapshot
+   * carries their canonical references until their dedicated migration slice.
+   */
+  public constructor(private readonly backing: GatewayProtocolStore) {}
+
+  public get kind(): GatewayProtocolStore["kind"] { return this.backing.kind; }
+  public get contractVersion(): typeof this.backing.contractVersion { return this.backing.contractVersion; }
+  public get startupCoordinator(): GatewayProtocolStore["startupCoordinator"] {
+    return this.backing.startupCoordinator;
+  }
+  public open(): Promise<StoreOutcome<void>> { return this.backing.open(); }
+  public close(): Promise<StoreOutcome<void>> { return this.backing.close(); }
+
+  public async transact<T>(
+    scope: { readonly tenantId: string },
+    work: (tx: StoreTransaction) => Promise<T> | T,
+  ): Promise<StoreOutcome<T>> {
+    return this.backing.transact(scope, async (raw) => {
+      const sessionStages = new Map<string, {
+        readonly value: GatewayJsonValue | null;
+        readonly expect: StoreExpectation;
+      }>();
+      const aggregateByRsid = new Map<string, StoredRecord<GatewayJsonValue> | null>();
+
+      const loadVirtual = async (rsid: string): Promise<StoredRecord<GatewayJsonValue> | null> => {
+        if (aggregateByRsid.has(rsid)) return aggregateByRsid.get(rsid) ?? null;
+        const marker = await raw.read<GatewayJsonValue>(GATEWAY_HOLD_CUTOVER_NAMESPACE, rsid);
+        if (marker === null) {
+          const legacy = await raw.read<GatewayJsonValue>(GATEWAY_RBP_SESSION_NAMESPACE, rsid);
+          aggregateByRsid.set(rsid, legacy);
+          return legacy;
+        }
+        parseHoldCutover(marker, scope.tenantId, rsid);
+        const root = await raw.read<GatewayJsonValue>(GATEWAY_RBP_SESSION_V2_NAMESPACE, rsid);
+        if (root === null) throw new Error("v2 cutover marker has no aggregate root");
+        const virtual = await this.#loadMarkedAggregate(raw, root, scope.tenantId, rsid);
+        aggregateByRsid.set(rsid, virtual);
+        return virtual;
+      };
+
+      const tx: StoreTransaction = {
+        read: async <TValue extends GatewayJsonValue>(namespace: string, key: string) => {
+          if (namespace !== GATEWAY_RBP_SESSION_NAMESPACE) {
+            return await raw.read<TValue>(namespace, key);
+          }
+          return await loadVirtual(key) as StoredRecord<TValue> | null;
+        },
+        list: async (namespace: string) => {
+          if (namespace !== GATEWAY_RBP_SESSION_NAMESPACE) return await raw.list(namespace);
+          const legacy = await raw.list(namespace);
+          const roots = await raw.list(GATEWAY_RBP_SESSION_V2_NAMESPACE);
+          const marked = await Promise.all(roots.map(async (root) => {
+            const marker = await raw.read<GatewayJsonValue>(GATEWAY_HOLD_CUTOVER_NAMESPACE, root.key);
+            if (marker === null) return null;
+            parseHoldCutover(marker, scope.tenantId, root.key);
+            return await this.#loadMarkedAggregate(raw, root as StoredRecord<GatewayJsonValue>, scope.tenantId, root.key);
+          }));
+          const markedKeys = new Set(marked.filter((value) => value !== null).map((value) => value!.key));
+          return [...legacy.filter((row) => !markedKeys.has(row.key)), ...marked.filter((row) => row !== null) as StoredRecord[]]
+            .sort((left, right) => left.key.localeCompare(right.key));
+        },
+        stage: (write) => {
+          if (write.namespace !== GATEWAY_RBP_SESSION_NAMESPACE) {
+            raw.stage(write);
+            return;
+          }
+          sessionStages.set(write.key, { value: write.value, expect: write.expect });
+        },
+      };
+      const value = await work(tx);
+      for (const [rsid, stage] of sessionStages) {
+        if (stage.value === null) {
+          throw new Error("v2 session aggregates are retained; legacy deletion is not authorized");
+        }
+        const record = parseStoredSession({
+          namespace: GATEWAY_RBP_SESSION_NAMESPACE,
+          tenantId: scope.tenantId,
+          key: rsid,
+          value: stage.value,
+          // The staged value is validated for shape only.  Its next durable
+          // CAS version is assigned by the normalized root below.
+          version: Number.MAX_SAFE_INTEGER,
+          updatedAtMs: 0,
+        }, scope.tenantId, rsid);
+        const existing = await loadVirtual(rsid);
+        const root = this.#rootFor(record);
+        for (const child of this.#evidenceChildren(record)) {
+          raw.stage({
+            namespace: GATEWAY_RBP_SESSION_V2_EVIDENCE_NAMESPACE,
+            key: child.key,
+            value: asJson(child.value),
+            expect: { kind: "any" },
+          });
+        }
+        raw.stage({
+          namespace: GATEWAY_RBP_SESSION_V2_NAMESPACE,
+          key: rsid,
+          value: asJson(root),
+          expect: existing === null ? { kind: "absent" } : { kind: "version", version: existing.version },
+        });
+        const marker = await raw.read<GatewayJsonValue>(GATEWAY_HOLD_CUTOVER_NAMESPACE, rsid);
+        if (marker === null) {
+          const nowMs = record.updatedAtMs;
+          const cutover: DurableHoldCutover = {
+            schema: GATEWAY_HOLD_CUTOVER_NAMESPACE,
+            tenantId: scope.tenantId,
+            rsid,
+            createdAtMs: nowMs,
+            updatedAtMs: nowMs,
+            recordVersion: 1,
+            legacyDigest: digest(canonicalizeJson(record as unknown as JsonValue)),
+            importedHoldCount: 0,
+            importedConflictCount: 0,
+            importedResolutionCount: 0,
+            targetGeneration: "normalized-v1",
+            state: "normalized_authoritative",
+            cutoverAtMs: nowMs,
+          };
+          // Deliberately staged after all root/child records: the marker is the
+          // atomic authority switch and is never visible alone.
+          raw.stage({ namespace: GATEWAY_HOLD_CUTOVER_NAMESPACE, key: rsid, value: asJson(cutover), expect: { kind: "absent" } });
+        }
+      }
+      return value;
+    });
+  }
+
+  #evidenceChildren(record: DurableRbpSession): readonly {
+    readonly key: string;
+    readonly value: DurableSessionV2EvidenceChild;
+    readonly ref: DurableSessionV2ChildRef;
+  }[] {
+    return sessionV2EvidenceChildren(record);
+  }
+
+  #rootFor(record: DurableRbpSession): DurableRbpSessionV2 {
+    const children = this.#evidenceChildren(record);
+    const childRefs = children.map((child) => child.ref);
+    return {
+      schema: GATEWAY_RBP_SESSION_V2_NAMESPACE,
+      generation: 2,
+      tenantId: record.tenantId,
+      rsid: record.rsid,
+      identity: { userId: record.userId, deviceId: record.deviceId, seatId: record.seatId, identityAuthority: record.identityAuthority },
+      lifecycle: {
+        sessionBindingId: record.sessionBindingId, sessionVersion: record.sessionVersion,
+        connectionId: record.connectionId, binding: record.binding,
+        resumeTokenDigest: record.resumeTokenDigest, resumeExpiresAtMs: record.resumeExpiresAtMs,
+        grantedCapabilities: record.grantedCapabilities, connectionLifecycle: record.connectionLifecycle,
+        sessionLifecycle: record.sessionLifecycle,
+      },
+      sequence: { sequence: record.sequence, pending: record.pending },
+      migration: {
+        sourceVersionDigest: digest(canonicalizeJson(record as unknown as JsonValue)),
+        legacyDigest: digest(canonicalizeJson(record as unknown as JsonValue)),
+        counts: { holds: 0, conflicts: 0, resolutions: 0 },
+        deletionReceipt: { state: "retained", verifiedAtMs: null },
+      },
+      snapshot: record,
+      childRefs,
+      childrenDigest: digest(canonicalizeJson(childRefs as unknown as JsonValue)),
+    };
+  }
+
+  async #loadMarkedAggregate(
+    tx: Pick<StoreTransaction, "read" | "list">,
+    stored: StoredRecord<GatewayJsonValue>,
+    tenantId: string,
+    rsid: string,
+  ): Promise<StoredRecord<GatewayJsonValue>> {
+    if (stored.namespace !== GATEWAY_RBP_SESSION_V2_NAMESPACE || stored.tenantId !== tenantId || stored.key !== rsid || !isRecord(stored.value)) {
+      throw new Error("malformed v2 aggregate root identity");
+    }
+    const root = stored.value as unknown as DurableRbpSessionV2;
+    if (root.schema !== GATEWAY_RBP_SESSION_V2_NAMESPACE || root.generation !== 2 || root.tenantId !== tenantId || root.rsid !== rsid || !Array.isArray(root.childRefs) || root.childrenDigest !== digest(canonicalizeJson(root.childRefs as unknown as JsonValue))) {
+      throw new Error("malformed v2 aggregate root");
+    }
+    const expected = this.#evidenceChildren(root.snapshot);
+    const refs = root.childRefs;
+    if (refs.length !== expected.length || refs.some((ref, index) => ref.namespace !== expected[index]?.ref.namespace || ref.key !== expected[index]?.ref.key || ref.digest !== expected[index]?.ref.digest)) {
+      throw new Error("v2 aggregate root child references are incomplete or non-canonical");
+    }
+    for (const expectedChild of expected) {
+      const child = await tx.read<GatewayJsonValue>(
+        GATEWAY_RBP_SESSION_V2_EVIDENCE_NAMESPACE,
+        expectedChild.key,
+      );
+      if (child === null || digest(canonicalizeJson(child.value as JsonValue)) !== expectedChild.ref.digest || !isRecord(child.value)) {
+        throw new Error("v2 aggregate evidence child digest mismatch");
+      }
+      const value = child.value as unknown as DurableSessionV2EvidenceChild;
+      if (value.schema !== GATEWAY_RBP_SESSION_V2_EVIDENCE_NAMESPACE || value.tenantId !== tenantId || value.rsid !== rsid || value.invocationId !== expectedChild.value.invocationId || !sameJson(value.entry as unknown as JsonValue, expectedChild.value.entry as unknown as JsonValue)) {
+        throw new Error("v2 aggregate evidence child identity mismatch");
+      }
+    }
+    const snapshot = parseStoredSession({ namespace: GATEWAY_RBP_SESSION_NAMESPACE, tenantId, key: rsid, value: asJson(root.snapshot), version: stored.version, updatedAtMs: stored.updatedAtMs }, tenantId, rsid);
+    return { namespace: GATEWAY_RBP_SESSION_NAMESPACE, tenantId, key: rsid, value: asJson(snapshot), version: stored.version, updatedAtMs: stored.updatedAtMs };
+  }
+}
+
 /**
  * One transport-neutral RBP authority for both primary WSS and HTTP/SSE.
  * All sequence changes are committed before bytes are acknowledged or emitted.
@@ -2157,6 +2414,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
   readonly #seatConnections = new Map<string, Set<string>>();
   readonly #deviceSessions = new Map<string, Set<string>>();
   readonly #seatSessions = new Map<string, Set<string>>();
+  readonly #sessionRepository: SessionAggregateRepository;
   readonly #productionIdentity: ProductionIdentityAuthority | null;
   readonly #clock: () => number;
   readonly #instanceId: string;
@@ -2186,6 +2444,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       readonly seatReassignmentCloseDrainTimeoutMs?: number;
     } = {},
   ) {
+    this.#sessionRepository = new SessionAggregateRepository(store);
     this.#productionIdentity = asProductionIdentityAuthority(identity);
     this.#clock = options.clock ?? Date.now;
     this.#instanceId = options.instanceId ?? gatewayUuidV7(this.#clock());
@@ -4178,7 +4437,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       async close(): Promise<void> {},
     };
     await this.#withSessionAuthorization(record.rsid, async () => {
-      const existing = await this.store.transact(
+      const existing = await this.#sessionRepository.transact(
         { tenantId: record.tenantId },
         async (tx) =>
           tx.read<GatewayJsonValue>(
@@ -4237,7 +4496,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
           : [event.seatId],
       ),
     );
-    const listed = await this.store.transact(
+    const listed = await this.#sessionRepository.transact(
       { tenantId },
       async (tx) => ({
         sessions: await tx.list(GATEWAY_RBP_SESSION_NAMESPACE),
@@ -4533,7 +4792,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     readonly seatId?: string;
     readonly affectedDeviceIds: ReadonlySet<string>;
   }): Promise<void> {
-    const listed = await this.store.transact(
+    const listed = await this.#sessionRepository.transact(
       { tenantId: input.tenantId },
       async (tx) => ({
         sessions: await tx.list(GATEWAY_RBP_SESSION_NAMESPACE),
@@ -5569,7 +5828,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         readonly next: DurableRbpSession;
         readonly lease: DurableEgressLease;
       } | null } = { current: null };
-      const persisted = await this.store.transact({ tenantId: input.tenantId }, async (tx) => {
+      const persisted = await this.#sessionRepository.transact({ tenantId: input.tenantId }, async (tx) => {
         const tombstone = await tx.read<GatewayJsonValue>(
           GATEWAY_RBP_UNREGISTER_NAMESPACE,
           input.rsid,
@@ -5799,7 +6058,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         readonly next: DurableRbpSession;
         readonly lease: DurableEgressLease;
       } | null } = { current: null };
-      const promoted = await this.store.transact(
+      const promoted = await this.#sessionRepository.transact(
         { tenantId: reservation.tenantId },
         async (tx) => {
           const tombstone = await tx.read<GatewayJsonValue>(
@@ -5928,7 +6187,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         readonly prior: StoredRecord<GatewayJsonValue>;
         readonly next: DurableRbpSession;
       } | null } = { current: null };
-      const released = await this.store.transact(
+      const released = await this.#sessionRepository.transact(
         { tenantId: reservation.tenantId },
         async (tx) => {
           const stored = await tx.read<GatewayJsonValue>(
@@ -6093,7 +6352,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         readonly lease: DurableEgressLease;
         readonly serialized: string;
       } | null } = { current: null };
-      const reserved = await this.store.transact({ tenantId }, async (tx) => {
+      const reserved = await this.#sessionRepository.transact({ tenantId }, async (tx) => {
         const tombstone = await tx.read<GatewayJsonValue>(
           GATEWAY_RBP_UNREGISTER_NAMESPACE,
           payload.rsid,
@@ -6281,7 +6540,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         readonly next: DurableRbpSession;
         readonly lease: DurableEgressLease;
       } | null } = { current: null };
-      const reserved = await this.store.transact({ tenantId }, async (tx) => {
+      const reserved = await this.#sessionRepository.transact({ tenantId }, async (tx) => {
         const tombstone = await tx.read<GatewayJsonValue>(
           GATEWAY_RBP_UNREGISTER_NAMESPACE,
           rsid,
@@ -6578,7 +6837,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       normalizedConflictIndex: emptyNormalizedConflictIndex(),
       updatedAtMs: nowMs,
     };
-    const saved = await this.store.transact(
+    const saved = await this.#sessionRepository.transact(
       { tenantId: record.tenantId },
       async (tx) => {
         this.#assertAuthorityTicket(authorityTicket, connection);
@@ -6742,7 +7001,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         readonly prior: StoredRecord<GatewayJsonValue>;
         readonly next: DurableRbpSession;
       } | null } = { current: null };
-      const persisted = await this.store.transact({ tenantId }, async (tx) => {
+      const persisted = await this.#sessionRepository.transact({ tenantId }, async (tx) => {
         const existingTombstone = await tx.read<GatewayJsonValue>(
           GATEWAY_RBP_UNREGISTER_NAMESPACE,
           payload.rsid,
@@ -7034,7 +7293,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         readonly pendingOutcome: GatewayExecutorOutcome | null;
         readonly pendingCorrelationId: string | null;
       } | null } = { current: null };
-      const finalized = await this.store.transact({ tenantId }, async (tx) => {
+      const finalized = await this.#sessionRepository.transact({ tenantId }, async (tx) => {
         const existingTombstone = await tx.read<GatewayJsonValue>(
           GATEWAY_RBP_UNREGISTER_NAMESPACE,
           payload.rsid,
@@ -7568,7 +7827,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     tenantId: string,
     rsid: string,
   ): Promise<StoredRecord<GatewayJsonValue> | null> {
-    const result = await this.store.transact({ tenantId }, async (tx) =>
+    const result = await this.#sessionRepository.transact({ tenantId }, async (tx) =>
       tx.read<GatewayJsonValue>(GATEWAY_RBP_SESSION_NAMESPACE, rsid),
     );
     if (!result.ok) {
@@ -7593,7 +7852,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     tenantId: string,
     rsid: string,
   ): Promise<void> {
-    const observed = await this.store.transact({ tenantId }, async (tx) =>
+    const observed = await this.#sessionRepository.transact({ tenantId }, async (tx) =>
       tx.read<GatewayJsonValue>(GATEWAY_RBP_UNREGISTER_NAMESPACE, rsid),
     );
     if (!observed.ok) {
@@ -7793,6 +8052,8 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
    * transaction as the normalized children, index and marker; no request path
    * can observe an import in progress. */
   async #importLegacySessionAtStartup(tenantId: string, rsid: string): Promise<StoreOutcome<void>> {
+    // Startup migration is the one bounded reader of legacy rows.  Request
+    // paths use the repository facade and cannot fall back to this source.
     return this.store.transact({ tenantId }, async (tx) => {
       const sessionStored = await tx.read<GatewayJsonValue>(GATEWAY_RBP_SESSION_NAMESPACE, rsid);
       if (sessionStored === null) return undefined;
@@ -7835,9 +8096,18 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
           scopeDigests: [...new Set(importedDigests)].sort(),
         },
       };
-      tx.stage({ namespace: GATEWAY_RBP_SESSION_NAMESPACE, key: rsid, value: asJson(nextSession), expect: { kind: "version", version: sessionStored.version } });
+      const evidenceChildren = sessionV2EvidenceChildren(nextSession);
+      for (const child of evidenceChildren) {
+        tx.stage({
+          namespace: GATEWAY_RBP_SESSION_V2_EVIDENCE_NAMESPACE,
+          key: child.key,
+          value: asJson(child.value),
+          expect: { kind: "absent" },
+        });
+      }
       const v2: DurableRbpSessionV2 = {
         schema: GATEWAY_RBP_SESSION_V2_NAMESPACE,
+        generation: 2,
         tenantId,
         rsid,
         identity: {
@@ -7864,6 +8134,9 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
           counts: { holds: facts.importedHoldCount, conflicts: facts.importedConflictCount, resolutions: facts.importedResolutionCount },
           deletionReceipt: { state: "retained", verifiedAtMs: null },
         },
+        snapshot: nextSession,
+        childRefs: evidenceChildren.map((child) => child.ref),
+        childrenDigest: digest(canonicalizeJson(evidenceChildren.map((child) => child.ref) as unknown as JsonValue)),
       };
       tx.stage({ namespace: GATEWAY_RBP_SESSION_V2_NAMESPACE, key: rsid, value: asJson(v2), expect: { kind: "absent" } });
       const cutover: DurableHoldCutover = {
@@ -8163,7 +8436,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     owner: DurableEgressRevocation["owner"],
     reason: SessionUnregister["reason"],
   ): Promise<PendingRevocationAuthority> {
-    const verified = await this.store.transact({ tenantId }, async (tx) => {
+    const verified = await this.#sessionRepository.transact({ tenantId }, async (tx) => {
       const stored = await tx.read<GatewayJsonValue>(
         GATEWAY_RBP_SESSION_NAMESPACE,
         rsid,
@@ -8193,7 +8466,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     reason: SessionUnregister["reason"],
   ): Promise<PendingRevocationAuthority> {
     for (let attempt = 0; attempt < MAX_AUTHORIZATION_CAS_ATTEMPTS; attempt += 1) {
-      const installed = await this.store.transact({ tenantId }, async (tx) => {
+      const installed = await this.#sessionRepository.transact({ tenantId }, async (tx) => {
         const stored = await tx.read<GatewayJsonValue>(
           GATEWAY_RBP_SESSION_NAMESPACE,
           rsid,
@@ -8232,7 +8505,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       }
       if (installed.code === "conflict") continue;
       if (installed.code === "durability_uncertain") {
-        const classified = await this.store.transact({ tenantId }, async (tx) => {
+        const classified = await this.#sessionRepository.transact({ tenantId }, async (tx) => {
           const stored = await tx.read<GatewayJsonValue>(
             GATEWAY_RBP_SESSION_NAMESPACE,
             rsid,
@@ -8322,7 +8595,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     owner: DurableEgressRevocation["owner"],
     reason: SessionUnregister["reason"],
   ): Promise<DurableUnregisterTombstone | null> {
-    const verified = await this.store.transact({ tenantId }, async (tx) => {
+    const verified = await this.#sessionRepository.transact({ tenantId }, async (tx) => {
       const tombstoneStored = await tx.read<GatewayJsonValue>(
         GATEWAY_RBP_UNREGISTER_NAMESPACE,
         rsid,
@@ -8458,7 +8731,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     rsid: string,
     mutate: (record: DurableRbpSession) => DurableRbpSession,
   ): Promise<DurableRbpSession> {
-    const result = await this.store.transact({ tenantId }, async (tx) => {
+    const result = await this.#sessionRepository.transact({ tenantId }, async (tx) => {
       const stored = await tx.read<GatewayJsonValue>(
         GATEWAY_RBP_SESSION_NAMESPACE,
         rsid,
