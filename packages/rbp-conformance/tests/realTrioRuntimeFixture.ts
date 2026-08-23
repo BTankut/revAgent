@@ -76,10 +76,63 @@ export interface RealTrioRuntimeFixture {
   readonly credential: RealTrioNorthCredential;
   readonly endpoint: string;
   readonly certificateSha256: string;
+  /** Value-free proof that a controlled cache update preceded the public route. */
+  readonly documentContextAudit: RealTrioDocumentContextAudit;
   stop(): Promise<void>;
 }
 
-export const REAL_TRIO_FIXTURE_DOCUMENT_ID = "fixture-document-1" as const;
+/** Deliberately differs from the fixture's boot cache identity. */
+export const REAL_TRIO_FIXTURE_DOCUMENT_ID = "fixture-document-wp12-control-1" as const;
+const DOCUMENT_CONTEXT_WATCHER_TIMEOUT_MS = 20_000;
+
+export interface RealTrioDocumentContextAudit {
+  readonly revision: number;
+  readonly cachedContextHash: string;
+  readonly activeDocumentIdentityHash: string;
+  readonly acknowledgementHash: string;
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function hash(value: unknown, label: string): string {
+  if (typeof value !== "string" || !/^sha256:[0-9a-f]{64}$/u.test(value)) {
+    throw new Error(`fixture ${label} is not a SHA-256 value`);
+  }
+  return value;
+}
+
+function documentContextControlAudit(value: unknown): RealTrioDocumentContextAudit {
+  if (!isObject(value) || value.action !== "apply_document_context" ||
+      !Number.isSafeInteger(value.revision) || Number(value.revision) < 1 ||
+      value.activeDocumentIdentityHash === null) {
+    throw new Error("fixture apply_document_context acknowledgement is malformed");
+  }
+  return Object.freeze({
+    revision: Number(value.revision),
+    cachedContextHash: hash(value.cachedContextHash, "cached context hash"),
+    activeDocumentIdentityHash: hash(value.activeDocumentIdentityHash, "document identity hash"),
+    acknowledgementHash: hash(value.acknowledgementHash, "control acknowledgement hash"),
+  });
+}
+
+/** Reads only value-free cache evidence produced after a strict control ACK. */
+export function probeRealTrioFixtureDocumentContext(
+  value: unknown,
+  expected: RealTrioDocumentContextAudit,
+): void {
+  if (!isObject(value) || !isObject(value.documentContextEvidence)) {
+    throw new Error("fixture snapshot_evidence lacks document-context evidence");
+  }
+  const evidence = value.documentContextEvidence;
+  if (evidence.currentRevision !== expected.revision ||
+      evidence.cachedContextHash !== expected.cachedContextHash ||
+      evidence.activeDocumentIdentityHash !== expected.activeDocumentIdentityHash ||
+      evidence.lastControlAcknowledgementHash !== expected.acknowledgementHash) {
+    throw new Error("fixture snapshot_evidence does not confirm the controlled cached document context");
+  }
+}
 
 export function realTrioFixtureDocumentContextEvent(
   documentId = REAL_TRIO_FIXTURE_DOCUMENT_ID,
@@ -130,7 +183,7 @@ async function waitForLiveDocumentRoute(input: {
   readonly certificateSha256: string;
   readonly timeoutMs?: number;
 }): Promise<void> {
-  const deadline = Date.now() + (input.timeoutMs ?? 35_000);
+  const deadline = Date.now() + (input.timeoutMs ?? DOCUMENT_CONTEXT_WATCHER_TIMEOUT_MS);
   for (;;) {
     const snapshot = await publicGatewayControl(
       input.endpoint,
@@ -185,7 +238,8 @@ export async function startRealTrioRuntimeFixture(
       workingDirectory: repoRoot,
     },
     gatewayExpected: { component: "gateway_production_conformance", contract: "wp12-production-conformance-host/v1" },
-    fixtureExpected: { contract: "addin-loopback/v1" },
+    bridgeExpected: { component: "bridge_worker", contract: "wp12-real-worker-host/v1" },
+    fixtureExpected: { component: "addin_loopback_fixture", contract: "addin-loopback/v1" },
     csharpPublishPath: worker,
     gatewayBuildPath: gatewayCli,
     fixtureBuildPath: fixtureCli,
@@ -201,9 +255,15 @@ export async function startRealTrioRuntimeFixture(
     // This is the normal attested loopback fixture document-context event;
     // route authority is still earned only when the C# watcher forwards it
     // and the Gateway's public audit observes the live route.
-    await supervisor.fixtureControl("apply_document_context", {
+    const documentContextAudit = documentContextControlAudit(await supervisor.fixtureControl("apply_document_context", {
       event: realTrioFixtureDocumentContextEvent(),
-    });
+    }));
+    // This probe is value-free and must succeed before any public Gateway
+    // route can qualify. The regular 15 s C# watcher is the only forwarder.
+    probeRealTrioFixtureDocumentContext(
+      await supervisor.fixtureControl("snapshot_evidence"),
+      documentContextAudit,
+    );
     await waitForLiveDocumentRoute({ endpoint, controlToken, certificateSha256 });
     const issued = await publicGatewayControl(
       endpoint,
@@ -218,6 +278,7 @@ export async function startRealTrioRuntimeFixture(
       credential: credential(issued),
       endpoint,
       certificateSha256,
+      documentContextAudit,
       stop: async () => await supervisor.stop(),
     });
   } catch (error) {

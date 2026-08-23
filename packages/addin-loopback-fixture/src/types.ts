@@ -126,6 +126,12 @@ export interface FixtureEvidenceSnapshot {
     readonly totalEventCount: number;
     readonly droppedEventCount: number;
     readonly currentRevision: number;
+    /** SHA-256 of the canonical cached context; raw context is never in evidence. */
+    readonly cachedContextHash: string;
+    /** SHA-256 of the active document identity, or null when there is no active document. */
+    readonly activeDocumentIdentityHash: string | null;
+    /** The most recent strict control acknowledgement, if document context was controlled. */
+    readonly lastControlAcknowledgementHash: string | null;
     readonly applicationEventCacheUpdateCount: number;
     readonly cacheReadCount: number;
     readonly pollRequestCount: number;
@@ -139,6 +145,15 @@ export interface FixtureEvidenceSnapshot {
   };
   readonly openSocketCount: number;
   readonly crashed: boolean;
+}
+
+/** Value-free receipt returned by the strict fixture control plane. */
+export interface DocumentContextControlAcknowledgement {
+  readonly action: "apply_document_context";
+  readonly revision: number;
+  readonly cachedContextHash: string;
+  readonly activeDocumentIdentityHash: string | null;
+  readonly acknowledgementHash: string;
 }
 
 export interface DocumentContextSnapshot {

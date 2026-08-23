@@ -514,6 +514,48 @@ describe("add-in loopback fixture listener", () => {
     }
   });
 
+  it("provides a value-free controlled document-context acknowledgement and probe", () => {
+    const fixture = new AddinLoopbackFixture();
+    const acknowledgement = fixture.applyDocumentContextControlEvent({
+      capturedAtUtc: "2026-07-22T10:15:00.000Z",
+      cacheState: "ready",
+      unavailableReason: null,
+      documents: [{
+        documentId: "control-only-document",
+        title: "Control-only Fixture Model",
+        pathDigest: null,
+        isWorkshared: false,
+        isActive: true,
+      }],
+      activeDocumentId: "control-only-document",
+      activeView: {
+        documentId: "control-only-document",
+        id: "2003",
+        name: "Control-only Fixture View",
+        type: "ThreeD",
+        level: null,
+      },
+      disciplineHint: "coordination",
+    });
+    const evidence = fixture.snapshotEvidence().documentContextEvidence;
+
+    expect(acknowledgement).toMatchObject({
+      action: "apply_document_context",
+      revision: 2,
+      cachedContextHash: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u),
+      activeDocumentIdentityHash: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u),
+      acknowledgementHash: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u),
+    });
+    expect(evidence).toMatchObject({
+      currentRevision: acknowledgement.revision,
+      cachedContextHash: acknowledgement.cachedContextHash,
+      activeDocumentIdentityHash: acknowledgement.activeDocumentIdentityHash,
+      lastControlAcknowledgementHash: acknowledgement.acknowledgementHash,
+    });
+    expect(JSON.stringify(evidence)).not.toContain("control-only-document");
+    expect(JSON.stringify(evidence)).not.toContain("Control-only Fixture Model");
+  });
+
   it("bounds document-context evidence while retaining monotonic totals", () => {
     const fixture = new AddinLoopbackFixture();
     for (let index = 0; index < 260; index += 1) {

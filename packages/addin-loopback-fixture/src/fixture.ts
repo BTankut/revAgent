@@ -29,6 +29,7 @@ import { parseStrictJsonBytes } from "./strictJson.js";
 import { TestTransactionGroup } from "./transactionGroup.js";
 import type {
   DocumentContextEvent,
+  DocumentContextControlAcknowledgement,
   DocumentContextSnapshot,
   Effect,
   FaultPlan,
@@ -604,6 +605,7 @@ export class AddinLoopbackFixture {
   #documentContextCacheReadCount = 0;
   #documentContextPollRequestCount = 0;
   #lastDocumentContextMonotonicMs = -1;
+  #lastDocumentContextControlAcknowledgementHash: string | null = null;
   readonly #documentContextEvidenceTimeline: DocumentContextEvidenceEvent[] = [];
   #crashed = false;
 
@@ -683,6 +685,9 @@ export class AddinLoopbackFixture {
           this.#documentContextEvidenceSequence - this.#documentContextEvidenceTimeline.length,
         ),
         currentRevision: this.#documentContext.revision,
+        cachedContextHash: this.#documentContextHash(),
+        activeDocumentIdentityHash: this.#activeDocumentIdentityHash(),
+        lastControlAcknowledgementHash: this.#lastDocumentContextControlAcknowledgementHash,
         applicationEventCacheUpdateCount: this.#documentContextCacheUpdateCount,
         cacheReadCount: this.#documentContextCacheReadCount,
         pollRequestCount: this.#documentContextPollRequestCount,
@@ -750,6 +755,33 @@ export class AddinLoopbackFixture {
     this.#documentContextCacheUpdateCount += 1;
     this.#recordDocumentContextEvidence("application_event_cache_update");
     return structuredClone(candidate);
+  }
+
+  /**
+   * Applies one strict control-plane update and returns only a value-free
+   * acknowledgement. This lets real-trio tests prove cache identity without
+   * reflecting document titles, paths, or document ids through stdio.
+   */
+  public applyDocumentContextControlEvent(
+    event: DocumentContextEvent,
+  ): DocumentContextControlAcknowledgement {
+    const snapshot = this.applyDocumentContextEvent(event);
+    const cachedContextHash = this.#documentContextHash();
+    const activeDocumentIdentityHash = this.#activeDocumentIdentityHash();
+    const acknowledgementHash = sha256(Buffer.from(JSON.stringify(stableJsonValue({
+      action: "apply_document_context",
+      revision: snapshot.revision,
+      cachedContextHash,
+      activeDocumentIdentityHash,
+    })), "utf8"));
+    this.#lastDocumentContextControlAcknowledgementHash = acknowledgementHash;
+    return Object.freeze({
+      action: "apply_document_context",
+      revision: snapshot.revision,
+      cachedContextHash,
+      activeDocumentIdentityHash,
+      acknowledgementHash,
+    });
   }
 
   public async start(): Promise<FixtureAddress> {
@@ -969,6 +1001,18 @@ export class AddinLoopbackFixture {
         this.#documentContextEvidenceTimeline.length - MAX_DOCUMENT_CONTEXT_EVIDENCE_EVENTS,
       );
     }
+  }
+
+  #documentContextHash(): string {
+    return sha256(Buffer.from(JSON.stringify(stableJsonValue(
+      this.#documentContext as unknown as JsonValue,
+    )), "utf8"));
+  }
+
+  #activeDocumentIdentityHash(): string | null {
+    return this.#documentContext.activeDocumentId === null
+      ? null
+      : sha256(Buffer.from(this.#documentContext.activeDocumentId, "utf8"));
   }
 
   #recordDocumentContextRead(): void {

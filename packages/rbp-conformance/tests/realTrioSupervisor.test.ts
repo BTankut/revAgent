@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   assertProductionCredential,
+  assertDedicatedRealTrioComponentIds,
   bridgeEndpointForBinding,
   fixtureAttestationTokens,
   fixtureAttestedWorkerCommand,
@@ -39,6 +40,29 @@ describe("WP-12 real trio bridge endpoint derivation", () => {
     ["https://127.0.0.1:48291", ["--binding", "http"] as const, /lacks one supported binding/u],
   ] as const)("rejects unsafe or malformed READY endpoint %#", (readyEndpoint, workerArgs, expected) => {
     expect(() => bridgeEndpointForBinding(readyEndpoint, workerArgs)).toThrow(expected);
+  });
+});
+
+describe("WP-12 dedicated real-trio process identity preflight", () => {
+  const launch = {
+    gateway: { executable: "gateway.exe", args: [], workingDirectory: "." },
+    bridgeWorker: { executable: "bridge.exe", args: [], workingDirectory: "." },
+    fixture: { executable: "fixture.exe", args: [], workingDirectory: "." },
+    gatewayExpected: { component: "gateway_production_conformance" },
+    bridgeExpected: { component: "bridge_worker" },
+    fixtureExpected: { component: "addin_loopback_fixture" },
+    csharpPublishPath: "bridge.exe",
+    gatewayBuildPath: "gateway.js",
+    fixtureBuildPath: "fixture.js",
+    gatewayControlToken: "test-token",
+  } as const;
+
+  it("rejects old simulator labels before any real process can launch", () => {
+    expect(() => assertDedicatedRealTrioComponentIds(launch)).not.toThrow();
+    expect(() => assertDedicatedRealTrioComponentIds({
+      ...launch,
+      gatewayExpected: { component: "gateway_stub" },
+    })).toThrow(/must declare/u);
   });
 });
 

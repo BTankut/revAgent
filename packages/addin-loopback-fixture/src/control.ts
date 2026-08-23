@@ -333,10 +333,10 @@ export class FixtureJsonlControl {
       case "apply_document_context": {
         exactKeys(record, ["controlVersion", "id", "action", "event"]);
         if (!isObject(record.event)) throw new Error("event must be an object");
-        const snapshot = this.fixture.applyDocumentContextEvent(
+        const acknowledgement = this.fixture.applyDocumentContextControlEvent(
           record.event as unknown as DocumentContextEvent,
         );
-        return { value: snapshot as unknown as JsonObject, shutdown: false };
+        return { value: acknowledgement as unknown as JsonObject, shutdown: false };
       }
       case "snapshot_evidence": {
         exactKeys(record, ["controlVersion", "id", "action"], ["snapshotId", "cursor"]);

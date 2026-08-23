@@ -36,12 +36,26 @@ export interface RealTrioSupervisorLaunch {
   readonly bridgeWorker: RealTrioSupervisorCommand;
   readonly fixture: RealTrioSupervisorCommand;
   readonly gatewayExpected: Readonly<Record<string, JsonValue>>;
+  readonly bridgeExpected: Readonly<Record<string, JsonValue>>;
   readonly fixtureExpected: Readonly<Record<string, JsonValue>>;
   readonly csharpPublishPath: string;
   readonly gatewayBuildPath: string;
   readonly fixtureBuildPath: string;
   /** Out-of-band test secret used only on the Gateway's public loopback control route. */
   readonly gatewayControlToken: string;
+}
+
+/**
+ * Rejects a legacy/simulator-labelled plan before any child starts. Process
+ * harness aliases remain implementation detail; these are the only accepted
+ * real-process READY identities for WP-12.
+ */
+export function assertDedicatedRealTrioComponentIds(input: RealTrioSupervisorLaunch): void {
+  if (input.gatewayExpected.component !== "gateway_production_conformance" ||
+      input.bridgeExpected.component !== "bridge_worker" ||
+      input.fixtureExpected.component !== "addin_loopback_fixture") {
+    throw new Error("real trio launch must declare gateway_production_conformance, bridge_worker, and addin_loopback_fixture");
+  }
 }
 
 export interface RealTrioSupervisorResult {
@@ -53,7 +67,7 @@ export interface RealTrioSupervisorResult {
   readonly sessionReadiness: RealTrioSessionReadiness;
   /** Fixture-only fault/evidence route; it never reaches the C# worker control channel. */
   readonly fixtureControl: (
-    action: "plan_fault" | "release_stall" | "snapshot_evidence",
+    action: "plan_fault" | "release_stall" | "apply_document_context" | "snapshot_evidence",
     fields?: Readonly<Record<string, JsonValue>>,
   ) => Promise<JsonValue>;
   /** Tenant-scoped, public and redacted audit correlation for real case assertions. */
@@ -589,6 +603,7 @@ function processIdentity(
  * binding drivers against the Gateway endpoint advertised by the child.
  */
 export async function startRealTrioSupervisor(input: RealTrioSupervisorLaunch): Promise<RealTrioSupervisorResult> {
+  assertDedicatedRealTrioComponentIds(input);
   const bridgeExecutable = assertRealBridgeWorkerExecutable(input.bridgeWorker.executable);
   const gateway = await StrictReadyProcess.start({
     componentId: "gateway_stub",
@@ -612,7 +627,10 @@ export async function startRealTrioSupervisor(input: RealTrioSupervisorLaunch): 
         command: command(input.fixture),
         absoluteWorkingDirectory: input.fixture.workingDirectory,
         expectedReadinessFields: input.fixtureExpected,
-        requiredActions: ["snapshot_evidence", "shutdown"],
+        // The real runtime must prove its post-registration cache update via
+        // the fixture's advertised, strict control surface; accepting an
+        // unadvertised action would turn this into a hidden bypass.
+        requiredActions: ["apply_document_context", "snapshot_evidence", "shutdown"],
       });
       try {
         const fixtureTokens = fixtureAttestationTokens(fixture.readiness, fixture.pid);
@@ -639,7 +657,7 @@ export async function startRealTrioSupervisor(input: RealTrioSupervisorLaunch): 
             device_proof: credential.deviceProof,
           })),
           absoluteWorkingDirectory: input.bridgeWorker.workingDirectory,
-          expectedReadinessFields: { component: "bridge_worker", contract: "wp12-real-worker-host/v1" },
+          expectedReadinessFields: input.bridgeExpected,
           requiredActions: ["shutdown"],
         });
         let sessionReadiness: RealTrioSessionReadiness;
@@ -680,7 +698,7 @@ export async function startRealTrioSupervisor(input: RealTrioSupervisorLaunch): 
               device_proof: credential.deviceProof,
             })),
             absoluteWorkingDirectory: input.bridgeWorker.workingDirectory,
-            expectedReadinessFields: { component: "bridge_worker", contract: "wp12-real-worker-host/v1" },
+            expectedReadinessFields: input.bridgeExpected,
             requiredActions: ["shutdown"],
           });
           sessionReadiness = await pollRbpSessionV2Readiness({
@@ -696,7 +714,7 @@ export async function startRealTrioSupervisor(input: RealTrioSupervisorLaunch): 
           return sessionReadiness;
         };
         const fixtureControl = async (
-          action: "plan_fault" | "release_stall" | "snapshot_evidence",
+          action: "plan_fault" | "release_stall" | "apply_document_context" | "snapshot_evidence",
           fields: Readonly<Record<string, JsonValue>> = {},
         ): Promise<JsonValue> => await fixture.request(action, fields);
         const readRealCaseAudit = async (): Promise<JsonObject> => await publicGatewayControl(
