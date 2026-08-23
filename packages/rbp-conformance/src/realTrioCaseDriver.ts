@@ -1,5 +1,8 @@
 import { caseProgram } from "./casePrograms.js";
 import type { CaseControlStep } from "./casePrograms.js";
+import { createHash } from "node:crypto";
+import { request as httpsRequest } from "node:https";
+import type { TLSSocket } from "node:tls";
 
 /**
  * The real-trio case executor deliberately has a smaller contract than the
@@ -17,6 +20,106 @@ export const REAL_TRIO_COMPONENTS = Object.freeze([
 ] as const);
 
 export type RealTrioCaseComponent = (typeof REAL_TRIO_COMPONENTS)[number];
+
+export const REAL_TRIO_NORTH_EVIDENCE_SCHEMA = "rbp-real-trio-north-evidence/v1" as const;
+
+/** Bearer material is deliberately short-lived in the caller and never copied into evidence. */
+export interface RealTrioNorthCredential {
+  readonly bearer: string;
+  readonly audience: string;
+  readonly credentialProvenance: "gateway_production_conformance";
+  readonly identityContract: "revagent.auth-context/v1";
+}
+
+export interface RealTrioNorthWireEvidence {
+  readonly schemaVersion: typeof REAL_TRIO_NORTH_EVIDENCE_SCHEMA;
+  readonly requestSha256: `sha256:${string}`;
+  readonly responseSha256: `sha256:${string}`;
+  readonly requestBytes: number;
+  readonly responseBytes: number;
+  readonly statusCode: number;
+  readonly effectiveMcpSessionId: string;
+}
+
+function sha256(bytes: Uint8Array): `sha256:${string}` {
+  return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+}
+
+/** Exact, authenticated control payload for the public north bearer route. */
+export function issueNorthCredentialControlPayload(): { readonly action: "issue_north_credential" } {
+  return Object.freeze({ action: "issue_north_credential" });
+}
+
+/**
+ * Uses the actual loopback TLS `/mcp` server.  The returned evidence contains
+ * only wire hashes and sizes: bearer, JSON-RPC payload and resource paths are
+ * intentionally excluded from case artifacts.
+ */
+export async function callRealTrioNorthMcp(input: {
+  readonly endpoint: string;
+  readonly certificateSha256: string;
+  readonly credential: RealTrioNorthCredential;
+  readonly effectiveMcpSessionId: string;
+  readonly request: Readonly<Record<string, unknown>>;
+}): Promise<{ readonly response: unknown; readonly evidence: RealTrioNorthWireEvidence }> {
+  if (!/^[-A-Za-z0-9._:]{1,512}$/u.test(input.effectiveMcpSessionId)) {
+    throw new Error("real trio effective MCP session id is invalid");
+  }
+  const url = new URL("/mcp", input.endpoint);
+  if (url.protocol !== "https:" || url.hostname !== "127.0.0.1" || url.port.length === 0) {
+    throw new Error("real trio north MCP endpoint must be numeric loopback TLS");
+  }
+  const payload = Buffer.from(JSON.stringify(input.request), "utf8");
+  return await new Promise((resolve, reject) => {
+    const operation = httpsRequest({
+      hostname: url.hostname,
+      port: url.port,
+      path: url.pathname,
+      method: "POST",
+      rejectUnauthorized: false,
+      headers: {
+        authorization: `Bearer ${input.credential.bearer}`,
+        accept: "application/json, text/event-stream",
+        "content-type": "application/json",
+        "content-length": payload.byteLength,
+        "mcp-session-id": input.effectiveMcpSessionId,
+      },
+    }, (response) => {
+      const peer = (response.socket as TLSSocket).getPeerCertificate(true).raw as Buffer | undefined;
+      const observed = peer === undefined ? null : sha256(peer);
+      if (observed !== input.certificateSha256) {
+        response.resume();
+        reject(new Error("real trio north MCP TLS pin mismatch"));
+        return;
+      }
+      const chunks: Buffer[] = [];
+      response.on("data", (chunk: Buffer) => chunks.push(chunk));
+      response.on("end", () => {
+        const bytes = Buffer.concat(chunks);
+        try {
+          const text = bytes.toString("utf8");
+          const responseValue = text.length === 0 ? null : JSON.parse(text) as unknown;
+          resolve(Object.freeze({
+            response: responseValue,
+            evidence: Object.freeze({
+              schemaVersion: REAL_TRIO_NORTH_EVIDENCE_SCHEMA,
+              requestSha256: sha256(payload),
+              responseSha256: sha256(bytes),
+              requestBytes: payload.byteLength,
+              responseBytes: bytes.byteLength,
+              statusCode: response.statusCode ?? 0,
+              effectiveMcpSessionId: input.effectiveMcpSessionId,
+            }),
+          }));
+        } catch (error) {
+          reject(error instanceof Error ? error : new Error(String(error)));
+        }
+      });
+    });
+    operation.once("error", reject);
+    operation.end(payload);
+  });
+}
 
 export interface RealTrioCaseControlSurface {
   /** Operations exposed by the loopback/TLS Gateway conformance control route. */

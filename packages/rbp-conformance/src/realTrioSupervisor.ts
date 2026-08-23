@@ -51,6 +51,8 @@ export interface RealTrioSupervisorResult {
   readonly bridgeReadiness: JsonObject;
   readonly fixtureReadiness: JsonObject;
   readonly sessionReadiness: RealTrioSessionReadiness;
+  /** Terminates the actual worker process, then relaunches its exact command/journal configuration. */
+  readonly restartBridge: () => Promise<RealTrioSessionReadiness>;
   readonly stop: () => Promise<void>;
 }
 
@@ -487,7 +489,7 @@ export async function pollRbpSessionV2Readiness(
   }
 }
 
-async function publicGatewayControl(
+export async function publicGatewayControl(
   endpoint: string,
   controlToken: string,
   expectedCertificateSha256: string,
@@ -495,7 +497,7 @@ async function publicGatewayControl(
 ): Promise<JsonObject> {
   const url = new URL("/__conformance/v1/control", endpoint);
   const action = payloadObject.action;
-  if (action !== "issue_device_credential" && action !== "snapshot_audit") {
+  if (action !== "issue_device_credential" && action !== "issue_north_credential" && action !== "snapshot_audit" && action !== "read_real_case_audit") {
     throw new Error("Gateway public control action is invalid");
   }
   const payload = Buffer.from(JSON.stringify(payloadObject), "utf8");
@@ -621,7 +623,7 @@ export async function startRealTrioSupervisor(input: RealTrioSupervisorLaunch): 
         );
         assertProductionCredential(credential, credentialRequest, endpoint);
         const fixtureBoundWorker = fixtureAttestedWorkerCommand(input.bridgeWorker, fixtureTokens);
-        const bridge = await StrictJsonlProcess.start({
+        let bridge = await StrictJsonlProcess.start({
           componentId: "bridge_simulator",
           command: command(replaceTokens({ ...fixtureBoundWorker, executable: bridgeExecutable }, {
             gateway_endpoint: bridgeEndpointForBinding(endpoint, input.bridgeWorker.args),
@@ -657,6 +659,35 @@ export async function startRealTrioSupervisor(input: RealTrioSupervisorLaunch): 
           }
           throw error;
         }
+        const restartBridge = async (): Promise<RealTrioSessionReadiness> => {
+          const stoppedBridge = await bridge.terminateForConformance();
+          if (stoppedBridge.killEscalated || stoppedBridge.exitCode === 0) {
+            throw new Error("real trio crash boundary did not observe an actual worker termination");
+          }
+          bridge = await StrictJsonlProcess.start({
+            componentId: "bridge_simulator",
+            command: command(replaceTokens({ ...fixtureBoundWorker, executable: bridgeExecutable }, {
+              gateway_endpoint: bridgeEndpointForBinding(endpoint, input.bridgeWorker.args),
+              gateway_certificate_sha256: certificateSha256.replace("sha256:", ""),
+              device_id: credential.deviceId,
+              device_proof: credential.deviceProof,
+            })),
+            absoluteWorkingDirectory: input.bridgeWorker.workingDirectory,
+            expectedReadinessFields: { component: "bridge_worker", contract: "wp12-real-worker-host/v1" },
+            requiredActions: ["shutdown"],
+          });
+          sessionReadiness = await pollRbpSessionV2Readiness({
+            expectedBinding: persistedBindingForReadiness(binding),
+            isBridgeExited: () => bridge.process.exitCode !== null,
+            readSnapshot: async () => await publicGatewayControl(
+              endpoint,
+              input.gatewayControlToken,
+              certificateSha256,
+              { action: "snapshot_audit" },
+            ),
+          });
+          return sessionReadiness;
+        };
         let stopped = false;
         const stop = async (): Promise<void> => {
           if (stopped) return;
@@ -682,6 +713,7 @@ export async function startRealTrioSupervisor(input: RealTrioSupervisorLaunch): 
         bridgeReadiness: bridge.readiness,
         fixtureReadiness: fixture.readiness,
         sessionReadiness,
+        restartBridge,
         stop,
         });
       } catch (error) { await fixture.stop(); throw error; }

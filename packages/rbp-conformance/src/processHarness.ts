@@ -422,6 +422,23 @@ export class StrictJsonlProcess {
     clearTimeout(forced);
     return { stoppedAt: exit.at, exitCode: exit.code, killEscalated };
   }
+
+  /**
+   * Conformance-only crash boundary.  Unlike `stop`, this does not send a
+   * component-private control action: it terminates the actual child process
+   * and waits for its observed exit before a supervisor may relaunch it.
+   */
+  async terminateForConformance(): Promise<{ stoppedAt: string; exitCode: number; killEscalated: boolean }> {
+    let killEscalated = false;
+    if (this.process.exitCode === null) this.child.kill("SIGTERM");
+    const forced = setTimeout(() => {
+      killEscalated = true;
+      this.child.kill("SIGKILL");
+    }, 10_000);
+    const exit = await this.#exit;
+    clearTimeout(forced);
+    return { stoppedAt: exit.at, exitCode: exit.code, killEscalated };
+  }
 }
 
 export interface HttpControlResponse {

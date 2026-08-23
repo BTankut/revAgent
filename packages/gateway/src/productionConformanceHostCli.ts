@@ -4,6 +4,11 @@ import path from "node:path";
 
 import { GatewayBridgeSessionAuthority } from "./bridgeSession.js";
 import { GatewayResourceAuthority } from "./resourceAuthority.js";
+import { GatewayDispatcher } from "./dispatch.js";
+import { EntitledCatalogView, type CatalogEntry } from "./entitledRegistry.js";
+import { GatewayToolRegistry, M2_BOOTSTRAP_TOOL_RECORDS } from "./registry.js";
+import type { AuthInfo } from "@modelcontextprotocol/server";
+import type { IncomingMessage } from "node:http";
 import {
   ConformanceCredentialAuthority,
   DigestFileConformanceObjectStore,
@@ -12,6 +17,8 @@ import {
 } from "./conformanceEphemeralAdapters.js";
 import { startProductionGatewayHost } from "./productionConformanceHost.js";
 import { createConformanceRbpIngressHost } from "./rbpIngress.js";
+import type { AuthorizedNorthMcpRequest, NorthMcpEndpointOptions } from "./northMcpEndpoint.js";
+import type { EffectiveMcpRequestScopeV1 } from "./invocationContext.js";
 
 interface CliOptions {
   readonly root: string;
@@ -33,6 +40,60 @@ const REQUIRED_CONNECTION_CAPABILITIES = Object.freeze([
   "chunked_results",
   "artifact_result_v1",
 ]);
+
+const CONFORMANCE_NORTH_CATALOG: readonly CatalogEntry[] = Object.freeze([
+  Object.freeze({
+    name: "core.ui.state",
+    summary: "Read the current Revit user-interface state.",
+    namespace: "core",
+    version: "1.0.0",
+    tool: "get_ui_state",
+    module: "runtime" as const,
+    policyClass: "auto" as const,
+    mutationScopePolicy: "none" as const,
+    executor: "bridge" as const,
+    variants: Object.freeze([Object.freeze({
+      plane: "live" as const,
+      executor: "bridge" as const,
+      executorMethod: "get_ui_state",
+      schemaOverlay: null,
+      fidelityNotes: Object.freeze([]),
+    })]),
+    terms: Object.freeze(["core", "state", "ui"]),
+  }),
+]);
+
+const REAL_CASE_AUDIT_SCHEMA = "revagent.wp12-real-case-audit/v1" as const;
+
+function digest(value: unknown): `sha256:${string}` {
+  return `sha256:${createHash("sha256").update(JSON.stringify(value)).digest("hex")}`;
+}
+
+function redactedSessionAudit(records: readonly { readonly namespace: string; readonly key: string; readonly value: unknown }[]): readonly Record<string, unknown>[] {
+  return Object.freeze(records.slice(0, 32).map((record) => {
+    const value = record.value !== null && typeof record.value === "object" && !Array.isArray(record.value)
+      ? record.value as Record<string, unknown>
+      : {};
+    const lifecycle = value.lifecycle !== null && typeof value.lifecycle === "object" && !Array.isArray(value.lifecycle)
+      ? value.lifecycle as Record<string, unknown>
+      : {};
+    const session = lifecycle.sessionLifecycle !== null && typeof lifecycle.sessionLifecycle === "object" && !Array.isArray(lifecycle.sessionLifecycle)
+      ? lifecycle.sessionLifecycle as Record<string, unknown>
+      : {};
+    const binding = value.binding !== null && typeof value.binding === "object" && !Array.isArray(value.binding)
+      ? value.binding as Record<string, unknown>
+      : {};
+    return Object.freeze({
+      namespace: record.namespace,
+      keyDigest: digest(record.key),
+      rsidDigest: typeof value.rsid === "string" ? digest(value.rsid) : null,
+      carrier: typeof binding.binding === "string" ? binding.binding : "unknown",
+      phase: typeof session.phase === "string" ? session.phase : "unknown",
+      dispatchAllowed: session.dispatchAllowed === true,
+      recordDigest: digest(value),
+    });
+  }));
+}
 
 export function conformanceConnectionCapabilitiesForBinding(
   binding: ConformanceBinding,
@@ -120,6 +181,55 @@ export async function runProductionConformanceHostCli(args: readonly string[]): 
   });
   const ingress = createConformanceRbpIngressHost({ authority });
   const supporting = createConformanceSupportingPorts();
+  const registry = new GatewayToolRegistry(M2_BOOTSTRAP_TOOL_RECORDS);
+  const entitledCatalog = new EntitledCatalogView(CONFORMANCE_NORTH_CATALOG, () => true);
+  const dispatcher = new GatewayDispatcher(registry, [authority.createExecutor()], {
+    eventSink: supporting.events,
+    eventSource: {
+      component: "gateway-production-conformance",
+      version: "wp12",
+      instance: "loopback",
+    },
+    // This host exposes a single auto/read-only MCP tool. Any mutation path is
+    // intentionally unreachable, so it cannot use the test control plane as a
+    // recovery authority.
+    recoveryAuthority: {} as never,
+  });
+  const auditAccesses: Array<{ readonly atMs: number; readonly tenantId: string; readonly action: string }> = [];
+  const northMcp: NorthMcpEndpointOptions = Object.freeze({
+    registry,
+    dispatcher,
+    catalogViewFor: () => entitledCatalog,
+    invocationRouteFor: (authenticated: AuthorizedNorthMcpRequest, _mcpSessionId: string, effectiveMcpRequestScope: EffectiveMcpRequestScopeV1) =>
+      authority.resolveLiveInvocationRoute({
+        tenantId: authenticated.authContext.actor.tenantId,
+        userId: authenticated.authContext.actor.userId,
+        deviceId: credentials[0]!.deviceId,
+        effectiveMcpRequestScope,
+      }),
+    requestState: { key: createHash("sha256").update(options.controlToken).digest() },
+    resourceMetadataUrl: new URL("https://127.0.0.1/.well-known/oauth-protected-resource/mcp"),
+    authenticator: {
+      kind: "conformance",
+      async authenticate(request: IncomingMessage) {
+        const outcome = await identity.authenticateNorthRequest({
+          authorization: request.headers.authorization,
+        });
+        if (!outcome.ok) return null;
+        const authorization = request.headers.authorization;
+        const token = typeof authorization === "string" && authorization.startsWith("Bearer ")
+          ? authorization.slice("Bearer ".length)
+          : "";
+        const authInfo: AuthInfo = {
+          token,
+          clientId: "conformance-loopback",
+          scopes: ["mcp:tools"],
+          resource: new URL("https://127.0.0.1/mcp"),
+        };
+        return Object.freeze({ authInfo, authContext: outcome.value, principalKey: outcome.value.principalKey });
+      },
+    },
+  });
   let conformanceEndpoint: string | null = null;
   let stopping = false;
   try {
@@ -127,6 +237,7 @@ export async function runProductionConformanceHostCli(args: readonly string[]): 
       hostProfile: "production_conformance",
       authority,
       resourceAuthority,
+      northMcp,
       server: {
         config: {
           nodeEnv: "test",
@@ -156,6 +267,7 @@ export async function runProductionConformanceHostCli(args: readonly string[]): 
             binding?: unknown;
             connectionCapabilities?: unknown;
             sessionCapabilities?: unknown;
+            tenantId?: unknown;
           } | null;
           const action = body?.action;
           if (action === "issue_device_credential") {
@@ -194,6 +306,20 @@ export async function runProductionConformanceHostCli(args: readonly string[]): 
               audit: identity.audit(),
             });
           }
+          if (action === "issue_north_credential") {
+            if (Object.keys(body ?? {}).length !== 1 || conformanceEndpoint === null) {
+              return reply.code(400).send({ ok: false, action, error: "invalid_north_credential_request" });
+            }
+            const credential = credentials[0]!;
+            return reply.send({
+              ok: true,
+              action,
+              bearer: credential.token,
+              audience: `${conformanceEndpoint}/mcp`,
+              credentialProvenance: "gateway_production_conformance",
+              identityContract: "revagent.auth-context/v1",
+            });
+          }
           if (action === "revoke_device") {
             const credential = credentials[0]!;
             const revoked = identity.revoke(credential.deviceId);
@@ -208,6 +334,35 @@ export async function runProductionConformanceHostCli(args: readonly string[]): 
               return reply.code(503).send({ ok: false, action, error: "session_audit_unavailable" });
             }
             return reply.send({ ok: true, action, audit: identity.audit(), sessions: sessions.value });
+          }
+          if (action === "read_real_case_audit") {
+            if (body?.tenantId !== "conformance" || Object.keys(body ?? {}).length !== 2) {
+              return reply.code(400).send({ ok: false, action, error: "invalid_audit_scope" });
+            }
+            auditAccesses.push(Object.freeze({ atMs: Date.now(), tenantId: "conformance", action: "read_real_case_audit" }));
+            const namespaces = [
+              "gateway.rbp-session/v2",
+              "gateway.mutation-hold/v1",
+              "gateway.invocation-outcome/v1",
+              "gateway.resource-carrier/v1",
+            ];
+            const records: Array<{ readonly namespace: string; readonly key: string; readonly value: unknown }> = [];
+            for (const namespace of namespaces) {
+              const result = await protocolStore.transact({ tenantId: "conformance" }, async (tx) => await tx.list(namespace));
+              if (!result.ok) return reply.code(503).send({ ok: false, action, error: "real_case_audit_unavailable" });
+              records.push(...result.value.map((row) => ({ namespace: row.namespace, key: row.key, value: row.value })));
+            }
+            const rows = redactedSessionAudit(records);
+            return reply.send({
+              ok: true,
+              action,
+              schemaVersion: REAL_CASE_AUDIT_SCHEMA,
+              tenantDigest: digest("conformance"),
+              rows,
+              counts: Object.freeze({ records: records.length, auditAccesses: auditAccesses.length }),
+              frontier: digest(rows),
+              auditAccessDigest: digest(auditAccesses.map((entry) => entry.action)),
+            });
           }
           return reply.code(400).send({ ok: false, error: "invalid_action" });
         });

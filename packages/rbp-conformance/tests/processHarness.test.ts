@@ -91,6 +91,22 @@ describe("strict JSONL process control", () => {
     expect(child.transcript.some((entry) => entry.stream === "stderr" && entry.line === "ping:observed")).toBe(true);
   });
 
+  it("exposes a process-only crash boundary without issuing a private shutdown control", async () => {
+    const child = await StrictJsonlProcess.start({
+      componentId: "addin_loopback_fixture",
+      command: command(),
+      absoluteWorkingDirectory: here,
+      expectedReadinessFields: { component: "fixture-test" },
+      requiredActions: ["ping", "shutdown"],
+    });
+    await expect(child.terminateForConformance()).resolves.toMatchObject({
+      exitCode: expect.any(Number),
+      killEscalated: false,
+    });
+    expect(child.process.exitCode).not.toBe(0);
+    expect(child.transcript.some((entry) => entry.line.includes('"stopped":true'))).toBe(false);
+  });
+
   it("keeps the control chain usable after an expected control error", async () => {
     const child = await StrictJsonlProcess.start({
       componentId: "addin_loopback_fixture",

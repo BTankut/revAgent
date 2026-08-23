@@ -5,6 +5,8 @@ import {
   REAL_TRIO_COMPONENTS,
   RealTrioCaseControlSurfaceError,
   assertRealTrioCaseControlSurface,
+  callRealTrioNorthMcp,
+  issueNorthCredentialControlPayload,
   realTrioCaseControlGaps,
 } from "../src/realTrioCaseDriver.js";
 
@@ -16,6 +18,22 @@ describe("WP-12 real-trio C28/C38/C39 case-driver admission", () => {
       "addin_loopback_fixture",
     ]);
     expect(JSON.stringify(REAL_TRIO_COMPONENTS)).not.toMatch(/stub|simulator/u);
+  });
+
+  it("uses an exact public north-credential control payload and refuses non-loopback MCP targets before any bearer use", async () => {
+    expect(issueNorthCredentialControlPayload()).toEqual({ action: "issue_north_credential" });
+    await expect(callRealTrioNorthMcp({
+      endpoint: "https://localhost:443",
+      certificateSha256: "sha256:deadbeef",
+      credential: {
+        bearer: "must-not-reach-network",
+        audience: "https://127.0.0.1/mcp",
+        credentialProvenance: "gateway_production_conformance",
+        identityContract: "revagent.auth-context/v1",
+      },
+      effectiveMcpSessionId: "real-case-session-1",
+      request: { jsonrpc: "2.0", id: "x", method: "tools/list" },
+    })).rejects.toThrow(/numeric loopback TLS/u);
   });
 
   it.each(["O1-C28", "O1-C38", "O1-C39"] as const)(
