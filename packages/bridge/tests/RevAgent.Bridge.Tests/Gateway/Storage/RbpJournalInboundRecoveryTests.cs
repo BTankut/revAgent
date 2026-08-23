@@ -182,7 +182,7 @@ public sealed class RbpJournalInboundRecoveryTests
         using var directory = new RbpJournalTestDirectory();
         var faults = new ArmedJournalFaultInjector();
         var migration = new RbpJournalMigration(
-            6,
+            7,
             "test",
             "test_atomic_handoff_v3",
             """
