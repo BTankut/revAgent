@@ -15,6 +15,8 @@ import {
   readRbpSessionV2Readiness,
   realTrioCredentialRequest,
   redactBridgeTranscript,
+  REAL_TRIO_TEST_HEARTBEAT_INTERVAL_MS,
+  testHeartbeatWorkerCommand,
 } from "../src/realTrioSupervisor.js";
 
 const worker = (binding: "wss" | "streamable_http_sse"): readonly string[] => ["--binding", binding];
@@ -156,6 +158,24 @@ describe("WP-12 fixture attestation supervisor configuration", () => {
       args: ["--binding", "wss", "--addin-port", "{{fixture_port}}", "--fixture-pid", "0"],
       workingDirectory: ".",
     }, tokens)).toThrow(/does not bind exact/u);
+  });
+
+  it("supervisor injects the bounded 1000ms test-host heartbeat cadence", () => {
+    const command = testHeartbeatWorkerCommand({
+      executable: "worker.exe",
+      args: ["--binding", "wss", "--test-heartbeat-interval-ms", "{{test_heartbeat_interval_ms}}"],
+      workingDirectory: ".",
+    });
+    expect(REAL_TRIO_TEST_HEARTBEAT_INTERVAL_MS).toBe(1_000);
+    expect(command.args).toContain("1000");
+  });
+
+  it.each([249, 5_001])("rejects an invalid test-host heartbeat interval", (interval) => {
+    expect(() => testHeartbeatWorkerCommand({
+      executable: "worker.exe",
+      args: ["--binding", "wss", "--test-heartbeat-interval-ms", "{{test_heartbeat_interval_ms}}"],
+      workingDirectory: ".",
+    }, interval)).toThrow(/between 250 and 5000/u);
   });
 });
 

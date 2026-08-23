@@ -31,6 +31,8 @@ const MAX_REAL_TRIO_DIAGNOSTIC_RECORDS = 16;
 const MAX_REAL_TRIO_READINESS_TRACE = 64;
 export const MAX_REAL_TRIO_CONTROL_BYTES = 64 * 1024;
 export const MAX_REAL_TRIO_CONTROL_TIMEOUT_MS = 15_000;
+/** Test-host-only cadence; the RBP/1 hello_ack remains 15 seconds on wire. */
+export const REAL_TRIO_TEST_HEARTBEAT_INTERVAL_MS = 1_000;
 
 export type RealTrioSupervisorCommand = RealTrioProcessCommand;
 
@@ -515,6 +517,26 @@ export function fixtureAttestedWorkerCommand(
   return replaceTokens(worker, tokens);
 }
 
+/**
+ * The supervisor, rather than a caller, owns the short real-worker test
+ * cadence. The worker still validates the same bound at its process boundary.
+ */
+export function testHeartbeatWorkerCommand(
+  worker: RealTrioSupervisorCommand,
+  heartbeatIntervalMs = REAL_TRIO_TEST_HEARTBEAT_INTERVAL_MS,
+): RealTrioSupervisorCommand {
+  if (!Number.isSafeInteger(heartbeatIntervalMs) || heartbeatIntervalMs < 250 || heartbeatIntervalMs > 5_000) {
+    throw new Error("real worker test heartbeat interval must be between 250 and 5000 milliseconds");
+  }
+  const indexes = worker.args
+    .map((entry, index) => entry === "--test-heartbeat-interval-ms" ? index : -1)
+    .filter((index) => index >= 0);
+  if (indexes.length !== 1 || worker.args[indexes[0]! + 1] !== "{{test_heartbeat_interval_ms}}") {
+    throw new Error("real worker command does not bind exact test heartbeat interval input");
+  }
+  return replaceTokens(worker, { test_heartbeat_interval_ms: String(heartbeatIntervalMs) });
+}
+
 function isObject(value: unknown): value is JsonObject {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
@@ -783,7 +805,9 @@ export async function startRealTrioSupervisor(input: RealTrioSupervisorLaunch): 
           credentialControl,
         );
         assertProductionCredential(credential, credentialRequest, endpoint);
-        const fixtureBoundWorker = fixtureAttestedWorkerCommand(input.bridgeWorker, fixtureTokens);
+        const fixtureBoundWorker = testHeartbeatWorkerCommand(
+          fixtureAttestedWorkerCommand(input.bridgeWorker, fixtureTokens),
+        );
         let bridge = await harness.startJsonl({
           componentId: "bridge_worker",
           command: replaceTokens({ ...fixtureBoundWorker, executable: bridgeExecutable }, {

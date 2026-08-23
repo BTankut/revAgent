@@ -182,8 +182,22 @@ export async function runProductionConformanceHostCli(args: readonly string[]): 
     protocolStore,
     objectStore,
   });
+  // The test control response retains no document route or identity values.
+  // A bounded stage/sequence trace distinguishes Gateway acceptance from
+  // rejection without becoming a second authority path.
+  const documentContextObservations: Array<Readonly<{
+    readonly stage: "accepted" | "rejected";
+    readonly sequence: number;
+  }>> = [];
   const authority = new GatewayBridgeSessionAuthority(protocolStore, identity, {
     resourceAuthority,
+    onDocumentContextObservation(observation) {
+      if (documentContextObservations.length === 32) documentContextObservations.shift();
+      documentContextObservations.push(Object.freeze({
+        stage: observation.stage,
+        sequence: observation.sequence,
+      }));
+    },
   });
   const ingress = createConformanceRbpIngressHost({ authority });
   const supporting = createConformanceSupportingPorts();
@@ -390,6 +404,7 @@ export async function runProductionConformanceHostCli(args: readonly string[]): 
               tenantDigest: digest("conformance"),
               rows,
               documentContextUpdates,
+              documentContextObservations: Object.freeze([...documentContextObservations]),
               counts: Object.freeze({ records: records.length, auditAccesses: auditAccesses.length }),
               frontier: digest(rows),
               auditAccessDigest: digest(auditAccesses.map((entry) => entry.action)),

@@ -827,6 +827,88 @@ describe("GatewayBridgeSessionAuthority live document routing", () => {
     expect(resolve(created).principalKey).toBe(`${TENANT_ID}:${USER_ID}`);
   });
 
+  it.each(["wss", "http_sse"] as const)(
+    "persists the %s document route before the next heartbeat-driven acknowledgement",
+    async (binding) => {
+      const fixture = createRestartableTestStore();
+      const observations: Array<{ readonly stage: string; readonly sequence: number }> = [];
+      const created = new GatewayBridgeSessionAuthority(fixture.store, identity(
+        binding === "http_sse"
+          ? { connectionCapabilities: ["transport_streamable_http"] }
+          : {},
+      ), {
+        onDocumentContextObservation: (observation) => observations.push(observation),
+      });
+      authorities.push(created);
+      await created.open();
+      const openedChannel = channel();
+      const offered = hello();
+      if (binding === "http_sse") {
+        offered.payload.capabilities = ["partial_progress", "transport_streamable_http"];
+      }
+      const opened = await created.openConnection({
+        deviceToken: DEVICE_TOKEN,
+        binding,
+        hello: offered,
+        channel: openedChannel,
+      });
+      await created.receive(opened.connectionId, registration(`route-before-ack-${binding}`, binding));
+      const registered = registeredFrame(openedChannel);
+      const session = {
+        connectionId: opened.connectionId,
+        channel: openedChannel,
+        rsid: registered.payload.rsid,
+      };
+
+      await created.receive(session.connectionId, contextUpdate({
+        rsid: session.rsid,
+        seq: 1,
+        activeDocument: "document-route-before-ack",
+        documents: [document("document-route-before-ack", true)],
+      }));
+
+      // This is the public route authority, independently visible before the
+      // worker emits its later heartbeat fence acknowledgement.
+      expect(resolve(created).documentIdentity).toEqual({
+        kind: "live",
+        session_document_id: "document-route-before-ack",
+      });
+      expect(observations).toEqual([{ stage: "accepted", sequence: 1 }]);
+      expect(session.channel.frames.filter((frame) => frame.type === "heartbeat_ack")).toEqual([]);
+
+      await created.receive(session.connectionId, {
+        v: 1,
+        type: "heartbeat",
+        id: id(),
+        ts: new Date().toISOString(),
+        payload: { bridge_version: "m4-route-test", acks: [], sessions: [] },
+      });
+      expect(session.channel.frames.filter((frame) => frame.type === "heartbeat_ack")).toHaveLength(1);
+    },
+  );
+
+  it("records a rejected document update by stage/sequence only without route or acknowledgement", async () => {
+    const fixture = createRestartableTestStore();
+    const observations: Array<{ readonly stage: string; readonly sequence: number }> = [];
+    const created = new GatewayBridgeSessionAuthority(fixture.store, identity(), {
+      onDocumentContextObservation: (observation) => observations.push(observation),
+    });
+    authorities.push(created);
+    await created.open();
+    const session = await register(created, "document-route-rejected");
+
+    await expect(created.receive(session.connectionId, contextUpdate({
+      rsid: session.rsid,
+      seq: 1,
+      activeDocument: "document-a",
+      documents: [document("document-a", true), document("document-b", true)],
+    }))).rejects.toMatchObject({ code: "protocol", httpStatus: 400 });
+
+    expect(observations).toEqual([{ stage: "rejected", sequence: 1 }]);
+    expectUnavailable(created);
+    expect(session.channel.frames.filter((frame) => frame.type === "heartbeat_ack")).toEqual([]);
+  });
+
   it("clears the live route when a later accepted context has no active document", async () => {
     const created = await authority();
     const session = await register(created);

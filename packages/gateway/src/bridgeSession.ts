@@ -279,6 +279,20 @@ type CarrierReceiveTailObserver = (event: {
   readonly queuedBytes: number;
 }) => void;
 
+/**
+ * Value-free test/diagnostic seam. It is deliberately limited to the outcome
+ * stage and inbound sequence: no rsid, payload, identity, or route detail is
+ * ever exposed through this callback.
+ */
+export type GatewayDocumentContextObservation = Readonly<{
+  readonly stage: "accepted" | "rejected";
+  readonly sequence: number;
+}>;
+
+type GatewayDocumentContextObserver = (
+  observation: GatewayDocumentContextObservation,
+) => void;
+
 interface DurablePendingDispatch {
   readonly envelopeDigest: `sha256:${string}`;
   readonly gatewaySequence: number;
@@ -2771,6 +2785,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
   readonly #receiveTails = new Map<string, Promise<void>>();
   readonly #rsidCarrierReceiveTailBytes = new Map<string, number>();
   readonly #carrierReceiveTailObserver: CarrierReceiveTailObserver | undefined;
+  readonly #documentContextObserver: GatewayDocumentContextObserver | undefined;
   readonly #sessionAuthorizationTails = new Map<string, Promise<void>>();
   readonly #tenantIdentityTails = new Map<string, Promise<void>>();
   readonly #tenantRevocationTails = new Map<string, Promise<void>>();
@@ -2830,6 +2845,8 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       readonly seatReassignmentCloseDrainTimeoutMs?: number;
       /** Optional until a composition has proved one shared store/object store. */
       readonly resourceAuthority?: GatewayResourceAuthority;
+      /** Value-free diagnostic only; never participates in route authority. */
+      readonly onDocumentContextObservation?: GatewayDocumentContextObserver;
     } = {},
   ) {
     this.#sessionRepository = new SessionAggregateRepository(store);
@@ -2840,6 +2857,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     )?.value;
     this.#carrierReceiveTailObserver =
       typeof carrierTailObserver === "function" ? carrierTailObserver : undefined;
+    this.#documentContextObserver = options.onDocumentContextObservation;
     this.#productionIdentity = asProductionIdentityAuthority(identity);
     this.#clock = options.clock ?? Date.now;
     this.#instanceId = options.instanceId ?? gatewayUuidV7(this.#clock());
@@ -5921,13 +5939,23 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
             4400,
           );
         }
-        await this.#withSessionAuthorization(envelope.rsid, async () =>
-          this.#acceptData(
-            connection,
-            envelope as Extract<RbpEnvelope, { rsid: string }>,
-            authorityTicket,
-          ),
-        );
+        try {
+          await this.#withSessionAuthorization(envelope.rsid, async () =>
+            this.#acceptData(
+              connection,
+              envelope as Extract<RbpEnvelope, { rsid: string }>,
+              authorityTicket,
+            ),
+          );
+          if (envelope.type === "doc_context_update") {
+            this.#observeDocumentContext("accepted", envelope.seq);
+          }
+        } catch (error) {
+          if (envelope.type === "doc_context_update") {
+            this.#observeDocumentContext("rejected", envelope.seq);
+          }
+          throw error;
+        }
         return;
       case "manifest_check":
         return;
@@ -5938,6 +5966,17 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
           400,
           4400,
         );
+    }
+  }
+
+  #observeDocumentContext(
+    stage: GatewayDocumentContextObservation["stage"],
+    sequence: number,
+  ): void {
+    try {
+      this.#documentContextObserver?.(Object.freeze({ stage, sequence }));
+    } catch {
+      // Diagnostic sinks cannot affect protocol acceptance or acknowledgement.
     }
   }
 

@@ -125,6 +125,12 @@ internal static class Program
                 new WorkerGatewayServices(cycle, journal, catalog,
                     new RbpConnectionCoordinatorOptions(options.GatewayUri, profile, CredentialClaimInvalidator: claims, SessionRouteBindingAuthority: catalog),
                     new WorkerAddinDispatchSurface(router, catalog),
+                    // The Gateway hello_ack remains the frozen 15 s RBP/1
+                    // value. This test-host-only clock shortens only the
+                    // locally scheduled wait so the real worker can prove a
+                    // subsequent heartbeat_ack without changing production
+                    // wire semantics.
+                    Clock: new TestHeartbeatClock(options.TestHeartbeatIntervalMilliseconds),
                     OnConnectionFailureObservation: ObserveConnectionFailure,
                     OnLifecycleTimeoutObservation: ObserveLifecycleTimeout,
                     OnDocumentContextObservation: ObserveDocumentContext,
@@ -401,11 +407,35 @@ internal static class Program
         return string.Equals(actual, expected, StringComparison.Ordinal);
     }
 
-    private sealed record Options(Uri GatewayUri, int AddinPort, int FixtureProcessId, string InstallRoot, string StateRoot, string DeviceId, string DeviceToken, string Fingerprint, string CertificateSha256, string Binding)
+    /// <summary>
+    /// Test-host-only scheduler clock. It recognizes only the frozen RBP/1
+    /// heartbeat delay; all other coordinator waits retain their production
+    /// durations. It never changes a received protocol acknowledgement.
+    /// </summary>
+    private sealed class TestHeartbeatClock : IRbpCoordinatorClock
+    {
+        private static readonly TimeSpan FrozenHeartbeatInterval = TimeSpan.FromSeconds(15);
+        private readonly TimeSpan _testHeartbeatInterval;
+
+        internal TestHeartbeatClock(int testHeartbeatIntervalMilliseconds)
+        {
+            _testHeartbeatInterval = TimeSpan.FromMilliseconds(testHeartbeatIntervalMilliseconds);
+        }
+
+        public DateTimeOffset UtcNow => DateTimeOffset.UtcNow;
+
+        public long MonotonicMilliseconds =>
+            checked((long)Math.Floor(Stopwatch.GetTimestamp() * 1000d / Stopwatch.Frequency));
+
+        public Task DelayAsync(TimeSpan delay, CancellationToken cancellationToken = default) =>
+            Task.Delay(delay == FrozenHeartbeatInterval ? _testHeartbeatInterval : delay, cancellationToken);
+    }
+
+    private sealed record Options(Uri GatewayUri, int AddinPort, int FixtureProcessId, string InstallRoot, string StateRoot, string DeviceId, string DeviceToken, string Fingerprint, string CertificateSha256, string Binding, int TestHeartbeatIntervalMilliseconds)
     {
         public static Options Parse(IReadOnlyList<string> args)
         {
-            if (args.Count != 20) throw new ArgumentException("real worker host requires exactly ten --key value pairs");
+            if (args.Count != 22) throw new ArgumentException("real worker host requires exactly eleven --key value pairs");
             var values = new Dictionary<string, string>(StringComparer.Ordinal);
             for (int index = 0; index < args.Count; index += 2)
             {
@@ -419,7 +449,8 @@ internal static class Program
             if (endpoint.Scheme != expectedScheme || endpoint.Host != "localhost") throw new ArgumentException("test host permits only pinned localhost Gateway endpoints for its selected binding");
             if (!int.TryParse(Required("--addin-port"), out int port) || port is < 1 or > 65535) throw new ArgumentException("invalid addin port");
             if (!int.TryParse(Required("--fixture-pid"), out int fixturePid) || fixturePid <= 0) throw new ArgumentException("invalid fixture pid");
-            Options result = new(endpoint, port, fixturePid, Required("--install-root"), Required("--state-root"), Required("--device-id"), Required("--device-token"), Required("--fingerprint"), Required("--certificate-sha256"), binding);
+            if (!int.TryParse(Required("--test-heartbeat-interval-ms"), out int testHeartbeatIntervalMilliseconds) || testHeartbeatIntervalMilliseconds is < 250 or > 5_000) throw new ArgumentException("test heartbeat interval must be between 250 and 5000 milliseconds");
+            Options result = new(endpoint, port, fixturePid, Required("--install-root"), Required("--state-root"), Required("--device-id"), Required("--device-token"), Required("--fingerprint"), Required("--certificate-sha256"), binding, testHeartbeatIntervalMilliseconds);
             if (values.Count != 0 || !result.Fingerprint.StartsWith("sha256:", StringComparison.Ordinal) || result.CertificateSha256.Length != 64) throw new ArgumentException("invalid test identity or certificate pin");
             return result;
         }

@@ -113,7 +113,10 @@ export interface RealTrioDocumentContextFailure {
   readonly schemaVersion: typeof REAL_TRIO_DOCUMENT_CONTEXT_FAILURE_SCHEMA;
   readonly reason: "ack_failure" | "stage_timeout" | "route_timeout" | "child_exit";
   readonly binding: RealTrioBinding;
-  readonly timeline: readonly "control_ack" | "ordered_stages" | "fixture_probe" | "gateway_route"[];
+  readonly timeline: readonly (
+    "control_ack" | "ordered_stages" | "document_sent" | "fixture_probe" |
+    "gateway_route" | "heartbeat_ack"
+  )[];
   /** Fixed stage/outcome fields only; no correlation identifiers or payloads. */
   readonly documentStages: readonly Readonly<{
     readonly stage: string;
@@ -317,6 +320,70 @@ async function waitForOrderedDocumentContextStages(input: {
   }
 }
 
+/** The route proof must not wait for, or infer, the later heartbeat ACK. */
+function hasDocumentContextSend(
+  records: readonly { readonly line: string }[],
+): boolean {
+  const expected = ["probe", "snapshot", "queue", "send"];
+  let next = 0;
+  for (const record of records) {
+    try {
+      const value = JSON.parse(record.line) as unknown;
+      if (isObject(value) && value.event === "bridge.document_context_observation" &&
+          value.stage === expected[next]) next += 1;
+      if (next === expected.length) return true;
+    } catch { /* Redacted diagnostics are the only input. */ }
+  }
+  return false;
+}
+
+async function waitForDocumentContextSend(input: {
+  readonly supervisor: RealTrioSupervisorResult;
+  readonly timeoutMs?: number;
+}): Promise<void> {
+  const deadline = Date.now() + (input.timeoutMs ?? DOCUMENT_CONTEXT_WATCHER_TIMEOUT_MS);
+  for (;;) {
+    if (input.supervisor.readDocumentContextFailureState().childExited) {
+      throw new Error("real trio child exited before document-context send");
+    }
+    if (hasDocumentContextSend(input.supervisor.readDocumentContextDiagnostics())) return;
+    if (Date.now() >= deadline) {
+      throw new Error("real trio document-context stages were not ordered through send");
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, 100));
+  }
+}
+
+/**
+ * `ack` is emitted only by the C# coordinator after a received
+ * heartbeat_ack is durably applied. Requiring a post-route record prevents a
+ * public persisted route from borrowing an earlier acknowledgement.
+ */
+async function waitForPostRouteDocumentContextHeartbeatAck(input: {
+  readonly supervisor: RealTrioSupervisorResult;
+  readonly diagnosticsBeforeRoute: number;
+  readonly timeoutMs?: number;
+}): Promise<void> {
+  const deadline = Date.now() + (input.timeoutMs ?? DOCUMENT_CONTEXT_WATCHER_TIMEOUT_MS);
+  for (;;) {
+    if (input.supervisor.readDocumentContextFailureState().childExited) {
+      throw new Error("real trio child exited before post-route heartbeat acknowledgement");
+    }
+    const current = input.supervisor.readDocumentContextDiagnostics();
+    if (current.slice(input.diagnosticsBeforeRoute).some((record) => {
+      try {
+        const value = JSON.parse(record.line) as unknown;
+        return isObject(value) && value.event === "bridge.document_context_observation" &&
+          value.stage === "ack" && value.outcome === "durably_acknowledged";
+      } catch { return false; }
+    })) return;
+    if (Date.now() >= deadline) {
+      throw new Error("real trio did not durably acknowledge document context after route persistence");
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, 100));
+  }
+}
+
 export function realTrioFixtureDocumentContextEvent(
   documentId = REAL_TRIO_FIXTURE_DOCUMENT_ID,
 ): Record<string, unknown> {
@@ -390,7 +457,7 @@ async function documentContextFailureError(input: {
   readonly error: unknown;
   readonly reason: RealTrioDocumentContextFailure["reason"];
   readonly binding: RealTrioBinding;
-  readonly timeline: readonly ("control_ack" | "ordered_stages" | "fixture_probe" | "gateway_route")[];
+  readonly timeline: readonly RealTrioDocumentContextFailure["timeline"][number][];
   readonly supervisor: RealTrioSupervisorResult;
   readonly endpoint: string;
   readonly controlToken: string;
@@ -457,6 +524,7 @@ export async function startRealTrioRuntimeFixture(
         "--device-token", "{{device_proof}}",
         "--fingerprint", `sha256:${"a".repeat(64)}`,
         "--certificate-sha256", "{{gateway_certificate_sha256}}",
+        "--test-heartbeat-interval-ms", "{{test_heartbeat_interval_ms}}",
       ],
       workingDirectory: repoRoot,
     },
@@ -481,7 +549,7 @@ export async function startRealTrioRuntimeFixture(
   }
   const evidenceFile = options.documentContextFailureEvidenceFile ??
     path.join(root, "document-context-failure.json");
-  const timeline: Array<"control_ack" | "ordered_stages" | "fixture_probe" | "gateway_route"> = [];
+  const timeline: Array<RealTrioDocumentContextFailure["timeline"][number]> = [];
   let failureReason: RealTrioDocumentContextFailure["reason"] = "ack_failure";
   let documentContextAudit: RealTrioDocumentContextAudit;
   try {
@@ -495,11 +563,11 @@ export async function startRealTrioRuntimeFixture(
     // This probe is value-free and must succeed before any public Gateway
     // route can qualify. The regular 15 s C# watcher is the only forwarder.
     failureReason = "stage_timeout";
-    await waitForOrderedDocumentContextStages({
+    await waitForDocumentContextSend({
       supervisor,
       timeoutMs: options.documentContextTimeoutMs,
     });
-    timeline.push("ordered_stages");
+    timeline.push("document_sent");
     failureReason = "ack_failure";
     const counts = probeRealTrioFixtureDocumentContext(
       await supervisor.fixtureControl("snapshot_evidence"),
@@ -516,6 +584,14 @@ export async function startRealTrioRuntimeFixture(
       timeoutMs: options.documentContextTimeoutMs,
     });
     timeline.push("gateway_route");
+    const diagnosticsBeforeRoute = supervisor.readDocumentContextDiagnostics().length;
+    failureReason = "ack_failure";
+    await waitForPostRouteDocumentContextHeartbeatAck({
+      supervisor,
+      diagnosticsBeforeRoute,
+      timeoutMs: options.documentContextTimeoutMs,
+    });
+    timeline.push("heartbeat_ack");
   } catch (error) {
     const failure = await documentContextFailureError({
       error,
