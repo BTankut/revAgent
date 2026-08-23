@@ -549,6 +549,10 @@ class ControlledStoreHarness {
   ): void {
     const composite = this.#recordKey(namespace, tenantId, key);
     const current = this.#records.get(composite);
+    if (current === undefined && namespace === "gateway.rbp-session/v1") {
+      this.#rewriteNormalizedSession(tenantId, key, mutate);
+      return;
+    }
     if (current === undefined) throw new Error(`missing fixture record ${namespace}/${key}`);
     this.#nextVersion += 1;
     this.#records.set(composite, {
@@ -556,6 +560,66 @@ class ControlledStoreHarness {
       value: structuredClone(mutate(current.value)),
       version: current.version + 1,
     });
+  }
+
+  /** Migration-aware fixture seam: v1-shaped mutators are projected onto the
+   * normalized root and its two mutable children, with fresh child/root/marker
+   * proofs. Production never receives this compatibility view. */
+  #rewriteNormalizedSession(
+    tenantId: string,
+    rsid: string,
+    mutate: (value: GatewayJsonValue) => GatewayJsonValue,
+  ): void {
+    const rootKey = this.#recordKey("gateway.rbp-session/v2", tenantId, rsid);
+    const markerKey = this.#recordKey("gateway.rbp-session-cutover/v2", tenantId, rsid);
+    const egressKey = this.#recordKey("gateway.rbp-session-egress/v2", tenantId, `${rsid}/egress`);
+    const indexKey = this.#recordKey("gateway.rbp-session-conflict-index/v2", tenantId, `${rsid}/conflict-index`);
+    const root = this.#records.get(rootKey);
+    const marker = this.#records.get(markerKey);
+    const egress = this.#records.get(egressKey);
+    const index = this.#records.get(indexKey);
+    if (root === undefined || marker === undefined || egress === undefined || index === undefined) {
+      throw new Error(`missing normalized fixture session ${rsid}`);
+    }
+    const rootValue = structuredClone(root.value) as GatewayJsonObject;
+    const egressValue = structuredClone(egress.value) as GatewayJsonObject;
+    const indexValue = structuredClone(index.value) as GatewayJsonObject;
+    const lifecycle = rootValue.lifecycle as GatewayJsonObject;
+    const binding = rootValue.binding as GatewayJsonObject;
+    const sequence = rootValue.sequence as GatewayJsonObject;
+    const legacy = mutate({
+      schema: "gateway.rbp-session/v1", tenantId, rsid,
+      ...(rootValue.identity as GatewayJsonObject), ...binding, ...lifecycle, ...sequence,
+      evidence: [], egressFence: egressValue.fence, normalizedConflictIndex: indexValue.index,
+    } as GatewayJsonObject) as GatewayJsonObject;
+    const put = (recordKey: string, record: StoredRecord<GatewayJsonValue>, value: GatewayJsonValue): StoredRecord<GatewayJsonValue> => {
+      const next = { ...record, value: structuredClone(value), version: record.version + 1 };
+      this.#records.set(recordKey, next);
+      return next;
+    };
+    const nextEgressValue = { ...egressValue, fence: legacy.egressFence } as GatewayJsonValue;
+    const nextIndexValue = { ...indexValue, index: legacy.normalizedConflictIndex } as GatewayJsonValue;
+    const nextEgress = put(egressKey, egress, nextEgressValue);
+    const nextIndex = put(indexKey, index, nextIndexValue);
+    const digestValue = (value: GatewayJsonValue): `sha256:${string}` => tokenDigest(canonicalizeJson(value as JsonValue));
+    const refs = (rootValue.childRefs as GatewayJsonObject[]).map((ref) => {
+      if (ref.namespace === nextEgress.namespace && ref.key === nextEgress.key) return { ...ref, version: nextEgress.version, digest: digestValue(nextEgress.value) };
+      if (ref.namespace === nextIndex.namespace && ref.key === nextIndex.key) return { ...ref, version: nextIndex.version, digest: digestValue(nextIndex.value) };
+      return ref;
+    });
+    const nextRootValue = {
+      ...rootValue,
+      rootVersion: Number(rootValue.rootVersion) + 1,
+      identity: { userId: legacy.userId, deviceId: legacy.deviceId, seatId: legacy.seatId, identityAuthority: legacy.identityAuthority },
+      binding: { sessionBindingId: legacy.sessionBindingId, sessionVersion: legacy.sessionVersion, connectionId: legacy.connectionId, binding: legacy.binding, resumeTokenDigest: legacy.resumeTokenDigest, resumeExpiresAtMs: legacy.resumeExpiresAtMs, grantedCapabilities: legacy.grantedCapabilities },
+      lifecycle: { connectionLifecycle: legacy.connectionLifecycle, sessionLifecycle: legacy.sessionLifecycle, lastHeartbeatAtMs: legacy.lastHeartbeatAtMs, liveDocumentRoute: legacy.liveDocumentRoute, recordVersion: legacy.recordVersion, createdAtMs: legacy.createdAtMs, updatedAtMs: legacy.updatedAtMs },
+      sequence: { sequence: legacy.sequence, pending: legacy.pending },
+      childRefs: refs,
+      childrenDigest: digestValue(refs as unknown as JsonValue),
+    } as GatewayJsonValue;
+    const nextRoot = put(rootKey, root, nextRootValue);
+    const markerValue = structuredClone(marker.value) as GatewayJsonObject;
+    put(markerKey, marker, { ...markerValue, rootVersion: (nextRoot.value as GatewayJsonObject).rootVersion, rootDigest: digestValue(nextRoot.value), childrenDigest: (nextRoot.value as GatewayJsonObject).childrenDigest } as GatewayJsonValue);
   }
 
   public seed(
@@ -1771,9 +1835,9 @@ describe("GatewayBridgeSessionAuthority durable unregister", () => {
       authority.receive(session.connectionId, unregister(session.rsid)),
     ).rejects.toMatchObject({ httpStatus: 503, closeCode: 1011 });
     const durable = store.snapshot().find(
-      (record) => record.namespace === "gateway.rbp-session/v1",
+      (record) => record.namespace === "gateway.rbp-session-egress/v2",
     )?.value as GatewayJsonObject;
-    expect((durable.egressFence as GatewayJsonObject).state).toBe("open");
+    expect((durable.fence as GatewayJsonObject).state).toBe("open");
   });
 
   it("does not cross a tenant boundary to observe or tombstone an rsid", async () => {
@@ -1804,9 +1868,9 @@ describe("GatewayBridgeSessionAuthority durable unregister", () => {
     await authority.open();
 
     const legacy = await register(authority);
-    const legacyCreatedAt = (store.snapshot().find(
-      (record) => record.namespace === "gateway.rbp-session/v1" && record.key === legacy.rsid,
-    )?.value as GatewayJsonObject).createdAtMs;
+    const legacyCreatedAt = (((store.snapshot().find(
+      (record) => record.namespace === GATEWAY_RBP_SESSION_V2_NAMESPACE && record.key === legacy.rsid,
+    )?.value as GatewayJsonObject).lifecycle) as GatewayJsonObject).createdAtMs;
     store.rewrite(TENANT_ID, "gateway.rbp-session/v1", legacy.rsid, (value) => {
       const rewritten = { ...(value as GatewayJsonObject) };
       delete rewritten.recordVersion;
@@ -1814,12 +1878,12 @@ describe("GatewayBridgeSessionAuthority durable unregister", () => {
     });
     await authority.detach(legacy.connectionId);
     const repairedLegacy = store.snapshot().find(
-      (record) => record.namespace === "gateway.rbp-session/v1" && record.key === legacy.rsid,
+      (record) => record.namespace === GATEWAY_RBP_SESSION_V2_NAMESPACE && record.key === legacy.rsid,
     )!;
-    expect((repairedLegacy.value as GatewayJsonObject).recordVersion).toBe(
+    expect(((repairedLegacy.value as GatewayJsonObject).lifecycle as GatewayJsonObject).recordVersion).toBe(
       repairedLegacy.version,
     );
-    expect((repairedLegacy.value as GatewayJsonObject).createdAtMs).toBe(legacyCreatedAt);
+    expect(((repairedLegacy.value as GatewayJsonObject).lifecycle as GatewayJsonObject).createdAtMs).toBe(legacyCreatedAt);
 
     const drifted = await register(authority);
     store.rewrite(TENANT_ID, "gateway.rbp-session/v1", drifted.rsid, (value) => ({
@@ -1828,9 +1892,9 @@ describe("GatewayBridgeSessionAuthority durable unregister", () => {
     }));
     await authority.detach(drifted.connectionId);
     const repairedDrift = store.snapshot().find(
-      (record) => record.namespace === "gateway.rbp-session/v1" && record.key === drifted.rsid,
+      (record) => record.namespace === GATEWAY_RBP_SESSION_V2_NAMESPACE && record.key === drifted.rsid,
     )!;
-    expect((repairedDrift.value as GatewayJsonObject).recordVersion).toBe(
+    expect(((repairedDrift.value as GatewayJsonObject).lifecycle as GatewayJsonObject).recordVersion).toBe(
       repairedDrift.version,
     );
 
