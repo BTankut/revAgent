@@ -18,7 +18,7 @@ interface RecordedRequest { readonly method: string; readonly authorization: str
 const closers: Array<() => Promise<void>> = [];
 afterEach(async () => { await Promise.all(closers.splice(0).map(async (close) => await close())); });
 
-async function testServer(mode: "ok" | "tool_error" = "ok"): Promise<{ readonly endpoint: string; readonly certificateSha256: string; readonly requests: RecordedRequest[] }> {
+async function testServer(input: { readonly mode?: "ok" | "tool_error"; readonly initializeSessionHeader?: string } = {}): Promise<{ readonly endpoint: string; readonly certificateSha256: string; readonly requests: RecordedRequest[] }> {
   const root = mkdtempSync(path.join(tmpdir(), "wp12-mcp-client-"));
   mkdirSync(path.join(root, "tls-root"));
   const tls = createEphemeralLoopbackTlsIdentity(realpathSync(path.join(root, "tls-root")));
@@ -34,11 +34,11 @@ async function testServer(mode: "ok" | "tool_error" = "ok"): Promise<{ readonly 
         hasId: "id" in body }));
       const result = method === "initialize"
         ? { jsonrpc: "2.0", id: body.id, result: { protocolVersion: "2025-03-26", capabilities: {}, serverInfo: { name: "fixture", version: "1" } } }
-        : mode === "tool_error" && method === "tools/call"
+        : input.mode === "tool_error" && method === "tools/call"
           ? { jsonrpc: "2.0", id: body.id, error: { code: -32001, message: "redacted" } }
           : { jsonrpc: "2.0", id: body.id, result: method === "tools/call"
             ? { structuredContent: { state: "completed", requestId: "server-request" } } : {} };
-      response.writeHead(200, { "content-type": "application/json", ...(method === "initialize" ? { "mcp-session-id": "gateway-issued-session-7" } : {}) });
+      response.writeHead(200, { "content-type": "application/json", ...(method === "initialize" && input.initializeSessionHeader !== undefined ? { "mcp-session-id": input.initializeSessionHeader } : {}) });
       response.end(JSON.stringify(result));
     });
   });
@@ -50,10 +50,10 @@ async function testServer(mode: "ok" | "tool_error" = "ok"): Promise<{ readonly 
 }
 
 describe("strict real-trio Streamable HTTP MCP client", () => {
-  it("authenticates initialize, accepts only the Gateway-issued session, then initializes before tools/call", async () => {
+  it("uses the actual stateless Streamable HTTP ordering with no MCP session header", async () => {
     const server = await testServer();
     await withRealTrioNorthMcpClient({ ...server, credential }, async (client) => {
-      expect(client.effectiveMcpSessionId).toBe("gateway-issued-session-7");
+      expect(client.usesMcpSessionHeader).toBe(false);
       const result = await client.toolCall({ name: "core.ui.state", arguments: {}, requestId: "tool-1" });
       expect(result.content).toEqual({ state: "completed", requestId: "server-request" });
       expect(result.evidence.methodSha256).toMatch(/^sha256:[0-9a-f]{64}$/u);
@@ -61,13 +61,22 @@ describe("strict real-trio Streamable HTTP MCP client", () => {
     });
     expect(server.requests).toEqual([
       { method: "initialize", authorization: "Bearer test-only-bearer", session: undefined, hasId: true },
-      { method: "notifications/initialized", authorization: "Bearer test-only-bearer", session: "gateway-issued-session-7", hasId: false },
-      { method: "tools/call", authorization: "Bearer test-only-bearer", session: "gateway-issued-session-7", hasId: true },
+      { method: "notifications/initialized", authorization: "Bearer test-only-bearer", session: undefined, hasId: false },
+      { method: "tools/call", authorization: "Bearer test-only-bearer", session: undefined, hasId: true },
     ]);
   });
 
+  it("rejects an unexpected Gateway session header unless an explicit identity binding matches", async () => {
+    const server = await testServer({ initializeSessionHeader: "gateway-issued-session-7" });
+    await expect(withRealTrioNorthMcpClient({ ...server, credential }, async () => undefined))
+      .rejects.toThrow(/unexpected mcp-session-id/u);
+    await expect(withRealTrioNorthMcpClient({ ...server, credential,
+      expectedMcpSessionId: "different-bound-session" }, async () => undefined))
+      .rejects.toThrow(/unexpected mcp-session-id/u);
+  });
+
   it("retains only bounded error code and method hash when Gateway returns a JSON-RPC error", async () => {
-    const server = await testServer("tool_error");
+    const server = await testServer({ mode: "tool_error" });
     await expect(withRealTrioNorthMcpClient({ ...server, credential }, async (client) =>
       await client.toolCall({ name: "core.ui.state", arguments: {}, requestId: "tool-error" }),
     )).rejects.toMatchObject({ name: "RealTrioNorthMcpError", evidence: expect.objectContaining({ jsonRpcErrorCode: -32001, methodSha256: expect.any(String) }) } satisfies Partial<RealTrioNorthMcpError>);

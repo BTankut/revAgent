@@ -23,7 +23,7 @@ export interface RealTrioNorthWireEvidence {
   readonly responseBytes: number;
   readonly statusCode: number;
   readonly jsonRpcErrorCode: number | null;
-  readonly effectiveMcpSessionId: string;
+  readonly mcpSessionHeaderPresent: boolean;
 }
 
 export class RealTrioNorthMcpError extends Error {
@@ -79,7 +79,7 @@ export class RealTrioNorthMcpClient {
     private readonly endpoint: URL,
     private readonly certificateSha256: string,
     private readonly credential: RealTrioNorthCredential,
-    private sessionId: string,
+    private sessionId: string | null,
     private closed = false,
   ) {}
 
@@ -87,6 +87,8 @@ export class RealTrioNorthMcpClient {
     readonly endpoint: string;
     readonly certificateSha256: string;
     readonly credential: RealTrioNorthCredential;
+    /** An explicit Gateway-bound identity is the only allowed header mode. */
+    readonly expectedMcpSessionId?: string;
   }): Promise<RealTrioNorthMcpClient> {
     const endpoint = strictEndpoint(input.endpoint);
     const initialization = await rawRequest({
@@ -107,16 +109,21 @@ export class RealTrioNorthMcpClient {
       }),
     });
     assertJsonRpcSuccess(initialization.response, "initialize");
+    const expected = input.expectedMcpSessionId;
+    if (expected !== undefined && !SESSION_ID.test(expected)) throw new Error("configured MCP session identity is invalid");
     const issued = initialization.sessionId;
-    if (issued === null || !SESSION_ID.test(issued)) {
-      throw new RealTrioNorthMcpError("real trio MCP initialize did not issue a valid mcp-session-id", initialization.evidence);
+    if (issued !== null && (!SESSION_ID.test(issued) || expected === undefined || issued !== expected)) {
+      throw new RealTrioNorthMcpError("real trio MCP returned an unexpected mcp-session-id", initialization.evidence);
+    }
+    if (expected !== undefined && issued === null) {
+      throw new RealTrioNorthMcpError("real trio MCP omitted configured mcp-session-id", initialization.evidence);
     }
     const client = new RealTrioNorthMcpClient(endpoint, input.certificateSha256, input.credential, issued);
     await client.notification("notifications/initialized", Object.freeze({}));
     return client;
   }
 
-  public get effectiveMcpSessionId(): string { return this.sessionId; }
+  public get usesMcpSessionHeader(): boolean { return this.sessionId !== null; }
 
   public async request(request: Readonly<Record<string, unknown>>): Promise<{ readonly response: unknown; readonly evidence: RealTrioNorthWireEvidence }> {
     this.assertOpen();
@@ -126,6 +133,7 @@ export class RealTrioNorthMcpClient {
     }
     const result = await rawRequest({ endpoint: this.endpoint, certificateSha256: this.certificateSha256,
       credential: this.credential, sessionId: this.sessionId, method, payload: request });
+    this.assertResponseSession(result.sessionId, result.evidence);
     assertJsonRpcSuccess(result.response, method, result.evidence);
     return Object.freeze({ response: result.response, evidence: result.evidence });
   }
@@ -147,17 +155,24 @@ export class RealTrioNorthMcpClient {
 
   private async notification(method: string, params: Readonly<Record<string, unknown>>): Promise<void> {
     this.assertOpen();
-    await rawRequest({ endpoint: this.endpoint, certificateSha256: this.certificateSha256,
+    const result = await rawRequest({ endpoint: this.endpoint, certificateSha256: this.certificateSha256,
       credential: this.credential, sessionId: this.sessionId, method, payload: Object.freeze({ jsonrpc: "2.0", method, params }) });
+    this.assertResponseSession(result.sessionId, result.evidence);
   }
 
   private assertOpen(): void { if (this.closed) throw new Error("real trio MCP client is closed"); }
+  private assertResponseSession(observed: string | null, evidence: RealTrioNorthWireEvidence): void {
+    if (observed !== this.sessionId) {
+      throw new RealTrioNorthMcpError("real trio MCP response mcp-session-id does not match configured identity", evidence);
+    }
+  }
 }
 
 export async function withRealTrioNorthMcpClient<T>(input: {
   readonly endpoint: string;
   readonly certificateSha256: string;
   readonly credential: RealTrioNorthCredential;
+  readonly expectedMcpSessionId?: string;
 }, action: (client: RealTrioNorthMcpClient) => Promise<T>): Promise<T> {
   const client = await RealTrioNorthMcpClient.connect(input);
   try { return await action(client); } finally { client.close(); }
@@ -227,7 +242,7 @@ async function rawRequest(input: {
           const evidence = Object.freeze({ schemaVersion: REAL_TRIO_NORTH_EVIDENCE_SCHEMA,
             requestSha256: sha256(payload), responseSha256: sha256(bytes), methodSha256: sha256(Buffer.from(input.method, "utf8")),
             requestBytes: payload.byteLength, responseBytes: bytes.byteLength, statusCode: response.statusCode ?? 0,
-            jsonRpcErrorCode: jsonRpcErrorCode(responseValue), effectiveMcpSessionId: input.sessionId ?? "issued_during_initialize" });
+            jsonRpcErrorCode: jsonRpcErrorCode(responseValue), mcpSessionHeaderPresent: input.sessionId !== null });
           const header = response.headers["mcp-session-id"];
           resolve(Object.freeze({ response: responseValue, evidence, sessionId: typeof header === "string" ? header : null }));
         } catch (error) { reject(error instanceof Error ? error : new Error(String(error))); }
