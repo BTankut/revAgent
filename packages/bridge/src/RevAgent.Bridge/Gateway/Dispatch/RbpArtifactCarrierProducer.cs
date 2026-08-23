@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text.Json;
+using System.Buffers;
 using RevAgent.Bridge.Gateway.Connection;
 using RevAgent.Bridge.Gateway.Protocol;
 using RevAgent.Bridge.Gateway.Storage;
@@ -19,12 +20,15 @@ internal sealed class RbpArtifactCarrierProducer
     internal const int MaximumArtifacts = 16;
     internal static readonly TimeSpan DefaultSpoolExpiry = TimeSpan.FromDays(7);
 
-    private readonly string _root;
+    private readonly RbpArtifactSpoolFileSystem _spool;
     private readonly RbpJournalStore _journal;
+    private readonly Dictionary<string, RbpCarrierFence> _fences =
+        new(StringComparer.Ordinal);
 
-    private RbpArtifactCarrierProducer(string root, RbpJournalStore journal)
+    private RbpArtifactCarrierProducer(
+        RbpArtifactSpoolFileSystem spool, RbpJournalStore journal)
     {
-        _root = root;
+        _spool = spool;
         _journal = journal;
     }
 
@@ -34,12 +38,13 @@ internal sealed class RbpArtifactCarrierProducer
     {
         ArgumentException.ThrowIfNullOrEmpty(stateRoot);
         ArgumentNullException.ThrowIfNull(journal);
-        string root = Path.GetFullPath(Path.Combine(stateRoot, "artifact-spool"));
-        EnsureSafeDirectory(root);
-        var producer = new RbpArtifactCarrierProducer(root, journal);
-        producer.SweepExpired(DateTimeOffset.UtcNow);
-        return producer;
+        return new RbpArtifactCarrierProducer(
+            RbpArtifactSpoolFileSystem.OpenForStateRoot(stateRoot), journal);
     }
+
+    internal static RbpArtifactCarrierProducer CreateForTesting(
+        IRelativeSpoolNative spool, RbpJournalStore journal) =>
+        new(RbpArtifactSpoolFileSystem.ForTesting(spool), journal);
 
     internal static IReadOnlyList<string> ConnectionCapabilities { get; } =
         Array.AsReadOnly(new[] { "journal_v1", "chunked_results", "artifact_result_v1" });
@@ -79,12 +84,12 @@ internal sealed class RbpArtifactCarrierProducer
         }
 
         string invocationId = RequireString(invocationBody, "invocation_id", 128);
-        string invocationRoot = Path.Combine(_root, SafeSegment(invocationId));
-        EnsureSafeDirectory(invocationRoot);
+        string carrierKey = SafeSegment(invocationId);
+        _spool.EnsureCarrier(carrierKey);
 
         if (!artifactOutput)
         {
-            return PrepareChunkedResult(invocationRoot, invocationId, rsid,
+            return PrepareChunkedResult(carrierKey, invocationId, rsid,
                 invocationBody, resultBytes);
         }
 
@@ -105,8 +110,7 @@ internal sealed class RbpArtifactCarrierProducer
             }
 
             string artifactId = StableArtifactId(invocationId, index, input.Digest);
-            string artifactPath = Path.Combine(invocationRoot, artifactId + ".bin");
-            WriteImmutable(artifactPath, input.Bytes, input.Digest);
+            _spool.WriteImmutable(carrierKey, artifactId + ".bin", input.Bytes, input.Digest);
             int totalChunks = checked((input.Bytes.Length + MaximumChunkBytes - 1) /
                                      MaximumChunkBytes);
             for (int chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++)
@@ -135,11 +139,12 @@ internal sealed class RbpArtifactCarrierProducer
             references.Add(new RbpArtifactReference(artifactId, index));
         }
 
-        WriteManifest(invocationRoot, invocationId, rsid, descriptors);
+        WriteManifest(carrierKey, invocationId, rsid, descriptors,
+            descriptors.Select(value => value.ArtifactId + ".bin").Append("terminal.ack.json"));
         return new RbpCarrierEmission(
             ReplaceTerminal(invocationBody, descriptors, references),
             chunks.AsReadOnly(),
-            SafeSegment(invocationId));
+            carrierKey);
     }
 
     internal Task<RbpCarrierEmission?> TryPrepareAsync(
@@ -154,8 +159,8 @@ internal sealed class RbpArtifactCarrierProducer
             ConnectionCapabilities,
             cancellationToken);
 
-    private static RbpCarrierEmission PrepareChunkedResult(
-        string invocationRoot,
+    private RbpCarrierEmission PrepareChunkedResult(
+        string carrierKey,
         string invocationId,
         string rsid,
         JsonElement invocationBody,
@@ -168,7 +173,7 @@ internal sealed class RbpArtifactCarrierProducer
         }
 
         string digest = Digest(bytes);
-        WriteImmutable(Path.Combine(invocationRoot, "result.bin"), bytes, digest);
+        _spool.WriteImmutable(carrierKey, "result.bin", bytes, digest);
         int totalChunks = checked((bytes.Length + MaximumChunkBytes - 1) /
                                  MaximumChunkBytes);
         var chunks = new List<RbpInvocationAnswer>(totalChunks);
@@ -182,13 +187,13 @@ internal sealed class RbpArtifactCarrierProducer
                 bytes.AsSpan(offset, length).ToArray())));
         }
 
-        WriteManifest(invocationRoot, invocationId, rsid,
-            Array.Empty<RbpArtifactDescriptor>());
+        WriteManifest(carrierKey, invocationId, rsid, Array.Empty<RbpArtifactDescriptor>(),
+            new[] { "result.bin", "terminal.ack.json" });
         return new RbpCarrierEmission(
             ReplaceChunkedResultTerminal(
                 invocationBody, totalChunks, bytes.Length, digest),
             chunks.AsReadOnly(),
-            SafeSegment(invocationId));
+            carrierKey);
     }
 
     private static IReadOnlyList<RbpArtifactInput> ParseInputs(JsonElement files)
@@ -200,8 +205,9 @@ internal sealed class RbpArtifactCarrierProducer
                 "Artifact output must contain 1 through 16 files.");
         }
 
-        var values = new List<RbpArtifactInput>(files.GetArrayLength());
+        var wires = new List<RbpArtifactWireInput>(files.GetArrayLength());
         int expectedIndex = 0;
+        long declaredAggregate = 0;
         foreach (JsonElement file in files.EnumerateArray())
         {
             if (file.ValueKind != JsonValueKind.Object ||
@@ -230,26 +236,50 @@ internal sealed class RbpArtifactCarrierProducer
                 throw new RbpArtifactCarrierException("Artifact digest is malformed.");
             }
 
-            string base64 = RequireMemberString(file, "contentBase64", MaximumCombinedBytes * 2);
-            byte[] bytes;
-            try { bytes = Convert.FromBase64String(base64); }
-            catch (FormatException exception)
-            {
-                throw new RbpArtifactCarrierException("Artifact content is not base64.", exception);
-            }
-
             if (!file.TryGetProperty("sizeBytes", out JsonElement size) ||
                 !size.TryGetInt32(out int declaredSize) ||
-                declaredSize < 0 || declaredSize != bytes.Length ||
-                bytes.Length > MaximumCombinedBytes ||
-                !string.Equals(Digest(bytes), declaredDigest, StringComparison.Ordinal))
+                declaredSize < 0 || declaredSize > MaximumCombinedBytes)
             {
+                throw new RbpArtifactCarrierException("Artifact size is malformed.");
+            }
+
+            string base64 = RequireMemberString(file, "contentBase64",
+                MaximumBase64Length(MaximumCombinedBytes));
+            int decodedLength = GetDecodedLength(base64);
+            if (decodedLength != declaredSize)
+            {
+                throw new RbpArtifactCarrierException(
+                    "Artifact size or base64 length verification failed.");
+            }
+
+            checked { declaredAggregate += decodedLength; }
+            if (declaredAggregate > MaximumCombinedBytes)
+            {
+                throw new RbpArtifactCarrierException(
+                    "Artifact output exceeds the 32 MiB carrier limit.");
+            }
+
+            wires.Add(new RbpArtifactWireInput(
+                fileName, contentType, base64, decodedLength, declaredDigest));
+            expectedIndex++;
+        }
+
+        var values = new List<RbpArtifactInput>(wires.Count);
+        long decodedAggregate = 0;
+        foreach (RbpArtifactWireInput wire in wires)
+        {
+            byte[] bytes = DecodeBase64Bounded(wire.ContentBase64, wire.DecodedLength);
+            checked { decodedAggregate += bytes.Length; }
+            if (decodedAggregate > MaximumCombinedBytes ||
+                !string.Equals(Digest(bytes), wire.Digest, StringComparison.Ordinal))
+            {
+                CryptographicOperations.ZeroMemory(bytes);
                 throw new RbpArtifactCarrierException(
                     "Artifact size or digest verification failed.");
             }
 
-            values.Add(new RbpArtifactInput(fileName, contentType, bytes, declaredDigest));
-            expectedIndex++;
+            values.Add(new RbpArtifactInput(
+                wire.FileName, wire.ContentType, bytes, wire.Digest));
         }
 
         return values.AsReadOnly();
@@ -390,9 +420,10 @@ internal sealed class RbpArtifactCarrierProducer
         return document.RootElement.Clone();
     }
 
-    private static void WriteManifest(
-        string root, string invocationId, string rsid,
-        IReadOnlyList<RbpArtifactDescriptor> descriptors)
+    private void WriteManifest(
+        string carrierKey, string invocationId, string rsid,
+        IReadOnlyList<RbpArtifactDescriptor> descriptors,
+        IEnumerable<string> declaredFiles)
     {
         string text = JsonSerializer.Serialize(new
         {
@@ -408,9 +439,11 @@ internal sealed class RbpArtifactCarrierProducer
                 value.TotalSize,
                 value.Digest,
             }),
+            spoolFiles = declaredFiles.Append("manifest.json")
+                .OrderBy(value => value, StringComparer.Ordinal),
         });
         byte[] bytes = System.Text.Encoding.UTF8.GetBytes(text);
-        WriteImmutable(Path.Combine(root, "manifest.json"), bytes, Digest(bytes));
+        _spool.WriteImmutable(carrierKey, "manifest.json", bytes, Digest(bytes));
     }
 
     /// <summary>
@@ -421,19 +454,19 @@ internal sealed class RbpArtifactCarrierProducer
     internal void RecordTerminalQueued(
         string carrierKey, string rsid, long terminalSequence)
     {
-        string root = CarrierDirectory(carrierKey);
-        EnsureSafeDirectory(root);
+        ValidateCarrierKey(carrierKey);
+        _spool.EnsureCarrier(carrierKey);
         byte[] bytes = System.Text.Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new
         {
             rsid,
             terminalSequence,
             createdAtMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
         }));
-        string path = Path.Combine(root, "terminal.ack.json");
-        if (File.Exists(path))
+        if (_spool.TryReadAllPinned(carrierKey, "terminal.ack.json", MaximumCombinedBytes, out byte[]? existing) &&
+            existing is not null)
         {
             if (!TryReadTerminalFence(
-                    path,
+                    existing,
                     out string? existingRsid,
                     out long existingSequence) ||
                 !string.Equals(existingRsid, rsid, StringComparison.Ordinal) ||
@@ -443,71 +476,73 @@ internal sealed class RbpArtifactCarrierProducer
                     "Carrier terminal cleanup fence conflicts with existing evidence.");
             }
 
+            _fences[carrierKey] = new RbpCarrierFence(rsid, terminalSequence);
             return;
         }
 
-        WriteImmutable(path, bytes, Digest(bytes));
+        _spool.WriteImmutable(carrierKey, "terminal.ack.json", bytes, Digest(bytes));
+        _fences[carrierKey] = new RbpCarrierFence(rsid, terminalSequence);
     }
 
     internal void ApplyDurableAcknowledgements(
         IReadOnlyList<RbpSessionAcknowledgement> acknowledgements)
     {
         ArgumentNullException.ThrowIfNull(acknowledgements);
-        foreach (string marker in Directory.EnumerateFiles(
-                     _root, "terminal.ack.json", SearchOption.AllDirectories))
+        foreach ((string carrierKey, RbpCarrierFence fence) in _fences.ToArray())
         {
-            if (!TryReadTerminalFence(marker, out string? rsid, out long sequence))
-            {
-                continue;
-            }
-
             long acknowledged = acknowledgements
-                .Where(value => string.Equals(value.Rsid, rsid, StringComparison.Ordinal))
+                .Where(value => string.Equals(value.Rsid, fence.Rsid, StringComparison.Ordinal))
                 .Select(value => value.Sequence)
                 .DefaultIfEmpty(-1)
                 .Max();
-            if (acknowledged >= sequence)
+            if (acknowledged >= fence.TerminalSequence)
             {
-                DeleteCarrierDirectory(Path.GetDirectoryName(marker)!);
+                DeleteCarrierByDeclaredManifest(carrierKey);
+                _fences.Remove(carrierKey);
             }
         }
     }
 
-    internal void SweepExpired(DateTimeOffset now)
+    /// <summary>Journal recovery supplies only fenced, already-released keys.
+    /// There is no spool discovery path and no timestamp-based directory scan.</summary>
+    internal void SweepExpired(IReadOnlyList<RbpReleasedCarrier> releasedCarriers)
     {
-        foreach (string marker in Directory.EnumerateFiles(
-                     _root, "terminal.ack.json", SearchOption.AllDirectories))
+        ArgumentNullException.ThrowIfNull(releasedCarriers);
+        foreach (RbpReleasedCarrier released in releasedCarriers)
         {
-            if (File.GetLastWriteTimeUtc(marker) <=
-                now.UtcDateTime.Subtract(DefaultSpoolExpiry))
+            string carrierKey = released.CarrierKey;
+            ValidateCarrierKey(carrierKey);
+            if (!_spool.TryReadAllPinned(carrierKey, "terminal.ack.json", MaximumCombinedBytes,
+                    out byte[]? fenceBytes) || fenceBytes is null ||
+                !TryReadTerminalFence(fenceBytes, out string? rsid, out long sequence) ||
+                !string.Equals(rsid, released.Rsid, StringComparison.Ordinal) ||
+                sequence != released.TerminalSequence)
             {
-                DeleteCarrierDirectory(Path.GetDirectoryName(marker)!);
+                throw new RbpArtifactCarrierException("carrier_spool_release_fence_refused");
             }
+            DeleteCarrierByDeclaredManifest(carrierKey);
+            _fences.Remove(carrierKey);
         }
     }
 
-    private string CarrierDirectory(string carrierKey)
+    private void DeleteCarrierByDeclaredManifest(string carrierKey)
     {
-        string directory = Path.GetFullPath(Path.Combine(_root, carrierKey));
-        if (!directory.StartsWith(_root + Path.DirectorySeparatorChar,
-                StringComparison.OrdinalIgnoreCase) ||
-            carrierKey.Length != 64 ||
-            carrierKey.Any(value => !Uri.IsHexDigit(value)))
+        byte[] bytes = _spool.ReadAllPinned(carrierKey, "manifest.json", MaximumCombinedBytes);
+        if (!TryReadDeclaredInventory(bytes, out IReadOnlyList<string>? inventory) || inventory is null)
         {
-            throw new RbpArtifactCarrierException("Carrier spool identity is malformed.");
+            throw new RbpArtifactCarrierException("carrier_spool_inventory_refused");
         }
-
-        return directory;
+        _spool.DeleteCarrier(carrierKey, inventory);
     }
 
     private static bool TryReadTerminalFence(
-        string marker, out string? rsid, out long sequence)
+        byte[] bytes, out string? rsid, out long sequence)
     {
         rsid = null;
         sequence = -1;
         try
         {
-            using JsonDocument document = JsonDocument.Parse(File.ReadAllBytes(marker));
+            using JsonDocument document = JsonDocument.Parse(bytes);
             JsonElement root = document.RootElement;
             if (!root.TryGetProperty("rsid", out JsonElement rsidElement) ||
                 rsidElement.GetString() is not { Length: > 0 } parsed ||
@@ -526,65 +561,44 @@ internal sealed class RbpArtifactCarrierProducer
         }
     }
 
-    private static void DeleteCarrierDirectory(string directory)
+    private static bool TryReadDeclaredInventory(byte[] bytes, out IReadOnlyList<string>? inventory)
     {
-        if ((File.GetAttributes(directory) & FileAttributes.ReparsePoint) != 0)
+        inventory = null;
+        try
         {
-            throw new RbpArtifactCarrierException(
-                "Carrier cleanup refused a reparse-point directory.");
-        }
-
-        Directory.Delete(directory, recursive: true);
-    }
-
-    private static void WriteImmutable(string path, byte[] bytes, string digest)
-    {
-        if (File.Exists(path))
-        {
-            byte[] existing = File.ReadAllBytes(path);
-            if (!CryptographicOperations.FixedTimeEquals(existing, bytes))
+            using JsonDocument document = JsonDocument.Parse(bytes);
+            if (!document.RootElement.TryGetProperty("spoolFiles", out JsonElement files) ||
+                files.ValueKind != JsonValueKind.Array)
             {
-                throw new RbpArtifactCarrierException(
-                    "Artifact spool has conflicting immutable content.");
+                return false;
             }
-
-            return;
+            string[] values = files.EnumerateArray()
+                .Where(value => value.ValueKind == JsonValueKind.String)
+                .Select(value => value.GetString())
+                .Where(value => value is not null && value.Length is > 0 and <= 255 &&
+                    value is not "." and not ".." && value.IndexOfAny(['/', '\\', ':', '\0']) < 0)
+                .Cast<string>()
+                .ToArray();
+            if (values.Length != files.GetArrayLength() || values.Length == 0 ||
+                !values.Contains("manifest.json", StringComparer.Ordinal) ||
+                !values.Contains("terminal.ack.json", StringComparer.Ordinal) ||
+                values.Distinct(StringComparer.Ordinal).Count() != values.Length)
+            {
+                return false;
+            }
+            inventory = values;
+            return true;
         }
-
-        using (var file = new FileStream(path, FileMode.CreateNew, FileAccess.Write,
-                   FileShare.None, 4096, FileOptions.WriteThrough))
+        catch (JsonException)
         {
-            file.Write(bytes);
-            file.Flush(flushToDisk: true);
-        }
-
-        if (!string.Equals(Digest(File.ReadAllBytes(path)), digest, StringComparison.Ordinal))
-        {
-            throw new RbpArtifactCarrierException("Artifact spool verification failed.");
+            return false;
         }
     }
 
-    private static void EnsureSafeDirectory(string path)
+    private static void ValidateCarrierKey(string carrierKey)
     {
-        string full = Path.GetFullPath(path);
-        string? cursor = full;
-        while (cursor is not null && Directory.Exists(cursor))
-        {
-            if ((File.GetAttributes(cursor) & FileAttributes.ReparsePoint) != 0)
-            {
-                throw new RbpArtifactCarrierException(
-                    "Artifact spool cannot use a reparse-point directory.");
-            }
-
-            cursor = Path.GetDirectoryName(cursor);
-        }
-
-        Directory.CreateDirectory(full);
-        if ((File.GetAttributes(full) & FileAttributes.ReparsePoint) != 0)
-        {
-            throw new RbpArtifactCarrierException(
-                "Artifact spool cannot use a reparse-point directory.");
-        }
+        if (carrierKey.Length != 64 || carrierKey.Any(value => !Uri.IsHexDigit(value)))
+            throw new RbpArtifactCarrierException("Carrier spool identity is malformed.");
     }
 
     private static string StableArtifactId(string invocationId, int index, string digest)
@@ -597,7 +611,7 @@ internal sealed class RbpArtifactCarrierProducer
     private static string SafeSegment(string value) =>
         Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(value))).ToLowerInvariant();
 
-    private static string Digest(byte[] value) =>
+    internal static string Digest(byte[] value) =>
         "sha256:" + Convert.ToHexString(SHA256.HashData(value)).ToLowerInvariant();
 
     private static string RequireString(JsonElement value, string name, int maximum) =>
@@ -617,6 +631,59 @@ internal sealed class RbpArtifactCarrierProducer
 
     private sealed record RbpArtifactInput(
         string FileName, string ContentType, byte[] Bytes, string Digest);
+
+    private sealed record RbpArtifactWireInput(
+        string FileName, string ContentType, string ContentBase64,
+        int DecodedLength, string Digest);
+
+    private static int MaximumBase64Length(int decodedLength) => checked(
+        ((decodedLength + 2) / 3) * 4);
+
+    private static int GetDecodedLength(string value)
+    {
+        if (value.Length == 0 || value.Length % 4 != 0)
+        {
+            throw new RbpArtifactCarrierException("Artifact content is not base64.");
+        }
+
+        int padding = value[^1] == '=' ? (value[^2] == '=' ? 2 : 1) : 0;
+        try
+        {
+            return checked((value.Length / 4 * 3) - padding);
+        }
+        catch (OverflowException exception)
+        {
+            throw new RbpArtifactCarrierException("Artifact content is too large.", exception);
+        }
+    }
+
+    private static byte[] DecodeBase64Bounded(string value, int expectedLength)
+    {
+        byte[] rented = ArrayPool<byte>.Shared.Rent(expectedLength);
+        try
+        {
+            if (!Convert.TryFromBase64Chars(value, rented, out int written) ||
+                written != expectedLength)
+            {
+                throw new RbpArtifactCarrierException("Artifact content is not base64.");
+            }
+
+            return rented.AsSpan(0, written).ToArray();
+        }
+        catch (RbpArtifactCarrierException)
+        {
+            throw;
+        }
+        catch (Exception exception) when (exception is FormatException or ArgumentException)
+        {
+            throw new RbpArtifactCarrierException("Artifact content is not base64.", exception);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(rented);
+            ArrayPool<byte>.Shared.Return(rented);
+        }
+    }
 }
 
 internal sealed record RbpCarrierEmission(
@@ -629,6 +696,12 @@ internal sealed record RbpArtifactDescriptor(
     int TotalChunks, int TotalSize, string Digest);
 
 internal sealed record RbpArtifactReference(string ArtifactId, int ArtifactIndex);
+
+/// <summary>Exact durable-release identity supplied by the journal.  A spool
+/// sweep cannot invent this selector and never enumerates the filesystem.</summary>
+internal sealed record RbpReleasedCarrier(string CarrierKey, string Rsid, long TerminalSequence);
+
+internal sealed record RbpCarrierFence(string Rsid, long TerminalSequence);
 
 internal sealed class RbpArtifactCarrierException : Exception
 {

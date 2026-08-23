@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.Diagnostics;
 using System.Text.Json;
 using RevAgent.Bridge.Gateway.Dispatch;
 using RevAgent.Bridge.Gateway.Protocol;
@@ -189,13 +190,184 @@ public sealed class RbpArtifactCarrierProducerTests
                 CancellationToken.None));
         string root = Path.Combine(directory.Path, "artifact-spool", emission.CarrierKey);
 
-        producer.SweepExpired(DateTimeOffset.UtcNow.AddDays(8));
-        Assert.True(Directory.Exists(root));
         producer.RecordTerminalQueued(emission.CarrierKey, "rs-expiry", 1);
-        string marker = Path.Combine(root, "terminal.ack.json");
-        File.SetLastWriteTimeUtc(marker, DateTime.UtcNow.AddDays(-8));
-        producer.SweepExpired(DateTimeOffset.UtcNow);
+        producer.SweepExpired(new[] { new RbpReleasedCarrier(
+            emission.CarrierKey, "rs-expiry", 1) });
         Assert.False(Directory.Exists(root));
+    }
+
+    [Fact]
+    public async Task RestartedProducerReleasesOnlyJournalSuppliedFence()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        await using RbpJournalStore store = OpenStore(directory);
+        RbpArtifactCarrierProducer first = RbpArtifactCarrierProducer.CreateProduction(directory.Path, store);
+        RbpCarrierEmission released = Assert.IsType<RbpCarrierEmission>(await first.TryPrepareAsync(
+            "rs-restart", Json("""{"kind":"invocation","invocation_id":"invoke-restart-release"}"""),
+            Files(new byte[] { 4 }), CancellationToken.None));
+        first.RecordTerminalQueued(released.CarrierKey, "rs-restart", 8);
+
+        RbpArtifactCarrierProducer restarted = RbpArtifactCarrierProducer.CreateProduction(directory.Path, store);
+        restarted.SweepExpired(new[] { new RbpReleasedCarrier(released.CarrierKey, "rs-restart", 8) });
+        Assert.False(Directory.Exists(Path.Combine(directory.Path, "artifact-spool", released.CarrierKey)));
+
+        RbpCarrierEmission acknowledged = Assert.IsType<RbpCarrierEmission>(await first.TryPrepareAsync(
+            "rs-restart", Json("""{"kind":"invocation","invocation_id":"invoke-restart-ack"}"""),
+            Files(new byte[] { 5 }), CancellationToken.None));
+        first.RecordTerminalQueued(acknowledged.CarrierKey, "rs-restart", 9);
+        RbpArtifactCarrierProducer rehydrated = RbpArtifactCarrierProducer.CreateProduction(directory.Path, store);
+        rehydrated.RecordTerminalQueued(acknowledged.CarrierKey, "rs-restart", 9);
+        rehydrated.ApplyDurableAcknowledgements(new[] { new RbpSessionAcknowledgement("rs-restart", 9) });
+        Assert.False(Directory.Exists(Path.Combine(directory.Path, "artifact-spool", acknowledged.CarrierKey)));
+    }
+
+    [Fact]
+    public async Task BootstrapCreatesMissingStateRootThroughPinnedComponents()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        await using RbpJournalStore store = OpenStore(directory);
+        string configuredRoot = Path.Combine(directory.Path, "missing-state-root", "nested");
+        RbpArtifactCarrierProducer producer = RbpArtifactCarrierProducer.CreateProduction(configuredRoot, store);
+        RbpCarrierEmission emission = Assert.IsType<RbpCarrierEmission>(await producer.TryPrepareAsync(
+            "rs-bootstrap", Json("""{"kind":"invocation","invocation_id":"invoke-bootstrap"}"""),
+            Files(new byte[] { 1 }), CancellationToken.None));
+        Assert.True(Directory.Exists(Path.Combine(configuredRoot, "artifact-spool", emission.CarrierKey)));
+    }
+
+    [Fact]
+    public void RefusesSameLengthLeafTamperByExpectedDigest()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        using var spool = RbpArtifactSpoolFileSystem.OpenForStateRoot(directory.Path);
+        string carrierKey = new string('a', 64);
+        const string name = "same-length.bin";
+        byte[] original = [1, 2, 3, 4];
+        spool.EnsureCarrier(carrierKey);
+        spool.WriteImmutable(carrierKey, name, original, Digest(original));
+
+        File.WriteAllBytes(Path.Combine(directory.Path, "artifact-spool", carrierKey, name),
+            new byte[] { 4, 3, 2, 1 });
+        RbpArtifactCarrierException error = Assert.Throws<RbpArtifactCarrierException>(() =>
+            spool.ReadAllPinned(carrierKey, name, RbpArtifactCarrierProducer.MaximumCombinedBytes,
+                Digest(original)));
+        Assert.Equal("carrier_spool_digest_refused", error.Message);
+        Assert.DoesNotContain(directory.Path, error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void RefusesBadDigestWithoutAcceptingPartialLeaf()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        using var spool = RbpArtifactSpoolFileSystem.OpenForStateRoot(directory.Path);
+        string carrierKey = new string('b', 64);
+        const string name = "immutable.bin";
+        spool.EnsureCarrier(carrierKey);
+        RbpArtifactCarrierException error = Assert.Throws<RbpArtifactCarrierException>(() =>
+            spool.WriteImmutable(carrierKey, name, new byte[] { 9, 8, 7 },
+                "sha256:0000000000000000000000000000000000000000000000000000000000000000"));
+        Assert.Equal("carrier_spool_verification_refused", error.Message);
+        Assert.False(File.Exists(Path.Combine(directory.Path, "artifact-spool", carrierKey, name)));
+        Assert.DoesNotContain(directory.Path, error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void LeafOperationSharePolicyDeniesConcurrentWriterAndDelete()
+    {
+        // The leaf option is passed for create, read, and cleanup opens; only
+        // FILE_SHARE_READ remains, so same-length write/delete replacement is
+        // denied for the entire pinned-handle operation lifetime.
+        Assert.Equal(1u, WindowsRelativeSpoolNative.LeafShare);
+    }
+
+    [Fact]
+    public async Task UsesOnlyDeclaredRelativeInventoryForReleasedCleanup()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        await using RbpJournalStore store = OpenStore(directory);
+        var native = new RecordingRelativeSpoolNative();
+        RbpArtifactCarrierProducer producer = RbpArtifactCarrierProducer.CreateForTesting(native, store);
+
+        RbpCarrierEmission emission = Assert.IsType<RbpCarrierEmission>(await producer.TryPrepareAsync(
+            "rs-relative", Json("""{"kind":"invocation","invocation_id":"invoke-relative"}"""),
+            Files(new byte[] { 3, 4 }), CancellationToken.None));
+        producer.RecordTerminalQueued(emission.CarrierKey, "rs-relative", 12);
+        producer.ApplyDurableAcknowledgements(new[] { new RbpSessionAcknowledgement("rs-relative", 12) });
+
+        (string Key, IReadOnlyList<string> Inventory) delete = Assert.Single(native.DeleteCalls);
+        Assert.Equal(emission.CarrierKey, delete.Key);
+        Assert.Contains(delete.Inventory, value => value.StartsWith("artifact-", StringComparison.Ordinal) && value.EndsWith(".bin", StringComparison.Ordinal));
+        Assert.Contains("manifest.json", delete.Inventory);
+        Assert.Contains("terminal.ack.json", delete.Inventory);
+        Assert.Equal(0, native.EnumerationAttempts);
+        Assert.All(native.RelativeSegments, value => Assert.DoesNotContain(Path.DirectorySeparatorChar, value));
+    }
+
+    [Fact]
+    public async Task RefusesCleanupWhenDeclaredFileIsMissing()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        await using RbpJournalStore store = OpenStore(directory);
+        var native = new RecordingRelativeSpoolNative();
+        RbpArtifactCarrierProducer producer = RbpArtifactCarrierProducer.CreateForTesting(native, store);
+        RbpCarrierEmission emission = Assert.IsType<RbpCarrierEmission>(await producer.TryPrepareAsync(
+            "rs-residue", Json("""{"kind":"invocation","invocation_id":"invoke-residue"}"""),
+            Files(new byte[] { 9 }), CancellationToken.None));
+        native.Remove(emission.CarrierKey, "terminal.ack.json");
+        producer.RecordTerminalQueued(emission.CarrierKey, "rs-residue", 1);
+        native.Remove(emission.CarrierKey, "manifest.json");
+
+        RbpArtifactCarrierException error = Assert.Throws<RbpArtifactCarrierException>(() =>
+            producer.ApplyDurableAcknowledgements(new[] { new RbpSessionAcknowledgement("rs-residue", 1) }));
+        Assert.Equal("carrier_spool_read_refused", error.Message);
+        Assert.Empty(native.DeleteCalls);
+    }
+
+    [Fact]
+    public async Task WindowsChildProcessParentJunctionSwapCannotEscapeHeldRoot()
+    {
+        if (!OperatingSystem.IsWindows()) throw Xunit.Sdk.SkipException.ForSkip(
+            "Windows NT root-handle test is not applicable on this platform.");
+
+        using var directory = new RbpJournalTestDirectory();
+        await using RbpJournalStore store = OpenStore(directory);
+        for (int attempt = 0; attempt < 3; attempt++)
+        {
+            RbpArtifactCarrierProducer producer = RbpArtifactCarrierProducer.CreateProduction(directory.Path, store);
+            RbpCarrierEmission emission = Assert.IsType<RbpCarrierEmission>(await producer.TryPrepareAsync(
+                "rs-swap", Json("{\"kind\":\"invocation\",\"invocation_id\":\"invoke-swap-" + attempt + "\"}"),
+                Files(new byte[] { 2, 7 }), CancellationToken.None));
+            string spool = Path.Combine(directory.Path, "artifact-spool");
+            string retained = Path.Combine(directory.Path, $"spool-retained-{attempt}");
+            string external = Path.Combine(directory.Path, $"external-sentinel-{attempt}");
+            string sentinel = Path.Combine(external, "sentinel.txt");
+            Directory.CreateDirectory(external);
+            File.WriteAllText(sentinel, "do-not-touch");
+
+            using Process child = Process.Start(new ProcessStartInfo("cmd.exe",
+                $"/d /c move \"{spool}\" \"{retained}\" && mklink /J \"{spool}\" \"{external}\"")
+            {
+                UseShellExecute = false,
+                CreateNoWindow = true,
+            }) ?? throw new InvalidOperationException("junction swap child did not start");
+            await child.WaitForExitAsync();
+            if (child.ExitCode != 0)
+            {
+                throw Xunit.Sdk.SkipException.ForSkip(
+                    $"Windows junction privilege unavailable (child exit {child.ExitCode}).");
+            }
+
+            try
+            {
+                producer.RecordTerminalQueued(emission.CarrierKey, "rs-swap", 4);
+                producer.ApplyDurableAcknowledgements(new[] { new RbpSessionAcknowledgement("rs-swap", 4) });
+                Assert.Equal("do-not-touch", File.ReadAllText(sentinel));
+                Assert.False(Directory.Exists(Path.Combine(retained, emission.CarrierKey)));
+            }
+            finally
+            {
+                if (Directory.Exists(spool)) Directory.Delete(spool);
+            }
+        }
     }
 
     [Fact]
@@ -222,6 +394,86 @@ public sealed class RbpArtifactCarrierProducerTests
         string spool = Path.Combine(directory.Path, "artifact-spool");
         Assert.True(Directory.Exists(spool));
         Assert.Empty(Directory.GetFiles(spool, "*", SearchOption.AllDirectories));
+    }
+
+    [Fact]
+    public async Task RejectsMalformedBase64BeforeCreatingAnyArtifactFile()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        await using RbpJournalStore store = OpenStore(directory);
+        RbpArtifactCarrierProducer producer =
+            RbpArtifactCarrierProducer.CreateProduction(directory.Path, store);
+
+        await Assert.ThrowsAsync<RbpArtifactCarrierException>(() =>
+            producer.TryPrepareAsync(
+                "rs-malformed",
+                Json("""{"kind":"invocation","invocation_id":"invoke-malformed"}"""),
+                Json("""
+                    {"files":[{"artifactIndex":0,"fileName":"x.bin","contentType":"application/octet-stream","sizeBytes":3,"sha256":"sha256:0000000000000000000000000000000000000000000000000000000000000000","contentBase64":"not!"}]}
+                    """),
+                CancellationToken.None));
+
+        string spool = Path.Combine(directory.Path, "artifact-spool");
+        Assert.Empty(Directory.GetFiles(spool, "*", SearchOption.AllDirectories));
+    }
+
+    [Fact]
+    public async Task RejectsDeclaredOversizeBeforeDecodingOrWriting()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        await using RbpJournalStore store = OpenStore(directory);
+        RbpArtifactCarrierProducer producer =
+            RbpArtifactCarrierProducer.CreateProduction(directory.Path, store);
+        JsonElement oversized = Json("""
+            {"files":[{"artifactIndex":0,"fileName":"x.bin","contentType":"application/octet-stream","sizeBytes":33554433,"sha256":"sha256:0000000000000000000000000000000000000000000000000000000000000000","contentBase64":"AAAA"}]}
+            """);
+
+        RbpArtifactCarrierException error = await Assert.ThrowsAsync<
+            RbpArtifactCarrierException>(() => producer.TryPrepareAsync(
+                "rs-oversize",
+                Json("""{"kind":"invocation","invocation_id":"invoke-oversize"}"""),
+                oversized,
+                CancellationToken.None));
+
+        Assert.DoesNotContain(directory.Path, error.Message,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Empty(Directory.GetFiles(
+            Path.Combine(directory.Path, "artifact-spool"), "*",
+            SearchOption.AllDirectories));
+    }
+
+    [Fact]
+    public async Task RefusesReparsePointStateRootWithoutFollowingIt()
+    {
+        if (!OperatingSystem.IsWindows()) throw Xunit.Sdk.SkipException.ForSkip(
+            "Windows no-follow bootstrap test is not applicable on this platform.");
+        using var directory = new RbpJournalTestDirectory();
+        string link = Path.Combine(directory.Path, "spool-link");
+        string external = Path.Combine(directory.Path, "external");
+        string sentinel = Path.Combine(external, "sentinel.txt");
+        Directory.CreateDirectory(external);
+        File.WriteAllText(sentinel, "unchanged");
+        try
+        {
+            Directory.CreateSymbolicLink(link, external);
+        }
+        catch (UnauthorizedAccessException)
+        {
+            throw Xunit.Sdk.SkipException.ForSkip(
+                "Windows symbolic-link privilege unavailable for no-follow bootstrap test.");
+        }
+        catch (IOException)
+        {
+            throw Xunit.Sdk.SkipException.ForSkip(
+                "Windows symbolic-link capability unavailable for no-follow bootstrap test.");
+        }
+
+        await using RbpJournalStore store = OpenStore(directory);
+        RbpArtifactCarrierException error = Assert.Throws<RbpArtifactCarrierException>(
+            () => RbpArtifactCarrierProducer.CreateProduction(link, store));
+        Assert.DoesNotContain(directory.Path, error.Message,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("unchanged", File.ReadAllText(sentinel));
     }
 
     private static RbpJournalStore OpenStore(RbpJournalTestDirectory directory) =>
@@ -265,4 +517,64 @@ public sealed class RbpArtifactCarrierProducerTests
 
     private static string Digest(byte[] bytes) => "sha256:" +
         Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+
+    private sealed class RecordingRelativeSpoolNative : IRelativeSpoolNative
+    {
+        private readonly Dictionary<string, Dictionary<string, byte[]>> _carriers =
+            new(StringComparer.Ordinal);
+        internal List<(string Key, IReadOnlyList<string> Inventory)> DeleteCalls { get; } = [];
+        internal List<string> RelativeSegments { get; } = [];
+        internal int EnumerationAttempts { get; private set; }
+
+        public void EnsureCarrier(string carrierKey)
+        {
+            RelativeSegments.Add(carrierKey);
+            if (!_carriers.ContainsKey(carrierKey)) _carriers.Add(carrierKey, new(StringComparer.Ordinal));
+        }
+
+        public void WriteImmutable(string carrierKey, string fileName, ReadOnlySpan<byte> bytes, string digest)
+        {
+            EnsureCarrier(carrierKey); RelativeSegments.Add(fileName);
+            Dictionary<string, byte[]> files = _carriers[carrierKey];
+            if (files.TryGetValue(fileName, out byte[]? existing))
+            {
+                if (!existing.AsSpan().SequenceEqual(bytes)) throw new RbpArtifactCarrierException("carrier_spool_conflict_refused");
+                return;
+            }
+            files.Add(fileName, bytes.ToArray());
+        }
+
+        public byte[] ReadAllPinned(string carrierKey, string fileName, int maximumBytes,
+            string? expectedDigest = null)
+        {
+            RelativeSegments.Add(carrierKey); RelativeSegments.Add(fileName);
+            if (!_carriers.TryGetValue(carrierKey, out Dictionary<string, byte[]>? files) ||
+                !files.TryGetValue(fileName, out byte[]? bytes) || bytes.Length > maximumBytes)
+                throw new RbpArtifactCarrierException("carrier_spool_read_refused");
+            byte[] result = bytes.ToArray();
+            if (expectedDigest is not null && !string.Equals(Digest(result), expectedDigest, StringComparison.Ordinal))
+                throw new RbpArtifactCarrierException("carrier_spool_digest_refused");
+            return result;
+        }
+
+        public bool TryReadAllPinned(string carrierKey, string fileName, int maximumBytes,
+            out byte[]? bytes, string? expectedDigest = null)
+        {
+            try { bytes = ReadAllPinned(carrierKey, fileName, maximumBytes, expectedDigest); return true; }
+            catch (RbpArtifactCarrierException) { bytes = null; return false; }
+        }
+
+        public void DeleteCarrier(string carrierKey, IReadOnlyList<string> declaredFileNames)
+        {
+            RelativeSegments.Add(carrierKey);
+            if (!_carriers.TryGetValue(carrierKey, out Dictionary<string, byte[]>? files) ||
+                declaredFileNames.Any(name => !files.ContainsKey(name)) || files.Count != declaredFileNames.Count)
+                throw new RbpArtifactCarrierException("carrier_spool_cleanup_refused");
+            DeleteCalls.Add((carrierKey, declaredFileNames.ToArray()));
+            _carriers.Remove(carrierKey);
+        }
+
+        internal void Remove(string carrierKey, string fileName) => _carriers[carrierKey].Remove(fileName);
+        public void Dispose() { }
+    }
 }
