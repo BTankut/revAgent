@@ -76,6 +76,16 @@ interface ResourceRecordBase {
   readonly mcpSessionId: string;
   readonly createdAtMs: number;
   readonly expiresAtMs: number;
+  /**
+   * Resource bytes never become readable until their metadata reaches active.
+   * Earlier v1 rows predate this field and are treated as active for a
+   * backwards-compatible, one-way import.
+   */
+  readonly lifecycle?: "allocating" | "assembling" | "verified" | "active" | "gc_claimed";
+  readonly gcLease?: {
+    readonly owner: string;
+    readonly expiresAtMs: number;
+  };
 }
 
 interface ArtifactRecord extends ResourceRecordBase {
@@ -165,6 +175,15 @@ export interface GatewayResourceAuthorityOptions {
   readonly maxResultBytes?: number;
   readonly maxResultPageBytes?: number;
   readonly defaultTtlMs?: number;
+  /** Deterministic owner for bounded, fenced expiry collection. */
+  readonly gcOwnerId?: string;
+}
+
+export interface GatewayResourceGcResult {
+  readonly scanned: number;
+  readonly claimed: number;
+  readonly deleted: number;
+  readonly retained: number;
 }
 
 export interface UploadArtifactInput {
@@ -239,6 +258,25 @@ function asJsonRecord(value: unknown): ResourceRecord | null {
     !Number.isSafeInteger(record.expiresAtMs) ||
     record.expiresAtMs! <= record.createdAtMs!;
   if (sharedInvalid) {
+    return null;
+  }
+  if (
+    record.lifecycle !== undefined &&
+    record.lifecycle !== "allocating" &&
+    record.lifecycle !== "assembling" &&
+    record.lifecycle !== "verified" &&
+    record.lifecycle !== "active" &&
+    record.lifecycle !== "gc_claimed"
+  ) {
+    return null;
+  }
+  if (record.gcLease !== undefined && (
+    record.lifecycle !== "gc_claimed" ||
+    typeof record.gcLease.owner !== "string" ||
+    record.gcLease.owner.length < 1 ||
+    !Number.isSafeInteger(record.gcLease.expiresAtMs) ||
+    record.gcLease.expiresAtMs < 0
+  )) {
     return null;
   }
   if (record.kind === "artifact_ref") {
@@ -456,6 +494,7 @@ export class GatewayResourceAuthority {
   readonly #maxResultBytes: number;
   readonly #maxResultPageBytes: number;
   readonly #defaultTtlMs: number;
+  readonly #gcOwnerId: string;
   readonly #scopeUriComparisonObserver: ScopedUriComparisonObserver | undefined;
 
   public constructor(options: GatewayResourceAuthorityOptions) {
@@ -463,10 +502,11 @@ export class GatewayResourceAuthority {
     this.#objectStore = options.objectStore;
     this.#now = options.now ?? Date.now;
     this.#newRefId = options.newRefId ?? randomUUID;
-    this.#maxUploadBytes = options.maxUploadBytes ?? 16 * 1024 * 1024;
+    this.#maxUploadBytes = options.maxUploadBytes ?? 2 * 1024 * 1024;
     this.#maxResultBytes = options.maxResultBytes ?? 32 * 1024 * 1024;
     this.#maxResultPageBytes = options.maxResultPageBytes ?? 512 * 1024;
     this.#defaultTtlMs = options.defaultTtlMs ?? 15 * 60 * 1_000;
+    this.#gcOwnerId = options.gcOwnerId ?? `gateway-resource-gc:${randomUUID()}`;
     const observer = Object.getOwnPropertyDescriptor(
       options,
       TEST_SCOPE_URI_COMPARISON_OBSERVER,
@@ -482,6 +522,9 @@ export class GatewayResourceAuthority {
       if (!Number.isSafeInteger(value) || value < 1) {
         throw new RangeError(`${name} must be a positive safe integer`);
       }
+    }
+    if (this.#gcOwnerId.length < 1 || this.#gcOwnerId.length > 512 || /[\u0000\r\n]/u.test(this.#gcOwnerId)) {
+      throw new RangeError("gcOwnerId must be a bounded non-empty string");
     }
   }
 
@@ -627,6 +670,7 @@ export class GatewayResourceAuthority {
       pageSize: this.#maxResultPageBytes,
       pageCount: pages.length,
       storageKey: key,
+      lifecycle: "active" as const,
     });
     const stored = await this.#writeRecords(input.scope, [record]);
     if (!stored) {
@@ -699,6 +743,61 @@ export class GatewayResourceAuthority {
         ? resultUri(scope, record.refId, parsed.page + 1)
         : null,
     });
+  }
+
+  /**
+   * Claims at most 100 expired refs with a 60-second fenced lease.  Metadata
+   * is removed only after an idempotent object delete; a failed delete leaves
+   * the claim for a later collector once the lease expires.
+   */
+  public async collectExpired(input: {
+    readonly tenantId: string;
+    readonly limit?: number;
+  }): Promise<GatewayResourceGcResult> {
+    const limit = input.limit ?? 100;
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100 || input.tenantId.length < 1) {
+      fail("invalid_input", "resource GC requires a tenant and a limit from 1 to 100");
+    }
+    const now = this.#now();
+    const candidates = await this.#protocolStore.transact({ tenantId: input.tenantId }, async (tx) =>
+      (await tx.list(RESOURCE_NAMESPACE)).filter((stored) => {
+        const record = asJsonRecord(stored.value);
+        return record !== null && record.expiresAtMs <= now;
+      }).slice(0, limit),
+    );
+    if (!candidates.ok) fail("storage_unavailable", candidates.message);
+    let claimed = 0;
+    let deleted = 0;
+    let retained = 0;
+    for (const candidate of candidates.value) {
+      const claim = await this.#claimExpired(input.tenantId, candidate.key, candidate.version, now);
+      if (claim === null) { retained += 1; continue; }
+      claimed += 1;
+      const removed = await this.#objectStore.delete({
+        tenantId: input.tenantId,
+        storageKey: claim.record.storageKey,
+      });
+      // Object stores must make delete retry/not-found success. A non-success
+      // response is deliberately retained for retry rather than losing the
+      // metadata proof while bytes may still exist.
+      if (!removed.ok) { retained += 1; continue; }
+      const finalized = await this.#protocolStore.transact({ tenantId: input.tenantId }, async (tx) => {
+        const current = await tx.read<GatewayJsonValue>(RESOURCE_NAMESPACE, candidate.key);
+        if (current === null || current.version !== claim.version) return false;
+        const currentRecord = asJsonRecord(current.value);
+        if (
+          currentRecord === null ||
+          currentRecord.lifecycle !== "gc_claimed" ||
+          currentRecord.gcLease?.owner !== this.#gcOwnerId ||
+          currentRecord.gcLease.expiresAtMs !== claim.record.gcLease?.expiresAtMs
+        ) return false;
+        tx.stage({ namespace: RESOURCE_NAMESPACE, key: candidate.key, value: null, expect: { kind: "version", version: current.version } });
+        return true;
+      });
+      if (!finalized.ok || !finalized.value) { retained += 1; continue; }
+      deleted += 1;
+    }
+    return Object.freeze({ scanned: candidates.value.length, claimed, deleted, retained });
   }
 
   async #storeArtifact(input: {
@@ -783,6 +882,7 @@ export class GatewayResourceAuthority {
         source: input.source,
         invocationId: input.invocationId,
         artifactIndex: input.artifactIndex,
+        lifecycle: "active" as const,
       }));
     }
     const stored = await this.#writeRecords(scope, records);
@@ -871,6 +971,9 @@ export class GatewayResourceAuthority {
     if (this.#now() >= record.expiresAtMs) {
       fail("expired", "resource ref has expired");
     }
+    if ((record.lifecycle ?? "active") !== "active") {
+      fail("not_found", "resource ref is not active");
+    }
     if (record.kind === "artifact_ref" && record.quarantineStatus !== "released") {
       fail("quarantined", "artifact_ref is not released from quarantine");
     }
@@ -910,6 +1013,38 @@ export class GatewayResourceAuthority {
         }),
       ),
     );
+  }
+
+  async #claimExpired(
+    tenantId: string,
+    key: string,
+    expectedVersion: number,
+    now: number,
+  ): Promise<{ readonly record: ResourceRecord; readonly version: number } | null> {
+    const claim = await this.#protocolStore.transact({ tenantId }, async (tx) => {
+      const stored = await tx.read<GatewayJsonValue>(RESOURCE_NAMESPACE, key);
+      if (stored === null || stored.version !== expectedVersion) return null;
+      const record = asJsonRecord(stored.value);
+      if (record === null || record.expiresAtMs > now) return null;
+      if (
+        record.lifecycle === "gc_claimed" &&
+        record.gcLease !== undefined &&
+        record.gcLease.expiresAtMs > now &&
+        record.gcLease.owner !== this.#gcOwnerId
+      ) return null;
+      const next = Object.freeze({
+        ...record,
+        lifecycle: "gc_claimed" as const,
+        gcLease: Object.freeze({ owner: this.#gcOwnerId, expiresAtMs: now + 60_000 }),
+      });
+      tx.stage({ namespace: RESOURCE_NAMESPACE, key, value: next as unknown as GatewayJsonValue, expect: { kind: "version", version: stored.version } });
+      return next;
+    });
+    if (!claim.ok) return null;
+    if (claim.value === null) return null;
+    const observed = await this.#protocolStore.transact({ tenantId }, (tx) => tx.read<GatewayJsonValue>(RESOURCE_NAMESPACE, key));
+    if (!observed.ok || observed.value === null) return null;
+    return { record: claim.value, version: observed.value.version };
   }
 
   #expiry(requested: number | undefined): number {
