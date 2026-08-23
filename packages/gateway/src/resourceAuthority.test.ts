@@ -33,6 +33,15 @@ const effectiveMcpRequestScope = createEffectiveMcpRequestScopeV1({
   nowMs: 1_775_000_000_000,
 });
 
+function effectiveScopeFor(input: GatewayResourceScope) {
+  return createEffectiveMcpRequestScopeV1({
+    principalKey: input.principalKey,
+    transportMcpSessionId: input.mcpSessionId,
+    identityMcpSessionId: null,
+    nowMs: 1_775_000_000_000,
+  });
+}
+
 function sha256(bytes: Uint8Array): `sha256:${string}` {
   return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
 }
@@ -124,12 +133,16 @@ describe("GW-9 scoped artifact and result authority", () => {
 
     expect(ref).toMatchObject({
       kind: "artifact_ref",
-      uri: "revagent://artifact/ref-1",
+      uri: expect.stringMatching(/^revagent:\/\/artifact\/p\/[0-9a-f]{64}\/s\/[0-9a-f]{64}\/t\/[0-9a-f]{64}\/a\/[0-9a-f]{64}\/r\/[0-9a-f]{64}$/u),
       filename: "schedule.csv",
       contentType: "text/csv",
       byteSize: bytes.byteLength,
     });
-    const consumed = await authority.consumeArtifact(scope, ref.refId);
+    const consumed = await authority.consumeArtifact(
+      scope,
+      effectiveMcpRequestScope,
+      ref.refId,
+    );
     expect(Buffer.from(consumed.bytes).toString("utf8")).toBe(
       "mark,count\nA,2\n",
     );
@@ -150,7 +163,7 @@ describe("GW-9 scoped artifact and result authority", () => {
       filename: "pending.csv",
     });
     await expectResourceError(
-      authority.consumeArtifact(scope, ref.refId),
+      authority.consumeArtifact(scope, effectiveMcpRequestScope, ref.refId),
       "quarantined",
     );
   });
@@ -201,7 +214,7 @@ describe("GW-9 scoped artifact and result authority", () => {
     expect(objectStore.keys()).toEqual([]);
   });
 
-  it("hash-prefixes durable keys and returns not_found for a foreign scope before object lookup", async () => {
+  it("hash-prefixes durable keys and rejects foreign effective scopes before metadata or object lookup", async () => {
     const ref = await authority.uploadArtifact({
       scope,
       filename: "source.tsv",
@@ -210,35 +223,56 @@ describe("GW-9 scoped artifact and result authority", () => {
       bytes: Buffer.from("A\t2", "utf8"),
     });
     const objectGet = vi.spyOn(objectStore, "get");
+    const transact = vi.spyOn(protocolStore, "transact");
     for (const denied of [
       { ...scope, actorId: "user-2" },
       { ...scope, principalKey: "tenant-1:user-2" },
       { ...scope, mcpSessionId: "mcp-session-2" },
     ]) {
       await expectResourceError(
-        authority.consumeArtifact(denied, ref.refId),
-        "not_found",
+        authority.readResource(
+          denied,
+          effectiveScopeFor(denied),
+          new URL(ref.uri),
+        ),
+        "scope_denied",
       );
     }
     await expectResourceError(
-      authority.consumeArtifact({ ...scope, tenantId: "tenant-2" }, ref.refId),
-      "not_found",
+      authority.readResource(
+        { ...scope, tenantId: "tenant-2" },
+        effectiveMcpRequestScope,
+        new URL(ref.uri),
+      ),
+      "scope_denied",
     );
     expect(objectGet).not.toHaveBeenCalled();
+    expect(transact).not.toHaveBeenCalled();
+
+    await expectResourceError(
+      authority.readResource(
+        scope,
+        effectiveMcpRequestScope,
+        new URL(`revagent://artifact/${ref.refId}`),
+      ),
+      "scope_denied",
+    );
+    expect(objectGet).not.toHaveBeenCalled();
+    expect(transact).not.toHaveBeenCalled();
 
     const [key] = objectStore.keys();
     expect(key).toMatch(
-      /^gateway-resources\/[0-9a-f]{64}\/[0-9a-f]{64}\/[0-9a-f]{64}\/[0-9a-f]{64}\/artifact_ref\/[0-9a-f]{64}$/u,
+      /^p:[0-9a-f]{64}\/s:[0-9a-f]{64}\/t:[0-9a-f]{64}\/a:[0-9a-f]{64}\/artifact_ref\/r:[0-9a-f]{64}$/u,
     );
     objectStore.corrupt(key!, Buffer.from("changed", "utf8"));
     await expectResourceError(
-      authority.consumeArtifact(scope, ref.refId),
+      authority.consumeArtifact(scope, effectiveMcpRequestScope, ref.refId),
       "digest_mismatch",
     );
 
     now = ref.expiresAtMs;
     await expectResourceError(
-      authority.consumeArtifact(scope, ref.refId),
+      authority.consumeArtifact(scope, effectiveMcpRequestScope, ref.refId),
       "expired",
     );
   });
@@ -269,12 +303,13 @@ describe("GW-9 scoped artifact and result authority", () => {
     for (let page = 0; page < ref.pageCount; page += 1) {
       const read = await authority.readResource(
         scope,
-        new URL(`revagent://result/${ref.refId}/${String(page)}`),
+        effectiveMcpRequestScope,
+        new URL(page === 0 ? ref.uri : ref.uri.replace(/\/page\/0$/u, `/page/${String(page)}`)),
       );
       expect(read.digest).toBe(sha256(read.bytes));
       expect(read.nextPageUri).toBe(
         page + 1 < ref.pageCount
-          ? `revagent://result/${ref.refId}/${String(page + 1)}`
+          ? ref.uri.replace(/\/page\/0$/u, `/page/${String(page + 1)}`)
           : null,
       );
       collected.push(Buffer.from(read.bytes));
@@ -283,9 +318,10 @@ describe("GW-9 scoped artifact and result authority", () => {
     await expectResourceError(
       authority.readResource(
         { ...scope, mcpSessionId: "foreign" },
+        effectiveScopeFor({ ...scope, mcpSessionId: "foreign" }),
         new URL(ref.uri),
       ),
-      "not_found",
+      "scope_denied",
     );
   });
 
@@ -315,7 +351,7 @@ describe("GW-9 scoped artifact and result authority", () => {
       { filename: "detail.png", contentType: "image/png" },
     ]);
     await expect(
-      Promise.all(refs.map((ref) => authority.readResource(scope, new URL(ref.uri)))),
+      Promise.all(refs.map((ref) => authority.readResource(scope, effectiveMcpRequestScope, new URL(ref.uri)))),
     ).resolves.toMatchObject([
       { contentType: "image/png", nextPageUri: null },
       { contentType: "image/png", nextPageUri: null },
@@ -330,7 +366,7 @@ describe("GW-9 scoped artifact and result authority", () => {
       newRefId: () => "unused-after-restart",
     });
     await expect(
-      restartedAuthority.readResource(scope, new URL(refs[1]!.uri)),
+      restartedAuthority.readResource(scope, effectiveMcpRequestScope, new URL(refs[1]!.uri)),
     ).resolves.toMatchObject({ contentType: "image/png" });
   });
 
