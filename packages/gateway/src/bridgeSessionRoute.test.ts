@@ -320,7 +320,6 @@ describe("GatewayBridgeSessionAuthority live document routing", () => {
 
     expect(resolve(created)).toEqual({
       tenantId: TENANT_ID,
-      principalKey: `${TENANT_ID}:${USER_ID}`,
       mcpSessionId: MCP_SESSION_ID,
       rsid: session.rsid,
       documentIdentity: {
@@ -328,6 +327,7 @@ describe("GatewayBridgeSessionAuthority live document routing", () => {
         session_document_id: "document-live",
       },
     });
+    expect(resolve(created).principalKey).toBe(`${TENANT_ID}:${USER_ID}`);
   });
 
   it("clears the live route when a later accepted context has no active document", async () => {

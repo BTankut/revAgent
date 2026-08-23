@@ -5217,16 +5217,24 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       );
     }
     const selected = candidates[0]!.record;
-    return {
+    // Keep the principal binding off legacy route serializations while making
+    // it an own, immutable field for the dispatcher authority check.
+    const route = {
       tenantId: input.tenantId,
-      principalKey: input.principalKey,
       mcpSessionId: input.mcpSessionId,
       rsid: selected.rsid,
       documentIdentity: {
         kind: "live",
         session_document_id: selected.liveDocumentRoute!.sessionDocumentId,
       },
-    };
+    } as GatewayInvocationRoute;
+    Object.defineProperty(route, "principalKey", {
+      value: input.principalKey,
+      enumerable: false,
+      writable: false,
+      configurable: false,
+    });
+    return Object.freeze(route);
   }
 
   public buildEnvelope(request: GatewayExecutorRequest): {
