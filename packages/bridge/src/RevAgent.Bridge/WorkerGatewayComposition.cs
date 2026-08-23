@@ -193,6 +193,16 @@ internal static class WorkerGatewayComposition
                     services.OnLifecycleTimeoutObservation);
         }
 
+        if (services.Options.SessionRouteBindingAuthority is
+                IRbpSessionRouteResolver bindingResolver &&
+            !ReferenceEquals(bindingResolver, surface.SessionRoutes))
+        {
+            throw new ArgumentException(
+                "The registration route-binding authority must be the same " +
+                "authority used by routed invocation dispatch.",
+                nameof(services));
+        }
+
         var channel = new RbpRoutedInvocationChannel(
             surface.SessionRouter,
             surface.SessionRoutes);

@@ -54,7 +54,8 @@ internal interface IRbpSessionRouteBinder
 internal sealed class WorkerAddinSessionCatalog :
     IRbpLocalSessionCatalog,
     IRbpSessionRouteResolver,
-    IRbpSessionRouteBinder
+    IRbpSessionRouteBinder,
+    IRbpSessionRouteBindingAuthority
 {
     private static readonly Regex CapabilityPattern = new(
         "^[a-z][a-z0-9_]{0,127}$",
@@ -216,7 +217,7 @@ internal sealed class WorkerAddinSessionCatalog :
                 .ConfigureAwait(false);
             if (localKey is { Length: > 0 })
             {
-                _ = _localKeyByRsid.TryAdd(rsid, localKey);
+                _ = TryBindRegisteredSession(rsid, localKey);
             }
         }
     }
@@ -226,9 +227,37 @@ internal sealed class WorkerAddinSessionCatalog :
     /// </summary>
     internal void Bind(string rsid, string localSessionKey)
     {
-        ArgumentException.ThrowIfNullOrEmpty(rsid);
-        ArgumentException.ThrowIfNullOrEmpty(localSessionKey);
-        _localKeyByRsid[rsid] = localSessionKey;
+        if (!TryBindRegisteredSession(rsid, localSessionKey))
+        {
+            throw new InvalidOperationException(
+                "The requested RBP route binding is not authoritative.");
+        }
+    }
+
+    /// <inheritdoc />
+    public bool TryBindRegisteredSession(string rsid, string localSessionKey)
+    {
+        if (string.IsNullOrEmpty(rsid) || string.IsNullOrEmpty(localSessionKey) ||
+            !_handlesByLocalKey.ContainsKey(localSessionKey))
+        {
+            return false;
+        }
+
+        while (true)
+        {
+            if (_localKeyByRsid.TryGetValue(rsid, out string? existing))
+            {
+                return string.Equals(
+                    existing,
+                    localSessionKey,
+                    StringComparison.Ordinal);
+            }
+
+            if (_localKeyByRsid.TryAdd(rsid, localSessionKey))
+            {
+                return true;
+            }
+        }
     }
 
     private void BeginBinding(string rsid)

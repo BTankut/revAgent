@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using System.Globalization;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using RevAgent.Bridge.Gateway.Dispatch;
 using RevAgent.Bridge.Gateway.Protocol;
 using RevAgent.Bridge.Gateway.Storage;
 
@@ -226,6 +227,7 @@ internal sealed partial class RbpConnectionCoordinator
                 new RbpSessionEvent(
                     RbpSessionEventType.Resumed,
                     Rsid: parsed.Rsid));
+            BindRegisteredRoute(parsed.Rsid, local);
             context.AddBoundSession(
                 new BoundSession(local, applied.Session, lifecycle));
             context.QueueRetransmit(applied.Retransmit);
@@ -293,6 +295,7 @@ internal sealed partial class RbpConnectionCoordinator
                 new RbpSessionEvent(
                     RbpSessionEventType.Registered,
                     Rsid: parsed.Rsid));
+            BindRegisteredRoute(parsed.Rsid, local);
             context.AddBoundSession(
                 new BoundSession(local, stored, lifecycle));
             context.AcknowledgeRegistrationApplied(
@@ -309,6 +312,26 @@ internal sealed partial class RbpConnectionCoordinator
         finally
         {
             context.EndRegistration(local.LocalSessionKey);
+        }
+    }
+
+    private void BindRegisteredRoute(
+        string rsid,
+        RbpLocalSessionSnapshot local)
+    {
+        IRbpSessionRouteBindingAuthority? authority =
+            _options.SessionRouteBindingAuthority;
+        if (authority is null)
+        {
+            return;
+        }
+
+        if (!authority.TryBindRegisteredSession(rsid, local.LocalSessionKey))
+        {
+            throw new RbpCoordinatorException(
+                RbpCoordinatorErrorCode.SessionRouteBindingFailed,
+                "The registered RBP session could not be bound to its " +
+                "attested local add-in session.");
         }
     }
 

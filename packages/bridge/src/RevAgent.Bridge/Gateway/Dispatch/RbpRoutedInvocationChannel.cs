@@ -264,3 +264,14 @@ internal interface IRbpSessionRouteResolver
 {
     AddinSessionRouter.SessionHandle? Resolve(string rsid);
 }
+
+/// <summary>
+/// Publishes a just-attested local add-in session as the only route for a
+/// Gateway-issued RBP session id. This is deliberately synchronous: the
+/// registration control path must either make the route available before it
+/// arms follow-on work, or fail the connection without dispatching anything.
+/// </summary>
+internal interface IRbpSessionRouteBindingAuthority
+{
+    bool TryBindRegisteredSession(string rsid, string localSessionKey);
+}

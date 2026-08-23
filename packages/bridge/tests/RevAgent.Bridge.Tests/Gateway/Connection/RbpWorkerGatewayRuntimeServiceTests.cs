@@ -35,7 +35,7 @@ public sealed partial class RbpConnectionCoordinatorTests
         await using RbpJournalStore store = OpenStore(directory, clock);
         var responder = new ScriptedGatewayResponder(clock);
         var cycle = new FakeConnectionCycle(responder.Respond);
-        var routes = new RecordingRouteResolver();
+        var routes = new RecordingRouteAuthority();
         RbpConnectionCoordinator coordinator =
             WorkerGatewayComposition.CreateCoordinator(
                 new WorkerGatewayServices(
@@ -43,7 +43,10 @@ public sealed partial class RbpConnectionCoordinatorTests
                     store,
                     new MutableSessionCatalog(
                         WatchedLocalSession(8080, 1000)),
-                    CompositionOptions(),
+                    CompositionOptions() with
+                    {
+                        SessionRouteBindingAuthority = routes,
+                    },
                     new WorkerAddinDispatchSurface(
                         new AddinSessionRouter(
                             new NeverInvokedAddinTransport()),
@@ -76,6 +79,8 @@ public sealed partial class RbpConnectionCoordinatorTests
             // rsid proves the watcher is constructed and running.
             await EventuallyAsync(
                 () => routes.Resolved.Contains("rs-8080"));
+            Assert.Contains("rs-8080", routes.Bound);
+            Assert.Equal(0, routes.ResolveBeforeBindingCount);
 
             // The invocation dispatcher is composed too: an inbound invoke is
             // journaled, admitted, and answered rather than refused by the
@@ -345,6 +350,92 @@ public sealed partial class RbpConnectionCoordinatorTests
         int settled = binder.PassCount;
         await Task.Delay(60);
         Assert.Equal(settled, binder.PassCount);
+    }
+
+    [Fact]
+    public async Task WorkerCompositionBindsResumeRouteBeforeWatching()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        var clock = new ManualCoordinatorClock();
+        await using RbpJournalStore store = OpenStore(directory, clock);
+        RbpLocalSessionSnapshot local = WatchedLocalSession(8080, 1000);
+        _ = await store.PersistRegisteredSessionAsync(
+            Registration(local, "rs-8080"));
+        var responder = new ScriptedGatewayResponder(clock);
+        var cycle = new FakeConnectionCycle(responder.Respond);
+        var routes = new RecordingRouteAuthority();
+        RbpConnectionCoordinator coordinator =
+            WorkerGatewayComposition.CreateCoordinator(
+                new WorkerGatewayServices(
+                    new FakeConnectionCycleFactory(cycle),
+                    store,
+                    new MutableSessionCatalog(local),
+                    CompositionOptions() with
+                    {
+                        SessionRouteBindingAuthority = routes,
+                    },
+                    new WorkerAddinDispatchSurface(
+                        new AddinSessionRouter(
+                            new NeverInvokedAddinTransport()),
+                        routes),
+                    clock,
+                    new FixedRandomSource(0)));
+        using var stop = new CancellationTokenSource();
+        Task run = coordinator.RunAsync(stop.Token);
+        try
+        {
+            await EventuallyAsync(() => routes.Resolved.Contains("rs-8080"));
+            Assert.Contains("rs-8080", routes.Bound);
+            Assert.Equal(0, routes.ResolveBeforeBindingCount);
+            Assert.Contains(cycle.Sent, envelope => envelope.Type == "session_resume");
+        }
+        finally
+        {
+            stop.Cancel();
+            await run.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+    }
+
+    [Fact]
+    public async Task WorkerCompositionDoesNotWatchSessionWithoutDocumentCapability()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        var clock = new ManualCoordinatorClock();
+        await using RbpJournalStore store = OpenStore(directory, clock);
+        var responder = new ScriptedGatewayResponder(clock);
+        var cycle = new FakeConnectionCycle(responder.Respond);
+        var routes = new RecordingRouteAuthority();
+        RbpConnectionCoordinator coordinator =
+            WorkerGatewayComposition.CreateCoordinator(
+                new WorkerGatewayServices(
+                    new FakeConnectionCycleFactory(cycle),
+                    store,
+                    new MutableSessionCatalog(LocalSession(8080, 1000)),
+                    CompositionOptions() with
+                    {
+                        SessionRouteBindingAuthority = routes,
+                    },
+                    new WorkerAddinDispatchSurface(
+                        new AddinSessionRouter(
+                            new NeverInvokedAddinTransport()),
+                        routes),
+                    clock,
+                    new FixedRandomSource(0)));
+        using var stop = new CancellationTokenSource();
+        Task run = coordinator.RunAsync(stop.Token);
+        try
+        {
+            await EventuallyAsync(
+                () => coordinator.GetSnapshot().ActiveRsids.Contains("rs-8080"));
+            await Task.Delay(75);
+            Assert.Contains("rs-8080", routes.Bound);
+            Assert.Empty(routes.Resolved);
+        }
+        finally
+        {
+            stop.Cancel();
+            await run.WaitAsync(TimeSpan.FromSeconds(5));
+        }
     }
 
     [Fact]
@@ -733,6 +824,29 @@ public sealed partial class RbpConnectionCoordinatorTests
     }
 
     [Fact]
+    public async Task WorkerCatalogRejectsMismatchedOrDuplicateRouteBindings()
+    {
+        var transport = new ScriptedStatusTransport();
+        var router = new AddinSessionRouter(transport);
+        var catalog = new WorkerAddinSessionCatalog(
+            new AddinDiscovery(transport, new NoOpProcessAttestor()),
+            router,
+            ScanConfiguration(),
+            () => new FixedCredentialProvider(),
+            (rsid, _) => Task.FromResult<string?>(null),
+            "0.1.0-test",
+            "WS01");
+        RbpLocalSessionSnapshot active = Assert.Single(await catalog.ReadAsync());
+
+        Assert.False(catalog.TryBindRegisteredSession("rs-bind", "unknown"));
+        Assert.True(catalog.TryBindRegisteredSession(
+            "rs-bind", active.LocalSessionKey));
+        Assert.False(catalog.TryBindRegisteredSession(
+            "rs-bind", "other-local-session"));
+        Assert.NotNull(catalog.Resolve("rs-bind"));
+    }
+
+    [Fact]
     public async Task WorkerCatalogRejectsPairDriftUntilCredentialRotationBinds()
     {
         string currentToken = "token-0123456789ABCDEFGHIJKLMNOP";
@@ -1028,6 +1142,52 @@ public sealed partial class RbpConnectionCoordinatorTests
         {
             Resolved.Enqueue(rsid);
             return null;
+        }
+    }
+
+    private sealed class RecordingRouteAuthority :
+        IRbpSessionRouteResolver,
+        IRbpSessionRouteBindingAuthority
+    {
+        private readonly ConcurrentDictionary<string, string> _bound =
+            new(StringComparer.Ordinal);
+        private int _resolveBeforeBindingCount;
+
+        internal ConcurrentQueue<string> Resolved { get; } = new();
+
+        internal ConcurrentQueue<string> Bound { get; } = new();
+
+        internal int ResolveBeforeBindingCount =>
+            Volatile.Read(ref _resolveBeforeBindingCount);
+
+        public AddinSessionRouter.SessionHandle? Resolve(string rsid)
+        {
+            Resolved.Enqueue(rsid);
+            if (!_bound.ContainsKey(rsid))
+            {
+                Interlocked.Increment(ref _resolveBeforeBindingCount);
+            }
+
+            return null;
+        }
+
+        public bool TryBindRegisteredSession(string rsid, string localSessionKey)
+        {
+            if (_bound.TryGetValue(rsid, out string? existing))
+            {
+                return string.Equals(
+                    existing,
+                    localSessionKey,
+                    StringComparison.Ordinal);
+            }
+
+            if (_bound.TryAdd(rsid, localSessionKey))
+            {
+                Bound.Enqueue(rsid);
+                return true;
+            }
+
+            return false;
         }
     }
 

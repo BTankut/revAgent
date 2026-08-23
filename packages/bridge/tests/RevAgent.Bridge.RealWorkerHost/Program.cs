@@ -122,7 +122,7 @@ internal static class Program
                 "wp12-real-worker-host", "localhost", "test-only", Array.Empty<string>(), capabilities.ToArray());
             RbpConnectionCoordinator coordinator = WorkerGatewayComposition.CreateCoordinator(
                 new WorkerGatewayServices(cycle, journal, catalog,
-                    new RbpConnectionCoordinatorOptions(options.GatewayUri, profile, CredentialClaimInvalidator: claims),
+                    new RbpConnectionCoordinatorOptions(options.GatewayUri, profile, CredentialClaimInvalidator: claims, SessionRouteBindingAuthority: catalog),
                     new WorkerAddinDispatchSurface(router, catalog),
                     OnConnectionFailureObservation: ObserveConnectionFailure,
                     OnLifecycleTimeoutObservation: ObserveLifecycleTimeout,

@@ -157,7 +157,8 @@ internal sealed class WorkerGatewayRuntime : IAsyncDisposable
                                     ? null
                                     : RbpArtifactCarrierProducer
                                         .ConnectionCapabilities),
-                            CredentialClaimInvalidator: credentialClaims),
+                            CredentialClaimInvalidator: credentialClaims,
+                            SessionRouteBindingAuthority: catalog),
                         new WorkerAddinDispatchSurface(router, catalog),
                         Clock: null,
                         Random: null,
