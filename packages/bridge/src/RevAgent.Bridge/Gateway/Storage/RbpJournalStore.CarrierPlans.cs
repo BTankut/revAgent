@@ -133,7 +133,8 @@ internal sealed partial class RbpJournalStore
 
                     using SqliteCommand read = context.CreateCommand("""
                         SELECT plan_id,carrier_key,terminal_rsid,terminal_sequence,
-                               spool_release_state,spool_release_token
+                               spool_release_state,spool_release_token,
+                               acknowledged_at_ms
                         FROM rbp_carrier_plans
                         WHERE terminal_rsid=$rsid
                           AND terminal_sequence <= $sequence
@@ -145,7 +146,7 @@ internal sealed partial class RbpJournalStore
                     using SqliteDataReader reader = read.ExecuteReader();
                     var plans = new List<(string PlanId, string CarrierKey,
                         string Rsid, long TerminalSequence, string State,
-                        string? Token)>();
+                        string? Token, long? AcknowledgedAt)>();
                     while (reader.Read())
                     {
                         if (reader.IsDBNull(2) || reader.IsDBNull(3) ||
@@ -157,13 +158,15 @@ internal sealed partial class RbpJournalStore
                         plans.Add((reader.GetString(0), reader.GetString(1),
                             reader.GetString(2), reader.GetInt64(3),
                             reader.GetString(4),
-                            reader.IsDBNull(5) ? null : reader.GetString(5)));
+                            reader.IsDBNull(5) ? null : reader.GetString(5),
+                            reader.IsDBNull(6) ? null : reader.GetInt64(6)));
                     }
                     reader.Close();
 
                     foreach ((string planId, string carrierKey,
                               string rsid, long terminalSequence,
-                              string state, string? existingToken) in plans)
+                              string state, string? existingToken,
+                              long? acknowledgedAt) in plans)
                     {
                         if (string.Equals(state, "pending", StringComparison.Ordinal))
                         {
@@ -182,7 +185,10 @@ internal sealed partial class RbpJournalStore
                                 "A carrier spool release state is malformed.");
                         }
 
-                        string token = CreateReleaseToken(planId, now);
+                        long releaseAcknowledgedAt = acknowledgedAt ?? now;
+                        string token = CreateReleaseToken(
+                            planId, carrierKey, rsid, terminalSequence,
+                            releaseAcknowledgedAt);
                         using SqliteCommand mark = context.CreateCommand("""
                             UPDATE rbp_carrier_plans
                             SET acknowledged_at_ms=COALESCE(acknowledged_at_ms,$now),
@@ -226,7 +232,7 @@ internal sealed partial class RbpJournalStore
         ValidateCarrierKey(released.CarrierKey);
         ValidateIdentifier(released.Rsid, nameof(released), 256);
         if (released.TerminalSequence < 1 ||
-            !RbpJournalSerialization.IsSha256Digest(released.ReleaseToken))
+            !IsReleaseToken(released.ReleaseToken))
         {
             throw new ArgumentException("Carrier release identity is malformed.", nameof(released));
         }
@@ -343,9 +349,16 @@ internal sealed partial class RbpJournalStore
         }
     }
 
-    private static string CreateReleaseToken(string planId, long now) =>
-        "sha256:" + Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
-            System.Text.Encoding.UTF8.GetBytes(planId + "\n" + now))).ToLowerInvariant();
+    private static string CreateReleaseToken(
+        string planId, string carrierKey, string rsid, long terminalSequence,
+        long acknowledgedAt) =>
+        string.Concat("v1:", planId, ":", carrierKey, ":", rsid, ":",
+            terminalSequence.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            ":", acknowledgedAt.ToString(System.Globalization.CultureInfo.InvariantCulture));
+
+    private static bool IsReleaseToken(string value) =>
+        value.Length is > 3 and <= 1_024 &&
+        value.StartsWith("v1:", StringComparison.Ordinal);
 }
 
 internal sealed record RbpCarrierFenceRecord(

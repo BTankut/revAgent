@@ -456,6 +456,14 @@ internal static class RbpJournalSchema
           ADD COLUMN spool_release_token TEXT;
         ALTER TABLE rbp_carrier_plans
           ADD COLUMN spool_released_at_ms INTEGER;
+        UPDATE rbp_carrier_plans
+        SET spool_release_state='pending',
+            spool_release_token='v1:' || plan_id || ':' || carrier_key || ':' ||
+              terminal_rsid || ':' || terminal_sequence || ':' || acknowledged_at_ms
+        WHERE acknowledged_at_ms IS NOT NULL
+          AND terminal_rsid IS NOT NULL
+          AND terminal_sequence IS NOT NULL
+          AND spool_release_state='none';
         CREATE INDEX ix_rbp_carrier_plans_spool_release
           ON rbp_carrier_plans(spool_release_state,terminal_rsid,terminal_sequence);
         """;

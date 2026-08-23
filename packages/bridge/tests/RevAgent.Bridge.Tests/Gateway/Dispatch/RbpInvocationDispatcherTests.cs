@@ -291,7 +291,7 @@ public sealed class RbpInvocationDispatcherTests
         await Assert.ThrowsAsync<RbpJournalException>(() =>
             store.ConfirmSpoolReleasedAsync(reissued with
             {
-                ReleaseToken = "sha256:" + new string('0', 64),
+                ReleaseToken = "v1:mismatched-release-token",
             }));
         await store.ConfirmSpoolReleasedAsync(reissued);
         Assert.Empty(await store.ApplyCarrierPlanAcknowledgementsAsync(
