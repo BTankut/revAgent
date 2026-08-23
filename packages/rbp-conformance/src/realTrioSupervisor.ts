@@ -37,6 +37,8 @@ export const REAL_TRIO_TEST_HEARTBEAT_INTERVAL_MS = 1_000;
 export type RealTrioSupervisorCommand = RealTrioProcessCommand;
 
 export interface RealTrioSupervisorLaunch {
+  /** Caller-owned directory for redacted process and runtime failure evidence. */
+  readonly evidenceDirectory: string;
   readonly gateway: RealTrioSupervisorCommand;
   readonly bridgeWorker: RealTrioSupervisorCommand;
   readonly fixture: RealTrioSupervisorCommand;
@@ -764,7 +766,7 @@ function processIdentity(
  */
 export async function startRealTrioSupervisor(input: RealTrioSupervisorLaunch): Promise<RealTrioSupervisorResult> {
   assertDedicatedRealTrioProcessComponents(input);
-  const harness = new RealTrioProcessHarness();
+  const harness = new RealTrioProcessHarness({ evidenceDirectory: input.evidenceDirectory });
   const bridgeExecutable = assertRealBridgeWorkerExecutable(input.bridgeWorker.executable);
   const gateway = await harness.startReady({
     componentId: "gateway_production_conformance",

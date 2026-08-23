@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -103,10 +103,24 @@ export interface RealTrioDocumentContextAudit {
 }
 
 export interface RealTrioRuntimeFixtureOptions {
-  /** A caller-owned, empty evidence file; no production path is inferred. */
-  readonly documentContextFailureEvidenceFile?: string;
+  /** Mandatory caller-owned directory; no production evidence path is inferred. */
+  readonly evidenceDirectory: string;
   /** Test-only bound for an observed document-context failure. */
   readonly documentContextTimeoutMs?: number;
+}
+
+export const REAL_TRIO_RUNTIME_FAILURE_SCHEMA =
+  "rbp-real-trio-runtime-failure/v1" as const;
+
+export interface RealTrioRuntimeFailure {
+  readonly schemaVersion: typeof REAL_TRIO_RUNTIME_FAILURE_SCHEMA;
+  readonly binding: RealTrioBinding;
+  readonly phase: "document_context" | "credential_issue";
+  readonly commandHash: string;
+  readonly childDiagnostics: readonly unknown[];
+  readonly documentContextEvidence: unknown | null;
+  readonly gatewayAuditPresent: boolean;
+  readonly toolEvidence: Readonly<{ readonly action: string; readonly outcome: "failed" }>;
 }
 
 export interface RealTrioDocumentContextFailure {
@@ -253,6 +267,45 @@ export function writeRealTrioDocumentContextFailure(
 ): void {
   mkdirSync(path.dirname(evidenceFile), { recursive: true });
   writeFileSync(evidenceFile, `${stableJson(failure)}\n`, { encoding: "utf8", flag: "wx" });
+}
+
+export function writeRealTrioRuntimeFailure(
+  evidenceDirectory: string,
+  failure: RealTrioRuntimeFailure,
+): void {
+  mkdirSync(evidenceDirectory, { recursive: true });
+  const destination = path.join(evidenceDirectory, `${failure.binding}.runtime-failure.json`);
+  const temporary = `${destination}.${process.pid}.tmp`;
+  writeFileSync(temporary, `${stableJson(failure)}\n`, { encoding: "utf8", mode: 0o600 });
+  renameSync(temporary, destination);
+}
+
+async function persistRuntimeFailure(input: {
+  readonly evidenceDirectory: string;
+  readonly binding: RealTrioBinding;
+  readonly phase: RealTrioRuntimeFailure["phase"];
+  readonly supervisor: RealTrioSupervisorResult;
+  readonly documentContextEvidence: unknown | null;
+  readonly toolAction: string;
+}): Promise<void> {
+  let gatewayAuditPresent = false;
+  try {
+    const audit = await input.supervisor.readRealCaseAudit();
+    gatewayAuditPresent = audit !== null && typeof audit === "object";
+  } catch {
+    // Failure evidence records only the availability bit, never the audit body.
+  }
+  const failure: RealTrioRuntimeFailure = Object.freeze({
+    schemaVersion: REAL_TRIO_RUNTIME_FAILURE_SCHEMA,
+    binding: input.binding,
+    phase: input.phase,
+    commandHash: digest({ binding: input.binding, phase: input.phase }),
+    childDiagnostics: input.supervisor.readDocumentContextFailureState().processDiagnostics,
+    documentContextEvidence: input.documentContextEvidence,
+    gatewayAuditPresent,
+    toolEvidence: Object.freeze({ action: input.toolAction, outcome: "failed" }),
+  });
+  writeRealTrioRuntimeFailure(input.evidenceDirectory, failure);
 }
 
 function hash(value: unknown, label: string): string {
@@ -495,7 +548,7 @@ async function documentContextFailureError(input: {
 
 export async function startRealTrioRuntimeFixture(
   binding: RealTrioBinding,
-  options: RealTrioRuntimeFixtureOptions = {},
+  options: RealTrioRuntimeFixtureOptions,
 ): Promise<RealTrioRuntimeFixture> {
   const root = mkdtempSync(path.join(tmpdir(), "revagent-wp12-real-trio-"));
   mkdirSync(path.join(root, "install"), { recursive: true });
@@ -506,6 +559,7 @@ export async function startRealTrioRuntimeFixture(
   const fixtureCli = requiredFile("packages/addin-loopback-fixture/dist/cli.js");
   const worker = requiredFile("packages/bridge/tests/RevAgent.Bridge.RealWorkerHost/bin/Release/net9.0/win-x64/publish/RevAgent.Bridge.RealWorkerHost.exe");
   const supervisor = await startRealTrioSupervisor({
+    evidenceDirectory: options.evidenceDirectory,
     gateway: {
       executable: node24,
       args: [gatewayCli, "--root", path.join(root, "gateway"), "--certificate", tls.certificatePath, "--key", tls.privateKeyPath, "--control-token", controlToken, "--port", "0"],
@@ -547,8 +601,7 @@ export async function startRealTrioRuntimeFixture(
     await supervisor.stop();
     throw new Error("real trio Gateway readiness did not contain its loopback pin");
   }
-  const evidenceFile = options.documentContextFailureEvidenceFile ??
-    path.join(root, "document-context-failure.json");
+  const evidenceFile = path.join(options.evidenceDirectory, `${binding}.document-context-failure.json`);
   const timeline: Array<RealTrioDocumentContextFailure["timeline"][number]> = [];
   let failureReason: RealTrioDocumentContextFailure["reason"] = "ack_failure";
   let documentContextAudit: RealTrioDocumentContextAudit;
@@ -604,6 +657,14 @@ export async function startRealTrioRuntimeFixture(
       certificateSha256,
       evidenceFile,
     });
+    await persistRuntimeFailure({
+      evidenceDirectory: options.evidenceDirectory,
+      binding,
+      phase: "document_context",
+      supervisor,
+      documentContextEvidence: failure.failureEvidence,
+      toolAction: "apply_document_context",
+    }).catch(() => undefined);
     await supervisor.stop().catch(() => undefined);
     throw failure;
   }
@@ -625,6 +686,14 @@ export async function startRealTrioRuntimeFixture(
       stop: async () => await supervisor.stop(),
     });
   } catch (error) {
+    await persistRuntimeFailure({
+      evidenceDirectory: options.evidenceDirectory,
+      binding,
+      phase: "credential_issue",
+      supervisor,
+      documentContextEvidence: null,
+      toolAction: "issue_north_credential",
+    }).catch(() => undefined);
     await supervisor.stop().catch(() => undefined);
     throw error;
   }

@@ -5,12 +5,14 @@ import { describe, expect, it } from "vitest";
 
 import {
   REAL_TRIO_FIXTURE_DOCUMENT_ID,
+  REAL_TRIO_RUNTIME_FAILURE_SCHEMA,
   RealTrioDocumentContextFailureError,
   createRealTrioDocumentContextFailure,
   hasRealTrioLiveDocumentRoute,
   probeRealTrioFixtureDocumentContext,
   realTrioFixtureDocumentContextEvent,
   writeRealTrioDocumentContextFailure,
+  writeRealTrioRuntimeFailure,
 } from "./realTrioRuntimeFixture.js";
 
 describe("WP-12 real-trio fixture document route gate", () => {
@@ -124,5 +126,32 @@ describe("WP-12 real-trio fixture document route gate", () => {
       childState: { childExited: true },
     });
     expect(JSON.stringify(error.failureEvidence)).not.toContain("raw cause");
+  });
+
+  it("keeps WSS and HTTP-SSE runtime failure artifacts isolated after caller re-wrap", () => {
+    const evidenceDirectory = mkdtempSync(path.join(tmpdir(), "wp12-runtime-evidence-"));
+    const failure = (binding: "wss" | "streamable_http_sse") => ({
+      schemaVersion: REAL_TRIO_RUNTIME_FAILURE_SCHEMA,
+      binding,
+      phase: "credential_issue" as const,
+      commandHash: `sha256:${"f".repeat(64)}`,
+      childDiagnostics: [],
+      documentContextEvidence: null,
+      gatewayAuditPresent: false,
+      toolEvidence: { action: "issue_north_credential", outcome: "failed" as const },
+    });
+    let wrapped: Error | undefined;
+    try {
+      writeRealTrioRuntimeFailure(evidenceDirectory, failure("wss"));
+      throw new Error("simulated caller failure");
+    } catch (error) {
+      wrapped = new Error("caller re-wrap", { cause: error });
+    }
+    writeRealTrioRuntimeFailure(evidenceDirectory, failure("streamable_http_sse"));
+    expect(wrapped).toBeDefined();
+    const wss = JSON.parse(readFileSync(path.join(evidenceDirectory, "wss.runtime-failure.json"), "utf8"));
+    const http = JSON.parse(readFileSync(path.join(evidenceDirectory, "streamable_http_sse.runtime-failure.json"), "utf8"));
+    expect(wss).toMatchObject({ schemaVersion: REAL_TRIO_RUNTIME_FAILURE_SCHEMA, binding: "wss" });
+    expect(http).toMatchObject({ schemaVersion: REAL_TRIO_RUNTIME_FAILURE_SCHEMA, binding: "streamable_http_sse" });
   });
 });

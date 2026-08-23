@@ -1,3 +1,6 @@
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -15,7 +18,11 @@ describe.sequential("WP-12 direct real trio runtime fixture", () => {
     "runs C38's public core UI probe against the real %s Worker binding",
     async (binding) => {
       buildRealTrioRuntimeFixture();
-      const launched = await runRealTrioCli(["real-trio", binding], startRealTrioRuntimeFixture);
+      const evidenceDirectory = mkdtempSync(path.join(tmpdir(), `wp12-real-${binding}-`));
+      const launched = await runRealTrioCli(
+        ["real-trio", binding],
+        async (selectedBinding) => await startRealTrioRuntimeFixture(selectedBinding, { evidenceDirectory }),
+      );
       const runtime = launched.result;
       try {
         const tool = realTrioNorthToolForCase("O1-C38");

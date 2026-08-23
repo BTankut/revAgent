@@ -29,6 +29,11 @@ export interface RealTrioProcessCommand {
   readonly workingDirectory: string;
 }
 
+export interface RealTrioProcessHarnessOptions {
+  /** Mandatory caller-owned directory for redacted process evidence. */
+  readonly evidenceDirectory: string;
+}
+
 export interface RealTrioReadyChild {
   readonly componentId: RealTrioProcessComponent;
   readonly readiness: JsonObject;
@@ -57,6 +62,8 @@ function command(input: RealTrioProcessCommand): ProcessCommandDescriptor {
 
 /** Owns READY, STOP, restart inputs, transcripts, and child exit observation. */
 export class RealTrioProcessHarness {
+  public constructor(private readonly options: RealTrioProcessHarnessOptions) {}
+
   public async startReady(input: {
     readonly componentId: RealTrioProcessComponent;
     readonly command: RealTrioProcessCommand;
@@ -69,6 +76,7 @@ export class RealTrioProcessHarness {
       command: command(input.command),
       absoluteWorkingDirectory: input.command.workingDirectory,
       useTestSignalProxy: true,
+      evidenceDirectory: this.options.evidenceDirectory,
       validateReadiness: input.validateReadiness,
     });
     return Object.freeze({
@@ -99,6 +107,7 @@ export class RealTrioProcessHarness {
       absoluteWorkingDirectory: input.command.workingDirectory,
       expectedReadinessFields: input.expectedReadinessFields,
       requiredActions: input.requiredActions,
+      evidenceDirectory: this.options.evidenceDirectory,
     });
     return Object.freeze({
       componentId: input.componentId,

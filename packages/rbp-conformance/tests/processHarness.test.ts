@@ -3,7 +3,10 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
-import { ControlResponseError, StrictJsonlProcess } from "../src/processHarness.js";
+import { mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+
+import { ControlResponseError, StrictJsonlProcess, StrictReadyProcess } from "../src/processHarness.js";
 import type { ProcessCommandDescriptor } from "../src/types.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -185,5 +188,44 @@ describe("strict JSONL process control", () => {
     })).rejects.toThrow(
       /exited before readiness \(1\).*EADDRINUSE.*address already in use/u,
     );
+  });
+
+  it("persists redacted start evidence before a caller catches and re-wraps the failure", async () => {
+    const evidenceDirectory = mkdtempSync(path.join(tmpdir(), "wp12-process-start-evidence-"));
+    let observed: Error | undefined;
+    try {
+      await StrictJsonlProcess.start({
+        componentId: "addin_loopback_fixture",
+        command: command("stderr-exit"),
+        absoluteWorkingDirectory: here,
+        evidenceDirectory,
+        expectedReadinessFields: { component: "fixture-test" },
+        requiredActions: ["shutdown"],
+      });
+    } catch (error) {
+      observed = new Error("caller re-wrap", { cause: error });
+    }
+    expect(observed).toBeDefined();
+    const artifact = JSON.parse(readFileSync(path.join(evidenceDirectory, "addin_loopback_fixture.start-failure.json"), "utf8"));
+    expect(artifact).toMatchObject({
+      schemaVersion: "rbp-real-trio-process-start-failure/v1",
+      component: "addin_loopback_fixture",
+      phase: "pre_ready",
+      pid: expect.any(Number),
+      stderr: { hash: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u) },
+    });
+    expect(readFileSync(path.join(evidenceDirectory, "addin_loopback_fixture.stderr.log"), "utf8")).toContain("EADDRINUSE");
+
+    await expect(StrictReadyProcess.start({
+      componentId: "addin_loopback_fixture",
+      command: command("stderr-exit"),
+      absoluteWorkingDirectory: here,
+      evidenceDirectory,
+      validateReadiness: () => undefined,
+    })).rejects.toMatchObject({ name: "ReadyProcessStartError" });
+    expect(JSON.parse(readFileSync(path.join(evidenceDirectory, "addin_loopback_fixture.start-failure.json"), "utf8"))).toMatchObject({
+      component: "addin_loopback_fixture",
+      stderr: { safeLines: expect.arrayContaining([expect.stringContaining("EADDRINUSE")]) },
+    });
   });
 });

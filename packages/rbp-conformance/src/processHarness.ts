@@ -1,10 +1,16 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { createHash } from "node:crypto";
+import { appendFileSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
+import path from "node:path";
 import { TextDecoder } from "node:util";
 
 import { sanitizedProductionRuntimeEnvironment } from "./productionRuntimeIdentity.js";
 import type { ComponentId, ProcessCommandDescriptor, ProcessEvidence } from "./types.js";
 
 export const MAX_CONTROL_LINE_BYTES = 64 * 1024;
+export const MAX_PROCESS_TRANSCRIPT_RECORDS = 128;
+export const REAL_TRIO_PROCESS_START_FAILURE_SCHEMA =
+  "rbp-real-trio-process-start-failure/v1" as const;
 const decoder = new TextDecoder("utf-8", { fatal: true });
 
 function decodeUtf8(bytes: Buffer, label: string): string {
@@ -62,6 +68,29 @@ export interface ProcessTranscriptRecord {
   line: string;
 }
 
+export interface ProcessEvidenceDirectoryOptions {
+  /** Caller-selected test evidence directory; no runtime path is inferred. */
+  readonly evidenceDirectory?: string;
+}
+
+interface ProcessFailureEvidence {
+  readonly schemaVersion: typeof REAL_TRIO_PROCESS_START_FAILURE_SCHEMA;
+  readonly component: string;
+  readonly phase: string;
+  readonly commandHash: string;
+  readonly pid: number | null;
+  readonly exitCode: number | null;
+  readonly signal: string | null;
+  readonly stdout: Readonly<{ readonly hash: string; readonly safeLines: readonly string[] }>;
+  readonly stderr: Readonly<{ readonly hash: string; readonly safeLines: readonly string[] }>;
+  readonly timeline: readonly string[];
+}
+
+function appendBoundedTranscript(target: ProcessTranscriptRecord[], record: ProcessTranscriptRecord): void {
+  target.push(record);
+  if (target.length > MAX_PROCESS_TRANSCRIPT_RECORDS) target.splice(0, target.length - MAX_PROCESS_TRANSCRIPT_RECORDS);
+}
+
 /** Safe, bounded process evidence for real-trio failure diagnostics. */
 export interface ProcessDiagnosticSnapshot {
   readonly componentId: string;
@@ -74,15 +103,125 @@ export interface ProcessDiagnosticSnapshot {
 const MAX_DIAGNOSTIC_LINES_PER_STREAM = 8;
 const MAX_DIAGNOSTIC_LINE_BYTES = 512;
 
-function redactDiagnosticLine(input: string): string {
-  const redacted = input
+function redactDiagnosticText(input: string): string {
+  return input
     .replace(/(bearer|token|secret|proof|password)\s*[:=]\s*[^\s,;]+/giu, "$1=[redacted]")
     .replace(/[A-Za-z]:\\[^\s,;]+/gu, "[path-redacted]")
     .replace(/\/[^\s,;]+/gu, (value) => value.startsWith("//") ? value : "[path-redacted]");
+}
+
+function redactDiagnosticLine(input: string): string {
+  let redacted = redactDiagnosticText(input);
+  try {
+    const parsed = JSON.parse(input) as unknown;
+    const redactValue = (value: unknown, key = ""): unknown => {
+      if (/(?:token|secret|proof|password|bearer|payload|document(?:id)?|path|command|args)/iu.test(key)) {
+        return "[redacted]";
+      }
+      if (typeof value === "string") return redactDiagnosticText(value);
+      if (Array.isArray(value)) return value.map((entry) => redactValue(entry));
+      if (value !== null && typeof value === "object") {
+        return Object.fromEntries(Object.entries(value as Record<string, unknown>)
+          .map(([entryKey, entryValue]) => [entryKey, redactValue(entryValue, entryKey)]));
+      }
+      return value;
+    };
+    redacted = JSON.stringify(redactValue(parsed));
+  } catch {
+    // Non-JSON diagnostics retain their bounded pattern redaction above.
+  }
   const bytes = Buffer.from(redacted, "utf8");
   return bytes.length <= MAX_DIAGNOSTIC_LINE_BYTES
     ? redacted
     : `${bytes.subarray(0, MAX_DIAGNOSTIC_LINE_BYTES - 16).toString("utf8")}…[truncated]`;
+}
+
+/**
+ * Writes only redacted, bounded child output.  Raw chunks never leave memory
+ * and are represented in failure artifacts solely by SHA-256 digests.
+ */
+class ProcessEvidenceRecorder {
+  readonly #stdout = createHash("sha256");
+  readonly #stderr = createHash("sha256");
+  readonly #safeLines: Record<"stdout" | "stderr", string[]> = { stdout: [], stderr: [] };
+  readonly #partial: Record<"stdout" | "stderr", Buffer> = { stdout: Buffer.alloc(0), stderr: Buffer.alloc(0) };
+  readonly #timeline: string[] = ["spawn_requested"];
+  #pid: number | null = null;
+  #exitCode: number | null = null;
+  #signal: string | null = null;
+
+  constructor(
+    private readonly component: string,
+    private readonly commandHash: string,
+    private readonly evidenceDirectory: string | undefined,
+  ) {
+    if (evidenceDirectory !== undefined) mkdirSync(evidenceDirectory, { recursive: true });
+  }
+
+  spawned(pid: number | undefined): void {
+    this.#pid = pid ?? null;
+    this.#timeline.push(this.#pid === null ? "spawn_without_pid" : "spawned");
+  }
+
+  exited(code: number | null, signal: NodeJS.Signals | null): void {
+    this.#exitCode = code;
+    this.#signal = signal;
+    this.#timeline.push("child_exit");
+  }
+
+  observeChunk(stream: "stdout" | "stderr", chunk: Buffer): void {
+    (stream === "stdout" ? this.#stdout : this.#stderr).update(chunk);
+    const buffer = Buffer.concat([this.#partial[stream], chunk]);
+    const lines = buffer.toString("utf8").split(/\r?\n/u);
+    this.#partial[stream] = Buffer.from(lines.pop() ?? "", "utf8");
+    for (const line of lines) this.#record(stream, line);
+  }
+
+  failure(phase: string): void {
+    this.#timeline.push(`failure:${phase}`);
+    this.#flushPartials();
+    if (this.evidenceDirectory === undefined) return;
+    const failure: ProcessFailureEvidence = Object.freeze({
+      schemaVersion: REAL_TRIO_PROCESS_START_FAILURE_SCHEMA,
+      component: this.component,
+      phase,
+      commandHash: this.commandHash,
+      pid: this.#pid,
+      exitCode: this.#exitCode,
+      signal: this.#signal,
+      stdout: Object.freeze({ hash: `sha256:${this.#stdout.copy().digest("hex")}`, safeLines: Object.freeze([...this.#safeLines.stdout]) }),
+      stderr: Object.freeze({ hash: `sha256:${this.#stderr.copy().digest("hex")}`, safeLines: Object.freeze([...this.#safeLines.stderr]) }),
+      timeline: Object.freeze([...this.#timeline]),
+    });
+    const destination = path.join(this.evidenceDirectory, `${this.component}.start-failure.json`);
+    const temporary = `${destination}.${process.pid}.tmp`;
+    writeFileSync(temporary, `${JSON.stringify(failure)}\n`, { encoding: "utf8", mode: 0o600 });
+    renameSync(temporary, destination);
+  }
+
+  #record(stream: "stdout" | "stderr", line: string): void {
+    const safe = redactDiagnosticLine(line);
+    const retained = this.#safeLines[stream];
+    retained.push(safe);
+    if (retained.length > MAX_DIAGNOSTIC_LINES_PER_STREAM) retained.splice(0, retained.length - MAX_DIAGNOSTIC_LINES_PER_STREAM);
+    if (this.evidenceDirectory !== undefined) {
+      appendFileSync(path.join(this.evidenceDirectory, `${this.component}.${stream}.log`), `${safe}\n`, { encoding: "utf8", mode: 0o600 });
+    }
+  }
+
+  #flushPartials(): void {
+    for (const stream of ["stdout", "stderr"] as const) {
+      const partial = this.#partial[stream];
+      if (partial.length === 0) continue;
+      this.#partial[stream] = Buffer.alloc(0);
+      this.#record(stream, partial.toString("utf8"));
+    }
+  }
+}
+
+function processCommandHash(command: ProcessCommandDescriptor): string {
+  const canonical = JSON.stringify({ executable: command.executable, args: command.args, workingDirectory: command.workingDirectory });
+  return `sha256:${createHash("sha256").update(canonical).digest("hex")}`;
 }
 
 export function boundedProcessDiagnostics(input: {
@@ -116,7 +255,7 @@ export class ReadyProcessStartError extends Error {
   }
 }
 
-export interface JsonlProcessOptions {
+export interface JsonlProcessOptions extends ProcessEvidenceDirectoryOptions {
   componentId: ComponentId;
   command: ProcessCommandDescriptor;
   absoluteWorkingDirectory: string;
@@ -247,6 +386,11 @@ export class StrictJsonlProcess {
 
   static async start(options: JsonlProcessOptions): Promise<StrictJsonlProcess> {
     const startedAt = new Date().toISOString();
+    const evidence = new ProcessEvidenceRecorder(
+      options.componentId,
+      processCommandHash(options.command),
+      options.evidenceDirectory,
+    );
     const child = spawn(options.command.executable, options.command.args, {
       cwd: options.absoluteWorkingDirectory,
       env: sanitizedProductionRuntimeEnvironment(process.env, options.environment),
@@ -254,7 +398,11 @@ export class StrictJsonlProcess {
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
     });
-    if (child.pid === undefined) throw new Error(`${options.componentId} did not receive a process id`);
+    evidence.spawned(child.pid);
+    if (child.pid === undefined) {
+      evidence.failure("spawn");
+      throw new Error(`${options.componentId} did not receive a process id`);
+    }
 
     const transcript: ProcessTranscriptRecord[] = [];
     let stdoutBuffer = Buffer.alloc(0);
@@ -262,8 +410,8 @@ export class StrictJsonlProcess {
     let settled = false;
     const active: { instance?: StrictJsonlProcess } = {};
     const appendTranscript = (record: ProcessTranscriptRecord): void => {
-      transcript.push(record);
-      active.instance?.transcript.push(record);
+      appendBoundedTranscript(transcript, record);
+      if (active.instance !== undefined) appendBoundedTranscript(active.instance.transcript, record);
     };
     const readiness = new Promise<{ value: JsonlReadiness; at: string }>((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -271,6 +419,7 @@ export class StrictJsonlProcess {
         child.kill("SIGTERM");
       }, options.command.readiness.timeoutMs);
       const fail = (error: Error): void => {
+        evidence.failure("pre_ready");
         if (settled) {
           child.kill("SIGTERM");
           return;
@@ -282,6 +431,7 @@ export class StrictJsonlProcess {
       };
       child.once("error", fail);
       child.once("close", (code, signal) => {
+        evidence.exited(code, signal);
         if (!settled) {
           fail(readinessExitError(
             options.componentId,
@@ -293,6 +443,7 @@ export class StrictJsonlProcess {
         }
       });
       child.stdout.on("data", (chunk: Buffer) => {
+        evidence.observeChunk("stdout", chunk);
         stdoutBuffer = Buffer.concat([stdoutBuffer, chunk]);
         if (stdoutBuffer.length > MAX_CONTROL_LINE_BYTES && !stdoutBuffer.includes(0x0a)) {
           fail(new Error(`${options.componentId} stdout line exceeds ${MAX_CONTROL_LINE_BYTES} bytes`));
@@ -330,6 +481,7 @@ export class StrictJsonlProcess {
         }
       });
       child.stderr.on("data", (chunk: Buffer) => {
+        evidence.observeChunk("stderr", chunk);
         stderrBuffer = Buffer.concat([stderrBuffer, chunk]);
         if (stderrBuffer.length > MAX_CONTROL_LINE_BYTES && !stderrBuffer.includes(0x0a)) {
           fail(new Error(`${options.componentId} stderr line exceeds ${MAX_CONTROL_LINE_BYTES} bytes`));
@@ -351,7 +503,7 @@ export class StrictJsonlProcess {
     });
     const ready = await readiness;
     active.instance = new StrictJsonlProcess(options.componentId, child, ready.value, startedAt, ready.at);
-    active.instance.transcript.push(...transcript);
+    for (const record of transcript) appendBoundedTranscript(active.instance.transcript, record);
     return active.instance;
   }
 
@@ -500,7 +652,7 @@ export interface HttpControlResponse {
   body: JsonObject;
 }
 
-export interface ReadyProcessOptions {
+export interface ReadyProcessOptions extends ProcessEvidenceDirectoryOptions {
   componentId: ComponentId;
   command: ProcessCommandDescriptor;
   absoluteWorkingDirectory: string;
@@ -549,6 +701,11 @@ export class StrictReadyProcess {
 
   static async start(options: ReadyProcessOptions): Promise<StrictReadyProcess> {
     const startedAt = new Date().toISOString();
+    const evidence = new ProcessEvidenceRecorder(
+      options.componentId,
+      processCommandHash(options.command),
+      options.evidenceDirectory,
+    );
     const child = spawn(options.command.executable, options.command.args, {
       cwd: options.absoluteWorkingDirectory,
       env: sanitizedProductionRuntimeEnvironment(process.env, {
@@ -561,30 +718,39 @@ export class StrictReadyProcess {
         : ["pipe", "pipe", "pipe"],
       windowsHide: true,
     }) as ChildProcessWithoutNullStreams;
-    if (child.pid === undefined) throw new Error(`${options.componentId} did not receive a process id`);
+    evidence.spawned(child.pid);
+    if (child.pid === undefined) {
+      evidence.failure("spawn");
+      throw new Error(`${options.componentId} did not receive a process id`);
+    }
     const transcript: ProcessTranscriptRecord[] = [];
     let observedExitCode: number | null = null;
     child.once("exit", (code, signal) => {
       observedExitCode = code ?? (signal === null ? 1 : 128);
+      evidence.exited(code, signal);
     });
     let ready: { value: JsonObject; at: string };
     try {
       ready = await new Promise<{ value: JsonObject; at: string }>((resolve, reject) => {
       let buffer = Buffer.alloc(0);
       let settled = false;
-      const timer = setTimeout(() => {
-        reject(new Error(`${options.componentId} readiness timed out`));
+      const fail = (error: Error): void => {
+        evidence.failure("pre_ready");
+        reject(error);
         child.kill("SIGTERM");
+      };
+      const timer = setTimeout(() => {
+        fail(new Error(`${options.componentId} readiness timed out`));
       }, options.command.readiness.timeoutMs);
-      child.once("error", reject);
+      child.once("error", (error) => fail(error));
       child.once("exit", (code, signal) => {
-        if (!settled) reject(new Error(`${options.componentId} exited before readiness (${String(code ?? signal)})`));
+        if (!settled) fail(new Error(`${options.componentId} exited before readiness (${String(code ?? signal)})`));
       });
       child.stdout.on("data", (chunk: Buffer) => {
+        evidence.observeChunk("stdout", chunk);
         buffer = Buffer.concat([buffer, chunk]);
         if (buffer.length > MAX_CONTROL_LINE_BYTES && !buffer.includes(0x0a)) {
-          reject(new Error(`${options.componentId} readiness exceeds 64 KiB`));
-          child.kill("SIGTERM");
+          fail(new Error(`${options.componentId} readiness exceeds 64 KiB`));
           return;
         }
         const newline = buffer.indexOf(0x0a);
@@ -597,28 +763,26 @@ export class StrictReadyProcess {
           settled = true;
           clearTimeout(timer);
           const at = new Date().toISOString();
-          transcript.push({ stream: "stdout", at, line: decodeUtf8(line, `${options.componentId} readiness`) });
+          appendBoundedTranscript(transcript, { stream: "stdout", at, line: decodeUtf8(line, `${options.componentId} readiness`) });
           resolve({ value, at });
         } catch (error) {
-          reject(error);
-          child.kill("SIGTERM");
+          fail(error instanceof Error ? error : new Error(String(error)));
         }
       });
       child.stderr.on("data", (chunk: Buffer) => {
+        evidence.observeChunk("stderr", chunk);
         let line: string;
         try {
           line = decodeUtf8(chunk, `${options.componentId} stderr`).trimEnd();
         } catch (error) {
-          child.kill("SIGTERM");
-          reject(error);
+          fail(error instanceof Error ? error : new Error(String(error)));
           return;
         }
         if (Buffer.byteLength(line, "utf8") > MAX_CONTROL_LINE_BYTES) {
-          child.kill("SIGTERM");
-          reject(new Error(`${options.componentId} stderr chunk exceeds 64 KiB`));
+          fail(new Error(`${options.componentId} stderr chunk exceeds 64 KiB`));
           return;
         }
-        if (line.length > 0) transcript.push({ stream: "stderr", at: new Date().toISOString(), line });
+        if (line.length > 0) appendBoundedTranscript(transcript, { stream: "stderr", at: new Date().toISOString(), line });
       });
       });
     } catch (error) {
