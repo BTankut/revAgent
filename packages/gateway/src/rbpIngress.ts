@@ -42,8 +42,35 @@ const RBP_WSS_MAX_QUEUED_FRAMES = 256;
 const RBP_WSS_DEFAULT_SEND_COMPLETION_TIMEOUT_MS = 5_000;
 const RBP_WSS_MIN_SEND_COMPLETION_TIMEOUT_MS = 1;
 const RBP_WSS_MAX_SEND_COMPLETION_TIMEOUT_MS = 60_000;
+const HTTP_SSE_GLOBAL_CONNECTION_LIMIT = 1_024;
+const HTTP_SSE_TENANT_CONNECTION_LIMIT = 128;
+const HTTP_SSE_DEVICE_CONNECTION_LIMIT = 8;
+const HTTP_SSE_ATTACH_TTL_MS = 30_000;
+const HTTP_SSE_REGISTER_TTL_MS = 60_000;
+const HTTP_SSE_SWEEP_INTERVAL_MS = 5_000;
+const HTTP_SSE_DISPOSED_TOMBSTONE_TTL_MS = 60_000;
 
 type WssConnectionState = "opening" | "open" | "closing" | "closed" | "faulted";
+type HttpConnectionState =
+  | "created"
+  | "sse_attached"
+  | "registered"
+  | "disposing"
+  | "disposed";
+
+interface HttpAdmissionScope {
+  readonly tenantId: string;
+  readonly deviceId: string;
+}
+
+interface HttpConnectionEntry {
+  readonly connectionId: string;
+  readonly channel: HttpSseChannel;
+  readonly scope: HttpAdmissionScope;
+  state: HttpConnectionState;
+  expiresAtMs: number;
+  disposePromise: Promise<void> | null;
+}
 
 interface WssFrameCeilings {
   readonly maxParamsBytes: number;
@@ -60,6 +87,23 @@ export interface RbpWssEgressConfig {
   readonly queuedFrames?: number;
   readonly queuedBytes?: number;
   readonly sendCompletionTimeoutMs?: number;
+}
+
+/** Testable clock/scheduler seam; production always retains the frozen values. */
+export interface RbpHttpSseLifecycleRuntime {
+  readonly clock?: () => number;
+  readonly setInterval?: (
+    callback: () => void,
+    milliseconds: number,
+  ) => ReturnType<typeof setInterval>;
+  readonly clearInterval?: (timer: ReturnType<typeof setInterval>) => void;
+  /** Value-free bounded-accounting observation for deterministic lifecycle tests. */
+  readonly onLifecycleSnapshot?: (snapshot: {
+    readonly entries: number;
+    readonly globalAdmissions: number;
+    readonly tenantAdmissions: number;
+    readonly deviceAdmissions: number;
+  }) => void;
 }
 
 export const RBP_WSS_INTERNAL_DIAGNOSTIC_CONTRACT =
@@ -79,6 +123,7 @@ export interface ProductionRbpIngressOptions {
   readonly authority: GatewayBridgeSessionAuthority;
   readonly wssQueue?: RbpWssQueueConfig;
   readonly wssEgress?: RbpWssEgressConfig;
+  readonly httpSseLifecycleRuntime?: RbpHttpSseLifecycleRuntime;
   readonly writeOpeningRefusalLog?: (serializedObservation: string) => void;
   readonly onOpeningRefusalObservation?: (
     observation: RbpOpeningRefusalObservation,
@@ -277,6 +322,12 @@ class HttpSseChannel implements BridgeConnectionChannel {
       throw new GatewayRbpFault("protocol", "SSE stream is already attached", 409, 4400);
     }
     this.#response = response;
+    response.once("close", this.onClose);
+    response.once("error", this.onClose);
+    if (response.destroyed || response.writableEnded) {
+      this.onClose();
+      throw new Error("SSE stream is closed");
+    }
     for (const serialized of this.#pending.splice(0)) {
       response.write(`event: rbp\ndata: ${serialized}\n\n`);
     }
@@ -296,6 +347,7 @@ class HttpSseChannel implements BridgeConnectionChannel {
       return;
     }
     if (response.destroyed || response.writableEnded) {
+      this.onClose();
       throw new Error("SSE stream is closed");
     }
     if (!response.write(`event: rbp\ndata: ${serialized}\n\n`)) {
@@ -307,6 +359,7 @@ class HttpSseChannel implements BridgeConnectionChannel {
           response.off("drain", onDrain);
           response.off("close", onClose);
           response.off("error", onError);
+          if (error !== undefined) this.onClose();
           if (error === undefined) resolve();
           else reject(error);
         };
@@ -413,6 +466,9 @@ export function createProductionRbpIngressHost(
   options: ProductionRbpIngressOptions,
 ): ProductionRbpIngressHost {
   const { authority } = options;
+  const httpSseClock = options.httpSseLifecycleRuntime?.clock ?? Date.now;
+  const scheduleHttpSseSweep = options.httpSseLifecycleRuntime?.setInterval ?? setInterval;
+  const clearHttpSseSweep = options.httpSseLifecycleRuntime?.clearInterval ?? clearInterval;
   const queuedFrameLimit = boundedInteger(
     options.wssQueue?.queuedFrames ?? RBP_WSS_DEFAULT_QUEUED_FRAMES,
     RBP_WSS_MIN_QUEUED_FRAMES,
@@ -447,9 +503,140 @@ export function createProductionRbpIngressHost(
     noServer: true,
     maxPayload: MAX_HTTP_MESSAGE_BYTES,
   });
-  const httpChannels = new Map<string, HttpSseChannel>();
+  const httpConnections = new Map<string, HttpConnectionEntry>();
+  const httpDisposed = new Map<string, number>();
+  const httpTenantCounts = new Map<string, number>();
+  const httpDeviceCounts = new Map<string, number>();
+  let httpGlobalCount = 0;
+  let httpAdmissionTail = Promise.resolve();
   let draining = false;
   let livenessTimer: ReturnType<typeof setInterval> | null = null;
+
+  const observeHttpLifecycle = (): void => {
+    options.httpSseLifecycleRuntime?.onLifecycleSnapshot?.(
+      Object.freeze({
+        entries: httpConnections.size,
+        globalAdmissions: httpGlobalCount,
+        tenantAdmissions: httpTenantCounts.size,
+        deviceAdmissions: httpDeviceCounts.size,
+      }),
+    );
+  };
+
+  const httpAdmission = async <T>(operation: () => Promise<T>): Promise<T> => {
+    const prior = httpAdmissionTail;
+    let release!: () => void;
+    httpAdmissionTail = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await prior;
+    try {
+      return await operation();
+    } finally {
+      release();
+    }
+  };
+
+  const releaseHttpAdmission = (scope: HttpAdmissionScope): void => {
+    httpGlobalCount -= 1;
+    const tenantCount = (httpTenantCounts.get(scope.tenantId) ?? 1) - 1;
+    if (tenantCount === 0) httpTenantCounts.delete(scope.tenantId);
+    else httpTenantCounts.set(scope.tenantId, tenantCount);
+    const deviceKey = `${scope.tenantId}\u0000${scope.deviceId}`;
+    const deviceCount = (httpDeviceCounts.get(deviceKey) ?? 1) - 1;
+    if (deviceCount === 0) httpDeviceCounts.delete(deviceKey);
+    else httpDeviceCounts.set(deviceKey, deviceCount);
+    observeHttpLifecycle();
+  };
+
+  const reserveHttpAdmission = (scope: HttpAdmissionScope): void => {
+    const tenantCount = httpTenantCounts.get(scope.tenantId) ?? 0;
+    const deviceKey = `${scope.tenantId}\u0000${scope.deviceId}`;
+    const deviceCount = httpDeviceCounts.get(deviceKey) ?? 0;
+    if (
+      httpGlobalCount >= HTTP_SSE_GLOBAL_CONNECTION_LIMIT ||
+      tenantCount >= HTTP_SSE_TENANT_CONNECTION_LIMIT ||
+      deviceCount >= HTTP_SSE_DEVICE_CONNECTION_LIMIT
+    ) {
+      throw new GatewayRbpFault(
+        "unavailable",
+        "HTTP/SSE connection admission limit reached",
+        429,
+        1013,
+      );
+    }
+    httpGlobalCount += 1;
+    httpTenantCounts.set(scope.tenantId, tenantCount + 1);
+    httpDeviceCounts.set(deviceKey, deviceCount + 1);
+    observeHttpLifecycle();
+  };
+
+  const disposeHttpConnection = (entry: HttpConnectionEntry): Promise<void> => {
+    if (entry.disposePromise !== null) return entry.disposePromise;
+    entry.state = "disposing";
+    // Make this connection invisible to new work before any transport or
+    // authority operation. All terminal paths converge here, so counters are
+    // released exactly once even when close/error/TTL race each other.
+    httpConnections.delete(entry.connectionId);
+    releaseHttpAdmission(entry.scope);
+    httpDisposed.set(entry.connectionId, httpSseClock() + HTTP_SSE_DISPOSED_TOMBSTONE_TTL_MS);
+    let settle!: () => void;
+    entry.disposePromise = new Promise<void>((resolve) => {
+      settle = resolve;
+    });
+    void (async () => {
+      try {
+        await entry.channel.close();
+      } catch {
+        // A transport failure cannot retain the admission reservation.
+      }
+      try {
+        await authority.detach(entry.connectionId);
+      } catch {
+        // Detach is containment work; the admission has already been released.
+      } finally {
+        entry.state = "disposed";
+        settle();
+      }
+    })();
+    return entry.disposePromise;
+  };
+
+  const sweepHttpConnections = (): void => {
+    const now = httpSseClock();
+    for (const [connectionId, expiresAtMs] of httpDisposed) {
+      if (expiresAtMs <= now) httpDisposed.delete(connectionId);
+    }
+    for (const entry of [...httpConnections.values()]) {
+      if (entry.expiresAtMs <= now) void disposeHttpConnection(entry);
+    }
+  };
+
+  const preauthenticateHttpScope = async (
+    hello: HelloEnvelope,
+    deviceToken: string | undefined,
+  ): Promise<HttpAdmissionScope> => {
+    const authenticated = await authority.identity.authenticateDevice({
+      deviceToken,
+      connectionId: gatewayUuidV7(httpSseClock()),
+      claimedDeviceId: hello.payload.device_id,
+      machineFingerprint: hello.payload.machine.fingerprint,
+      machineHostname: hello.payload.machine.hostname,
+    });
+    if (!authenticated.ok) {
+      throw new GatewayRbpFault("auth", authenticated.message, 401, 4401);
+    }
+    if (authenticated.value.deviceStatus !== "active") {
+      throw new GatewayRbpFault("auth", "device or seat is not active", 403, 4403);
+    }
+    if (authenticated.value.actor.deviceId !== hello.payload.device_id) {
+      throw new GatewayRbpFault("auth", "hello device identity does not match credential", 403, 4403);
+    }
+    return Object.freeze({
+      tenantId: authenticated.value.actor.tenantId,
+      deviceId: authenticated.value.actor.deviceId,
+    });
+  };
 
   const bestEffort = (operation: () => unknown): void => {
     try {
@@ -498,15 +685,16 @@ export function createProductionRbpIngressHost(
     },
     async start(): Promise<void> {
       await authority.open();
-      livenessTimer = setInterval(() => {
+      livenessTimer = scheduleHttpSseSweep(() => {
+        sweepHttpConnections();
         void authority.sweepLiveness().catch(() => {
           // Losing durable liveness authority is a fail-closed condition: keep
           // existing sockets available for shutdown evidence, but admit no new
           // connection that could be mistaken for authorized dispatch state.
           draining = true;
         });
-      }, 5_000);
-      livenessTimer.unref();
+      }, HTTP_SSE_SWEEP_INTERVAL_MS);
+      (livenessTimer as unknown as { readonly unref?: () => void }).unref?.();
     },
     mount(app): void {
       app.post(
@@ -527,21 +715,39 @@ export function createProductionRbpIngressHost(
               throw new GatewayRbpFault("protocol", "create body must be hello", 400, 4400);
             }
             openingCorrelationId = hello.id;
-            let openedConnectionId: string | null = null;
-            const channel = new HttpSseChannel(() => {
-              if (openedConnectionId !== null) {
-                httpChannels.delete(openedConnectionId);
+            const opened = await httpAdmission(async () => {
+              const deviceToken = bearer(request.headers.authorization);
+              const scope = await preauthenticateHttpScope(hello as HelloEnvelope, deviceToken);
+              reserveHttpAdmission(scope);
+              let entry: HttpConnectionEntry | null = null;
+              const channel = new HttpSseChannel(() => {
+                if (entry !== null) void disposeHttpConnection(entry);
+              });
+              try {
+                const opening = await authority.openConnection({
+                  deviceToken,
+                  binding: "http_sse",
+                  hello: hello as HelloEnvelope,
+                  channel,
+                });
+                entry = {
+                  connectionId: opening.connectionId,
+                  channel,
+                  scope,
+                  state: "created",
+                  expiresAtMs: httpSseClock() + HTTP_SSE_ATTACH_TTL_MS,
+                  disposePromise: null,
+                };
+                httpConnections.set(opening.connectionId, entry);
+                observeHttpLifecycle();
+                authority.assertConnectionOutbound(opening.connectionId);
+                return opening;
+              } catch (error) {
+                if (entry === null) releaseHttpAdmission(scope);
+                else await disposeHttpConnection(entry);
+                throw error;
               }
             });
-            const opened = await authority.openConnection({
-              deviceToken: bearer(request.headers.authorization),
-              binding: "http_sse",
-              hello: hello as HelloEnvelope,
-              channel,
-            });
-            openedConnectionId = opened.connectionId;
-            authority.assertConnectionOutbound(opened.connectionId);
-            httpChannels.set(opened.connectionId, channel);
             return reply
               .header("RBP-Connection-Id", opened.connectionId)
               .header("Cache-Control", "no-store")
@@ -569,15 +775,20 @@ export function createProductionRbpIngressHost(
         async (request, reply) => {
           const connectionId = (request.params as { connection_id: string }).connection_id;
           try {
+            const entry = httpConnections.get(connectionId);
+            if (entry === undefined) {
+              throw new GatewayRbpFault(
+                "unavailable",
+                httpDisposed.has(connectionId) ? "connection is disposed" : "unknown connection",
+                httpDisposed.has(connectionId) ? 410 : 404,
+                4401,
+              );
+            }
             await authority.assertConnectionCredential(
               connectionId,
               bearer(request.headers.authorization),
             );
             authority.assertConnectionOutbound(connectionId);
-            const channel = httpChannels.get(connectionId);
-            if (channel === undefined) {
-              throw new GatewayRbpFault("auth", "unknown connection", 404, 4401);
-            }
             reply.hijack();
             reply.raw.writeHead(200, {
               "Cache-Control": "no-cache, no-store",
@@ -586,12 +797,15 @@ export function createProductionRbpIngressHost(
               "X-Accel-Buffering": "no",
             });
             reply.raw.flushHeaders();
-            channel.attach(reply.raw);
+            entry.channel.attach(reply.raw);
+            if (entry.state !== "registered") {
+              entry.state = "sse_attached";
+              entry.expiresAtMs = httpSseClock() + HTTP_SSE_ATTACH_TTL_MS;
+            }
             // Last-Event-ID is deliberately ignored. RBP sequence state is the
             // only replay authority and lives in the durable session record.
             reply.raw.once("close", () => {
-              httpChannels.delete(connectionId);
-              void authority.detach(connectionId);
+              void disposeHttpConnection(entry);
             });
           } catch (error) {
             if (error instanceof GatewayRbpFault) {
@@ -608,12 +822,29 @@ export function createProductionRbpIngressHost(
         async (request, reply) => {
           const connectionId = (request.params as { connection_id: string }).connection_id;
           try {
+            const entry = httpConnections.get(connectionId);
+            if (entry === undefined) {
+              throw new GatewayRbpFault(
+                "unavailable",
+                httpDisposed.has(connectionId) ? "connection is disposed" : "unknown connection",
+                httpDisposed.has(connectionId) ? 410 : 404,
+                4401,
+              );
+            }
             await authority.assertConnectionCredential(
               connectionId,
               bearer(request.headers.authorization),
             );
             const envelope = frame(request.body);
             await authority.receive(connectionId, envelope);
+            if (envelope.type === "session_register" || envelope.type === "session_resume") {
+              entry.state = "registered";
+              entry.expiresAtMs = httpSseClock() + HTTP_SSE_REGISTER_TTL_MS;
+            } else if (entry.state === "registered" && envelope.type === "heartbeat") {
+              // The entry is already located by connection id, so heartbeat
+              // renewal never scans the connection registry.
+              entry.expiresAtMs = httpSseClock() + HTTP_SSE_REGISTER_TTL_MS;
+            }
             authority.assertConnectionOutbound(connectionId);
             // receive() commits sequence/journal changes before resolving.
             return reply.code(202).send({ accepted: true });
@@ -1254,18 +1485,19 @@ export function createProductionRbpIngressHost(
     },
     beginDrain(): void {
       draining = true;
+      for (const entry of [...httpConnections.values()]) {
+        void disposeHttpConnection(entry);
+      }
     },
     async close(): Promise<void> {
       draining = true;
       if (livenessTimer !== null) {
-        clearInterval(livenessTimer);
+        clearHttpSseSweep(livenessTimer);
         livenessTimer = null;
       }
-      for (const [connectionId, channel] of [...httpChannels]) {
-        await channel.close();
-        await authority.detach(connectionId);
-      }
-      httpChannels.clear();
+      await Promise.all(
+        [...httpConnections.values()].map((entry) => disposeHttpConnection(entry)),
+      );
       websocketServer.close();
       await authority.close();
     },
