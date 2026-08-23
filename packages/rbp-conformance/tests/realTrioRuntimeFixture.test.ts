@@ -7,6 +7,7 @@ import {
   REAL_TRIO_FIXTURE_DOCUMENT_ID,
   REAL_TRIO_RUNTIME_FAILURE_SCHEMA,
   RealTrioDocumentContextFailureError,
+  correlatedDocumentContextSendSince,
   createRealTrioDocumentContextFailure,
   hasGatewayAcceptedDocumentContextRoute,
   hasDurableDocumentContextHeartbeatAckSince,
@@ -104,6 +105,23 @@ describe("WP-12 real-trio fixture document route gate", () => {
     expect(hasGatewayAcceptedDocumentContextRoute(audit(expected.rsidHash, 6), expected)).toBe(false);
     expect(hasGatewayAcceptedDocumentContextRoute(audit(`sha256:${"b".repeat(64)}`, 7), expected)).toBe(false);
     expect(hasGatewayAcceptedDocumentContextRoute(audit(`sha256:${"A".repeat(64)}`, 7), expected)).toBe(false);
+  });
+
+  it("selects only the controlled post-ACK send and rejects a borrowed historical route", () => {
+    const observation = (stage: string, rsidHash: string, sequence: number) => ({ line: JSON.stringify({
+      event: "bridge.document_context_observation", stage,
+      outcome: stage === "send" ? "sent" : "durably_queued", rsidHash, sequence,
+    }) });
+    const historicalHash = `sha256:${"a".repeat(64)}`;
+    const controlledHash = `sha256:${"b".repeat(64)}`;
+    const transcript = [
+      observation("probe", historicalHash, 1), observation("snapshot", historicalHash, 1),
+      observation("queue", historicalHash, 1), observation("send", historicalHash, 1),
+      observation("probe", controlledHash, 2), observation("snapshot", controlledHash, 2),
+      observation("queue", controlledHash, 2), observation("send", controlledHash, 2),
+    ];
+    expect(correlatedDocumentContextSendSince(transcript, 4)).toEqual({ rsidHash: controlledHash, sequence: 2 });
+    expect(correlatedDocumentContextSendSince(transcript, 5)).toBeNull();
   });
 
   it("exports bounded redacted stage-timeout evidence before cleanup", () => {

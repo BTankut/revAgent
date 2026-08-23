@@ -170,6 +170,9 @@ describe("strict real-trio Streamable HTTP MCP client", () => {
     for (const value of [
       { result: { structuredContent: [] } }, { result: { content: [] } },
       { result: { isError: true, content: [{ type: "text", text: "not-json" }] } },
+      { result: { isError: "false", structuredContent: { ok: true } } },
+      { result: { isError: { value: false }, structuredContent: { ok: true } } },
+      { result: { isError: null, structuredContent: { ok: true } } },
       { result: { structuredContent: { ok: true }, content: [{ type: "text", text: "{\"ok\":false}" }] } },
       { result: { content: [{ type: "image", text: "{}" }] } },
       { result: { content: [{ type: "text", text: "[]" }] } },

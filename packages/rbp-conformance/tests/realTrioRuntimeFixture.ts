@@ -404,33 +404,25 @@ export function probeRealTrioFixtureDocumentContext(
   });
 }
 
-/** The route proof must not wait for, or infer, the later heartbeat ACK. */
-function hasDocumentContextSend(
+/** Selects one post-control ordered lifecycle; historical worker output is inert. */
+export function correlatedDocumentContextSendSince(
   records: readonly { readonly line: string }[],
-): boolean {
+  floor: number,
+): RealTrioDocumentContextCorrelation | null {
+  if (!Number.isSafeInteger(floor) || floor < 0) return null;
   const expected = ["probe", "snapshot", "queue", "send"];
   let next = 0;
-  for (const record of records) {
+  for (const record of records.slice(floor)) {
     try {
       const value = JSON.parse(record.line) as unknown;
       if (isObject(value) && value.event === "bridge.document_context_observation" &&
           value.stage === expected[next]) next += 1;
-      if (next === expected.length) return true;
-    } catch { /* Redacted diagnostics are the only input. */ }
-  }
-  return false;
-}
-
-function correlatedDocumentContextSend(
-  records: readonly { readonly line: string }[],
-): RealTrioDocumentContextCorrelation | null {
-  for (const record of records) {
-    try {
-      const value = JSON.parse(record.line) as unknown;
-      if (isObject(value) && value.event === "bridge.document_context_observation" &&
-          value.stage === "send" && value.outcome === "sent" &&
-          isSha256(value.rsidHash) && Number.isSafeInteger(value.sequence) && Number(value.sequence) >= 1) {
-        return Object.freeze({ rsidHash: value.rsidHash, sequence: Number(value.sequence) });
+      if (next === expected.length) {
+        if (isObject(value) && value.outcome === "sent" && isSha256(value.rsidHash) &&
+            Number.isSafeInteger(value.sequence) && Number(value.sequence) >= 1) {
+          return Object.freeze({ rsidHash: value.rsidHash, sequence: Number(value.sequence) });
+        }
+        return null;
       }
     } catch { /* Redacted diagnostics are the only input. */ }
   }
@@ -439,6 +431,7 @@ function correlatedDocumentContextSend(
 
 async function waitForDocumentContextSend(input: {
   readonly supervisor: RealTrioSupervisorResult;
+  readonly transcriptFloor: number;
   readonly timeoutMs?: number;
 }): Promise<void> {
   const deadline = Date.now() + (input.timeoutMs ?? DOCUMENT_CONTEXT_WATCHER_TIMEOUT_MS);
@@ -446,7 +439,9 @@ async function waitForDocumentContextSend(input: {
     if (input.supervisor.readDocumentContextFailureState().childExited) {
       throw new Error("real trio child exited before document-context send");
     }
-    if (hasDocumentContextSend(input.supervisor.readDocumentContextDiagnostics())) return;
+    if (correlatedDocumentContextSendSince(
+      input.supervisor.readDocumentContextDiagnostics(), input.transcriptFloor,
+    ) !== null) return;
     if (Date.now() >= deadline) {
       throw new Error("real trio document-context stages were not ordered through send");
     }
@@ -456,9 +451,8 @@ async function waitForDocumentContextSend(input: {
 
 /**
  * `ack` is emitted only by the C# coordinator after a received
- * heartbeat_ack is durably applied. The baseline is captured after the
- * ordered send and before the public route poll so an ACK produced while the
- * route becomes observable cannot be lost between the two observations.
+ * heartbeat_ack is durably applied. The control-completion floor excludes
+ * historical output while retaining an ACK produced during route observation.
  */
 export function hasDurableDocumentContextHeartbeatAckSince(
   records: readonly { readonly line: string }[],
@@ -489,7 +483,7 @@ export function hasGatewayAcceptedDocumentContextRoute(
 
 async function waitForPostRouteDocumentContextHeartbeatAck(input: {
   readonly supervisor: RealTrioSupervisorResult;
-  readonly diagnosticsBeforeRoute: number;
+  readonly transcriptFloor: number;
   readonly expected: RealTrioDocumentContextCorrelation;
   readonly timeoutMs?: number;
 }): Promise<void> {
@@ -499,7 +493,7 @@ async function waitForPostRouteDocumentContextHeartbeatAck(input: {
       throw new Error("real trio child exited before post-route heartbeat acknowledgement");
     }
     if (hasDurableDocumentContextHeartbeatAckSince(
-      input.supervisor.readDocumentContextDiagnostics(), input.diagnosticsBeforeRoute, input.expected,
+      input.supervisor.readDocumentContextDiagnostics(), input.transcriptFloor, input.expected,
     )) return;
     if (Date.now() >= deadline) {
       throw new Error("real trio did not durably acknowledge document context after route persistence");
@@ -687,15 +681,21 @@ export async function startRealTrioRuntimeFixture(
       event: realTrioFixtureDocumentContextEvent(),
     }));
     timeline.push("control_ack");
+    // Capture immediately after control completion: historical valid sends
+    // cannot establish this controlled case's route correlation.
+    const transcriptFloor = supervisor.readDocumentContextDiagnostics().length;
     // This probe is value-free and must succeed before any public Gateway
     // route can qualify. The regular 15 s C# watcher is the only forwarder.
     failureReason = "stage_timeout";
     await waitForDocumentContextSend({
       supervisor,
+      transcriptFloor,
       timeoutMs: options.documentContextTimeoutMs,
     });
     timeline.push("document_sent");
-    const expected = correlatedDocumentContextSend(supervisor.readDocumentContextDiagnostics());
+    const expected = correlatedDocumentContextSendSince(
+      supervisor.readDocumentContextDiagnostics(), transcriptFloor,
+    );
     if (expected === null) throw new Error("real trio document-context send lacks strict route correlation");
     failureReason = "ack_failure";
     const counts = probeRealTrioFixtureDocumentContext(
@@ -705,10 +705,6 @@ export async function startRealTrioRuntimeFixture(
     documentContextAudit = Object.freeze({ ...controlAudit, ...counts });
     timeline.push("fixture_probe");
     failureReason = "route_timeout";
-    // Capture the post-send observation floor before polling the public
-    // Gateway. The C# ACK can legitimately arrive during that poll once the
-    // durable route is applied; starting after it would discard valid proof.
-    const diagnosticsBeforeRoute = supervisor.readDocumentContextDiagnostics().length;
     await waitForLiveDocumentRoute({
       endpoint,
       controlToken,
@@ -721,7 +717,7 @@ export async function startRealTrioRuntimeFixture(
     failureReason = "ack_failure";
     await waitForPostRouteDocumentContextHeartbeatAck({
       supervisor,
-      diagnosticsBeforeRoute,
+      transcriptFloor,
       expected,
       timeoutMs: options.documentContextTimeoutMs,
     });

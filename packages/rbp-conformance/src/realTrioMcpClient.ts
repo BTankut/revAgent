@@ -243,6 +243,9 @@ function assertJsonRpcSuccess(value: unknown, method: string, evidence?: RealTri
 export function strictToolContent(response: unknown): Record<string, unknown> {
   const envelope = record(response, "real trio MCP response");
   const result = record(envelope.result, "real trio MCP response result");
+  if ("isError" in result && typeof result.isError !== "boolean") {
+    throw new Error("real trio MCP tool result has invalid isError");
+  }
   if (result.isError === true) throw new Error("real trio MCP tool result is marked isError");
   const structured = "structuredContent" in result
     ? record(result.structuredContent, "real trio MCP structured content") : null;
