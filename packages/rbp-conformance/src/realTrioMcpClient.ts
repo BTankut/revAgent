@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { request as httpsRequest } from "node:https";
 import type { TLSSocket } from "node:tls";
+import { isDeepStrictEqual } from "node:util";
 
 export const REAL_TRIO_NORTH_EVIDENCE_SCHEMA = "rbp-real-trio-north-evidence/v1" as const;
 const MAX_NORTH_RESPONSE_BYTES = 256 * 1024;
@@ -30,9 +31,31 @@ export class RealTrioNorthMcpError extends Error {
   public constructor(
     message: string,
     readonly evidence: RealTrioNorthWireEvidence | null,
+    readonly toolResultEvidence: RealTrioNorthToolResultEvidence | null = null,
   ) {
     super(message);
     this.name = "RealTrioNorthMcpError";
+  }
+}
+
+export interface RealTrioNorthToolResultEvidence {
+  readonly httpStatus: number;
+  readonly responseBytes: number;
+  readonly responseSha256: `sha256:${string}`;
+  readonly resultKeySet: readonly string[] | null;
+  readonly isError: boolean | null;
+  readonly contentCount: number | null;
+  readonly contentItems: readonly Readonly<{
+    readonly type: string | null;
+    readonly textUtf8Bytes: number | null;
+    readonly textSha256: `sha256:${string}` | null;
+  }>[];
+}
+
+export class RealTrioNorthToolResultError extends Error {
+  public constructor(readonly evidence: RealTrioNorthToolResultEvidence) {
+    super("real trio MCP tool result rejected");
+    this.name = "RealTrioNorthToolResultError";
   }
 }
 
@@ -149,7 +172,11 @@ export class RealTrioNorthMcpClient {
       jsonrpc: "2.0", id: input.requestId, method: "tools/call",
       params: Object.freeze({ name: input.name, arguments: input.arguments }),
     }));
-    return Object.freeze({ content: strictToolContent(result.response), evidence: result.evidence });
+    try {
+      return Object.freeze({ content: strictToolContent(result.response), evidence: result.evidence });
+    } catch {
+      throw new RealTrioNorthToolResultError(boundedToolResultEvidence(result.response, result.evidence));
+    }
   }
 
   public async readResource(input: { readonly uri: string; readonly requestId: string }): Promise<{ readonly response: unknown; readonly evidence: RealTrioNorthWireEvidence }> {
@@ -196,16 +223,20 @@ function assertJsonRpcSuccess(value: unknown, method: string, evidence?: RealTri
   const envelope = record(value, "real trio MCP response");
   if ("error" in envelope) {
     const code = jsonRpcErrorCode(value);
-    throw new RealTrioNorthMcpError(`real trio MCP ${method} returned JSON-RPC error ${code ?? "invalid"}`, evidence ?? null);
+    throw new RealTrioNorthMcpError(`real trio MCP ${method} returned JSON-RPC error ${code ?? "invalid"}`, evidence ?? null,
+      method === "tools/call" && evidence !== undefined ? boundedToolResultEvidence(value, evidence) : null);
   }
   if (!("result" in envelope)) throw new RealTrioNorthMcpError(`real trio MCP ${method} lacks result`, evidence ?? null);
 }
 
-/** Structured content is authoritative; legacy text is accepted only as one bounded JSON object. */
+/** Explicit structured and legacy text forms may coexist only when they agree exactly. */
 export function strictToolContent(response: unknown): Record<string, unknown> {
   const envelope = record(response, "real trio MCP response");
   const result = record(envelope.result, "real trio MCP response result");
-  if ("structuredContent" in result) return record(result.structuredContent, "real trio MCP structured content");
+  if (result.isError === true) throw new Error("real trio MCP tool result is marked isError");
+  const structured = "structuredContent" in result
+    ? record(result.structuredContent, "real trio MCP structured content") : null;
+  if (structured !== null && !("content" in result)) return structured;
   if (!Array.isArray(result.content) || result.content.length !== 1) {
     throw new Error("real trio MCP tool result requires one fallback text content item");
   }
@@ -214,8 +245,43 @@ export function strictToolContent(response: unknown): Record<string, unknown> {
       Buffer.byteLength(item.text, "utf8") > MAX_FALLBACK_TEXT_BYTES) {
     throw new Error("real trio MCP tool fallback content is invalid");
   }
-  try { return record(JSON.parse(item.text) as unknown, "real trio MCP fallback JSON"); }
+  try {
+    const fallback = record(JSON.parse(item.text) as unknown, "real trio MCP fallback JSON");
+    if (structured !== null && !isDeepStrictEqual(structured, fallback)) {
+      throw new Error("real trio MCP structured and fallback content differ");
+    }
+    return structured ?? fallback;
+  }
   catch { throw new Error("real trio MCP tool fallback text is not a JSON object"); }
+}
+
+/** A parse failure carries only bounded structural metadata, never tool text or payloads. */
+export function boundedToolResultEvidence(
+  response: unknown,
+  wire: RealTrioNorthWireEvidence,
+): RealTrioNorthToolResultEvidence {
+  let result: Record<string, unknown> | null = null;
+  try {
+    const envelope = record(response, "real trio MCP response");
+    result = "result" in envelope ? record(envelope.result, "real trio MCP response result") : null;
+  } catch { /* malformed envelopes intentionally reduce to null shape evidence */ }
+  const content = result !== null && Array.isArray(result.content) ? result.content : null;
+  return Object.freeze({
+    httpStatus: wire.statusCode,
+    responseBytes: wire.responseBytes,
+    responseSha256: wire.responseSha256,
+    resultKeySet: result === null ? null : Object.freeze(Object.keys(result).sort().slice(0, 64)),
+    isError: result === null || typeof result.isError !== "boolean" ? null : result.isError,
+    contentCount: content === null ? null : content.length,
+    contentItems: Object.freeze((content ?? []).slice(0, 8).map((value) => {
+      const item = value !== null && typeof value === "object" && !Array.isArray(value)
+        ? value as Record<string, unknown> : null;
+      const text = item !== null && typeof item.text === "string" ? item.text : null;
+      return Object.freeze({ type: item !== null && typeof item.type === "string" ? item.type : null,
+        textUtf8Bytes: text === null ? null : Buffer.byteLength(text, "utf8"),
+        textSha256: text === null ? null : sha256(Buffer.from(text, "utf8")) });
+    })),
+  });
 }
 
 async function rawRequest(input: {

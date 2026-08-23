@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createEphemeralLoopbackTlsIdentity } from "../src/ephemeralTlsIdentity.js";
 import {
   RealTrioNorthMcpError,
+  RealTrioNorthToolResultError,
   strictToolContent,
   withRealTrioNorthMcpClient,
 } from "../src/realTrioMcpClient.js";
@@ -18,7 +19,7 @@ interface RecordedRequest { readonly method: string; readonly authorization: str
 const closers: Array<() => Promise<void>> = [];
 afterEach(async () => { await Promise.all(closers.splice(0).map(async (close) => await close())); });
 
-async function testServer(input: { readonly mode?: "ok" | "tool_error"; readonly initializeSessionHeader?: string } = {}): Promise<{ readonly endpoint: string; readonly certificateSha256: string; readonly requests: RecordedRequest[] }> {
+async function testServer(input: { readonly mode?: "ok" | "tool_error" | "tool_is_error" | "tool_bad_text"; readonly initializeSessionHeader?: string } = {}): Promise<{ readonly endpoint: string; readonly certificateSha256: string; readonly requests: RecordedRequest[] }> {
   const root = mkdtempSync(path.join(tmpdir(), "wp12-mcp-client-"));
   mkdirSync(path.join(root, "tls-root"));
   const tls = createEphemeralLoopbackTlsIdentity(realpathSync(path.join(root, "tls-root")));
@@ -36,6 +37,10 @@ async function testServer(input: { readonly mode?: "ok" | "tool_error"; readonly
         ? { jsonrpc: "2.0", id: body.id, result: { protocolVersion: "2025-03-26", capabilities: {}, serverInfo: { name: "fixture", version: "1" } } }
         : input.mode === "tool_error" && method === "tools/call"
           ? { jsonrpc: "2.0", id: body.id, error: { code: -32001, message: "redacted" } }
+          : input.mode === "tool_is_error" && method === "tools/call"
+            ? { jsonrpc: "2.0", id: body.id, result: { isError: true, content: [{ type: "text", text: "{\"redacted\":true}" }] } }
+            : input.mode === "tool_bad_text" && method === "tools/call"
+              ? { jsonrpc: "2.0", id: body.id, result: { content: [{ type: "text", text: "not-json" }] } }
           : { jsonrpc: "2.0", id: body.id, result: method === "tools/call"
             ? { structuredContent: { state: "completed", requestId: "server-request" } } : {} };
       response.writeHead(200, { "content-type": "application/json", ...(method === "initialize" && input.initializeSessionHeader !== undefined ? { "mcp-session-id": input.initializeSessionHeader } : {}) });
@@ -75,18 +80,40 @@ describe("strict real-trio Streamable HTTP MCP client", () => {
       .rejects.toThrow(/unexpected mcp-session-id/u);
   });
 
-  it("retains only bounded error code and method hash when Gateway returns a JSON-RPC error", async () => {
+  it("retains only bounded wire and shape evidence when Gateway returns a JSON-RPC error", async () => {
     const server = await testServer({ mode: "tool_error" });
     await expect(withRealTrioNorthMcpClient({ ...server, credential }, async (client) =>
       await client.toolCall({ name: "core.ui.state", arguments: {}, requestId: "tool-error" }),
-    )).rejects.toMatchObject({ name: "RealTrioNorthMcpError", evidence: expect.objectContaining({ jsonRpcErrorCode: -32001, methodSha256: expect.any(String) }) } satisfies Partial<RealTrioNorthMcpError>);
+    )).rejects.toMatchObject({ name: "RealTrioNorthMcpError", evidence: expect.objectContaining({ jsonRpcErrorCode: -32001, methodSha256: expect.any(String) }), toolResultEvidence: expect.objectContaining({ resultKeySet: null, contentCount: null }) } satisfies Partial<RealTrioNorthMcpError>);
   });
 
-  it("fails closed unless explicit structured content is a non-array object, or one bounded JSON text fallback is present", () => {
-    expect(strictToolContent({ result: { structuredContent: { ok: true }, content: [{ type: "text", text: "ignored" }] } })).toEqual({ ok: true });
+  it("rejects isError before fallback parsing and retains bounded tool-result evidence", async () => {
+    const server = await testServer({ mode: "tool_is_error" });
+    await expect(withRealTrioNorthMcpClient({ ...server, credential }, async (client) =>
+      await client.toolCall({ name: "core.ui.state", arguments: {}, requestId: "tool-is-error" }),
+    )).rejects.toMatchObject({ name: "RealTrioNorthToolResultError", evidence: {
+      httpStatus: 200, isError: true, contentCount: 1,
+      contentItems: [{ type: "text", textUtf8Bytes: 17, textSha256: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u) }],
+    } } satisfies Partial<RealTrioNorthToolResultError>);
+  });
+
+  it("retains text size and hash, but never plain fallback text, when fallback parsing fails", async () => {
+    const server = await testServer({ mode: "tool_bad_text" });
+    await expect(withRealTrioNorthMcpClient({ ...server, credential }, async (client) =>
+      await client.toolCall({ name: "core.ui.state", arguments: {}, requestId: "tool-bad-text" }),
+    )).rejects.toMatchObject({ name: "RealTrioNorthToolResultError", evidence: {
+      resultKeySet: ["content"], isError: null, contentCount: 1,
+      contentItems: [{ type: "text", textUtf8Bytes: 8, textSha256: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u) }],
+    } } satisfies Partial<RealTrioNorthToolResultError>);
+  });
+
+  it("requires matching structured and plain-text objects, otherwise fails closed", () => {
+    expect(strictToolContent({ result: { structuredContent: { ok: true }, content: [{ type: "text", text: "{\"ok\":true}" }] } })).toEqual({ ok: true });
     expect(strictToolContent({ result: { content: [{ type: "text", text: "{\"ok\":true}" }] } })).toEqual({ ok: true });
     for (const value of [
       { result: { structuredContent: [] } }, { result: { content: [] } },
+      { result: { isError: true, content: [{ type: "text", text: "not-json" }] } },
+      { result: { structuredContent: { ok: true }, content: [{ type: "text", text: "{\"ok\":false}" }] } },
       { result: { content: [{ type: "image", text: "{}" }] } },
       { result: { content: [{ type: "text", text: "[]" }] } },
       { result: { content: [{ type: "text", text: "not-json" }] } },
