@@ -13,6 +13,7 @@ import { describe, expect, it } from "vitest";
 import {
   GATEWAY_AUTH_CONTRACT_VERSION,
   type DeviceAuthContext,
+  type GatewayMachineFingerprint,
   type IdentityPort,
 } from "./authContext.js";
 import type { GatewayExecutorRequest, GatewayJsonObject } from "./dispatch.js";
@@ -364,6 +365,66 @@ function deviceRevocationScope(
     seatAuthorityVersion: revocation.seatAuthorityVersion,
     seatRecordVersion: revocation.seatRecordVersion,
   };
+}
+
+function reEnrollPreProductionDevice(
+  identity: PreProductionIdentityAuthority,
+  input: {
+    readonly enrollmentId: string;
+    readonly deviceId: string;
+    readonly seatId: string;
+    readonly userId: string;
+    readonly fingerprint: GatewayMachineFingerprint;
+  },
+): string {
+  const revoked = identity.revokeDevice(input.deviceId);
+  if (!revoked.ok) throw new Error(revoked.message);
+  const issued = identity.issueEnrollmentToken({
+    enrollmentId: input.enrollmentId,
+    tenantId: TENANT_A,
+    userId: input.userId,
+    deviceId: input.deviceId,
+    seatId: input.seatId,
+    machineFingerprint: input.fingerprint,
+    grantedSessionCapabilities: ["partial_progress"],
+  });
+  if (!issued.ok) throw new Error(issued.message);
+  const exchanged = identity.exchangeEnrollmentToken({
+    enrollmentToken: issued.value.enrollmentToken,
+    machineFingerprint: input.fingerprint,
+  });
+  if (!exchanged.ok) throw new Error(exchanged.message);
+  return exchanged.value.deviceToken;
+}
+
+function cleanupPendingForDevice(value: unknown, deviceId: string): boolean {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "kind" in value &&
+    value.kind === "pending" &&
+    "record" in value &&
+    typeof value.record === "object" &&
+    value.record !== null &&
+    "deviceId" in value.record &&
+    value.record.deviceId === deviceId
+  );
+}
+
+function tombstoneCreatedForRsid(value: unknown, rsid: string): boolean {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "kind" in value &&
+    value.kind === "created" &&
+    "tombstone" in value &&
+    typeof value.tombstone === "object" &&
+    value.tombstone !== null &&
+    "schema" in value.tombstone &&
+    value.tombstone.schema === GATEWAY_RBP_UNREGISTER_NAMESPACE &&
+    "rsid" in value.tombstone &&
+    value.tombstone.rsid === rsid
+  );
 }
 
 function delayFirstDeviceAuthentication(
@@ -1812,6 +1873,329 @@ describe("WP-06 Gateway identity composition and active revocation", () => {
     authority.assertConnectionOutbound(laterOpening.connectionId);
     expect(registeredB.payload.rsid).toBeTypeOf("string");
     await authority.close();
+  });
+
+  it.each([
+    { phase: "cleanup_started" as const },
+    { phase: "tombstone_committed" as const },
+  ])(
+    "drains and cancels reassignment when close begins at $phase",
+    async ({ phase }) => {
+      const fixture = createRestartableTestStore();
+      const gated = gatedStore(fixture);
+      const sharedSeat = `seat-reassignment-close-${phase}`;
+      const multi = multiPreProductionFixture([
+        { deviceId: DEVICE_A, seatId: sharedSeat, userId: USER_A, fingerprint: FINGERPRINT_A },
+        { deviceId: DEVICE_B, seatId: sharedSeat, userId: USER_B, fingerprint: FINGERPRINT_B },
+      ]);
+      const authority = new GatewayBridgeSessionAuthority(
+        gated.store,
+        multi.identity,
+      );
+      await authority.open();
+      const sessionA = await openAndRegister({
+        authority,
+        deviceId: DEVICE_A,
+        deviceToken: multi.tokens.get(DEVICE_A)!,
+        fingerprint: FINGERPRINT_A,
+      });
+      const tokenB = reEnrollPreProductionDevice(multi.identity, {
+        enrollmentId: `seat-reassignment-close-b-${phase}`,
+        deviceId: DEVICE_B,
+        seatId: sharedSeat,
+        userId: USER_B,
+        fingerprint: FINGERPRINT_B,
+      });
+      const cleanupGate = gated.holdAfterCommit((value) =>
+        phase === "cleanup_started"
+          ? cleanupPendingForDevice(value, DEVICE_A)
+          : tombstoneCreatedForRsid(value, sessionA.registered.payload.rsid),
+      );
+      const channelB = channel();
+      const openingB = authority.openConnection({
+        deviceToken: tokenB,
+        binding: "wss",
+        hello: hello({ deviceId: DEVICE_B, fingerprint: FINGERPRINT_B }),
+        channel: channelB,
+      });
+      await bounded(cleanupGate.entered, `close barrier ${phase}`);
+      let closeSettled = false;
+      const closing = authority.close();
+      void closing.then(
+        () => {
+          closeSettled = true;
+        },
+        () => {
+          closeSettled = true;
+        },
+      );
+      expect(authority.lifecycle().state).toBe("closing");
+      await expect(
+        authority.openConnection({
+          deviceToken: tokenB,
+          binding: "wss",
+          hello: hello({ deviceId: DEVICE_B, fingerprint: FINGERPRINT_B }),
+          channel: channel(),
+        }),
+      ).rejects.toMatchObject({ httpStatus: 503, closeCode: 1011 });
+      await Promise.resolve();
+      expect(closeSettled).toBe(false);
+      cleanupGate.release();
+      const [openingResult, closeResult] = await bounded(
+        Promise.allSettled([openingB, closing]),
+        `close drain ${phase}`,
+      );
+      expect(openingResult).toMatchObject({
+        status: "rejected",
+        reason: { httpStatus: 503, closeCode: 1011 },
+      });
+      expect(closeResult.status).toBe("fulfilled");
+      expect(authority.lifecycle().state).toBe("closed");
+      expect(channelB.frames).toEqual([]);
+      expect(sessionA.channel.closes).toHaveLength(1);
+      expect(
+        fixture.snapshot().records.filter(
+          (row) =>
+            row.namespace === GATEWAY_RBP_UNREGISTER_NAMESPACE &&
+            row.key === sessionA.registered.payload.rsid,
+        ),
+      ).toHaveLength(1);
+      expect(
+        fixture.snapshot().records.some(
+          (row) =>
+            row.namespace === "gateway.rbp-session/v1" &&
+            typeof row.value === "object" &&
+            row.value !== null &&
+            "deviceId" in row.value &&
+            row.value.deviceId === DEVICE_B,
+        ),
+      ).toBe(false);
+      await authority.open();
+      await expect(
+        authority.openConnection({
+          deviceToken: tokenB,
+          binding: "wss",
+          hello: hello({ deviceId: DEVICE_B, fingerprint: FINGERPRINT_B }),
+          channel: channel(),
+        }),
+      ).rejects.toMatchObject({ httpStatus: 403, closeCode: 4403 });
+      await authority.close();
+    },
+  );
+
+  it("admits the exact reassignment cap, shares one retry, and rejects cap plus one", async () => {
+    const fixture = createRestartableTestStore();
+    const gated = gatedStore(fixture);
+    const deviceC = "device-reassignment-cap-c";
+    const deviceD = "device-reassignment-cap-d";
+    const userC = "user-reassignment-cap-c";
+    const userD = "user-reassignment-cap-d";
+    const seatOne = "seat-reassignment-cap-one";
+    const seatTwo = "seat-reassignment-cap-two";
+    const fingerprintC = `sha256:${"c".repeat(64)}` as GatewayMachineFingerprint;
+    const fingerprintD = `sha256:${"d".repeat(64)}` as GatewayMachineFingerprint;
+    const multi = multiPreProductionFixture([
+      { deviceId: DEVICE_A, seatId: seatOne, userId: USER_A, fingerprint: FINGERPRINT_A },
+      { deviceId: DEVICE_B, seatId: seatOne, userId: USER_B, fingerprint: FINGERPRINT_B },
+      { deviceId: deviceC, seatId: seatTwo, userId: userC, fingerprint: fingerprintC },
+      { deviceId: deviceD, seatId: seatTwo, userId: userD, fingerprint: fingerprintD },
+    ]);
+    const authority = new GatewayBridgeSessionAuthority(
+      gated.store,
+      multi.identity,
+      { maxActiveSeatReassignments: 1 },
+    );
+    await authority.open();
+    await openAndRegister({
+      authority,
+      deviceId: DEVICE_A,
+      deviceToken: multi.tokens.get(DEVICE_A)!,
+      fingerprint: FINGERPRINT_A,
+    });
+    const sessionC = await openAndRegister({
+      authority,
+      deviceId: deviceC,
+      deviceToken: multi.tokens.get(deviceC)!,
+      fingerprint: fingerprintC,
+    });
+    const tokenB = reEnrollPreProductionDevice(multi.identity, {
+      enrollmentId: "seat-reassignment-cap-b",
+      deviceId: DEVICE_B,
+      seatId: seatOne,
+      userId: USER_B,
+      fingerprint: FINGERPRINT_B,
+    });
+    const tokenD = reEnrollPreProductionDevice(multi.identity, {
+      enrollmentId: "seat-reassignment-cap-d",
+      deviceId: deviceD,
+      seatId: seatTwo,
+      userId: userD,
+      fingerprint: fingerprintD,
+    });
+    const cleanupGate = gated.holdAfterCommit((value) =>
+      cleanupPendingForDevice(value, DEVICE_A),
+    );
+    const firstOpeningB = authority.openConnection({
+      deviceToken: tokenB,
+      binding: "wss",
+      hello: hello({ deviceId: DEVICE_B, fingerprint: FINGERPRINT_B }),
+      channel: channel(),
+    });
+    await bounded(cleanupGate.entered, "bounded reassignment cap");
+    const exactReplayB = authority.openConnection({
+      deviceToken: tokenB,
+      binding: "wss",
+      hello: hello({ deviceId: DEVICE_B, fingerprint: FINGERPRINT_B }),
+      channel: channel(),
+    });
+    await expect(
+      authority.openConnection({
+        deviceToken: tokenD,
+        binding: "wss",
+        hello: hello({ deviceId: deviceD, fingerprint: fingerprintD }),
+        channel: channel(),
+      }),
+    ).rejects.toMatchObject({ httpStatus: 503, closeCode: 1011 });
+    cleanupGate.release();
+    const bResults = await bounded(
+      Promise.allSettled([firstOpeningB, exactReplayB]),
+      "exact cap reassignment and replay",
+    );
+    expect(bResults.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(bResults.filter((result) => result.status === "rejected")).toHaveLength(1);
+    const openingD = await bounded(
+      authority.openConnection({
+        deviceToken: tokenD,
+        binding: "wss",
+        hello: hello({ deviceId: deviceD, fingerprint: fingerprintD }),
+        channel: channel(),
+      }),
+      "released reassignment slot",
+    );
+    authority.assertConnectionOutbound(openingD.connectionId);
+    expect(
+      fixture.snapshot().records.some(
+        (row) =>
+          row.namespace === GATEWAY_RBP_UNREGISTER_NAMESPACE &&
+          row.key === sessionC.registered.payload.rsid,
+      ),
+    ).toBe(true);
+    await authority.close();
+  });
+
+  it("releases a timed-out slot but keeps the seat quarantined and retry-bounded", async () => {
+    const fixture = createRestartableTestStore();
+    const gated = gatedStore(fixture);
+    const deviceC = "device-reassignment-timeout-c";
+    const deviceD = "device-reassignment-timeout-d";
+    const userC = "user-reassignment-timeout-c";
+    const userD = "user-reassignment-timeout-d";
+    const seatOne = "seat-reassignment-timeout-one";
+    const seatTwo = "seat-reassignment-timeout-two";
+    const fingerprintC = `sha256:${"e".repeat(64)}` as GatewayMachineFingerprint;
+    const fingerprintD = `sha256:${"f".repeat(64)}` as GatewayMachineFingerprint;
+    const multi = multiPreProductionFixture([
+      { deviceId: DEVICE_A, seatId: seatOne, userId: USER_A, fingerprint: FINGERPRINT_A },
+      { deviceId: DEVICE_B, seatId: seatOne, userId: USER_B, fingerprint: FINGERPRINT_B },
+      { deviceId: deviceC, seatId: seatTwo, userId: userC, fingerprint: fingerprintC },
+      { deviceId: deviceD, seatId: seatTwo, userId: userD, fingerprint: fingerprintD },
+    ]);
+    const authority = new GatewayBridgeSessionAuthority(
+      gated.store,
+      multi.identity,
+      {
+        maxActiveSeatReassignments: 1,
+        seatReassignmentTimeoutMs: 50,
+      },
+    );
+    await authority.open();
+    const sessionA = await openAndRegister({
+      authority,
+      deviceId: DEVICE_A,
+      deviceToken: multi.tokens.get(DEVICE_A)!,
+      fingerprint: FINGERPRINT_A,
+    });
+    await openAndRegister({
+      authority,
+      deviceId: deviceC,
+      deviceToken: multi.tokens.get(deviceC)!,
+      fingerprint: fingerprintC,
+    });
+    const tokenB = reEnrollPreProductionDevice(multi.identity, {
+      enrollmentId: "seat-reassignment-timeout-b",
+      deviceId: DEVICE_B,
+      seatId: seatOne,
+      userId: USER_B,
+      fingerprint: FINGERPRINT_B,
+    });
+    const tokenD = reEnrollPreProductionDevice(multi.identity, {
+      enrollmentId: "seat-reassignment-timeout-d",
+      deviceId: deviceD,
+      seatId: seatTwo,
+      userId: userD,
+      fingerprint: fingerprintD,
+    });
+    const cleanupGate = gated.holdAfterCommit((value) =>
+      cleanupPendingForDevice(value, DEVICE_A),
+    );
+    const openingB = authority.openConnection({
+      deviceToken: tokenB,
+      binding: "wss",
+      hello: hello({ deviceId: DEVICE_B, fingerprint: FINGERPRINT_B }),
+      channel: channel(),
+    });
+    await bounded(cleanupGate.entered, "timed-out reassignment cleanup");
+    await expect(
+      bounded(openingB, "first reassignment timeout"),
+    ).rejects.toMatchObject({ httpStatus: 503, closeCode: 1011 });
+    const openingD = await bounded(
+      authority.openConnection({
+        deviceToken: tokenD,
+        binding: "wss",
+        hello: hello({ deviceId: deviceD, fingerprint: fingerprintD }),
+        channel: channel(),
+      }),
+      "operation after timed-out slot release",
+    );
+    authority.assertConnectionOutbound(openingD.connectionId);
+    await expect(
+      bounded(
+        authority.openConnection({
+          deviceToken: tokenB,
+          binding: "wss",
+          hello: hello({ deviceId: DEVICE_B, fingerprint: FINGERPRINT_B }),
+          channel: channel(),
+        }),
+        "bounded reassignment retry timeout",
+      ),
+    ).rejects.toMatchObject({ httpStatus: 503, closeCode: 1011 });
+    await expect(
+      authority.openConnection({
+        deviceToken: tokenB,
+        binding: "wss",
+        hello: hello({ deviceId: DEVICE_B, fingerprint: FINGERPRINT_B }),
+        channel: channel(),
+      }),
+    ).rejects.toMatchObject({ httpStatus: 403, closeCode: 4403 });
+    expect(
+      fixture.snapshot().records.some(
+        (row) =>
+          row.namespace === "gateway.rbp-session/v1" &&
+          typeof row.value === "object" &&
+          row.value !== null &&
+          "deviceId" in row.value &&
+          row.value.deviceId === DEVICE_B,
+      ),
+    ).toBe(false);
+    cleanupGate.release();
+    await bounded(authority.close(), "timed-out reassignment drain on close");
+    expect(
+      fixture.snapshot().records.filter(
+        (row) =>
+          row.namespace === GATEWAY_RBP_UNREGISTER_NAMESPACE &&
+          row.key === sessionA.registered.payload.rsid,
+      ),
+    ).toHaveLength(1);
   });
 
   it("keeps stale active-version sessions untombstoned and refreshes HTTP authority", async () => {
