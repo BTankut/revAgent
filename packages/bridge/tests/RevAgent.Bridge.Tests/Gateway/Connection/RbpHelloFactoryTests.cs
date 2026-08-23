@@ -68,6 +68,7 @@ public sealed class RbpHelloFactoryTests
     [InlineData("partial_progress")]
     [InlineData("batch_atomic")]
     [InlineData("doc_context_cached_v1")]
+    [InlineData("unrecognized_connection_capability_v42")]
     public void HelloRejectsCarrierAndSessionCapabilityMixing(string capability)
     {
         Assert.Throws<ArgumentException>(

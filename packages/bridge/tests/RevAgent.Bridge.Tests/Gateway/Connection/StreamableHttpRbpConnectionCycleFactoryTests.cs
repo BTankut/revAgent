@@ -223,6 +223,47 @@ public sealed class StreamableHttpRbpConnectionCycleFactoryTests
     }
 
     [Fact]
+    public async Task FallbackDeniesAWithdrawnTransportCapabilityAfterGrant()
+    {
+        var events = new PushSseStream();
+        int requestNumber = 0;
+        var handler = new ScriptedHttpMessageHandler(
+            (_, _) => Task.FromResult(
+                Interlocked.Increment(ref requestNumber) == 1
+                    ? StreamableHttpResponses.Created(
+                        "conn-test",
+                        StreamableHttpRbpConnectionCycleTests.HelloAck(
+                            "conn-test"))
+                    : StreamableHttpResponses.Events(events)));
+        var factory = Factory(handler);
+
+        await using (IRbpConnectionCycle granted = await factory.OpenAsync(
+                         StreamableHttpRbpConnectionCycleTests.Endpoint(),
+                         StreamableHttpRbpConnectionCycleTests.Profile()))
+        {
+            Assert.Contains(
+                RbpTransportCapabilities.StreamableHttp,
+                granted.Acknowledgement.GrantedCapabilities);
+        }
+
+        int requestCountBeforeWithdrawal = handler.Requests.Count;
+        var withdrawn = new RbpHelloProfile(
+            "0.1.0-test",
+            "fixture-host",
+            "Windows test",
+            Array.Empty<string>());
+        RbpGatewayTransportException exception =
+            await Assert.ThrowsAsync<RbpGatewayTransportException>(
+                () => factory.OpenAsync(
+                    StreamableHttpRbpConnectionCycleTests.Endpoint(),
+                    withdrawn));
+
+        Assert.Equal(RbpGatewayFailureKind.Protocol, exception.Kind);
+        Assert.Equal(requestCountBeforeWithdrawal, handler.Requests.Count);
+        events.Dispose();
+    }
+
+    [Fact]
     public async Task OpaqueConnectionIdIsOneEscapedPathSegment()
     {
         const string connectionId = "opaque/segment with space";
