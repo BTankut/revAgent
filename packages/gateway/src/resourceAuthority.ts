@@ -16,7 +16,10 @@ import type { GatewayProtocolStore, ObjectStorePort } from "./store.js";
 const RESOURCE_NAMESPACE = "gateway_resource_v1";
 const SHA256_PATTERN = /^sha256:[0-9a-f]{64}$/u;
 const SHA256_HEX_PATTERN = /^[0-9a-f]{64}$/u;
+const SHA256_HEX_SENTINEL = "0".repeat(64);
 const SAFE_FILENAME_PATTERN = /^[^\\/:<>"|?*\u0000-\u001f\u007f]+$/u;
+const TEST_SCOPE_URI_COMPARISON_OBSERVER =
+  "__revAgentTestObserveScopedUriComparison";
 
 export const GW9_ALLOWED_UPLOAD_CONTENT_TYPES = Object.freeze([
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -290,11 +293,25 @@ function scopeHash(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
-function sameHash(left: string, right: string): boolean {
-  if (!SHA256_HEX_PATTERN.test(left) || !SHA256_HEX_PATTERN.test(right)) {
-    return false;
-  }
-  return timingSafeEqual(Buffer.from(left, "hex"), Buffer.from(right, "hex"));
+type ScopedUriComparisonSlot = "p" | "s" | "t" | "a";
+type ScopedUriComparisonObserver = (slot: ScopedUriComparisonSlot) => void;
+
+function sameHash(
+  expected: string,
+  supplied: string,
+  slot: ScopedUriComparisonSlot,
+  observer: ScopedUriComparisonObserver | undefined,
+): boolean {
+  const suppliedIsHash = SHA256_HEX_PATTERN.test(supplied);
+  const normalizedSupplied = suppliedIsHash ? supplied : SHA256_HEX_SENTINEL;
+  // All scope positions compare exactly 32 bytes, even when the supplied URI
+  // component is malformed. Never return before the fixed-width comparison.
+  const matches = timingSafeEqual(
+    Buffer.from(expected, "hex"),
+    Buffer.from(normalizedSupplied, "hex"),
+  );
+  observer?.(slot);
+  return matches && suppliedIsHash;
 }
 
 function assertEffectiveScope(
@@ -367,12 +384,10 @@ function parseScopedResourceUri(
   scope: GatewayResourceScope,
   effectiveMcpRequestScope: EffectiveMcpRequestScopeV1,
   uri: URL,
+  comparisonObserver: ScopedUriComparisonObserver | undefined,
 ): ParsedScopedResourceUri {
   assertScope(scope);
   assertEffectiveScope(scope, effectiveMcpRequestScope);
-  if (uri.protocol !== "revagent:") {
-    fail("not_found", "resource URI is outside the revAgent namespace");
-  }
   const parts = uri.pathname.split("/").filter(Boolean);
   const expectedPrincipal = scopeHash(scope.principalKey);
   const expectedSession = scopeHash(scope.mcpSessionId);
@@ -383,18 +398,32 @@ function parseScopedResourceUri(
   const parsedTenant = parts[5] ?? "";
   const parsedActor = parts[7] ?? "";
   const parsedRef = parts[9] ?? "";
-  if (
-    parts[0] !== "p" ||
-    parts[2] !== "s" ||
-    parts[4] !== "t" ||
-    parts[6] !== "a" ||
-    parts[8] !== "r" ||
-    !sameHash(expectedPrincipal, parsedPrincipal) ||
-    !sameHash(expectedSession, parsedSession) ||
-    !sameHash(expectedTenant, parsedTenant) ||
-    !sameHash(expectedActor, parsedActor) ||
-    !SHA256_HEX_PATTERN.test(parsedRef)
-  ) {
+  let invalid =
+    Number(uri.protocol !== "revagent:") |
+    Number(parts[0] !== "p") |
+    Number(parts[2] !== "s") |
+    Number(parts[4] !== "t") |
+    Number(parts[6] !== "a") |
+    Number(parts[8] !== "r") |
+    Number(!SHA256_HEX_PATTERN.test(parsedRef));
+  invalid |= Number(
+    !sameHash(
+      expectedPrincipal,
+      parsedPrincipal,
+      "p",
+      comparisonObserver,
+    ),
+  );
+  invalid |= Number(
+    !sameHash(expectedSession, parsedSession, "s", comparisonObserver),
+  );
+  invalid |= Number(
+    !sameHash(expectedTenant, parsedTenant, "t", comparisonObserver),
+  );
+  invalid |= Number(
+    !sameHash(expectedActor, parsedActor, "a", comparisonObserver),
+  );
+  if (invalid !== 0) {
     fail("scope_denied", "resource URI is not bound to the effective MCP scope");
   }
   if (uri.hostname === "artifact" && parts.length === 10) {
@@ -427,6 +456,7 @@ export class GatewayResourceAuthority {
   readonly #maxResultBytes: number;
   readonly #maxResultPageBytes: number;
   readonly #defaultTtlMs: number;
+  readonly #scopeUriComparisonObserver: ScopedUriComparisonObserver | undefined;
 
   public constructor(options: GatewayResourceAuthorityOptions) {
     this.#protocolStore = options.protocolStore;
@@ -437,6 +467,12 @@ export class GatewayResourceAuthority {
     this.#maxResultBytes = options.maxResultBytes ?? 32 * 1024 * 1024;
     this.#maxResultPageBytes = options.maxResultPageBytes ?? 512 * 1024;
     this.#defaultTtlMs = options.defaultTtlMs ?? 15 * 60 * 1_000;
+    const observer = Object.getOwnPropertyDescriptor(
+      options,
+      TEST_SCOPE_URI_COMPARISON_OBSERVER,
+    )?.value;
+    this.#scopeUriComparisonObserver =
+      typeof observer === "function" ? observer : undefined;
     for (const [name, value] of Object.entries({
       maxUploadBytes: this.#maxUploadBytes,
       maxResultBytes: this.#maxResultBytes,
@@ -626,7 +662,12 @@ export class GatewayResourceAuthority {
     effectiveMcpRequestScope: EffectiveMcpRequestScopeV1,
     uri: URL,
   ): Promise<GatewayResourceRead> {
-    const parsed = parseScopedResourceUri(scope, effectiveMcpRequestScope, uri);
+    const parsed = parseScopedResourceUri(
+      scope,
+      effectiveMcpRequestScope,
+      uri,
+      this.#scopeUriComparisonObserver,
+    );
     const record = await this.#readRecord(scope, parsed.kind, parsed.refHash);
     if (record.kind !== "artifact_ref") {
       if (record.kind !== "result_ref") {

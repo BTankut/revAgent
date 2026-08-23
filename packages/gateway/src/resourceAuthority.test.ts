@@ -20,6 +20,7 @@ import type { GatewayProtocolStore } from "./store.js";
 const invocationId = "0197a3c2-0000-7000-8000-000000000010";
 const artifactA = "0197a3c2-0000-7000-8000-000000000201";
 const artifactB = "0197a3c2-0000-7000-8000-000000000202";
+type ScopedUriComparisonSlot = "p" | "s" | "t" | "a";
 const scope: GatewayResourceScope = Object.freeze({
   tenantId: "tenant-1",
   actorId: "user-1",
@@ -100,15 +101,17 @@ describe("GW-9 scoped artifact and result authority", () => {
   let objectStore: MemoryObjectStore;
   let authority: GatewayResourceAuthority;
   let refSequence: number;
+  let comparisonSlots: ScopedUriComparisonSlot[];
 
   beforeEach(async () => {
     now = 10_000;
     refSequence = 0;
+    comparisonSlots = [];
     restartableStore = createRestartableTestStore();
     protocolStore = restartableStore.store;
     await protocolStore.open();
     objectStore = createMemoryObjectStore();
-    authority = new GatewayResourceAuthority({
+    const authorityOptions = {
       protocolStore,
       objectStore,
       now: () => now,
@@ -117,7 +120,17 @@ describe("GW-9 scoped artifact and result authority", () => {
       maxResultBytes: 128,
       maxResultPageBytes: 8,
       defaultTtlMs: 1_000,
-    });
+    };
+    Object.defineProperty(
+      authorityOptions,
+      "__revAgentTestObserveScopedUriComparison",
+      {
+        configurable: true,
+        enumerable: false,
+        value: (slot: ScopedUriComparisonSlot) => comparisonSlots.push(slot),
+      },
+    );
+    authority = new GatewayResourceAuthority(authorityOptions);
   });
 
   it("uploads an allowlisted CSV and gives a file-aware executor bytes, never a path", async () => {
@@ -224,20 +237,31 @@ describe("GW-9 scoped artifact and result authority", () => {
     });
     const objectGet = vi.spyOn(objectStore, "get");
     const transact = vi.spyOn(protocolStore, "transact");
-    for (const denied of [
-      { ...scope, actorId: "user-2" },
-      { ...scope, principalKey: "tenant-1:user-2" },
-      { ...scope, mcpSessionId: "mcp-session-2" },
-    ]) {
+    const uriParts = new URL(ref.uri).pathname.split("/");
+    const deniedUris = [
+      { label: "malformed", index: 1, value: "invalid-scope-label" },
+      { label: "principal", index: 2, value: "f".repeat(64) },
+      { label: "session", index: 4, value: "f".repeat(64) },
+      { label: "tenant", index: 6, value: "f".repeat(64) },
+      { label: "actor", index: 8, value: "f".repeat(64) },
+    ];
+    for (const denied of deniedUris) {
+      const deniedUri = new URL(ref.uri);
+      const parts = [...uriParts];
+      parts[denied.index] = denied.value;
+      deniedUri.pathname = parts.join("/");
+      comparisonSlots = [];
       await expectResourceError(
         authority.readResource(
-          denied,
-          effectiveScopeFor(denied),
-          new URL(ref.uri),
+          scope,
+          effectiveMcpRequestScope,
+          deniedUri,
         ),
         "scope_denied",
       );
+      expect(comparisonSlots).toEqual(["p", "s", "t", "a"]);
     }
+    comparisonSlots = [];
     await expectResourceError(
       authority.readResource(
         { ...scope, tenantId: "tenant-2" },
@@ -246,9 +270,11 @@ describe("GW-9 scoped artifact and result authority", () => {
       ),
       "scope_denied",
     );
+    expect(comparisonSlots).toEqual(["p", "s", "t", "a"]);
     expect(objectGet).not.toHaveBeenCalled();
     expect(transact).not.toHaveBeenCalled();
 
+    comparisonSlots = [];
     await expectResourceError(
       authority.readResource(
         scope,
@@ -257,6 +283,7 @@ describe("GW-9 scoped artifact and result authority", () => {
       ),
       "scope_denied",
     );
+    expect(comparisonSlots).toEqual(["p", "s", "t", "a"]);
     expect(objectGet).not.toHaveBeenCalled();
     expect(transact).not.toHaveBeenCalled();
 
