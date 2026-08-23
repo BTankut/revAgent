@@ -3,6 +3,7 @@ import type { CaseControlStep } from "./casePrograms.js";
 import { createHash } from "node:crypto";
 import { request as httpsRequest } from "node:https";
 import type { TLSSocket } from "node:tls";
+import type { JsonValue } from "./processHarness.js";
 
 /**
  * The real-trio case executor deliberately has a smaller contract than the
@@ -42,6 +43,172 @@ export function realTrioNorthToolForCase(
   return REAL_TRIO_NORTH_CASE_TOOL_MAP[caseId];
 }
 
+export const REAL_TRIO_CASE_MAPPING_SCHEMA = "rbp-real-trio-case-mapping/v1" as const;
+
+export type RealTrioMappedOperation =
+  | "audited_readiness"
+  | "fixture_fault"
+  | "north_tool_call"
+  | "north_confirm_commit"
+  | "public_audit_poll"
+  | "supervisor_restart"
+  | "raw_binding";
+
+export interface RealTrioCaseSemanticMapping {
+  readonly schemaVersion: typeof REAL_TRIO_CASE_MAPPING_SCHEMA;
+  readonly caseId: keyof typeof REAL_TRIO_NORTH_CASE_TOOL_MAP;
+  readonly operations: readonly RealTrioMappedOperation[];
+  /** Frozen simulator controls are intentionally never an execution route. */
+  readonly rejectedFrozenActions: readonly string[];
+}
+
+/**
+ * Approved semantic substitutions for the real-worker cases.  This is not a
+ * generic case-program interpreter: every mapping is deliberately closed to
+ * the four named cases and exposes only public Gateway, fixture, binding, or
+ * supervisor operations.  In particular, no mapping grants a private worker
+ * journal, expiry, hold, or crash-latch mutation.
+ */
+export const REAL_TRIO_CASE_SEMANTIC_MAPPINGS = Object.freeze({
+  "O1-C28": Object.freeze({
+    schemaVersion: REAL_TRIO_CASE_MAPPING_SCHEMA,
+    caseId: "O1-C28",
+    operations: Object.freeze([
+      "audited_readiness", "fixture_fault", "north_tool_call",
+      "north_confirm_commit", "public_audit_poll",
+    ] as const),
+    rejectedFrozenActions: Object.freeze([
+      "open_session", "register_session", "start_heartbeat", "expire_pending",
+      "install_mutation_hold", "clear_mutation_hold", "dispatch_invoke",
+    ]),
+  }),
+  "O1-C29": Object.freeze({
+    schemaVersion: REAL_TRIO_CASE_MAPPING_SCHEMA,
+    caseId: "O1-C29",
+    operations: Object.freeze([
+      "audited_readiness", "fixture_fault", "north_tool_call",
+      "north_confirm_commit", "public_audit_poll", "supervisor_restart",
+    ] as const),
+    rejectedFrozenActions: Object.freeze([
+      "inject_crash", "restart_simulator", "journal_mutate", "crash_latch_mutate",
+      "dispatch_batch",
+    ]),
+  }),
+  "O1-C38": Object.freeze({
+    schemaVersion: REAL_TRIO_CASE_MAPPING_SCHEMA,
+    caseId: "O1-C38",
+    operations: Object.freeze([
+      "audited_readiness", "fixture_fault", "raw_binding", "public_audit_poll",
+    ] as const),
+    rejectedFrozenActions: Object.freeze(["dispatch_batch", "simulator_guarded_result"]),
+  }),
+  "O1-C39": Object.freeze({
+    schemaVersion: REAL_TRIO_CASE_MAPPING_SCHEMA,
+    caseId: "O1-C39",
+    operations: Object.freeze([
+      "audited_readiness", "north_tool_call", "public_audit_poll",
+    ] as const),
+    rejectedFrozenActions: Object.freeze([
+      "dispatch_payload_recovery", "resource_store_mutate", "guessed_result_recovery",
+    ]),
+  }),
+} satisfies Record<keyof typeof REAL_TRIO_NORTH_CASE_TOOL_MAP, RealTrioCaseSemanticMapping>);
+
+export function realTrioSemanticMappingForCase(
+  caseId: keyof typeof REAL_TRIO_NORTH_CASE_TOOL_MAP,
+): RealTrioCaseSemanticMapping {
+  return REAL_TRIO_CASE_SEMANTIC_MAPPINGS[caseId];
+}
+
+function objectRecord(value: unknown, label: string): Record<string, unknown> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`${label} must be an object`);
+  }
+  return value as Record<string, unknown>;
+}
+
+function mcpStructuredContent(response: unknown): Record<string, unknown> {
+  const envelope = objectRecord(response, "real trio MCP response");
+  const result = objectRecord(envelope.result, "real trio MCP response result");
+  return objectRecord(result.structuredContent, "real trio MCP structured content");
+}
+
+export interface RealTrioNorthToolCall {
+  readonly toolName: string;
+  readonly args: Readonly<Record<string, JsonValue>>;
+  readonly requestId: string;
+}
+
+export interface RealTrioNorthToolResult {
+  readonly preview: RealTrioNorthWireEvidence;
+  readonly commit: RealTrioNorthWireEvidence | null;
+  readonly state: string;
+  readonly requestId: string;
+}
+
+/**
+ * Executes a public MCP tool call and, only when Gateway requests it, the
+ * ordinary one-time confirmation re-invocation.  Confirmation material is
+ * consumed immediately and retained only as wire hashes.
+ */
+export async function callRealTrioNorthTool(input: {
+  readonly endpoint: string;
+  readonly certificateSha256: string;
+  readonly credential: RealTrioNorthCredential;
+  readonly effectiveMcpSessionId: string;
+  readonly call: RealTrioNorthToolCall;
+}): Promise<RealTrioNorthToolResult> {
+  const callRequest = Object.freeze({
+    jsonrpc: "2.0",
+    id: input.call.requestId,
+    method: "tools/call",
+    params: Object.freeze({ name: input.call.toolName, arguments: input.call.args }),
+  });
+  const preview = await callRealTrioNorthMcp({ ...input, request: callRequest });
+  const previewContent = mcpStructuredContent(preview.response);
+  const state = previewContent.state;
+  const requestId = previewContent.requestId;
+  if (typeof state !== "string" || typeof requestId !== "string") {
+    throw new Error("real trio MCP tool response lacks state or request id");
+  }
+  if (state !== "confirmation_required") {
+    return Object.freeze({ preview: preview.evidence, commit: null, state, requestId });
+  }
+  const confirmation = objectRecord(previewContent.confirmation, "real trio MCP confirmation");
+  const confirmToken = confirmation.confirmToken;
+  const originatingPreviewInvocationId = confirmation.originatingPreviewInvocationId;
+  if (typeof confirmToken !== "string" || confirmToken.length === 0 ||
+      typeof originatingPreviewInvocationId !== "string" || originatingPreviewInvocationId.length === 0) {
+    throw new Error("real trio MCP confirmation is malformed");
+  }
+  const commit = await callRealTrioNorthMcp({
+    ...input,
+    request: Object.freeze({
+      jsonrpc: "2.0",
+      id: `${input.call.requestId}-commit`,
+      method: "tools/call",
+      params: Object.freeze({
+        name: input.call.toolName,
+        arguments: Object.freeze({
+          ...input.call.args,
+          confirm_token: confirmToken,
+          originating_preview_invocation_id: originatingPreviewInvocationId,
+        }),
+      }),
+    }),
+  });
+  const committed = mcpStructuredContent(commit.response);
+  if (committed.state !== "completed" || typeof committed.requestId !== "string") {
+    throw new Error("real trio MCP confirmed tool call did not complete");
+  }
+  return Object.freeze({
+    preview: preview.evidence,
+    commit: commit.evidence,
+    state: "completed",
+    requestId: committed.requestId,
+  });
+}
+
 /** Bearer material is deliberately short-lived in the caller and never copied into evidence. */
 export interface RealTrioNorthCredential {
   readonly bearer: string;
@@ -62,6 +229,21 @@ export interface RealTrioNorthWireEvidence {
 
 function sha256(bytes: Uint8Array): `sha256:${string}` {
   return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+}
+
+/** Accepts one ordinary JSON reply or the single JSON message in a bounded MCP SSE reply. */
+function parseNorthMcpResponse(bytes: Buffer): unknown {
+  const text = bytes.toString("utf8");
+  if (text.length === 0) return null;
+  if (!text.startsWith("event:") && !text.startsWith("data:")) {
+    return JSON.parse(text) as unknown;
+  }
+  const data = text.split(/\r?\n/u)
+    .filter((line) => line.startsWith("data:"))
+    .map((line) => line.slice("data:".length).trim())
+    .filter((line) => line.length > 0);
+  if (data.length !== 1) throw new Error("real trio MCP SSE response must contain exactly one data message");
+  return JSON.parse(data[0]!) as unknown;
 }
 
 /** Exact, authenticated control payload for the public north bearer route. */
@@ -116,8 +298,7 @@ export async function callRealTrioNorthMcp(input: {
       response.on("end", () => {
         const bytes = Buffer.concat(chunks);
         try {
-          const text = bytes.toString("utf8");
-          const responseValue = text.length === 0 ? null : JSON.parse(text) as unknown;
+          const responseValue = parseNorthMcpResponse(bytes);
           resolve(Object.freeze({
             response: responseValue,
             evidence: Object.freeze({

@@ -51,6 +51,13 @@ export interface RealTrioSupervisorResult {
   readonly bridgeReadiness: JsonObject;
   readonly fixtureReadiness: JsonObject;
   readonly sessionReadiness: RealTrioSessionReadiness;
+  /** Fixture-only fault/evidence route; it never reaches the C# worker control channel. */
+  readonly fixtureControl: (
+    action: "plan_fault" | "release_stall" | "snapshot_evidence",
+    fields?: Readonly<Record<string, JsonValue>>,
+  ) => Promise<JsonValue>;
+  /** Tenant-scoped, public and redacted audit correlation for real case assertions. */
+  readonly readRealCaseAudit: () => Promise<JsonObject>;
   /** Terminates the actual worker process, then relaunches its exact command/journal configuration. */
   readonly restartBridge: () => Promise<RealTrioSessionReadiness>;
   readonly stop: () => Promise<void>;
@@ -688,6 +695,16 @@ export async function startRealTrioSupervisor(input: RealTrioSupervisorLaunch): 
           });
           return sessionReadiness;
         };
+        const fixtureControl = async (
+          action: "plan_fault" | "release_stall" | "snapshot_evidence",
+          fields: Readonly<Record<string, JsonValue>> = {},
+        ): Promise<JsonValue> => await fixture.request(action, fields);
+        const readRealCaseAudit = async (): Promise<JsonObject> => await publicGatewayControl(
+          endpoint,
+          input.gatewayControlToken,
+          certificateSha256,
+          { action: "read_real_case_audit", tenantId: "conformance" },
+        );
         let stopped = false;
         const stop = async (): Promise<void> => {
           if (stopped) return;
@@ -713,6 +730,8 @@ export async function startRealTrioSupervisor(input: RealTrioSupervisorLaunch): 
         bridgeReadiness: bridge.readiness,
         fixtureReadiness: fixture.readiness,
         sessionReadiness,
+        fixtureControl,
+        readRealCaseAudit,
         restartBridge,
         stop,
         });

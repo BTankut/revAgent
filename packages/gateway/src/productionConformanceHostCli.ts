@@ -214,7 +214,21 @@ export async function runProductionConformanceHostCli(args: readonly string[]): 
           scopes: ["mcp:tools"],
           resource: new URL("https://127.0.0.1/mcp"),
         };
-        return Object.freeze({ authInfo, authContext: outcome.value, principalKey: outcome.value.principalKey });
+        // The loopback bearer is issued for this fixed test MCP client.  Bind
+        // the callback context to that client before the north endpoint's
+        // normal principal/client consistency check; no identity-port state is
+        // changed and the token remains outside all emitted evidence.
+        return Object.freeze({
+          authInfo,
+          authContext: Object.freeze({
+            ...outcome.value,
+            session: Object.freeze({
+              ...outcome.value.session,
+              oauthClientId: "conformance-loopback",
+            }),
+          }),
+          principalKey: outcome.value.principalKey,
+        });
       },
     },
   });

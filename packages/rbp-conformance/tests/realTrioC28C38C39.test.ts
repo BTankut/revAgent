@@ -8,7 +8,9 @@ import {
   callRealTrioNorthMcp,
   issueNorthCredentialControlPayload,
   REAL_TRIO_NORTH_CASE_TOOL_MAP,
+  REAL_TRIO_CASE_SEMANTIC_MAPPINGS,
   realTrioNorthToolForCase,
+  realTrioSemanticMappingForCase,
   realTrioCaseControlGaps,
 } from "../src/realTrioCaseDriver.js";
 
@@ -23,6 +25,31 @@ describe("WP-12 real-trio C28/C38/C39 case-driver admission", () => {
     for (const caseId of ["O1-C28", "O1-C29", "O1-C38", "O1-C39"] as const) {
       expect(realTrioNorthToolForCase(caseId)).toBe(REAL_TRIO_NORTH_CASE_TOOL_MAP[caseId]);
     }
+  });
+
+  it("maps frozen controls to audited public routes and rejects private worker mutations", () => {
+    expect(REAL_TRIO_CASE_SEMANTIC_MAPPINGS).toEqual({
+      "O1-C28": expect.objectContaining({
+        operations: ["audited_readiness", "fixture_fault", "north_tool_call", "north_confirm_commit", "public_audit_poll"],
+      }),
+      "O1-C29": expect.objectContaining({
+        operations: ["audited_readiness", "fixture_fault", "north_tool_call", "north_confirm_commit", "public_audit_poll", "supervisor_restart"],
+      }),
+      "O1-C38": expect.objectContaining({
+        operations: ["audited_readiness", "fixture_fault", "raw_binding", "public_audit_poll"],
+      }),
+      "O1-C39": expect.objectContaining({
+        operations: ["audited_readiness", "north_tool_call", "public_audit_poll"],
+      }),
+    });
+    const serialized = JSON.stringify(REAL_TRIO_CASE_SEMANTIC_MAPPINGS);
+    expect(serialized).toContain("journal_mutate");
+    expect(serialized).toContain("crash_latch_mutate");
+    expect(serialized).toContain("resource_store_mutate");
+    expect(REAL_TRIO_CASE_SEMANTIC_MAPPINGS["O1-C28"].operations).not.toContain("supervisor_restart");
+    expect(realTrioSemanticMappingForCase("O1-C39")).toBe(
+      REAL_TRIO_CASE_SEMANTIC_MAPPINGS["O1-C39"],
+    );
   });
   it("uses only the production Gateway, real C# worker, and loopback fixture identities", () => {
     expect(REAL_TRIO_COMPONENTS).toEqual([
