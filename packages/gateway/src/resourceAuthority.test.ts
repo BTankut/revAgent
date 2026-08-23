@@ -84,6 +84,32 @@ function descriptor(
   };
 }
 
+function chunkedDescriptor(
+  artifactId: string,
+  artifactIndex: number,
+  bytes: Uint8Array,
+  filename: string,
+  totalChunks: number,
+): ArtifactDescriptor {
+  return {
+    ...descriptor(artifactId, artifactIndex, bytes, filename),
+    total_chunks: totalChunks,
+  };
+}
+
+function splitArtifactChunks(
+  artifactId: string,
+  artifactIndex: number,
+  bytes: Uint8Array,
+  chunkSize: number,
+): readonly RbpStreamChunk[] {
+  const chunks: RbpStreamChunk[] = [];
+  for (let start = 0, index = 0; start < bytes.byteLength; start += chunkSize, index += 1) {
+    chunks.push(artifactChunk(artifactId, artifactIndex, bytes.slice(start, start + chunkSize), index));
+  }
+  return chunks;
+}
+
 function expectResourceError(
   operation: Promise<unknown>,
   code: GatewayResourceError["code"],
@@ -481,6 +507,197 @@ describe("GW-9 scoped artifact and result authority", () => {
     await expect(authority.recoverAll({ scope, effectiveMcpRequestScope })).resolves.toEqual([]);
     expect(objectStore.keys()).toEqual([]);
     expect(restartableStore.snapshot().records.filter((row) => row.namespace.startsWith("gateway.carrier") || row.namespace === "gateway.resource-set/v1")).toEqual([]);
+  });
+
+  it("serializes concurrent carrier replays onto one durable identity and rejects a terminal conflict", async () => {
+    const bytes = new Uint8Array([3, 1, 4, 1]);
+    const input = {
+      scope,
+      effectiveMcpRequestScope,
+      rsid: "rsid-concurrent-one-set",
+      invocationId,
+      chunks: [artifactChunk(artifactA, 0, bytes)],
+      manifest: {
+        kind: "artifact_result" as const,
+        descriptors: [descriptor(artifactA, 0, bytes, "one.png")],
+        artifactReferences: [{ artifact_id: artifactA, artifact_index: 0 }],
+      },
+    };
+    const [left, right] = await Promise.all([
+      authority.ingestRbpArtifactCarrier(input),
+      authority.ingestRbpArtifactCarrier(input),
+    ]);
+    expect(left).toHaveLength(1);
+    expect(right).toHaveLength(1);
+    expect(left[0]!.refId).toBe(right[0]!.refId);
+    const sets = restartableStore.snapshot().records.filter((row) => row.namespace === "gateway.resource-set/v1");
+    expect(sets).toHaveLength(1);
+    expect(sets[0]!.value).toMatchObject({ state: "active", rsid: input.rsid, invocationId });
+    expect(restartableStore.snapshot().records.filter((row) => row.namespace === "gateway.carrier-identity/v1")).toHaveLength(1);
+
+    await expectResourceError(authority.ingestRbpArtifactCarrier({
+      ...input,
+      manifest: {
+        ...input.manifest,
+        descriptors: [descriptor(artifactA, 0, bytes, "conflict.png")],
+      },
+    }), "incomplete");
+    expect(restartableStore.snapshot().records.filter((row) => row.namespace === "gateway_resource_v1")).toHaveLength(1);
+  });
+
+  it("requires contiguous multi-chunk receipts with terminal count and digest before publication", async () => {
+    const bytes = new Uint8Array([10, 11, 12, 13, 14, 15]);
+    const chunks = splitArtifactChunks(artifactA, 0, bytes, 2);
+    const manifest = {
+      kind: "artifact_result" as const,
+      descriptors: [chunkedDescriptor(artifactA, 0, bytes, "multi.png", chunks.length)],
+      artifactReferences: [{ artifact_id: artifactA, artifact_index: 0 }],
+    };
+    const refs = await authority.ingestRbpArtifactCarrier({
+      scope,
+      effectiveMcpRequestScope,
+      rsid: "rsid-multi-chunk",
+      invocationId,
+      chunks,
+      manifest,
+    });
+    expect(refs).toHaveLength(1);
+    const durableChunks = restartableStore.snapshot().records.filter((row) => row.namespace === "gateway.carrier-chunk/v1");
+    expect(durableChunks).toHaveLength(3);
+    expect(durableChunks.map((row) => row.value)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ chunkIndex: 0, sequence: 0, digest: sha256(bytes.slice(0, 2)) }),
+      expect.objectContaining({ chunkIndex: 1, sequence: 1, digest: sha256(bytes.slice(2, 4)) }),
+      expect.objectContaining({ chunkIndex: 2, sequence: 2, digest: sha256(bytes.slice(4, 6)) }),
+    ]));
+
+    await expectResourceError(authority.ingestRbpArtifactCarrier({
+      scope,
+      effectiveMcpRequestScope,
+      rsid: "rsid-multi-bad-count",
+      invocationId,
+      chunks,
+      manifest: { ...manifest, descriptors: [chunkedDescriptor(artifactA, 0, bytes, "bad.png", 2)] },
+    }), "incomplete");
+    await expectResourceError(authority.ingestRbpArtifactCarrier({
+      scope,
+      effectiveMcpRequestScope,
+      rsid: "rsid-multi-gap",
+      invocationId,
+      chunks: [chunks[0]!, chunks[2]!],
+      manifest,
+    }), "incomplete");
+  });
+
+  it("keeps terminal-less receipts private across restart and fences cleanup from a later stage", async () => {
+    const bytes = new Uint8Array([7, 7, 7]);
+    const setId = "0197a3c2-0000-7000-8000-000000000077";
+    const staged = {
+      scope,
+      effectiveMcpRequestScope,
+      setId,
+      rsid: "rsid-terminal-less",
+      invocationId,
+      streamDigest: createHash("sha256").update("artifact:terminal-less").digest("hex"),
+      chunkIndex: 0,
+      sequence: 0,
+      bytes,
+      digest: sha256(bytes),
+      streamId: "artifact:terminal-less",
+      contentType: "image/png",
+      artifactId: "terminal-less",
+      artifactIndex: 0,
+    } as const;
+    await authority.stageChunk(staged);
+    const restarted = restartableStore.restart();
+    await restarted.open();
+    const recovered = new GatewayResourceAuthority({ protocolStore: restarted, objectStore, now: () => now, newRefId: () => "unused" });
+    await expect(recovered.recoverAll({ scope, effectiveMcpRequestScope })).resolves.toEqual([]);
+    expect(objectStore.keys()).toEqual([]);
+    expect(restartableStore.snapshot().records.filter((row) => row.namespace === "gateway_resource_v1")).toEqual([]);
+    // A legitimate replay may begin a new private set only after the old
+    // terminal-less set was durably removed; it still cannot resurrect a ref.
+    await expect(recovered.stageChunk(staged)).resolves.toBeUndefined();
+    expect(restartableStore.snapshot().records.filter((row) => row.namespace === "gateway_resource_v1")).toEqual([]);
+  });
+
+  it("keeps A/B object-store faults private and restart recovery only publishes after the final object verifies", async () => {
+    const bytes = new Uint8Array([9, 8, 7]);
+    const direct = {
+      scope,
+      effectiveMcpRequestScope,
+      setId: "0197a3c2-0000-7000-8000-000000000088",
+      rsid: "rsid-stage-a-fault",
+      invocationId,
+      streamDigest: createHash("sha256").update("artifact:stage-a").digest("hex"),
+      chunkIndex: 0,
+      sequence: 0,
+      bytes,
+      digest: sha256(bytes),
+      streamId: "artifact:stage-a",
+      contentType: "image/png",
+      artifactId: "stage-a",
+      artifactIndex: 0,
+    } as const;
+    vi.spyOn(objectStore, "put").mockResolvedValueOnce({ ok: false, port: "object_store", code: "unavailable", message: "stage A object fault" });
+    await expectResourceError(authority.stageChunk(direct), "storage_unavailable");
+    expect(restartableStore.snapshot().records.filter((row) => row.namespace === "gateway_resource_v1")).toEqual([]);
+
+    vi.restoreAllMocks();
+    const input = {
+      scope,
+      effectiveMcpRequestScope,
+      rsid: "rsid-stage-b-fault",
+      invocationId,
+      chunks: [artifactChunk(artifactA, 0, bytes)],
+      manifest: {
+        kind: "artifact_result" as const,
+        descriptors: [descriptor(artifactA, 0, bytes, "recovery.png")],
+        artifactReferences: [{ artifact_id: artifactA, artifact_index: 0 }],
+      },
+    };
+    const originalPut = objectStore.put.bind(objectStore);
+    vi.spyOn(objectStore, "put").mockImplementation(async (write) => {
+      if (write.contentType === "image/png") {
+        return { ok: false, port: "object_store", code: "unavailable", message: "stage B final object fault" } as const;
+      }
+      return originalPut(write);
+    });
+    await expectResourceError(authority.ingestRbpArtifactCarrier(input), "storage_unavailable");
+    expect(restartableStore.snapshot().records.filter((row) => row.namespace === "gateway_resource_v1")).toEqual([]);
+    const restarted = restartableStore.restart();
+    await restarted.open();
+    vi.restoreAllMocks();
+    const recovered = new GatewayResourceAuthority({ protocolStore: restarted, objectStore, now: () => now, newRefId: () => "recovered-ref" });
+    const refs = await recovered.recoverAll({ scope, effectiveMcpRequestScope });
+    expect(refs).toHaveLength(1);
+    await expect(recovered.readResource(scope, effectiveMcpRequestScope, new URL(refs[0]!.uri))).resolves.toMatchObject({ digest: sha256(bytes) });
+  });
+
+  it("isolates carrier refs across tenant, principal, and effective session boundaries", async () => {
+    const bytes = new Uint8Array([5, 4, 3]);
+    const refs = await authority.ingestRbpArtifactCarrier({
+      scope,
+      effectiveMcpRequestScope,
+      rsid: "rsid-isolation",
+      invocationId,
+      chunks: [artifactChunk(artifactA, 0, bytes)],
+      manifest: {
+        kind: "artifact_result",
+        descriptors: [descriptor(artifactA, 0, bytes, "isolation.png")],
+        artifactReferences: [{ artifact_id: artifactA, artifact_index: 0 }],
+      },
+    });
+    const denied = [
+      { ...scope, tenantId: "other-tenant", principalKey: "other-tenant:user-1" },
+      { ...scope, principalKey: "tenant-1:user-other", actorId: "user-other" },
+      { ...scope, mcpSessionId: "other-session" },
+    ];
+    for (const foreign of denied) {
+      await expectResourceError(
+        authority.readResource(foreign, effectiveScopeFor(foreign), new URL(refs[0]!.uri)),
+        "scope_denied",
+      );
+    }
   });
 
   it("rejects stream collision, missing sibling, and digest mismatch without publishing refs", async () => {
