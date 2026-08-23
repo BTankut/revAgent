@@ -90,6 +90,8 @@ export const GATEWAY_RBP_SESSION_NAMESPACE =
   "gateway.rbp-session/v1" as const;
 export const GATEWAY_RBP_UNREGISTER_NAMESPACE =
   "gateway.rbp-unregister/v1" as const;
+export const GATEWAY_RBP_SESSION_V2_NAMESPACE = "gateway.rbp-session/v2" as const;
+export const GATEWAY_MUTATION_RESOLUTION_NAMESPACE = "gateway.mutation-resolution/v1" as const;
 
 const RESUME_LIFETIME_MS = 24 * 60 * 60 * 1_000;
 const INVOCATION_TIMEOUT_MS = 120_000;
@@ -313,6 +315,21 @@ interface DurableRbpSession {
   /** Optional only for pre-WP-02 legacy rows. */
   readonly normalizedConflictIndex?: DurableNormalizedConflictIndex;
   readonly updatedAtMs: number;
+}
+
+interface DurableRbpSessionV2 {
+  readonly schema: typeof GATEWAY_RBP_SESSION_V2_NAMESPACE;
+  readonly tenantId: string;
+  readonly rsid: string;
+  readonly identity: Pick<DurableRbpSession, "userId" | "deviceId" | "seatId" | "identityAuthority">;
+  readonly lifecycle: Pick<DurableRbpSession, "sessionBindingId" | "sessionVersion" | "connectionId" | "binding" | "resumeTokenDigest" | "resumeExpiresAtMs" | "grantedCapabilities" | "connectionLifecycle" | "sessionLifecycle">;
+  readonly sequence: Pick<DurableRbpSession, "sequence" | "pending">;
+  readonly migration: {
+    readonly sourceVersionDigest: `sha256:${string}`;
+    readonly legacyDigest: `sha256:${string}`;
+    readonly counts: { readonly holds: number; readonly conflicts: number; readonly resolutions: number };
+    readonly deletionReceipt: { readonly state: "retained"; readonly verifiedAtMs: number | null };
+  };
 }
 
 type DurableEgressOperation =
@@ -7795,7 +7812,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       const holds = parseLegacyRecoveryHolds(recovery.value, rsid);
       // Two child writes per imported hold plus session and marker writes.
       // Refuse rather than relying on an adapter's transaction limit.
-      if (holds.length > 62) throw new Error("startup legacy import exceeds 128 write limit");
+      if (holds.length > 61) throw new Error("startup legacy import exceeds 128 write limit");
       const importedDigests: `sha256:${string}`[] = [];
       for (const legacy of holds) {
         if (legacy.state === "cleared" || legacy.state === "resolved_pending_bridge") {
@@ -7819,6 +7836,36 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         },
       };
       tx.stage({ namespace: GATEWAY_RBP_SESSION_NAMESPACE, key: rsid, value: asJson(nextSession), expect: { kind: "version", version: sessionStored.version } });
+      const v2: DurableRbpSessionV2 = {
+        schema: GATEWAY_RBP_SESSION_V2_NAMESPACE,
+        tenantId,
+        rsid,
+        identity: {
+          userId: session.userId,
+          deviceId: session.deviceId,
+          seatId: session.seatId,
+          identityAuthority: session.identityAuthority,
+        },
+        lifecycle: {
+          sessionBindingId: session.sessionBindingId,
+          sessionVersion: session.sessionVersion,
+          connectionId: session.connectionId,
+          binding: session.binding,
+          resumeTokenDigest: session.resumeTokenDigest,
+          resumeExpiresAtMs: session.resumeExpiresAtMs,
+          grantedCapabilities: session.grantedCapabilities,
+          connectionLifecycle: session.connectionLifecycle,
+          sessionLifecycle: session.sessionLifecycle,
+        },
+        sequence: { sequence: session.sequence, pending: session.pending },
+        migration: {
+          sourceVersionDigest: digest(canonicalizeJson(session as unknown as JsonValue)),
+          legacyDigest: facts.legacyDigest,
+          counts: { holds: facts.importedHoldCount, conflicts: facts.importedConflictCount, resolutions: facts.importedResolutionCount },
+          deletionReceipt: { state: "retained", verifiedAtMs: null },
+        },
+      };
+      tx.stage({ namespace: GATEWAY_RBP_SESSION_V2_NAMESPACE, key: rsid, value: asJson(v2), expect: { kind: "absent" } });
       const cutover: DurableHoldCutover = {
         schema: GATEWAY_HOLD_CUTOVER_NAMESPACE,
         tenantId,
