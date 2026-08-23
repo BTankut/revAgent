@@ -11,7 +11,7 @@ import {
 import type { AuthContext } from "./authContext.js";
 import type { GatewayJsonValue } from "./dispatch.js";
 import type { EffectiveMcpRequestScopeV1 } from "./invocationContext.js";
-import type { GatewayProtocolStore, ObjectStorePort } from "./store.js";
+import type { GatewayProtocolStore, ObjectStorePort, StoreTransaction } from "./store.js";
 
 const RESOURCE_NAMESPACE = "gateway_resource_v1";
 /** DC-10 durable carrier state.  These are deliberately separate from the
@@ -242,6 +242,42 @@ export interface StageCarrierChunkInput {
   readonly expiresAtMs?: number;
 }
 
+/**
+ * The bridge only receives this callback inside the same durable transaction
+ * that records its carrier acknowledgement.  It is intentionally an internal
+ * integration seam, not a north-facing resource operation.
+ */
+export type BridgeCarrierCommit = (tx: StoreTransaction) => Promise<void> | void;
+
+export interface BridgeCarrierChunkInput {
+  readonly scope: GatewayResourceScope;
+  readonly effectiveMcpRequestScope: EffectiveMcpRequestScopeV1;
+  readonly rsid: string;
+  readonly invocationId: string;
+  readonly sequence: number;
+  readonly chunk: RbpStreamChunk;
+  readonly expiresAtMs?: number;
+  readonly commitBridge: BridgeCarrierCommit;
+}
+
+export interface BridgeCarrierTerminalInput {
+  readonly scope: GatewayResourceScope;
+  readonly effectiveMcpRequestScope: EffectiveMcpRequestScopeV1;
+  readonly rsid: string;
+  readonly invocationId: string;
+  readonly manifest: Extract<TerminalStreamManifest, { kind: "artifact_result" }>;
+  readonly commitBridge: BridgeCarrierCommit;
+}
+
+export interface BridgeChunkedResultTerminalInput {
+  readonly scope: GatewayResourceScope;
+  readonly effectiveMcpRequestScope: EffectiveMcpRequestScopeV1;
+  readonly rsid: string;
+  readonly invocationId: string;
+  readonly manifest: Extract<TerminalStreamManifest, { kind: "chunked_result" }>;
+  readonly commitBridge: BridgeCarrierCommit;
+}
+
 type CarrierSetState = "declared" | "assembling" | "verified" | "active" | "cleanup_pending" | "gc_claimed";
 const CARRIER_MAX_RECEIPTS = 1_024;
 type CarrierMemberState = "intent" | "verified" | "active";
@@ -277,7 +313,7 @@ interface CarrierTerminalRecord {
   readonly setId: string;
   readonly rsid: string;
   readonly invocationId: string;
-  readonly manifest: Extract<TerminalStreamManifest, { kind: "artifact_result" }>;
+  readonly manifest: TerminalStreamManifest;
 }
 
 interface CarrierChunkRecord {
@@ -495,6 +531,28 @@ function decodeCarrierChunk(chunk: RbpStreamChunk): Uint8Array {
   return new Uint8Array(decoded);
 }
 
+function isGatewayJsonValue(value: unknown, seen = new WeakSet<object>()): value is GatewayJsonValue {
+  if (value === null || typeof value === "string" || typeof value === "boolean") return true;
+  if (typeof value === "number") return Number.isFinite(value);
+  if (typeof value !== "object" || seen.has(value)) return false;
+  seen.add(value);
+  const valid = Array.isArray(value)
+    ? value.every((item) => isGatewayJsonValue(item, seen))
+    : Object.entries(value).every(([key, item]) => key.length > 0 && isGatewayJsonValue(item, seen));
+  seen.delete(value);
+  return valid;
+}
+
+function parseCarrierJson(bytes: Uint8Array): GatewayJsonValue {
+  try {
+    const value: unknown = JSON.parse(Buffer.from(bytes).toString("utf8"));
+    if (!isGatewayJsonValue(value)) throw new Error("not JSON");
+    return structuredClone(value);
+  } catch {
+    fail("protocol_fault", "chunked result bytes are not a bounded JSON value");
+  }
+}
+
 function recordKey(
   scope: GatewayResourceScope,
   kind: GatewayResourceKind,
@@ -693,6 +751,73 @@ export class GatewayResourceAuthority {
     if (this.#gcOwnerId.length < 1 || this.#gcOwnerId.length > 512 || /[\u0000\r\n]/u.test(this.#gcOwnerId)) {
       throw new RangeError("gcOwnerId must be a bounded non-empty string");
     }
+  }
+
+  /**
+   * A capability is not evidence of a carrier.  The bridge may grant carrier
+   * capabilities only when this exact authority owns its exact protocol store
+   * and has a non-stub object-store port.  No serving path calls this as a
+   * production readiness assertion.
+   */
+  public isBridgeCarrierReady(protocolStore: GatewayProtocolStore): boolean {
+    return this.#protocolStore === protocolStore && this.#objectStore.kind !== "unavailable";
+  }
+
+  /** Durable receipt/ack plus Bridge inbound sequence in one Tx-B commit. */
+  public async acceptBridgeChunk(input: BridgeCarrierChunkInput): Promise<void> {
+    assertScope(input.scope);
+    assertEffectiveScope(input.scope, input.effectiveMcpRequestScope);
+    assertCarrierId("rsid", input.rsid);
+    assertCarrierId("invocationId", input.invocationId);
+    const chunk = input.chunk;
+    const bytes = decodeCarrierChunk(chunk);
+    const setId = await this.#setIdFor(
+      input.scope,
+      input.rsid,
+      input.invocationId,
+      input.expiresAtMs,
+    );
+    await this.#persistCarrierChunk({
+      scope: input.scope,
+      effectiveMcpRequestScope: input.effectiveMcpRequestScope,
+      setId,
+      rsid: input.rsid,
+      invocationId: input.invocationId,
+      streamDigest: carrierStreamDigest(chunk.stream_id),
+      chunkIndex: chunk.chunk_index,
+      sequence: input.sequence,
+      bytes,
+      digest: sha256(bytes),
+      streamId: chunk.stream_id,
+      contentType: chunk.content_type,
+      artifactId: (chunk as RbpStreamChunk & { artifact_id?: string }).artifact_id ?? null,
+      artifactIndex: (chunk as RbpStreamChunk & { artifact_index?: number }).artifact_index ?? null,
+      expiresAtMs: input.expiresAtMs,
+    }, input.commitBridge);
+  }
+
+  /** Stage C atomically makes artifacts, terminal ack, and Bridge terminal visible. */
+  public async acceptBridgeTerminal(input: BridgeCarrierTerminalInput): Promise<readonly GatewayArtifactRef[]> {
+    assertScope(input.scope);
+    assertEffectiveScope(input.scope, input.effectiveMcpRequestScope);
+    assertCarrierId("rsid", input.rsid);
+    assertCarrierId("invocationId", input.invocationId);
+    const setId = await this.#setIdFor(input.scope, input.rsid, input.invocationId, undefined);
+    await this.#stageCarrierTerminal(input.scope, setId, input.rsid, input.invocationId, input.manifest);
+    return await this.#resumeCarrier(input.scope, input.effectiveMcpRequestScope, setId, input.commitBridge);
+  }
+
+  /** A chunked invocation result remains private until its terminal Tx-C commits. */
+  public async acceptBridgeChunkedResultTerminal(
+    input: BridgeChunkedResultTerminalInput,
+  ): Promise<GatewayJsonValue> {
+    assertScope(input.scope);
+    assertEffectiveScope(input.scope, input.effectiveMcpRequestScope);
+    assertCarrierId("rsid", input.rsid);
+    assertCarrierId("invocationId", input.invocationId);
+    const setId = await this.#setIdFor(input.scope, input.rsid, input.invocationId, undefined);
+    await this.#stageCarrierTerminal(input.scope, setId, input.rsid, input.invocationId, input.manifest);
+    return await this.#activateChunkedResult(input.scope, setId, input.manifest, input.commitBridge);
   }
 
   public async uploadArtifact(input: UploadArtifactInput): Promise<GatewayArtifactRef> {
@@ -1127,7 +1252,7 @@ export class GatewayResourceAuthority {
     fail("protocol_fault", "carrier identity allocation conflicts with durable state");
   }
 
-  async #persistCarrierChunk(input: StageCarrierChunkInput): Promise<void> {
+  async #persistCarrierChunk(input: StageCarrierChunkInput, commitBridge?: BridgeCarrierCommit): Promise<void> {
     const { scope, setId, rsid, invocationId } = input;
     const key = carrierChunkKey(setId, input.streamDigest, input.chunkIndex);
     const objectKey = carrierChunkObjectKey(scope, setId, input.streamDigest, input.chunkIndex);
@@ -1161,12 +1286,13 @@ export class GatewayResourceAuthority {
       const ackKey = carrierAckKey(scope, rsid, String(input.sequence)); const ack = await tx.read(CARRIER_ACK_NAMESPACE, ackKey);
       if (ack === null) tx.stage({ namespace: CARRIER_ACK_NAMESPACE, key: ackKey, value: { schemaVersion: "revagent-gateway-carrier/v1", setId, rsid, invocationId, seq: input.sequence, chunkIdentity: identity, tenantId: scope.tenantId, principalKey: scope.principalKey, effectiveMcpSessionId: scope.mcpSessionId, state: "chunk_durable" } as unknown as GatewayJsonValue, expect: { kind: "absent" } });
       else { const value = ack.value as { setId?: string; invocationId?: string; chunkIdentity?: string; state?: string; tenantId?: string; principalKey?: string; effectiveMcpSessionId?: string }; if (value.setId !== setId || value.invocationId !== invocationId || value.chunkIdentity !== identity || value.state !== "chunk_durable" || value.tenantId !== scope.tenantId || value.principalKey !== scope.principalKey || value.effectiveMcpSessionId !== scope.mcpSessionId) return false; }
+      await commitBridge?.(tx);
       return true;
     });
     if (!durable.ok || !durable.value) fail("storage_unavailable", "carrier chunk durability acknowledgement was not accepted");
   }
 
-  async #stageCarrierTerminal(scope: GatewayResourceScope, setId: string, rsid: string, invocationId: string, manifest: Extract<TerminalStreamManifest, { kind: "artifact_result" }>): Promise<void> {
+  async #stageCarrierTerminal(scope: GatewayResourceScope, setId: string, rsid: string, invocationId: string, manifest: TerminalStreamManifest): Promise<void> {
     const outcome = await this.#protocolStore.transact({ tenantId: scope.tenantId }, async (tx) => {
       const set = await tx.read<GatewayJsonValue>(RESOURCE_SET_NAMESPACE, carrierSetKey(setId));
       if (set === null) return false;
@@ -1179,7 +1305,81 @@ export class GatewayResourceAuthority {
     if (!outcome.ok || !outcome.value) fail("incomplete", "carrier terminal conflicts with durable state");
   }
 
-  async #resumeCarrier(scope: GatewayResourceScope, effective: EffectiveMcpRequestScopeV1, setId: string): Promise<readonly GatewayArtifactRef[]> {
+  /**
+   * Chunked JSON has no public object URI in WP-11.  Rebuild from the private
+   * receipts, validate the terminal digest, then commit terminal ack/set state
+   * with the Bridge state callback before returning its sanitized JSON value.
+   */
+  async #activateChunkedResult(
+    scope: GatewayResourceScope,
+    setId: string,
+    manifest: Extract<TerminalStreamManifest, { kind: "chunked_result" }>,
+    commitBridge: BridgeCarrierCommit,
+  ): Promise<GatewayJsonValue> {
+    const loaded = await this.#protocolStore.transact({ tenantId: scope.tenantId }, async (tx) => ({
+      set: await tx.read<GatewayJsonValue>(RESOURCE_SET_NAMESPACE, carrierSetKey(setId)),
+      chunks: await tx.list(CARRIER_CHUNK_NAMESPACE),
+    }));
+    if (!loaded.ok || loaded.value.set === null) fail("storage_unavailable", loaded.ok ? "chunked carrier set is absent" : loaded.message);
+    const set = loaded.value.set.value as unknown as CarrierSetRecord;
+    if (set.rsid === "" || set.tenantId !== scope.tenantId || set.principalKey !== scope.principalKey || set.effectiveMcpSessionId !== scope.mcpSessionId) {
+      fail("scope_denied", "chunked carrier set scope does not match");
+    }
+    let assembler = createStreamAssembler(set.invocationId, { maxInvocationBytes: this.#maxResultBytes });
+    const receipts = loaded.value.chunks
+      .map((row) => row.value as unknown as CarrierChunkRecord)
+      .filter((chunk) => chunk.setId === setId)
+      .sort((left, right) => left.streamId.localeCompare(right.streamId) || left.chunkIndex - right.chunkIndex);
+    const sequences = new Set<number>();
+    for (const chunk of receipts) {
+      if (chunk.state !== "durable" || chunk.streamId !== "result" || chunk.artifactId !== null || chunk.artifactIndex !== null || sequences.has(chunk.sequence)) {
+        fail("incomplete", "chunked result receipts are not one durable result stream");
+      }
+      sequences.add(chunk.sequence);
+      const object = await this.#objectStore.get({ tenantId: scope.tenantId, storageKey: chunk.storageKey });
+      if (!object.ok || object.value.bytes.byteLength !== chunk.byteSize || sha256(object.value.bytes) !== chunk.digest) {
+        fail("storage_unavailable", "chunked result receipt object is missing or corrupt");
+      }
+      const appended = appendStreamChunk(assembler, {
+        kind: "chunk",
+        invocation_id: chunk.invocationId,
+        stream_id: "result",
+        chunk_index: chunk.chunkIndex,
+        encoding: "base64",
+        content_type: chunk.contentType,
+        data: Buffer.from(object.value.bytes).toString("base64"),
+      });
+      assembler = appended.state;
+      if (appended.kind === "gap") fail("incomplete", "chunked result has a receipt gap");
+      if (appended.kind === "oversize") fail("oversize", "chunked result exceeds carrier limits");
+      if (appended.kind === "protocol_fault") fail("protocol_fault", `chunked result receipt invalid: ${appended.reason}`);
+    }
+    const finalized = finalizeStreams(assembler, manifest);
+    if (finalized.kind !== "complete" || finalized.streams.length !== 1) {
+      fail(finalized.kind === "incomplete" ? "incomplete" : finalized.kind === "oversize" ? "oversize" : "protocol_fault", "chunked result terminal is incomplete or invalid");
+    }
+    const result = parseCarrierJson(finalized.streams[0]!.bytes);
+    const committed = await this.#protocolStore.transact({ tenantId: scope.tenantId }, async (tx) => {
+      const setRow = await tx.read<GatewayJsonValue>(RESOURCE_SET_NAMESPACE, carrierSetKey(setId));
+      if (setRow === null) return false;
+      const current = setRow.value as unknown as CarrierSetRecord;
+      if (current.tenantId !== scope.tenantId || current.principalKey !== scope.principalKey || current.effectiveMcpSessionId !== scope.mcpSessionId || (current.state !== "declared" && current.state !== "active")) return false;
+      const ackKey = carrierAckKey(scope, current.rsid, "terminal");
+      const ack = await tx.read<GatewayJsonValue>(CARRIER_ACK_NAMESPACE, ackKey);
+      if (ack === null) {
+        tx.stage({ namespace: CARRIER_ACK_NAMESPACE, key: ackKey, value: { schemaVersion: "revagent-gateway-carrier/v1", setId, rsid: current.rsid, invocationId: current.invocationId, seq: "terminal", tenantId: scope.tenantId, principalKey: scope.principalKey, effectiveMcpSessionId: scope.mcpSessionId, state: "terminal_accepted" } as unknown as GatewayJsonValue, expect: { kind: "absent" } });
+      } else if ((ack.value as { setId?: string; state?: string }).setId !== setId || (ack.value as { state?: string }).state !== "terminal_accepted") {
+        return false;
+      }
+      if (current.state === "declared") tx.stage({ namespace: RESOURCE_SET_NAMESPACE, key: setRow.key, value: { ...current, state: "active" } as unknown as GatewayJsonValue, expect: { kind: "version", version: setRow.version } });
+      await commitBridge(tx);
+      return true;
+    });
+    if (!committed.ok || !committed.value) fail("storage_unavailable", committed.ok ? "chunked result stage C was not accepted" : committed.message);
+    return result;
+  }
+
+  async #resumeCarrier(scope: GatewayResourceScope, effective: EffectiveMcpRequestScopeV1, setId: string, commitBridge?: BridgeCarrierCommit): Promise<readonly GatewayArtifactRef[]> {
     assertEffectiveScope(scope, effective);
     const loaded = await this.#protocolStore.transact({ tenantId: scope.tenantId }, async (tx) => {
       const set = await tx.read<GatewayJsonValue>(RESOURCE_SET_NAMESPACE, carrierSetKey(setId));
@@ -1189,19 +1389,20 @@ export class GatewayResourceAuthority {
     if (!loaded.ok) fail("storage_unavailable", loaded.message);
     const { set, terminal } = loaded.value;
     if (set === undefined || terminal === undefined || set.tenantId !== scope.tenantId || set.principalKey !== scope.principalKey || set.effectiveMcpSessionId !== scope.mcpSessionId) fail("incomplete", "carrier set has no durable terminal");
+    if (terminal.manifest.kind !== "artifact_result") fail("protocol_fault", "artifact carrier resumed with a non-artifact terminal");
     if (set.state === "verified") {
       await this.#validateVerifiedCarrierSet(scope, set, terminal.manifest);
-      return this.#activateCarrierSet(scope, setId);
+      return this.#activateCarrierSet(scope, setId, commitBridge);
     }
-    if (set.state === "active") return this.#activateCarrierSet(scope, setId);
+    if (set.state === "active") return this.#activateCarrierSet(scope, setId, commitBridge);
     await this.#prepareCarrierSet(scope, set, terminal.manifest);
     await this.#verifyCarrierSet(scope, setId, terminal.manifest);
-    return this.#activateCarrierSet(scope, setId);
+    return this.#activateCarrierSet(scope, setId, commitBridge);
   }
 
   /** A restart after B must prove the private final objects before C, without
    * attempting the intent-only stream reconstruction path again. */
-  async #validateVerifiedCarrierSet(scope: GatewayResourceScope, set: CarrierSetRecord, manifest: CarrierTerminalRecord["manifest"]): Promise<void> {
+  async #validateVerifiedCarrierSet(scope: GatewayResourceScope, set: CarrierSetRecord, manifest: Extract<TerminalStreamManifest, { kind: "artifact_result" }>): Promise<void> {
     const members = await this.#protocolStore.transact({ tenantId: scope.tenantId }, async (tx) =>
       (await tx.list(RESOURCE_SET_MEMBER_NAMESPACE)).map((row) => row.value as unknown as CarrierMemberRecord)
         .filter((member) => member.setId === set.setId).sort((a, b) => a.memberIndex - b.memberIndex));
@@ -1215,7 +1416,7 @@ export class GatewayResourceAuthority {
   }
 
   /** Stage A: a single CAS creates every opaque member intent with the set transition. */
-  async #prepareCarrierSet(scope: GatewayResourceScope, set: CarrierSetRecord, manifest: CarrierTerminalRecord["manifest"]): Promise<void> {
+  async #prepareCarrierSet(scope: GatewayResourceScope, set: CarrierSetRecord, manifest: Extract<TerminalStreamManifest, { kind: "artifact_result" }>): Promise<void> {
     const outcome = await this.#protocolStore.transact({ tenantId: scope.tenantId }, async (tx) => {
       const row = await tx.read<GatewayJsonValue>(RESOURCE_SET_NAMESPACE, carrierSetKey(set.setId));
       if (row === null) return false;
@@ -1234,7 +1435,7 @@ export class GatewayResourceAuthority {
   }
 
   /** Stage B: only durable, contiguous receipts are read.  Nothing is public here. */
-  async #verifyCarrierSet(scope: GatewayResourceScope, setId: string, manifest: CarrierTerminalRecord["manifest"]): Promise<void> {
+  async #verifyCarrierSet(scope: GatewayResourceScope, setId: string, manifest: Extract<TerminalStreamManifest, { kind: "artifact_result" }>): Promise<void> {
     const durable = await this.#protocolStore.transact({ tenantId: scope.tenantId }, async (tx) =>
       (await tx.list(CARRIER_CHUNK_NAMESPACE)).map((row) => row.value as unknown as CarrierChunkRecord)
         .filter((chunk) => chunk.setId === setId && chunk.tenantId === scope.tenantId && chunk.principalKey === scope.principalKey && chunk.effectiveMcpSessionId === scope.mcpSessionId),
@@ -1294,7 +1495,7 @@ export class GatewayResourceAuthority {
   }
 
   /** Stage C: the set, all north metadata, terminal ack and members become visible in one transaction. */
-  async #activateCarrierSet(scope: GatewayResourceScope, setId: string): Promise<readonly GatewayArtifactRef[]> {
+  async #activateCarrierSet(scope: GatewayResourceScope, setId: string, commitBridge?: BridgeCarrierCommit): Promise<readonly GatewayArtifactRef[]> {
     const activated = await this.#protocolStore.transact({ tenantId: scope.tenantId }, async (tx) => {
       const setRow = await tx.read<GatewayJsonValue>(RESOURCE_SET_NAMESPACE, carrierSetKey(setId)); if (setRow === null) return false;
       const set = setRow.value as unknown as CarrierSetRecord;
@@ -1308,6 +1509,7 @@ export class GatewayResourceAuthority {
           const record = stored === null ? null : asJsonRecord(stored.value);
           if (record === null || record.kind !== "artifact_ref" || record.lifecycle !== "active" || record.refId !== member.refId || record.storageKey !== member.storageKey || record.digest !== member.digest || record.byteSize !== member.byteSize || record.carrierSetId !== setId) return false;
         }
+        await commitBridge?.(tx);
         return members.map(({ member }) => this.#carrierRef(scope, member, set.expiresAtMs));
       }
       if (set.state !== "verified" || members.length < 1 || members.some(({ member }) => member.state !== "verified")) return false;
@@ -1320,6 +1522,7 @@ export class GatewayResourceAuthority {
       if (ack === null) tx.stage({ namespace: CARRIER_ACK_NAMESPACE, key: ackKey, value: { schemaVersion: "revagent-gateway-carrier/v1", setId, rsid: set.rsid, invocationId: set.invocationId, seq: "terminal", tenantId: scope.tenantId, principalKey: scope.principalKey, effectiveMcpSessionId: scope.mcpSessionId, state: "terminal_accepted" } as unknown as GatewayJsonValue, expect: { kind: "absent" } });
       else { const value = ack.value as { setId?: string; rsid?: string; invocationId?: string; seq?: string; tenantId?: string; principalKey?: string; effectiveMcpSessionId?: string; state?: string }; if (value.setId !== setId || value.rsid !== set.rsid || value.invocationId !== set.invocationId || value.seq !== "terminal" || value.tenantId !== scope.tenantId || value.principalKey !== scope.principalKey || value.effectiveMcpSessionId !== scope.mcpSessionId || value.state !== "terminal_accepted") return false; }
       tx.stage({ namespace: RESOURCE_SET_NAMESPACE, key: setRow.key, value: { ...set, state: "active" } as unknown as GatewayJsonValue, expect: { kind: "version", version: setRow.version } });
+      await commitBridge?.(tx);
       return members.map(({ member }) => this.#carrierRef(scope, member, set.expiresAtMs));
     });
     if (activated.ok && activated.value !== false) return Object.freeze(activated.value);
