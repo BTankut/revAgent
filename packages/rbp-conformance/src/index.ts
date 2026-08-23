@@ -92,11 +92,13 @@ export { REAL_TRIO_SUPERVISOR_SCHEMA, startRealTrioSupervisor } from "./realTrio
 export type { RealTrioSupervisorLaunch, RealTrioSupervisorResult } from "./realTrioSupervisor.js";
 export {
   C957_REAL_TRIO_CONTROL_SURFACE,
+  REAL_TRIO_NORTH_CASE_TOOL_MAP,
   REAL_TRIO_CASE_DRIVER_CONTRACT,
   REAL_TRIO_COMPONENTS,
   RealTrioCaseControlSurfaceError,
   assertRealTrioCaseControlSurface,
   realTrioCaseControlGaps,
+  realTrioNorthToolForCase,
 } from "./realTrioCaseDriver.js";
 export type {
   RealTrioCaseComponent,

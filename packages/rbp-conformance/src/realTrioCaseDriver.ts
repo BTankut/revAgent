@@ -23,6 +23,25 @@ export type RealTrioCaseComponent = (typeof REAL_TRIO_COMPONENTS)[number];
 
 export const REAL_TRIO_NORTH_EVIDENCE_SCHEMA = "rbp-real-trio-north-evidence/v1" as const;
 
+/**
+ * The only north-tool admission mapping for the four frozen real cases.  It
+ * is descriptive rather than a control-plane substitute: the case program,
+ * its oracle, and the real worker/fixture remain authoritative.  Keeping the
+ * mapping here makes both carriers exercise one identical public MCP path.
+ */
+export const REAL_TRIO_NORTH_CASE_TOOL_MAP = Object.freeze({
+  "O1-C28": Object.freeze({ toolName: "conformance.fixture.c28_mutation", confirmation: true }),
+  "O1-C29": Object.freeze({ toolName: "conformance.fixture.c29_atomic_batch", confirmation: true }),
+  "O1-C38": Object.freeze({ toolName: "core.ui.state", confirmation: false }),
+  "O1-C39": Object.freeze({ toolName: "conformance.fixture.c39_multifile", confirmation: false }),
+} as const);
+
+export function realTrioNorthToolForCase(
+  caseId: keyof typeof REAL_TRIO_NORTH_CASE_TOOL_MAP,
+): (typeof REAL_TRIO_NORTH_CASE_TOOL_MAP)[keyof typeof REAL_TRIO_NORTH_CASE_TOOL_MAP] {
+  return REAL_TRIO_NORTH_CASE_TOOL_MAP[caseId];
+}
+
 /** Bearer material is deliberately short-lived in the caller and never copied into evidence. */
 export interface RealTrioNorthCredential {
   readonly bearer: string;

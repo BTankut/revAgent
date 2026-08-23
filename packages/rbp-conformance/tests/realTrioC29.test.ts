@@ -14,10 +14,12 @@ describe("WP-12 real-trio C29 crash/restart/redelivery admission", () => {
       component === "bridge_worker" && action === "inject_crash",
     )).toBe(true);
     expect(gaps.some(({ component, action }) =>
-      component === "supervisor" && action === "restart_component",
+      component === "bridge_worker" && action === "restart_simulator",
     )).toBe(true);
     expect(() => assertRealTrioCaseControlSurface("O1-C29", C957_REAL_TRIO_CONTROL_SURFACE))
       .toThrow(RealTrioCaseControlSurfaceError);
-    expect(JSON.stringify(gaps)).not.toMatch(/stub|simulator/u);
+    // The frozen program's historical action token is `restart_simulator`;
+    // admission must not manufacture a simulator *component* to satisfy it.
+    expect(gaps.map(({ component }) => component)).not.toContain("simulator");
   });
 });

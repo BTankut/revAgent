@@ -7,10 +7,23 @@ import {
   assertRealTrioCaseControlSurface,
   callRealTrioNorthMcp,
   issueNorthCredentialControlPayload,
+  REAL_TRIO_NORTH_CASE_TOOL_MAP,
+  realTrioNorthToolForCase,
   realTrioCaseControlGaps,
 } from "../src/realTrioCaseDriver.js";
 
 describe("WP-12 real-trio C28/C38/C39 case-driver admission", () => {
+  it("maps every frozen C28/C29/C38/C39 program to one public north tool for both carriers", () => {
+    expect(REAL_TRIO_NORTH_CASE_TOOL_MAP).toEqual({
+      "O1-C28": { toolName: "conformance.fixture.c28_mutation", confirmation: true },
+      "O1-C29": { toolName: "conformance.fixture.c29_atomic_batch", confirmation: true },
+      "O1-C38": { toolName: "core.ui.state", confirmation: false },
+      "O1-C39": { toolName: "conformance.fixture.c39_multifile", confirmation: false },
+    });
+    for (const caseId of ["O1-C28", "O1-C29", "O1-C38", "O1-C39"] as const) {
+      expect(realTrioNorthToolForCase(caseId)).toBe(REAL_TRIO_NORTH_CASE_TOOL_MAP[caseId]);
+    }
+  });
   it("uses only the production Gateway, real C# worker, and loopback fixture identities", () => {
     expect(REAL_TRIO_COMPONENTS).toEqual([
       "gateway_production_conformance",
@@ -43,10 +56,16 @@ describe("WP-12 real-trio C28/C38/C39 case-driver admission", () => {
       expect(gaps.length).toBeGreaterThan(0);
       expect(() => assertRealTrioCaseControlSurface(caseId, C957_REAL_TRIO_CONTROL_SURFACE))
         .toThrow(RealTrioCaseControlSurfaceError);
-      expect(gaps.some(({ component, action }) =>
-        component === "gateway_production_conformance" &&
-        ["dispatch_invoke", "dispatch_batch", "dispatch_payload_recovery"].includes(action),
-      )).toBe(true);
+      if (caseId === "O1-C38") {
+        expect(gaps.some(({ component, action }) =>
+          component === "public_binding" && action === "send_binding_frame",
+        )).toBe(true);
+      } else {
+        expect(gaps.some(({ component, action }) =>
+          component === "gateway_production_conformance" &&
+          ["dispatch_invoke", "dispatch_batch", "dispatch_payload_recovery"].includes(action),
+        )).toBe(true);
+      }
       expect(JSON.stringify(gaps)).not.toMatch(/stub|simulator/u);
     },
   );

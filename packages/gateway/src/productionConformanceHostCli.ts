@@ -5,8 +5,9 @@ import path from "node:path";
 import { GatewayBridgeSessionAuthority } from "./bridgeSession.js";
 import { GatewayResourceAuthority } from "./resourceAuthority.js";
 import { GatewayDispatcher } from "./dispatch.js";
-import { EntitledCatalogView, type CatalogEntry } from "./entitledRegistry.js";
+import { EntitledCatalogView } from "./entitledRegistry.js";
 import { GatewayToolRegistry, M2_BOOTSTRAP_TOOL_RECORDS } from "./registry.js";
+import { PRODUCTION_CONFORMANCE_TOOL_RECORDS, productionConformanceCatalog } from "./productionConformanceTools.js";
 import type { AuthInfo } from "@modelcontextprotocol/server";
 import type { IncomingMessage } from "node:http";
 import {
@@ -39,28 +40,6 @@ const REQUIRED_CONNECTION_CAPABILITIES = Object.freeze([
   "journal_v1",
   "chunked_results",
   "artifact_result_v1",
-]);
-
-const CONFORMANCE_NORTH_CATALOG: readonly CatalogEntry[] = Object.freeze([
-  Object.freeze({
-    name: "core.ui.state",
-    summary: "Read the current Revit user-interface state.",
-    namespace: "core",
-    version: "1.0.0",
-    tool: "get_ui_state",
-    module: "runtime" as const,
-    policyClass: "auto" as const,
-    mutationScopePolicy: "none" as const,
-    executor: "bridge" as const,
-    variants: Object.freeze([Object.freeze({
-      plane: "live" as const,
-      executor: "bridge" as const,
-      executorMethod: "get_ui_state",
-      schemaOverlay: null,
-      fidelityNotes: Object.freeze([]),
-    })]),
-    terms: Object.freeze(["core", "state", "ui"]),
-  }),
 ]);
 
 const REAL_CASE_AUDIT_SCHEMA = "revagent.wp12-real-case-audit/v1" as const;
@@ -181,8 +160,15 @@ export async function runProductionConformanceHostCli(args: readonly string[]): 
   });
   const ingress = createConformanceRbpIngressHost({ authority });
   const supporting = createConformanceSupportingPorts();
-  const registry = new GatewayToolRegistry(M2_BOOTSTRAP_TOOL_RECORDS);
-  const entitledCatalog = new EntitledCatalogView(CONFORMANCE_NORTH_CATALOG, () => true);
+  const registry = new GatewayToolRegistry([
+    ...M2_BOOTSTRAP_TOOL_RECORDS,
+    ...PRODUCTION_CONFORMANCE_TOOL_RECORDS,
+  ]);
+  const coreUiState = registry.require("core.ui.state");
+  const entitledCatalog = new EntitledCatalogView(
+    productionConformanceCatalog(coreUiState),
+    () => true,
+  );
   const dispatcher = new GatewayDispatcher(registry, [authority.createExecutor()], {
     eventSink: supporting.events,
     eventSource: {
