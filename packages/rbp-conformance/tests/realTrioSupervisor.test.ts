@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   assertProductionCredential,
-  assertDedicatedRealTrioComponentIds,
+  assertDedicatedRealTrioProcessComponents,
   bridgeEndpointForBinding,
   fixtureAttestationTokens,
   fixtureAttestedWorkerCommand,
@@ -58,8 +58,8 @@ describe("WP-12 dedicated real-trio process identity preflight", () => {
   } as const;
 
   it("rejects old simulator labels before any real process can launch", () => {
-    expect(() => assertDedicatedRealTrioComponentIds(launch)).not.toThrow();
-    expect(() => assertDedicatedRealTrioComponentIds({
+    expect(() => assertDedicatedRealTrioProcessComponents(launch)).not.toThrow();
+    expect(() => assertDedicatedRealTrioProcessComponents({
       ...launch,
       gatewayExpected: { component: "gateway_stub" },
     })).toThrow(/must declare/u);

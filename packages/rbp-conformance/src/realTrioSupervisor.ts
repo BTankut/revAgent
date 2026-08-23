@@ -3,14 +3,13 @@ import { readFileSync } from "node:fs";
 import { request as httpsRequest } from "node:https";
 import type { TLSSocket } from "node:tls";
 
+import { type JsonObject, type JsonValue, type ProcessTranscriptRecord } from "./processHarness.js";
 import {
-  StrictJsonlProcess,
-  StrictReadyProcess,
-  type JsonObject,
-  type JsonValue,
-  type ProcessTranscriptRecord,
-} from "./processHarness.js";
-import type { ProcessCommandDescriptor } from "./types.js";
+  RealTrioProcessHarness,
+  type RealTrioJsonlChild,
+  type RealTrioProcessCommand,
+  type RealTrioReadyChild,
+} from "./realTrioProcessHarness.js";
 import {
   assertRealBridgeWorkerExecutable,
   validateRealTrioAttestation,
@@ -25,11 +24,7 @@ export const REAL_TRIO_FAILURE_DIAGNOSTICS_SCHEMA =
 const MAX_REAL_TRIO_DIAGNOSTIC_RECORDS = 16;
 const MAX_REAL_TRIO_READINESS_TRACE = 64;
 
-export interface RealTrioSupervisorCommand {
-  readonly executable: string;
-  readonly args: readonly string[];
-  readonly workingDirectory: string;
-}
+export type RealTrioSupervisorCommand = RealTrioProcessCommand;
 
 export interface RealTrioSupervisorLaunch {
   readonly gateway: RealTrioSupervisorCommand;
@@ -50,7 +45,7 @@ export interface RealTrioSupervisorLaunch {
  * harness aliases remain implementation detail; these are the only accepted
  * real-process READY identities for WP-12.
  */
-export function assertDedicatedRealTrioComponentIds(input: RealTrioSupervisorLaunch): void {
+export function assertDedicatedRealTrioProcessComponents(input: RealTrioSupervisorLaunch): void {
   if (input.gatewayExpected.component !== "gateway_production_conformance" ||
       input.bridgeExpected.component !== "bridge_worker" ||
       input.fixtureExpected.component !== "addin_loopback_fixture") {
@@ -318,17 +313,6 @@ function sha256File(path: string): `sha256:${string}` {
   return `sha256:${createHash("sha256").update(readFileSync(path)).digest("hex")}`;
 }
 
-function command(input: RealTrioSupervisorCommand): ProcessCommandDescriptor {
-  return {
-    executable: input.executable,
-    args: [...input.args],
-    workingDirectory: input.workingDirectory,
-    environmentKeys: [],
-    readiness: { kind: "stdout_pattern", value: "ready", timeoutMs: 30_000 },
-    shutdown: { signal: "SIGTERM", timeoutMs: 10_000 },
-  };
-}
-
 function replaceTokens(input: RealTrioSupervisorCommand, values: Readonly<Record<string, string>>): RealTrioSupervisorCommand {
   const replace = (value: string): string => Object.entries(values).reduce((current, [token, replacement]) => current.replaceAll(`{{${token}}}`, replacement), value);
   return { executable: replace(input.executable), args: input.args.map(replace), workingDirectory: replace(input.workingDirectory) };
@@ -573,7 +557,7 @@ export function assertProductionCredential(
   }
 }
 
-function transcriptHash(process: StrictJsonlProcess | StrictReadyProcess, stream: "stdout" | "stderr"): `sha256:${string}` {
+function transcriptHash(process: RealTrioJsonlChild | RealTrioReadyChild, stream: "stdout" | "stderr"): `sha256:${string}` {
   const records = process.transcript.filter((record) => record.stream === stream);
   return `sha256:${createHash("sha256").update(stableJson(records)).digest("hex")}`;
 }
@@ -581,7 +565,7 @@ function transcriptHash(process: StrictJsonlProcess | StrictReadyProcess, stream
 function processIdentity(
   componentId: RealTrioProcessIdentity["componentId"],
   executablePath: string,
-  process: StrictJsonlProcess | StrictReadyProcess,
+  process: RealTrioJsonlChild | RealTrioReadyChild,
 ): RealTrioProcessIdentity {
   if (process.process.exitCode !== 0) {
     throw new Error(`real trio ${componentId} is not cleanly stopped`);
@@ -603,13 +587,12 @@ function processIdentity(
  * binding drivers against the Gateway endpoint advertised by the child.
  */
 export async function startRealTrioSupervisor(input: RealTrioSupervisorLaunch): Promise<RealTrioSupervisorResult> {
-  assertDedicatedRealTrioComponentIds(input);
+  assertDedicatedRealTrioProcessComponents(input);
+  const harness = new RealTrioProcessHarness();
   const bridgeExecutable = assertRealBridgeWorkerExecutable(input.bridgeWorker.executable);
-  const gateway = await StrictReadyProcess.start({
-    componentId: "gateway_stub",
-    command: command(input.gateway),
-    absoluteWorkingDirectory: input.gateway.workingDirectory,
-    useTestSignalProxy: true,
+  const gateway = await harness.startReady({
+    componentId: "gateway_production_conformance",
+    command: input.gateway,
     validateReadiness(value) {
       for (const [key, expected] of Object.entries(input.gatewayExpected)) {
         if (JSON.stringify(value[key]) !== JSON.stringify(expected)) throw new Error(`Gateway readiness ${key} is not exact`);
@@ -622,10 +605,9 @@ export async function startRealTrioSupervisor(input: RealTrioSupervisorLaunch): 
     const certificateSha256 = gateway.readiness.tlsCertificateSha256;
     if (typeof endpoint !== "string" || typeof certificateSha256 !== "string") throw new Error("Gateway readiness lacks endpoint pin");
     try {
-      const fixture = await StrictJsonlProcess.start({
+      const fixture = await harness.startJsonl({
         componentId: "addin_loopback_fixture",
-        command: command(input.fixture),
-        absoluteWorkingDirectory: input.fixture.workingDirectory,
+        command: input.fixture,
         expectedReadinessFields: input.fixtureExpected,
         // The real runtime must prove its post-registration cache update via
         // the fixture's advertised, strict control surface; accepting an
@@ -648,15 +630,14 @@ export async function startRealTrioSupervisor(input: RealTrioSupervisorLaunch): 
         );
         assertProductionCredential(credential, credentialRequest, endpoint);
         const fixtureBoundWorker = fixtureAttestedWorkerCommand(input.bridgeWorker, fixtureTokens);
-        let bridge = await StrictJsonlProcess.start({
-          componentId: "bridge_simulator",
-          command: command(replaceTokens({ ...fixtureBoundWorker, executable: bridgeExecutable }, {
+        let bridge = await harness.startJsonl({
+          componentId: "bridge_worker",
+          command: replaceTokens({ ...fixtureBoundWorker, executable: bridgeExecutable }, {
             gateway_endpoint: bridgeEndpointForBinding(endpoint, input.bridgeWorker.args),
             gateway_certificate_sha256: certificateSha256.replace("sha256:", ""),
             device_id: credential.deviceId,
             device_proof: credential.deviceProof,
-          })),
-          absoluteWorkingDirectory: input.bridgeWorker.workingDirectory,
+          }),
           expectedReadinessFields: input.bridgeExpected,
           requiredActions: ["shutdown"],
         });
@@ -689,15 +670,14 @@ export async function startRealTrioSupervisor(input: RealTrioSupervisorLaunch): 
           if (stoppedBridge.killEscalated || stoppedBridge.exitCode === 0) {
             throw new Error("real trio crash boundary did not observe an actual worker termination");
           }
-          bridge = await StrictJsonlProcess.start({
-            componentId: "bridge_simulator",
-            command: command(replaceTokens({ ...fixtureBoundWorker, executable: bridgeExecutable }, {
+          bridge = await harness.startJsonl({
+            componentId: "bridge_worker",
+            command: replaceTokens({ ...fixtureBoundWorker, executable: bridgeExecutable }, {
               gateway_endpoint: bridgeEndpointForBinding(endpoint, input.bridgeWorker.args),
               gateway_certificate_sha256: certificateSha256.replace("sha256:", ""),
               device_id: credential.deviceId,
               device_proof: credential.deviceProof,
-            })),
-            absoluteWorkingDirectory: input.bridgeWorker.workingDirectory,
+            }),
             expectedReadinessFields: input.bridgeExpected,
             requiredActions: ["shutdown"],
           });
