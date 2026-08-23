@@ -5,6 +5,7 @@ import {
   type GatewayServerHandle,
   type GatewayServerOptions,
 } from "./server.js";
+import type { FastifyInstance } from "fastify";
 
 /**
  * WP-12's distinct, explicitly non-production Gateway process composition.
@@ -15,6 +16,8 @@ export async function startProductionGatewayHost(input: {
   readonly server: Omit<GatewayServerOptions, "ports">;
   readonly ports: GatewayServerOptions["ports"];
   readonly authority: GatewayBridgeSessionAuthority;
+  /** Installed before listen by this conformance-only composition. */
+  readonly mountConformanceControl?: (app: FastifyInstance) => void;
   /** Deliberate, value-free admission token. No other host profile may use conformance ports. */
   readonly hostProfile: "production_conformance";
 }): Promise<GatewayServerHandle & { readonly ingress: ConformanceRbpIngressHost }> {
@@ -53,6 +56,7 @@ export async function startProductionGatewayHost(input: {
   const handle = await startGatewayServer({
     ...input.server,
     ports: { ...input.ports, rbpIngress: ingress },
+    beforeListen: input.mountConformanceControl,
   });
   return Object.freeze({ ...handle, ingress: ingress as ConformanceRbpIngressHost });
 }

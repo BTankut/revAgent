@@ -76,7 +76,10 @@ export function assertRealBridgeWorkerExecutable(
   }
   const normalized = realpathSync(executablePath);
   const base = path.basename(normalized).toLowerCase();
-  if (base !== "revagent-bridge.exe" && base !== "revagent-bridge") {
+  if (
+    base !== "revagent-bridge.exe" && base !== "revagent-bridge" &&
+    base !== "revagent.bridge.realworkerhost.exe" && base !== "revagent.bridge.realworkerhost"
+  ) {
     throw new Error("real Bridge worker executable identity is invalid");
   }
   if (!statSync(normalized).isFile()) {

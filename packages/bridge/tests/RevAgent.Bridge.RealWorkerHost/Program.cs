@@ -27,6 +27,7 @@ namespace RevAgent.Bridge.RealWorkerHost;
 internal static class Program
 {
     private const string TestProtectionScheme = "wp12-test-only/v1";
+    private const int MaxControlLineBytes = 65_536;
 
     public static async Task<int> Main(string[] args)
     {
@@ -41,6 +42,10 @@ internal static class Program
                 ready = true,
                 component = "bridge_worker",
                 contract = "wp12-real-worker-host/v1",
+                controlVersion = 1,
+                maxControlLineBytes = MaxControlLineBytes,
+                actions = new[] { "shutdown" },
+                pid = Environment.ProcessId,
                 bindings = new[] { options.Binding },
                 state_root_redacted = true,
                 program_data_touched = false,
@@ -49,10 +54,15 @@ internal static class Program
             })).ConfigureAwait(false);
 
             string? command = await Console.In.ReadLineAsync().ConfigureAwait(false);
-            if (!string.Equals(command, "{\"action\":\"shutdown\"}", StringComparison.Ordinal))
-            {
-                throw new InvalidOperationException("test host accepts only exact shutdown control");
-            }
+            if (command is null || Encoding.UTF8.GetByteCount(command) > MaxControlLineBytes)
+                throw new InvalidOperationException("test host control is missing or exceeds its fixed bound");
+            using JsonDocument control = JsonDocument.Parse(command);
+            JsonElement root = control.RootElement;
+            if (root.ValueKind != JsonValueKind.Object || !root.TryGetProperty("controlVersion", out JsonElement version) || version.GetInt32() != 1 ||
+                !root.TryGetProperty("id", out JsonElement id) || id.ValueKind != JsonValueKind.String || string.IsNullOrWhiteSpace(id.GetString()) ||
+                !root.TryGetProperty("action", out JsonElement action) || action.GetString() != "shutdown")
+                throw new InvalidOperationException("test host accepts only schema-valid shutdown control");
+            await Console.Out.WriteLineAsync(JsonSerializer.Serialize(new { controlVersion = 1, id = id.GetString(), ok = true, result = new { stopping = true } })).ConfigureAwait(false);
             cancellation.Cancel();
             try { await run.ConfigureAwait(false); }
             catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { }

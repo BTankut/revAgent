@@ -88,6 +88,8 @@ export {
   sha256RealTrioFile,
   validateRealTrioAttestation,
 } from "./realTrioAttestation.js";
+export { REAL_TRIO_SUPERVISOR_SCHEMA, startRealTrioSupervisor } from "./realTrioSupervisor.js";
+export type { RealTrioSupervisorLaunch, RealTrioSupervisorResult } from "./realTrioSupervisor.js";
 export type {
   RealTrioAttestation,
   RealTrioComponentId,

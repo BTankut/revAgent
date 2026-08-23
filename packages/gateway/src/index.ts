@@ -442,6 +442,7 @@ export {
   type GatewayServerTlsMaterial,
 } from "./server.js";
 export { startProductionGatewayHost } from "./productionConformanceHost.js";
+export { runProductionConformanceHostCli } from "./productionConformanceHostCli.js";
 export {
   ConformanceCredentialAuthority,
   DigestFileConformanceObjectStore,

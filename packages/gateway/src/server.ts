@@ -360,6 +360,13 @@ export interface GatewayServerOptions {
   readonly ports: GatewayServerPorts;
   /** Explicit TLS material; absent preserves the production proxy/HTTP default. */
   readonly tls?: GatewayServerTlsMaterial;
+  /**
+   * A narrowly-owned composition hook. It runs after the production graph has
+   * been validated and the app has been built, but before ingress/listen. The
+   * production conformance host uses it for its loopback-only audited control
+   * route; ordinary Gateway compositions leave it absent.
+   */
+  readonly beforeListen?: (app: FastifyInstance) => void;
 }
 
 function buildGatewayApp(
@@ -557,6 +564,7 @@ export async function startGatewayServer(
   // same resource ownership without closing an ingress whose start failed.
   const app = buildGatewayApp(options, closeIngressOnce);
   try {
+    options.beforeListen?.(app);
     await options.ports.rbpIngress.start?.();
     ingressStarted = true;
     await app.listen({

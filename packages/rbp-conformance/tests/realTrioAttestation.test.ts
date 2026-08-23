@@ -39,6 +39,13 @@ describe("WP-12 real trio attestation", () => {
     expect(() => validateRealTrioAttestation(evidence(worker))).not.toThrow();
   });
 
+  it("also recognizes the dedicated RealWorkerHost carrier, never a simulator", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "rbp-real-trio-"));
+    const worker = path.join(root, "RevAgent.Bridge.RealWorkerHost.exe");
+    writeFileSync(worker, "published C# RealWorkerHost bytes\n", "utf8");
+    expect(assertRealBridgeWorkerExecutable(worker)).toBe(worker);
+  });
+
   it("rejects a simulator or a non-zero worker exit as real-trio evidence", () => {
     const root = mkdtempSync(path.join(tmpdir(), "rbp-real-trio-"));
     const simulator = path.join(root, "bridge-simulator.exe");
