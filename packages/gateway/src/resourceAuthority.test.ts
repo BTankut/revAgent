@@ -413,10 +413,16 @@ describe("GW-9 scoped artifact and result authority", () => {
       effectiveMcpSessionId: scope.mcpSessionId,
       state: "active",
     });
+    expect((set?.value as { setId?: string } | undefined)?.setId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u,
+    );
     expect(durable.filter((record) => record.namespace === "gateway.carrier-chunk/v1")).toHaveLength(2);
     expect(durable.filter((record) => record.namespace === "gateway.resource-set-member/v1")).toHaveLength(2);
     expect(durable.filter((record) => record.namespace === "gateway.carrier-ack/v1").map((record) => record.value)).toEqual(
-      expect.arrayContaining([expect.objectContaining({ state: "terminal_accepted" })]),
+      expect.arrayContaining([
+        expect.objectContaining({ state: "chunk_durable", seq: 0 }),
+        expect.objectContaining({ state: "terminal_accepted" }),
+      ]),
     );
 
     const restartedStore = restartableStore.restart();
@@ -430,6 +436,35 @@ describe("GW-9 scoped artifact and result authority", () => {
     await expect(
       restartedAuthority.readResource(scope, effectiveMcpRequestScope, new URL(refs[1]!.uri)),
     ).resolves.toMatchObject({ contentType: "image/png" });
+  });
+
+  it("binds direct durable receipt to the effective scope and rejects a conflicting replay", async () => {
+    const bytes = new Uint8Array([1, 2, 3]);
+    const setId = "0197a3c2-0000-7000-8000-000000000099";
+    const staged = {
+      scope,
+      effectiveMcpRequestScope,
+      setId,
+      rsid: "rsid-direct-stage",
+      invocationId,
+      streamDigest: createHash("sha256").update("artifact:direct").digest("hex"),
+      chunkIndex: 0,
+      sequence: 3,
+      bytes,
+      digest: sha256(bytes),
+      streamId: "artifact:direct",
+      contentType: "image/png",
+      artifactId: "direct",
+      artifactIndex: 0,
+    } as const;
+    await authority.stageChunk(staged);
+    await authority.stageChunk(staged);
+    expect(restartableStore.snapshot().records.filter((row) => row.namespace === "gateway.carrier-ack/v1")).toContainEqual(expect.objectContaining({
+      value: expect.objectContaining({ state: "chunk_durable", seq: 3, setId }),
+    }));
+    await expectResourceError(authority.stageChunk({ ...staged, bytes: new Uint8Array([9]), digest: sha256(new Uint8Array([9])) }), "protocol_fault");
+    await expectResourceError(authority.stageChunk({ ...staged, effectiveMcpRequestScope: effectiveScopeFor({ ...scope, mcpSessionId: "other" }) }), "scope_denied");
+    expect(restartableStore.snapshot().records.filter((row) => row.namespace === "gateway_resource_v1")).toEqual([]);
   });
 
   it("rejects stream collision, missing sibling, and digest mismatch without publishing refs", async () => {
