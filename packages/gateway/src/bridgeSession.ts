@@ -112,13 +112,33 @@ const MAX_SEAT_REASSIGNMENT_CLOSE_DRAIN_TIMEOUT_MS = 60_000;
 const MAX_SEAT_REASSIGNMENT_ATTEMPTS = 2;
 const DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/u;
 const HOLD_ID_PATTERN = /^vh:[0-9a-f]{64}$/u;
-const SUPPORTED_CAPABILITIES = Object.freeze([
+/**
+ * RBP/1 grants capabilities in two non-interchangeable authority domains.
+ * Connection capabilities are negotiated by `hello`; session capabilities are
+ * negotiated only by `session_register`.
+ */
+const IMPLEMENTED_CONNECTION_CAPABILITIES = Object.freeze([
+  "journal_v1",
   "transport_streamable_http",
-  "batch_atomic",
-  "partial_progress",
-  "chunked_results",
-  "artifact_result_v1",
 ] as const);
+
+const IMPLEMENTED_SESSION_CAPABILITIES = Object.freeze([
+  "batch_atomic",
+  "doc_context_cached_v1",
+] as const);
+
+function grantCapabilities(
+  implemented: readonly string[],
+  provisioned: readonly string[] | undefined,
+  requestedOrProbed: readonly string[],
+): string[] {
+  const provisionedSet = new Set(provisioned ?? []);
+  const requestedOrProbedSet = new Set(requestedOrProbed);
+  return implemented.filter(
+    (capability) =>
+      provisionedSet.has(capability) && requestedOrProbedSet.has(capability),
+  );
+}
 
 type BindingKind = "wss" | "http_sse";
 
@@ -4883,10 +4903,10 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     if (authenticated.value.actor.deviceId !== input.hello.payload.device_id) {
       throw new GatewayRbpFault("auth", "hello device identity does not match credential", 403, 4403);
     }
-    const granted = SUPPORTED_CAPABILITIES.filter(
-      (capability) =>
-        input.hello.payload.capabilities.includes(capability) &&
-        authenticated.value.grantedSessionCapabilities.includes(capability),
+    const granted = grantCapabilities(
+      IMPLEMENTED_CONNECTION_CAPABILITIES,
+      authenticated.value.grantedConnectionCapabilities,
+      input.hello.payload.capabilities,
     );
     if (
       input.binding === "http_sse" &&
@@ -6453,8 +6473,10 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     await this.#withSessionAuthorization(rsid, async () => {
     const resumeToken = token();
     const nowMs = this.#clock();
-    const grantedCapabilities = connection.grantedCapabilities.filter((capability) =>
-      payload.session_capabilities.includes(capability),
+    const grantedCapabilities = grantCapabilities(
+      IMPLEMENTED_SESSION_CAPABILITIES,
+      connection.auth.grantedSessionCapabilities,
+      payload.session_capabilities,
     );
     const record: DurableRbpSession = {
       schema: GATEWAY_RBP_SESSION_NAMESPACE,

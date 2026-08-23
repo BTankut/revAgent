@@ -358,8 +358,6 @@ export class GatewayStubCore {
     this.supportedProtocols = supportedProtocols;
     this.connectionCapabilities = options.connectionCapabilities ?? [
       "journal_v1",
-      "chunked_results",
-      "artifact_result_v1",
       "transport_streamable_http",
     ];
     this.sessionCapabilities = options.sessionCapabilities ?? [
