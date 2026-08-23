@@ -81,9 +81,9 @@ import type {
   EffectiveMcpRequestScopeV1,
   GatewayInvocationRoute,
 } from "./invocationContext.js";
-import {
+import type {
   GatewayResourceAuthority,
-  type GatewayResourceScope,
+  GatewayResourceScope,
 } from "./resourceAuthority.js";
 import type {
   IdentityDeviceV2,
@@ -134,6 +134,7 @@ const MAX_SEAT_REASSIGNMENT_TIMEOUT_MS = 300_000;
 const DEFAULT_SEAT_REASSIGNMENT_CLOSE_DRAIN_TIMEOUT_MS = 5_000;
 const MAX_SEAT_REASSIGNMENT_CLOSE_DRAIN_TIMEOUT_MS = 60_000;
 const MAX_SEAT_REASSIGNMENT_ATTEMPTS = 2;
+const MAX_RSID_CARRIER_RECEIVE_TAIL_BYTES = 8 * 1024 * 1024;
 const DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/u;
 const HOLD_ID_PATTERN = /^vh:[0-9a-f]{64}$/u;
 /**
@@ -2485,6 +2486,32 @@ class SessionAggregateRepository {
     });
   }
 
+  /**
+   * Carrier Tx-B/Tx-C begins on the resource authority's shared raw store.
+   * Normalize the session aggregate inside that same transaction so receipt,
+   * acknowledgement, and inbound sequence can never commit independently.
+   */
+  public async stageAuthoritativeOnRaw(
+    raw: StoreTransaction,
+    tenantId: string,
+    rsid: string,
+    mutate: (stored: StoredRecord<GatewayJsonValue>, record: DurableRbpSession) => DurableRbpSession,
+  ): Promise<DurableRbpSession> {
+    const stored = await this.readAuthoritative(raw, tenantId, rsid);
+    if (stored === null) throw new Error("carrier session is missing");
+    const record = parseStoredSession(stored, tenantId, rsid);
+    const next = mutate(stored, record);
+    await this.#stageNormalized(
+      raw,
+      tenantId,
+      rsid,
+      { value: asJson(next), expect: { kind: "version", version: stored.version } },
+      stored,
+      0,
+    );
+    return next;
+  }
+
   async #stageNormalized(raw: StoreTransaction, tenantId: string, rsid: string, stage: { readonly value: GatewayJsonValue | null; readonly expect: StoreExpectation }, existing: StoredRecord<GatewayJsonValue> | null, priorStageCount: number): Promise<void> {
     if (stage.value === null) throw new Error("normalized session roots are retained; unregister is tombstone authority");
     const record = parseStoredSession({ namespace: GATEWAY_RBP_SESSION_NAMESPACE, tenantId, key: rsid, value: stage.value, version: Number.MAX_SAFE_INTEGER, updatedAtMs: 0 }, tenantId, rsid);
@@ -2731,6 +2758,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
   readonly #active = new Map<string, ActiveSession>();
   readonly #waiters = new Map<string, PendingWaiter>();
   readonly #receiveTails = new Map<string, Promise<void>>();
+  readonly #rsidCarrierReceiveTailBytes = new Map<string, number>();
   readonly #sessionAuthorizationTails = new Map<string, Promise<void>>();
   readonly #tenantIdentityTails = new Map<string, Promise<void>>();
   readonly #tenantRevocationTails = new Map<string, Promise<void>>();
@@ -2848,10 +2876,20 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     readonly scope: GatewayResourceScope;
     readonly effective: EffectiveMcpRequestScopeV1;
   } {
-    const effective = record.pending?.effectiveMcpRequestScope;
-    if (effective === undefined) {
+    const persisted = record.pending?.effectiveMcpRequestScope;
+    if (persisted === undefined) {
       throw new GatewayRbpFault("protocol", "carrier lacks an effective MCP request scope", 400, 4400);
     }
+    // Structured persistence deliberately strips object freezing. Rehydrate the
+    // exact four-field ingress carrier before presenting it to the resource
+    // authority; a mutable recovered record is never authority evidence.
+    const effective = Object.freeze({
+      contractVersion: persisted.contractVersion,
+      principalKey: persisted.principalKey,
+      effectiveMcpSessionId: persisted.effectiveMcpSessionId,
+      transportMcpSessionId: persisted.transportMcpSessionId,
+      identityMcpSessionId: persisted.identityMcpSessionId,
+    }) as EffectiveMcpRequestScopeV1;
     return {
       scope: Object.freeze({
         tenantId: record.tenantId,
@@ -5704,6 +5742,31 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     envelope: RbpEnvelope,
   ): Promise<void> {
     this.#assertOpen();
+    // Heartbeats do not consume the per-rsid carrier tail. They retain their
+    // own durable authorization path and remain serviceable while a large
+    // receipt is awaiting object-store durability.
+    if (envelope.type === "heartbeat") {
+      await this.#receiveNow(connectionId, envelope);
+      return;
+    }
+    let carrierBytes = 0;
+    let rsid: string | null = null;
+    if (envelope.type === "partial" && envelope.payload.kind === "chunk") {
+      carrierBytes = Buffer.byteLength(envelope.payload.data, "base64");
+      rsid = envelope.rsid;
+    }
+    if (rsid !== null) {
+      const queued = this.#rsidCarrierReceiveTailBytes.get(rsid) ?? 0;
+      if (queued + carrierBytes > MAX_RSID_CARRIER_RECEIVE_TAIL_BYTES) {
+        throw new GatewayRbpFault(
+          "unavailable",
+          "carrier receive tail exceeds the 8 MiB per-rsid limit",
+          503,
+          1013,
+        );
+      }
+      this.#rsidCarrierReceiveTailBytes.set(rsid, queued + carrierBytes);
+    }
     const prior = this.#receiveTails.get(connectionId) ?? Promise.resolve();
     let release!: () => void;
     const tail = new Promise<void>((resolve) => {
@@ -5714,6 +5777,11 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     try {
       await this.#receiveNow(connectionId, envelope);
     } finally {
+      if (rsid !== null) {
+        const remaining = (this.#rsidCarrierReceiveTailBytes.get(rsid) ?? 0) - carrierBytes;
+        if (remaining > 0) this.#rsidCarrierReceiveTailBytes.set(rsid, remaining);
+        else this.#rsidCarrierReceiveTailBytes.delete(rsid);
+      }
       release();
       if (this.#receiveTails.get(connectionId) === tail) {
         this.#receiveTails.delete(connectionId);
@@ -7975,27 +8043,26 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     authorityTicket: TenantAuthorityTicket,
     committed: { current: DurableRbpSession | null },
   ): Promise<void> {
-    const stored = await tx.read<GatewayJsonValue>(GATEWAY_RBP_SESSION_NAMESPACE, active.rsid);
-    if (stored === null) throw new Error("carrier receipt session is missing");
-    const record = parseStoredSession(stored, active.tenantId, active.rsid);
-    this.#assertAuthorityTicket(authorityTicket, connection, { session: record });
-    if (record.pending === null || record.pending.invocationId !== envelope.payload.invocation_id) {
-      throw new Error("carrier receipt does not match the active invocation");
-    }
-    const accepted = acceptInboundData(record.sequence, envelope as DataEnvelopeSnapshot);
-    if (accepted.kind === "protocol_fault" || accepted.kind === "gap") {
-      throw new Error("carrier receipt sequence is not acceptable");
-    }
-    if (accepted.kind === "duplicate") {
-      committed.current = record;
-      return;
-    }
-    const next = nextSessionRecord(stored, record, {
-      ...record,
-      sequence: accepted.state,
-    }, this.#clock());
-    tx.stage({ namespace: GATEWAY_RBP_SESSION_NAMESPACE, key: active.rsid, value: asJson(next), expect: { kind: "version", version: stored.version } });
-    committed.current = next;
+    committed.current = await this.#sessionRepository.stageAuthoritativeOnRaw(
+      tx,
+      active.tenantId,
+      active.rsid,
+      (stored, record) => {
+        this.#assertAuthorityTicket(authorityTicket, connection, { session: record });
+        if (record.pending === null || record.pending.invocationId !== envelope.payload.invocation_id) {
+          throw new Error("carrier receipt does not match the active invocation");
+        }
+        const accepted = acceptInboundData(record.sequence, envelope as DataEnvelopeSnapshot);
+        if (accepted.kind === "protocol_fault" || accepted.kind === "gap") {
+          throw new Error("carrier receipt sequence is not acceptable");
+        }
+        if (accepted.kind === "duplicate") return record;
+        return nextSessionRecord(stored, record, {
+          ...record,
+          sequence: accepted.state,
+        }, this.#clock());
+      },
+    );
   }
 
   async #commitCarrierTerminal(
@@ -8007,54 +8074,48 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     committed: { current: DurableRbpSession | null },
     completion: { current: GatewayExecutorOutcome | null },
   ): Promise<void> {
-    const stored = await tx.read<GatewayJsonValue>(GATEWAY_RBP_SESSION_NAMESPACE, active.rsid);
-    if (stored === null) throw new Error("carrier terminal session is missing");
-    const record = parseStoredSession(stored, active.tenantId, active.rsid);
-    this.#assertAuthorityTicket(authorityTicket, connection, { session: record });
-    const accepted = acceptInboundData(record.sequence, envelope as DataEnvelopeSnapshot);
-    if (accepted.kind === "protocol_fault" || accepted.kind === "gap") {
-      throw new Error("carrier terminal sequence is not acceptable");
-    }
-    if (accepted.kind === "duplicate") {
-      committed.current = record;
-      return;
-    }
-    const pending = record.pending;
-    if (pending === null || pending.invocationId !== envelope.payload.invocation_id) {
-      throw new Error("carrier terminal does not match the active invocation");
-    }
-    const existing = record.evidence.find((candidate) => candidate.envelopeDigest === pending.envelopeDigest);
-    const journals = terminalJournalRecords(pending.journalRecords, envelope);
-    const journal: GatewayVerifiedBridgeJournalEvidence | null = journals.length === 0
-      ? null
-      : {
-          kind: "known_terminal",
-          rsid: record.rsid,
-          sessionBindingId: record.sessionBindingId,
+    committed.current = await this.#sessionRepository.stageAuthoritativeOnRaw(
+      tx,
+      active.tenantId,
+      active.rsid,
+      (stored, record) => {
+        this.#assertAuthorityTicket(authorityTicket, connection, { session: record });
+        const accepted = acceptInboundData(record.sequence, envelope as DataEnvelopeSnapshot);
+        if (accepted.kind === "protocol_fault" || accepted.kind === "gap") {
+          throw new Error("carrier terminal sequence is not acceptable");
+        }
+        if (accepted.kind === "duplicate") return record;
+        const pending = record.pending;
+        if (pending === null || pending.invocationId !== envelope.payload.invocation_id) {
+          throw new Error("carrier terminal does not match the active invocation");
+        }
+        const existing = record.evidence.find((candidate) => candidate.envelopeDigest === pending.envelopeDigest);
+        const journals = terminalJournalRecords(pending.journalRecords, envelope);
+        const journal: GatewayVerifiedBridgeJournalEvidence | null = journals.length === 0
+          ? null
+          : {
+              kind: "known_terminal", rsid: record.rsid, sessionBindingId: record.sessionBindingId,
+              envelopeDigest: pending.envelopeDigest, journalRecords: journals, batchTerminal: null,
+              durableJournalVersion: record.sessionVersion, recordedAtMs: this.#clock(),
+            };
+        const evidence: DurableDispatchEvidence = {
           envelopeDigest: pending.envelopeDigest,
-          journalRecords: journals,
-          batchTerminal: null,
-          durableJournalVersion: record.sessionVersion,
-          recordedAtMs: this.#clock(),
+          acceptance: existing?.acceptance ?? null,
+          journal,
+          terminalTruth: durableTerminalTruth(envelope),
         };
-    const evidence: DurableDispatchEvidence = {
-      envelopeDigest: pending.envelopeDigest,
-      acceptance: existing?.acceptance ?? null,
-      journal,
-      terminalTruth: durableTerminalTruth(envelope),
-    };
-    const next = nextSessionRecord(stored, record, {
-      ...record,
-      sequence: accepted.state,
-      pending: null,
-      evidence: [
-        ...record.evidence.filter((candidate) => candidate.envelopeDigest !== pending.envelopeDigest),
-        evidence,
-      ],
-    }, this.#clock());
-    tx.stage({ namespace: GATEWAY_RBP_SESSION_NAMESPACE, key: active.rsid, value: asJson(next), expect: { kind: "version", version: stored.version } });
-    committed.current = next;
-    completion.current = terminalOutcome(envelope);
+        completion.current = terminalOutcome(envelope);
+        return nextSessionRecord(stored, record, {
+          ...record,
+          sequence: accepted.state,
+          pending: null,
+          evidence: [
+            ...record.evidence.filter((candidate) => candidate.envelopeDigest !== pending.envelopeDigest),
+            evidence,
+          ],
+        }, this.#clock());
+      },
+    );
   }
 
   async #acceptData(

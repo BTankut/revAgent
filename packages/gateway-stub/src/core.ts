@@ -341,6 +341,7 @@ export class GatewayStubCore {
   private readonly store: DurableGatewayStateStore;
   private readonly clock: GatewayClock;
   private readonly connectionCapabilities: readonly string[];
+  private readonly carrierReady: boolean;
   private readonly sessionCapabilities: readonly string[];
   private readonly tokenTable: Map<string, StaticDeviceIdentity>;
   private readonly enrollmentTokenTable: Map<string, StaticEnrollmentGrant>;
@@ -360,6 +361,7 @@ export class GatewayStubCore {
       "journal_v1",
       "transport_streamable_http",
     ];
+    this.carrierReady = options.carrierReady ?? true;
     this.sessionCapabilities = options.sessionCapabilities ?? [
       "batch_atomic",
       "doc_context_cached_v1",
@@ -533,7 +535,11 @@ export class GatewayStubCore {
     const provisioned = new Set(runtime.transport.device.provisionedCapabilities);
     const requested = new Set(hello.payload.capabilities);
     const granted = this.connectionCapabilities.filter(
-      (capability) => provisioned.has(capability) && requested.has(capability),
+      (capability) =>
+        provisioned.has(capability) &&
+        requested.has(capability) &&
+        (this.carrierReady ||
+          (capability !== "chunked_results" && capability !== "artifact_result_v1")),
     );
     if (
       runtime.transport.binding === "http_sse" &&
