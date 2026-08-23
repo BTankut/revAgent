@@ -57,6 +57,11 @@ function safeObservedSequence(value: unknown): number | null {
   return Number.isSafeInteger(value) && Number(value) >= 1 ? Number(value) : null;
 }
 
+function isCanonicalUtc(value: unknown): value is string {
+  return typeof value === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(value) &&
+    Number.isFinite(Date.parse(value)) && new Date(value).toISOString() === value;
+}
+
 function redactedSessionAudit(records: readonly { readonly namespace: string; readonly key: string; readonly value: unknown }[]): readonly Record<string, unknown>[] {
   return Object.freeze(records.slice(0, 32).map((record) => {
     const value = record.value !== null && typeof record.value === "object" && !Array.isArray(record.value)
@@ -86,6 +91,7 @@ function redactedSessionAudit(records: readonly { readonly namespace: string; re
 /** Value-free proof that the Gateway accepted a real doc_context_update. */
 function redactedDocumentContextAudit(
   records: readonly { readonly namespace: string; readonly key: string; readonly value: unknown }[],
+  observations: readonly Readonly<{ readonly stage: "accepted" | "rejected"; readonly sequence: number; readonly ordinal: number; readonly observedAtUtc: string }>[],
 ): readonly Record<string, unknown>[] {
   return Object.freeze(records
     .filter((record) => record.namespace === "gateway.rbp-session/v2")
@@ -101,6 +107,11 @@ function redactedDocumentContextAudit(
       if (route === null || typeof route !== "object" || Array.isArray(route)) return [];
       const observedSequence = safeObservedSequence((route as Record<string, unknown>).observedSequence);
       if (typeof value?.rsid !== "string" || observedSequence === null) return [];
+      const matches = observations.filter((observation) => observation.stage === "accepted" &&
+        observation.sequence === observedSequence && Number.isSafeInteger(observation.ordinal) && observation.ordinal >= 1 &&
+        isCanonicalUtc(observation.observedAtUtc));
+      if (matches.length !== 1) return [];
+      const observation = matches[0]!;
       return [Object.freeze({
         contractVersion: "revagent.wp12-document-context-audit/v1",
         event: "gateway.doc_context_update_observation",
@@ -108,6 +119,8 @@ function redactedDocumentContextAudit(
         rsidDigest: typeof value?.rsid === "string" ? digest(value.rsid) : null,
         rsidHash: rsidHash(value.rsid),
         observedSequence,
+        observationOrdinal: observation.ordinal,
+        observedAtUtc: observation.observedAtUtc,
         routeDigest: digest(route),
         recordDigest: digest(value),
       })];
@@ -201,14 +214,21 @@ export async function runProductionConformanceHostCli(args: readonly string[]): 
   const documentContextObservations: Array<Readonly<{
     readonly stage: "accepted" | "rejected";
     readonly sequence: number;
+    readonly ordinal: number;
+    readonly observedAtUtc: string;
   }>> = [];
+  let documentContextObservationOrdinal = 0;
   const authority = new GatewayBridgeSessionAuthority(protocolStore, identity, {
     resourceAuthority,
     onDocumentContextObservation(observation) {
+      if (documentContextObservationOrdinal >= Number.MAX_SAFE_INTEGER) return;
       if (documentContextObservations.length === 32) documentContextObservations.shift();
+      documentContextObservationOrdinal += 1;
       documentContextObservations.push(Object.freeze({
         stage: observation.stage,
         sequence: observation.sequence,
+        ordinal: documentContextObservationOrdinal,
+        observedAtUtc: new Date().toISOString(),
       }));
     },
   });
@@ -409,7 +429,7 @@ export async function runProductionConformanceHostCli(args: readonly string[]): 
               records.push(...result.value.map((row) => ({ namespace: row.namespace, key: row.key, value: row.value })));
             }
             const rows = redactedSessionAudit(records);
-            const documentContextUpdates = redactedDocumentContextAudit(records);
+            const documentContextUpdates = redactedDocumentContextAudit(records, documentContextObservations);
             return reply.send({
               ok: true,
               action,
@@ -418,6 +438,7 @@ export async function runProductionConformanceHostCli(args: readonly string[]): 
               rows,
               documentContextUpdates,
               documentContextObservations: Object.freeze([...documentContextObservations]),
+              documentContextObservationHighWaterOrdinal: documentContextObservationOrdinal,
               counts: Object.freeze({ records: records.length, auditAccesses: auditAccesses.length }),
               frontier: digest(rows),
               auditAccessDigest: digest(auditAccesses.map((entry) => entry.action)),

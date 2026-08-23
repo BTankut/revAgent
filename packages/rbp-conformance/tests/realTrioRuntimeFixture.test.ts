@@ -9,6 +9,7 @@ import {
   RealTrioDocumentContextFailureError,
   correlatedDocumentContextSendSince,
   createRealTrioDocumentContextFailure,
+  gatewayAuditBaseline,
   hasGatewayAcceptedDocumentContextRoute,
   hasDurableDocumentContextHeartbeatAckSince,
   hasRealTrioLiveDocumentRoute,
@@ -98,15 +99,25 @@ describe("WP-12 real-trio fixture document route gate", () => {
 
   it("requires Gateway accepted-route correlation with the intended send", () => {
     const expected = { rsidHash: `sha256:${"a".repeat(64)}` as const, sequence: 7,
-      sendTranscriptIndex: 3, sendRecordedAt: null };
-    const audit = (rsidHash: string, observedSequence: number) => ({ documentContextUpdates: [{
+      sendTranscriptIndex: 3, sendRecordedAt: "2026-08-24T00:00:01.000Z" };
+    const baseline = gatewayAuditBaseline({ documentContextObservationHighWaterOrdinal: 4 })!;
+    const audit = (rsidHash: string, observedSequence: number, observationOrdinal = 5,
+      observedAtUtc = "2026-08-24T00:00:01.000Z", highWater = observationOrdinal) => ({ documentContextObservationHighWaterOrdinal: highWater, documentContextUpdates: [{
       contractVersion: "revagent.wp12-document-context-audit/v1",
-      event: "gateway.doc_context_update_observation", stage: "accepted", rsidHash, observedSequence,
+      event: "gateway.doc_context_update_observation", stage: "accepted", rsidHash, observedSequence, observationOrdinal, observedAtUtc,
     }] });
-    expect(hasGatewayAcceptedDocumentContextRoute(audit(expected.rsidHash, expected.sequence), expected)).toBe(true);
-    expect(hasGatewayAcceptedDocumentContextRoute(audit(expected.rsidHash, 6), expected)).toBe(false);
-    expect(hasGatewayAcceptedDocumentContextRoute(audit(`sha256:${"b".repeat(64)}`, 7), expected)).toBe(false);
-    expect(hasGatewayAcceptedDocumentContextRoute(audit(`sha256:${"A".repeat(64)}`, 7), expected)).toBe(false);
+    expect(hasGatewayAcceptedDocumentContextRoute(audit(expected.rsidHash, expected.sequence), expected, baseline)).toBe(true);
+    expect(hasGatewayAcceptedDocumentContextRoute(audit(expected.rsidHash, 6), expected, baseline)).toBe(false);
+    expect(hasGatewayAcceptedDocumentContextRoute(audit(`sha256:${"b".repeat(64)}`, 7), expected, baseline)).toBe(false);
+    expect(hasGatewayAcceptedDocumentContextRoute(audit(`sha256:${"A".repeat(64)}`, 7), expected, baseline)).toBe(false);
+    expect(hasGatewayAcceptedDocumentContextRoute(audit(expected.rsidHash, 7, 4), expected, baseline)).toBe(false);
+    expect(hasGatewayAcceptedDocumentContextRoute(audit(expected.rsidHash, 7, 5, "2026-08-24T00:00:00.999Z"), expected, baseline)).toBe(false);
+    expect(hasGatewayAcceptedDocumentContextRoute(audit(expected.rsidHash, 7, 5, "2026-08-24T00:00:01.000Z", 3), expected, baseline)).toBe(false);
+    expect(hasGatewayAcceptedDocumentContextRoute(audit(expected.rsidHash, 7, 0), expected, baseline)).toBe(false);
+    const duplicate = audit(expected.rsidHash, 7);
+    duplicate.documentContextUpdates.push(duplicate.documentContextUpdates[0]!);
+    expect(hasGatewayAcceptedDocumentContextRoute(duplicate, expected, baseline)).toBe(false);
+    expect(hasGatewayAcceptedDocumentContextRoute({ documentContextObservationHighWaterOrdinal: 6, documentContextUpdates: [] }, expected, baseline)).toBe(false);
   });
 
   it("selects only the controlled post-ACK send and rejects a borrowed historical route", () => {
@@ -147,6 +158,13 @@ describe("WP-12 real-trio fixture document route gate", () => {
     const preSendAck = [event("ack", "durably_acknowledged", hash, 9), ...flow()];
     const selected = correlatedDocumentContextSendSince(preSendAck, 1)!;
     expect(hasDurableDocumentContextHeartbeatAckSince(preSendAck, 0, selected)).toBe(false);
+    const acknowledged = [...flow(), event("ack", "durably_acknowledged", hash, 9)];
+    const acknowledgedSend = correlatedDocumentContextSendSince(acknowledged, 0)!;
+    expect(hasDurableDocumentContextHeartbeatAckSince(acknowledged, 0, acknowledgedSend)).toBe(true);
+    expect(hasDurableDocumentContextHeartbeatAckSince([...flow(), event("failure", "send_deferred", hash, 9), event("ack", "durably_acknowledged", hash, 9)], 0, acknowledgedSend)).toBe(false);
+    expect(hasDurableDocumentContextHeartbeatAckSince([...flow(), event("queue", "durably_queued", hash, 9), event("ack", "durably_acknowledged", hash, 9)], 0, acknowledgedSend)).toBe(false);
+    expect(hasDurableDocumentContextHeartbeatAckSince([...acknowledged, event("probe", "started", hash, null)], 0, acknowledgedSend)).toBe(false);
+    expect(hasDurableDocumentContextHeartbeatAckSince([...acknowledged, event("ack", "durably_acknowledged", hash, 9)], 0, acknowledgedSend)).toBe(false);
   });
 
   it("exports bounded redacted stage-timeout evidence before cleanup", () => {
