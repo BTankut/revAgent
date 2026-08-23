@@ -420,9 +420,20 @@ describe("WP-12 real-trio v2 session smoke reader", () => {
       outcome: "durably_queued",
       binding: "unknown",
       failureKind: "none",
-      rsidHashPresent: true,
+      rsidHash: `sha256:${"a".repeat(64)}`,
+      sequence: 7,
       payloadHashPresent: true,
     });
+    expect(redactBridgeTranscript([{ stream: "stderr", at: "now", line: JSON.stringify({
+      contractVersion: "revagent.rbp-document-context-observation/v1",
+      event: "bridge.document_context_observation", stage: "send", outcome: "sent",
+      rsidHash: `sha256:${"A".repeat(64)}`, sequence: 7,
+    }) }])).toEqual([]);
+    expect(redactBridgeTranscript([{ stream: "stderr", at: "now", line: JSON.stringify({
+      contractVersion: "revagent.rbp-document-context-observation/v1",
+      event: "bridge.document_context_observation", stage: "send", outcome: "sent",
+      rsidHash: `sha256:${"a".repeat(64)}`, sequence: 0,
+    }) }])).toEqual([]);
   });
 
   it("requires document context progression through durable acknowledgement", () => {

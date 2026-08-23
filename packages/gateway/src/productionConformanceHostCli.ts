@@ -48,6 +48,15 @@ function digest(value: unknown): `sha256:${string}` {
   return `sha256:${createHash("sha256").update(JSON.stringify(value)).digest("hex")}`;
 }
 
+/** Matches the C# worker's UTF-8, lowercase, prefixed SHA-256 observation. */
+function rsidHash(value: string): `sha256:${string}` {
+  return `sha256:${createHash("sha256").update(value, "utf8").digest("hex")}`;
+}
+
+function safeObservedSequence(value: unknown): number | null {
+  return Number.isSafeInteger(value) && Number(value) >= 1 ? Number(value) : null;
+}
+
 function redactedSessionAudit(records: readonly { readonly namespace: string; readonly key: string; readonly value: unknown }[]): readonly Record<string, unknown>[] {
   return Object.freeze(records.slice(0, 32).map((record) => {
     const value = record.value !== null && typeof record.value === "object" && !Array.isArray(record.value)
@@ -90,11 +99,15 @@ function redactedDocumentContextAudit(
         : null;
       const route = lifecycle?.liveDocumentRoute;
       if (route === null || typeof route !== "object" || Array.isArray(route)) return [];
+      const observedSequence = safeObservedSequence((route as Record<string, unknown>).observedSequence);
+      if (typeof value?.rsid !== "string" || observedSequence === null) return [];
       return [Object.freeze({
         contractVersion: "revagent.wp12-document-context-audit/v1",
         event: "gateway.doc_context_update_observation",
         stage: "accepted",
         rsidDigest: typeof value?.rsid === "string" ? digest(value.rsid) : null,
+        rsidHash: rsidHash(value.rsid),
+        observedSequence,
         routeDigest: digest(route),
         recordDigest: digest(value),
       })];

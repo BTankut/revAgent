@@ -147,6 +147,11 @@ export interface RealTrioDocumentContextAudit {
   readonly pollRequestCount: number;
 }
 
+interface RealTrioDocumentContextCorrelation {
+  readonly rsidHash: `sha256:${string}`;
+  readonly sequence: number;
+}
+
 export interface RealTrioRuntimeFixtureOptions {
   /** Mandatory caller-owned directory; no production evidence path is inferred. */
   readonly evidenceDirectory: string;
@@ -216,7 +221,7 @@ function isObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function isSha256(value: unknown): boolean {
+function isSha256(value: unknown): value is `sha256:${string}` {
   return typeof value === "string" && /^sha256:[0-9a-f]{64}$/u.test(value);
 }
 
@@ -416,6 +421,22 @@ function hasDocumentContextSend(
   return false;
 }
 
+function correlatedDocumentContextSend(
+  records: readonly { readonly line: string }[],
+): RealTrioDocumentContextCorrelation | null {
+  for (const record of records) {
+    try {
+      const value = JSON.parse(record.line) as unknown;
+      if (isObject(value) && value.event === "bridge.document_context_observation" &&
+          value.stage === "send" && value.outcome === "sent" &&
+          isSha256(value.rsidHash) && Number.isSafeInteger(value.sequence) && Number(value.sequence) >= 1) {
+        return Object.freeze({ rsidHash: value.rsidHash, sequence: Number(value.sequence) });
+      }
+    } catch { /* Redacted diagnostics are the only input. */ }
+  }
+  return null;
+}
+
 async function waitForDocumentContextSend(input: {
   readonly supervisor: RealTrioSupervisorResult;
   readonly timeoutMs?: number;
@@ -442,19 +463,34 @@ async function waitForDocumentContextSend(input: {
 export function hasDurableDocumentContextHeartbeatAckSince(
   records: readonly { readonly line: string }[],
   baseline: number,
+  expected: RealTrioDocumentContextCorrelation,
 ): boolean {
   return records.slice(baseline).some((record) => {
     try {
       const value = JSON.parse(record.line) as unknown;
       return isObject(value) && value.event === "bridge.document_context_observation" &&
-        value.stage === "ack" && value.outcome === "durably_acknowledged";
+        value.stage === "ack" && value.outcome === "durably_acknowledged" &&
+        value.rsidHash === expected.rsidHash && value.sequence === expected.sequence;
     } catch { return false; }
   });
+}
+
+export function hasGatewayAcceptedDocumentContextRoute(
+  audit: unknown,
+  expected: RealTrioDocumentContextCorrelation,
+): boolean {
+  if (!isObject(audit) || !Array.isArray(audit.documentContextUpdates)) return false;
+  return audit.documentContextUpdates.some((value) => isObject(value) &&
+    value.contractVersion === "revagent.wp12-document-context-audit/v1" &&
+    value.event === "gateway.doc_context_update_observation" && value.stage === "accepted" &&
+    value.rsidHash === expected.rsidHash && value.observedSequence === expected.sequence &&
+    isSha256(value.rsidHash) && Number.isSafeInteger(value.observedSequence) && Number(value.observedSequence) >= 1);
 }
 
 async function waitForPostRouteDocumentContextHeartbeatAck(input: {
   readonly supervisor: RealTrioSupervisorResult;
   readonly diagnosticsBeforeRoute: number;
+  readonly expected: RealTrioDocumentContextCorrelation;
   readonly timeoutMs?: number;
 }): Promise<void> {
   const deadline = Date.now() + (input.timeoutMs ?? DOCUMENT_CONTEXT_WATCHER_TIMEOUT_MS);
@@ -463,7 +499,7 @@ async function waitForPostRouteDocumentContextHeartbeatAck(input: {
       throw new Error("real trio child exited before post-route heartbeat acknowledgement");
     }
     if (hasDurableDocumentContextHeartbeatAckSince(
-      input.supervisor.readDocumentContextDiagnostics(), input.diagnosticsBeforeRoute,
+      input.supervisor.readDocumentContextDiagnostics(), input.diagnosticsBeforeRoute, input.expected,
     )) return;
     if (Date.now() >= deadline) {
       throw new Error("real trio did not durably acknowledge document context after route persistence");
@@ -520,6 +556,7 @@ async function waitForLiveDocumentRoute(input: {
   readonly controlToken: string;
   readonly certificateSha256: string;
   readonly supervisor: RealTrioSupervisorResult;
+  readonly expected: RealTrioDocumentContextCorrelation;
   readonly timeoutMs?: number;
 }): Promise<void> {
   const deadline = Date.now() + (input.timeoutMs ?? DOCUMENT_CONTEXT_WATCHER_TIMEOUT_MS);
@@ -533,7 +570,9 @@ async function waitForLiveDocumentRoute(input: {
       input.certificateSha256,
       { action: "snapshot_audit" },
     );
-    if (hasRealTrioLiveDocumentRoute(snapshot)) return;
+    const audit = await input.supervisor.readRealCaseAudit();
+    if (hasRealTrioLiveDocumentRoute(snapshot) &&
+        hasGatewayAcceptedDocumentContextRoute(audit, input.expected)) return;
     if (Date.now() >= deadline) {
       throw new Error("real trio fixture document context did not produce a live Gateway route");
     }
@@ -656,6 +695,8 @@ export async function startRealTrioRuntimeFixture(
       timeoutMs: options.documentContextTimeoutMs,
     });
     timeline.push("document_sent");
+    const expected = correlatedDocumentContextSend(supervisor.readDocumentContextDiagnostics());
+    if (expected === null) throw new Error("real trio document-context send lacks strict route correlation");
     failureReason = "ack_failure";
     const counts = probeRealTrioFixtureDocumentContext(
       await supervisor.fixtureControl("snapshot_evidence"),
@@ -673,6 +714,7 @@ export async function startRealTrioRuntimeFixture(
       controlToken,
       certificateSha256,
       supervisor,
+      expected,
       timeoutMs: options.documentContextTimeoutMs,
     });
     timeline.push("gateway_route");
@@ -680,6 +722,7 @@ export async function startRealTrioRuntimeFixture(
     await waitForPostRouteDocumentContextHeartbeatAck({
       supervisor,
       diagnosticsBeforeRoute,
+      expected,
       timeoutMs: options.documentContextTimeoutMs,
     });
     timeline.push("heartbeat_ack");

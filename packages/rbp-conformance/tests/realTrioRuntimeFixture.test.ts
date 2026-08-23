@@ -8,6 +8,7 @@ import {
   REAL_TRIO_RUNTIME_FAILURE_SCHEMA,
   RealTrioDocumentContextFailureError,
   createRealTrioDocumentContextFailure,
+  hasGatewayAcceptedDocumentContextRoute,
   hasDurableDocumentContextHeartbeatAckSince,
   hasRealTrioLiveDocumentRoute,
   probeRealTrioFixtureDocumentContext,
@@ -85,8 +86,24 @@ describe("WP-12 real-trio fixture document route gate", () => {
   it("keeps a durable ACK emitted during public route observation, but rejects an earlier ACK", () => {
     const ack = JSON.stringify({ event: "bridge.document_context_observation", stage: "ack", outcome: "durably_acknowledged" });
     const send = JSON.stringify({ event: "bridge.document_context_observation", stage: "send", outcome: "sent" });
-    expect(hasDurableDocumentContextHeartbeatAckSince([{ line: ack }, { line: send }], 1)).toBe(false);
-    expect(hasDurableDocumentContextHeartbeatAckSince([{ line: send }, { line: ack }], 1)).toBe(true);
+    const expected = { rsidHash: `sha256:${"a".repeat(64)}` as const, sequence: 7 };
+    const correlatedAck = JSON.stringify({ ...JSON.parse(ack), rsidHash: expected.rsidHash, sequence: expected.sequence });
+    expect(hasDurableDocumentContextHeartbeatAckSince([{ line: correlatedAck }, { line: send }], 1, expected)).toBe(false);
+    expect(hasDurableDocumentContextHeartbeatAckSince([{ line: send }, { line: correlatedAck }], 1, expected)).toBe(true);
+    expect(hasDurableDocumentContextHeartbeatAckSince([{ line: send }, { line: JSON.stringify({ ...JSON.parse(ack), rsidHash: expected.rsidHash, sequence: 6 }) }], 1, expected)).toBe(false);
+    expect(hasDurableDocumentContextHeartbeatAckSince([{ line: send }, { line: JSON.stringify({ ...JSON.parse(ack), rsidHash: `sha256:${"b".repeat(64)}`, sequence: 7 }) }], 1, expected)).toBe(false);
+  });
+
+  it("requires Gateway accepted-route correlation with the intended send", () => {
+    const expected = { rsidHash: `sha256:${"a".repeat(64)}` as const, sequence: 7 };
+    const audit = (rsidHash: string, observedSequence: number) => ({ documentContextUpdates: [{
+      contractVersion: "revagent.wp12-document-context-audit/v1",
+      event: "gateway.doc_context_update_observation", stage: "accepted", rsidHash, observedSequence,
+    }] });
+    expect(hasGatewayAcceptedDocumentContextRoute(audit(expected.rsidHash, expected.sequence), expected)).toBe(true);
+    expect(hasGatewayAcceptedDocumentContextRoute(audit(expected.rsidHash, 6), expected)).toBe(false);
+    expect(hasGatewayAcceptedDocumentContextRoute(audit(`sha256:${"b".repeat(64)}`, 7), expected)).toBe(false);
+    expect(hasGatewayAcceptedDocumentContextRoute(audit(`sha256:${"A".repeat(64)}`, 7), expected)).toBe(false);
   });
 
   it("exports bounded redacted stage-timeout evidence before cleanup", () => {

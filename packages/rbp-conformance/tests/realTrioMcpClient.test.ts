@@ -92,6 +92,20 @@ describe("strict real-trio Streamable HTTP MCP client", () => {
     });
   });
 
+  it.each([202, 204] as const)("accepts a zero-byte %i initialized notification with an exact bound session", async (status) => {
+    const server = await testServer({ initializeSessionHeader: "bound-session", notificationSessionHeader: "bound-session",
+      emptyResponseMethod: "notifications/initialized", emptyResponseStatus: status });
+    await expect(withRealTrioNorthMcpClient({ ...server, credential, expectedMcpSessionId: "bound-session" }, async () => undefined))
+      .resolves.toBeUndefined();
+  });
+
+  it("rejects a mismatched session header on an otherwise permitted empty notification in bound mode", async () => {
+    const server = await testServer({ initializeSessionHeader: "bound-session", notificationSessionHeader: "other-session",
+      emptyResponseMethod: "notifications/initialized", emptyResponseStatus: 204 });
+    await expect(withRealTrioNorthMcpClient({ ...server, credential, expectedMcpSessionId: "bound-session" }, async () => undefined))
+      .rejects.toThrow(/mcp-session-id/u);
+  });
+
   it("rejects zero-byte initialize and tool responses even when their status is otherwise successful", async () => {
     const initialize = await testServer({ emptyResponseMethod: "initialize", emptyResponseStatus: 200 });
     await expect(withRealTrioNorthMcpClient({ ...initialize, credential }, async () => undefined))

@@ -245,6 +245,10 @@ const DOCUMENT_CONTEXT_OUTCOMES = new Set([
 ]);
 const SHA256 = /^sha256:[0-9a-f]{64}$/u;
 
+function isSafeDocumentContextSequence(value: unknown): value is number {
+  return Number.isSafeInteger(value) && Number(value) >= 1;
+}
+
 /**
  * Drops arbitrary worker stderr. Both admitted schemas are reduced to fixed
  * enum fields and hash-presence booleans before entering diagnostic evidence.
@@ -282,9 +286,9 @@ export function redactBridgeTranscript(
           parsed.event === "bridge.document_context_observation" &&
           typeof parsed.stage === "string" && DOCUMENT_CONTEXT_STAGES.has(parsed.stage) &&
           typeof parsed.outcome === "string" && DOCUMENT_CONTEXT_OUTCOMES.has(parsed.outcome) &&
-          (parsed.rsidHash === null || typeof parsed.rsidHash === "string") &&
+          typeof parsed.rsidHash === "string" && SHA256.test(parsed.rsidHash) &&
           (parsed.payloadHash === null || typeof parsed.payloadHash === "string") &&
-          (parsed.sequence === null || Number.isSafeInteger(parsed.sequence))) {
+          (parsed.sequence === null || isSafeDocumentContextSequence(parsed.sequence))) {
         retained.push(Object.freeze({
           stream: "stderr",
           at: "",
@@ -295,7 +299,8 @@ export function redactBridgeTranscript(
             outcome: parsed.outcome,
             binding: "unknown",
             failureKind: parsed.stage === "failure" ? parsed.outcome : "none",
-            rsidHashPresent: typeof parsed.rsidHash === "string" && SHA256.test(parsed.rsidHash),
+            rsidHash: parsed.rsidHash,
+            sequence: isSafeDocumentContextSequence(parsed.sequence) ? parsed.sequence : null,
             payloadHashPresent: typeof parsed.payloadHash === "string" && SHA256.test(parsed.payloadHash),
           }),
         }));
@@ -329,8 +334,8 @@ export function redactDocumentContextFailureStages(
           event: parsed.event,
           stage: parsed.stage,
           outcome: parsed.outcome,
-          sequence: Number.isSafeInteger(parsed.sequence) ? parsed.sequence : null,
-          rsidHashPresent: typeof parsed.rsidHash === "string" && SHA256.test(parsed.rsidHash),
+          sequence: isSafeDocumentContextSequence(parsed.sequence) ? parsed.sequence : null,
+          rsidHash: typeof parsed.rsidHash === "string" && SHA256.test(parsed.rsidHash) ? parsed.rsidHash : null,
           payloadHashPresent: typeof parsed.payloadHash === "string" && SHA256.test(parsed.payloadHash),
         }),
       }));
