@@ -2483,12 +2483,9 @@ class SessionAggregateRepository {
       ]);
       if (legacy !== null || recovery !== null) throw new Error("v2 deletion receipt disagrees with legacy source");
     }
-    const observedOwned = new Set<string>();
-    for (const namespace of [GATEWAY_RBP_SESSION_V2_EVIDENCE_NAMESPACE, GATEWAY_RBP_SESSION_V2_EGRESS_NAMESPACE, GATEWAY_RBP_SESSION_V2_CONFLICT_INDEX_NAMESPACE]) {
-      for (const child of await raw.list(namespace)) if (child.key.startsWith(`${rsid}/`)) observedOwned.add(`${namespace}\u0000${child.key}`);
-    }
-    const expectedOwned = new Set(root.childRefs.filter((ref) => this.#isOwned(ref.namespace)).map((ref) => this.#refId(ref)));
-    if (!sameJson([...observedOwned].sort(), [...expectedOwned].sort())) throw new Error("v2 session root has missing or extra children");
+    // Authority is the marker-indexed manifest only. An unindexed row cannot
+    // grant or alter authority and is left for bounded maintenance GC; this
+    // avoids a tenant-wide list during dispatch/unregister hot paths.
     const values = new Map<string, StoredRecord<GatewayJsonValue>>();
     // Tombstone is read before all other refs to preserve unregister authority ordering.
     const tombstoneRef = root.childRefs.find((ref) => ref.namespace === GATEWAY_RBP_UNREGISTER_NAMESPACE);
