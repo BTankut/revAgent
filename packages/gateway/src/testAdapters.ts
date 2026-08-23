@@ -477,7 +477,10 @@ function buildMemoryStore(state: MemoryState): GatewayProtocolStore {
             tenantId: scope.tenantId,
             key: write.key,
             value: write.value,
-            version: state.nextVersion,
+            // CAS versions are record-local. A normalized root can therefore
+            // prove a child's next committed version without depending on
+            // unrelated writes elsewhere in the tenant.
+            version: (state.records.get(composite)?.version ?? 0) + 1,
             updatedAtMs: 0,
           }),
         );

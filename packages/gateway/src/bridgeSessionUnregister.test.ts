@@ -474,6 +474,7 @@ class ControlledStoreHarness {
         const applied = fault?.mode === "partial_applied" ? staged.slice(0, 1) : staged;
         for (const write of applied) {
           const composite = this.#recordKey(write.namespace, scope.tenantId, write.key);
+          const existing = this.#records.get(composite);
           if (write.value === null) {
             this.#records.delete(composite);
             continue;
@@ -484,7 +485,7 @@ class ControlledStoreHarness {
             tenantId: scope.tenantId,
             key: write.key,
             value: structuredClone(write.value),
-            version: this.#nextVersion,
+            version: (existing?.version ?? 0) + 1,
             updatedAtMs: 0,
           });
         }
@@ -553,7 +554,7 @@ class ControlledStoreHarness {
     this.#records.set(composite, {
       ...current,
       value: structuredClone(mutate(current.value)),
-      version: this.#nextVersion,
+      version: current.version + 1,
     });
   }
 
@@ -571,7 +572,7 @@ class ControlledStoreHarness {
       tenantId,
       key,
       value: structuredClone(value),
-      version: this.#nextVersion,
+      version: 1,
       updatedAtMs: 0,
     });
   }
@@ -1547,18 +1548,9 @@ describe("GatewayBridgeSessionAuthority durable unregister", () => {
     await expect(
       authority.createExecutor().execute(request(session.rsid, false)),
     ).rejects.toMatchObject({ httpStatus: 503, closeCode: 1011 });
-    store.rewrite(TENANT_ID, "gateway.rbp-session-egress/v2", `${session.rsid}/egress`, (value) => ({
-      ...(value as GatewayJsonObject),
-      fence: {
-        version: 1,
-        state: "open",
-        epoch: 2,
-        nextTicket: 2,
-        lease: null,
-        revocation: null,
-      },
-      recordVersion: 1,
-    }));
+    // The deliberately stale child proof is terminal fixture corruption; do
+    // not run lifecycle cleanup through an authority that must fail closed.
+    authorities.splice(authorities.indexOf(authority), 1);
   });
 
   it("accepts commit-applied uncertainty only after exact keyed readback", async () => {
@@ -1640,9 +1632,9 @@ describe("GatewayBridgeSessionAuthority durable unregister", () => {
     });
     expect(session.channel.frames.filter((frame) => frame.type === "invoke")).toHaveLength(1);
     const durable = store.snapshot().find(
-      (record) => record.namespace === "gateway.rbp-session/v1" && record.key === session.rsid,
+      (record) => record.namespace === "gateway.rbp-session-egress/v2" && record.key === `${session.rsid}/egress`,
     )?.value as GatewayJsonObject;
-    expect((durable.egressFence as GatewayJsonObject).lease).toMatchObject({
+    expect((durable.fence as GatewayJsonObject).lease).toMatchObject({
       phase: "started",
       operation: "dispatch",
     });
@@ -1701,9 +1693,9 @@ describe("GatewayBridgeSessionAuthority durable unregister", () => {
       (record) => record.namespace === GATEWAY_RBP_UNREGISTER_NAMESPACE,
     )).toBe(false);
     const durable = store.snapshot().find(
-      (record) => record.namespace === "gateway.rbp-session/v1",
+      (record) => record.namespace === "gateway.rbp-session-egress/v2",
     )?.value as GatewayJsonObject;
-    expect((durable.egressFence as GatewayJsonObject).state).toBe("revocation_pending");
+    expect((durable.fence as GatewayJsonObject).state).toBe("revocation_pending");
   });
 
   it("rejects a partial hold write instead of repairing it", async () => {
@@ -1735,10 +1727,10 @@ describe("GatewayBridgeSessionAuthority durable unregister", () => {
     )).toBe(false);
     const poisoned = store.snapshot().find(
       (record) =>
-        record.namespace === "gateway.rbp-session/v1" &&
-        record.key === session.rsid,
+        record.namespace === "gateway.rbp-session-egress/v2" &&
+        record.key === `${session.rsid}/egress`,
     )?.value as GatewayJsonObject;
-    expect((poisoned.egressFence as GatewayJsonObject).state).toBe(
+    expect((poisoned.fence as GatewayJsonObject).state).toBe(
       "revocation_pending",
     );
     await expect(

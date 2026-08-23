@@ -2235,20 +2235,25 @@ class SessionAggregateRepository {
       const staged = new Map<string, { readonly value: GatewayJsonValue | null; readonly expect: StoreExpectation }>();
       const loaded = new Map<string, StoredRecord<GatewayJsonValue> | null>();
       const overlay = new Map<string, { readonly value: GatewayJsonValue | null }>();
+      let rawStageCount = 0;
       const overlayKey = (namespace: string, key: string) => `${namespace}\u0000${key}`;
+      const stageRaw = (write: { readonly namespace: string; readonly key: string; readonly value: GatewayJsonValue | null; readonly expect: StoreExpectation }): void => {
+        rawStageCount += 1;
+        raw.stage(write);
+      };
       const readOverlay = async <TValue extends GatewayJsonValue>(namespace: string, key: string): Promise<StoredRecord<TValue> | null> => {
         const stagedValue = overlay.get(overlayKey(namespace, key));
         if (stagedValue !== undefined) {
           if (stagedValue.value === null) return null;
           const current = await raw.read<TValue>(namespace, key);
-          return { namespace, tenantId: scope.tenantId, key, value: stagedValue.value as TValue, version: current?.version ?? 0, updatedAtMs: current?.updatedAtMs ?? 0 };
+          return { namespace, tenantId: scope.tenantId, key, value: stagedValue.value as TValue, version: (current?.version ?? 0) + 1, updatedAtMs: current?.updatedAtMs ?? 0 };
         }
         return await raw.read<TValue>(namespace, key);
       };
       const normalizedRaw: StoreTransaction = {
         read: readOverlay,
         list: async (namespace) => await raw.list(namespace),
-        stage: (write) => raw.stage(write),
+        stage: stageRaw,
       };
       const load = async (rsid: string): Promise<StoredRecord<GatewayJsonValue> | null> => {
         if (loaded.has(rsid)) return loaded.get(rsid) ?? null;
@@ -2286,17 +2291,19 @@ class SessionAggregateRepository {
           if (write.namespace === GATEWAY_RBP_SESSION_NAMESPACE) staged.set(write.key, { value: write.value, expect: write.expect });
           else {
             overlay.set(overlayKey(write.namespace, write.key), { value: write.value });
-            raw.stage(write);
+            stageRaw(write);
           }
         },
       };
       const value = await work(tx);
-      for (const [rsid, stage] of staged) await this.#stageNormalized(normalizedRaw, scope.tenantId, rsid, stage, await load(rsid));
+      for (const [rsid, stage] of staged) {
+        await this.#stageNormalized(normalizedRaw, scope.tenantId, rsid, stage, await load(rsid), rawStageCount);
+      }
       return value;
     });
   }
 
-  async #stageNormalized(raw: StoreTransaction, tenantId: string, rsid: string, stage: { readonly value: GatewayJsonValue | null; readonly expect: StoreExpectation }, existing: StoredRecord<GatewayJsonValue> | null): Promise<void> {
+  async #stageNormalized(raw: StoreTransaction, tenantId: string, rsid: string, stage: { readonly value: GatewayJsonValue | null; readonly expect: StoreExpectation }, existing: StoredRecord<GatewayJsonValue> | null, priorStageCount: number): Promise<void> {
     if (stage.value === null) throw new Error("normalized session roots are retained; unregister is tombstone authority");
     const record = parseStoredSession({ namespace: GATEWAY_RBP_SESSION_NAMESPACE, tenantId, key: rsid, value: stage.value, version: Number.MAX_SAFE_INTEGER, updatedAtMs: 0 }, tenantId, rsid);
     const currentRoot = await raw.read<GatewayJsonValue>(GATEWAY_RBP_SESSION_V2_NAMESPACE, rsid);
@@ -2310,6 +2317,7 @@ class SessionAggregateRepository {
     const children = await this.#childrenFor(raw, record);
     const priorOwned = priorRoot?.childRefs.filter((ref) => this.#isOwned(ref.namespace)) ?? [];
     const nextOwned = new Map(children.owned.map((child) => [this.#refId(child.ref), child]));
+    const staleOwned = priorOwned.filter((prior) => !nextOwned.has(this.#refId(prior)));
     for (const prior of priorOwned) {
       if (!nextOwned.has(this.#refId(prior))) {
         const current = await raw.read<GatewayJsonValue>(prior.namespace, prior.key);
@@ -2327,9 +2335,20 @@ class SessionAggregateRepository {
     const legacyRecovery = marker === null
       ? await raw.read<GatewayJsonValue>(GATEWAY_RECOVERY_NAMESPACE, rsid)
       : null;
+    const holdMarker = await raw.read<GatewayJsonValue>(GATEWAY_HOLD_CUTOVER_NAMESPACE, rsid);
+    const plannedWrites = priorStageCount + children.owned.length + staleOwned.length + 2 +
+      (holdMarker === null ? 1 : 0) + (legacySource === null ? 0 : 1) +
+      (legacyRecovery === null ? 0 : 1);
+    if (plannedWrites > PROTOCOL_STORE_TRANSACTION_WRITE_LIMIT) {
+      throw new Error("normalized session write plan exceeds the durable transaction limit");
+    }
     const migration = priorRoot?.migration ?? {
-      sourceVersionDigest: digest(canonicalizeJson(record as unknown as JsonValue)),
-      legacyDigest: digest(canonicalizeJson(record as unknown as JsonValue)),
+      sourceVersionDigest: legacySource === null
+        ? digest(canonicalizeJson({ source: "no_legacy_session", tenantId, rsid } as unknown as JsonValue))
+        : digest(canonicalizeJson({ version: legacySource.version, value: legacySource.value } as unknown as JsonValue)),
+      legacyDigest: legacySource === null
+        ? digest(canonicalizeJson({ source: "no_legacy_session", tenantId, rsid } as unknown as JsonValue))
+        : digest(canonicalizeJson(legacySource.value as JsonValue)),
       counts: { holds: 0, conflicts: 0, resolutions: 0 },
       deletionReceipt: legacySource === null
         ? { state: "retained" as const, verifiedAtMs: null }
@@ -2340,7 +2359,6 @@ class SessionAggregateRepository {
     raw.stage({ namespace: GATEWAY_RBP_SESSION_V2_NAMESPACE, key: rsid, value: asJson(root), expect: currentRoot === null ? { kind: "absent" } : { kind: "version", version: currentRoot.version } });
     // This older marker remains exclusively a proof that legacy recovery holds
     // were normalized. It is not, and is never consulted as, session authority.
-    const holdMarker = await raw.read<GatewayJsonValue>(GATEWAY_HOLD_CUTOVER_NAMESPACE, rsid);
     if (holdMarker === null) {
       const nowMs = record.updatedAtMs;
       const holdCutover: DurableHoldCutover = {
@@ -2428,7 +2446,22 @@ class SessionAggregateRepository {
   #parseRoot(stored: StoredRecord<GatewayJsonValue>, tenantId: string, rsid: string): DurableRbpSessionV2 {
     if (stored.namespace !== GATEWAY_RBP_SESSION_V2_NAMESPACE || stored.tenantId !== tenantId || stored.key !== rsid || !isRecord(stored.value)) throw new Error("malformed v2 session root identity");
     const root = stored.value as unknown as DurableRbpSessionV2;
-    if (root.schema !== GATEWAY_RBP_SESSION_V2_NAMESPACE || root.generation !== 2 || !isSafePositiveInteger(root.rootVersion) || root.tenantId !== tenantId || root.rsid !== rsid || !isRecord(root.identity) || !isRecord(root.binding) || !isRecord(root.lifecycle) || !isRecord(root.sequence) || !isRecord(root.migration) || !Array.isArray(root.childRefs) || root.childrenDigest !== digest(canonicalizeJson(root.childRefs as unknown as JsonValue)) || Object.hasOwn(root, "snapshot")) throw new Error("malformed normalized v2 session root");
+    if (!hasExactKeys(stored.value, [
+      "schema", "generation", "rootVersion", "tenantId", "rsid", "identity", "binding",
+      "lifecycle", "sequence", "migration", "childRefs", "childrenDigest",
+    ]) || root.schema !== GATEWAY_RBP_SESSION_V2_NAMESPACE || root.generation !== 2 || !isSafePositiveInteger(root.rootVersion) || root.tenantId !== tenantId || root.rsid !== rsid || !isRecord(root.identity) || !isRecord(root.binding) || !isRecord(root.lifecycle) || !isRecord(root.sequence) || !isRecord(root.migration) || !Array.isArray(root.childRefs) || root.childrenDigest !== digest(canonicalizeJson(root.childRefs as unknown as JsonValue))) throw new Error("malformed normalized v2 session root");
+    const migration = root.migration;
+    if (!hasExactKeys(migration, ["sourceVersionDigest", "legacyDigest", "counts", "deletionReceipt"]) ||
+      typeof migration.sourceVersionDigest !== "string" || !DIGEST_PATTERN.test(migration.sourceVersionDigest) ||
+      typeof migration.legacyDigest !== "string" || !DIGEST_PATTERN.test(migration.legacyDigest) ||
+      !isRecord(migration.counts) || !hasExactKeys(migration.counts, ["holds", "conflicts", "resolutions"]) ||
+      !isSafeNonNegativeInteger(migration.counts.holds) || !isSafeNonNegativeInteger(migration.counts.conflicts) || !isSafeNonNegativeInteger(migration.counts.resolutions) ||
+      !isRecord(migration.deletionReceipt) || !hasExactKeys(migration.deletionReceipt, ["state", "verifiedAtMs"]) ||
+      (migration.deletionReceipt.state !== "retained" && migration.deletionReceipt.state !== "deleted") ||
+      !(migration.deletionReceipt.verifiedAtMs === null || isSafeNonNegativeInteger(migration.deletionReceipt.verifiedAtMs)) ||
+      (migration.deletionReceipt.state === "retained" && migration.deletionReceipt.verifiedAtMs !== null) ||
+      (migration.deletionReceipt.state === "deleted" && !isSafeNonNegativeInteger(migration.deletionReceipt.verifiedAtMs))
+    ) throw new Error("malformed normalized v2 migration proof");
     const sorted = [...root.childRefs].sort((a, b) => this.#refId(a).localeCompare(this.#refId(b)));
     if (!sameJson(sorted as unknown as JsonValue, root.childRefs as unknown as JsonValue) || root.childRefs.some((ref) => !isRecord(ref) || typeof ref.namespace !== "string" || typeof ref.key !== "string" || !DIGEST_PATTERN.test(String(ref.digest)) || !isSafeNonNegativeInteger(ref.version))) throw new Error("malformed v2 child references");
     return root;
@@ -2466,7 +2499,7 @@ class SessionAggregateRepository {
     }
     for (const ref of root.childRefs) {
       const child = values.get(this.#refId(ref))!;
-      if (child.namespace !== ref.namespace || child.tenantId !== tenantId || child.key !== ref.key || digest(canonicalizeJson(child.value as JsonValue)) !== ref.digest) throw new Error("v2 session child proof is stale or corrupt");
+      if (child.namespace !== ref.namespace || child.tenantId !== tenantId || child.key !== ref.key || child.version !== ref.version || digest(canonicalizeJson(child.value as JsonValue)) !== ref.digest) throw new Error("v2 session child proof is stale or corrupt");
     }
     const evidence: DurableDispatchEvidence[] = [];
     let fence: DurableEgressFence | undefined;
