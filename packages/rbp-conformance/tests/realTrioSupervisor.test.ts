@@ -151,7 +151,10 @@ describe("WP-12 real-trio v2 session smoke reader", () => {
       now: () => time,
       sleep: async (milliseconds) => { time += milliseconds; },
     })).rejects.toSatisfy((error: unknown) =>
-      error instanceof RealTrioSessionReadinessPollError && error.audits.length === 3);
+      error instanceof RealTrioSessionReadinessPollError &&
+      error.audits.length === 3 &&
+      error.lastGatewayAudit !== null &&
+      error.bridgeReceiveTranscript.length === 0);
   });
 
   it("aborts polling when the real worker exits", async () => {

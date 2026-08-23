@@ -375,7 +375,7 @@ class HttpSseChannel implements BridgeConnectionChannel {
     throw error;
   }
 
-  public attach(response: ServerResponse): void {
+  public async attach(response: ServerResponse): Promise<void> {
     if (this.#closed) {
       this.#fail(new GatewayRbpFault("auth", "SSE authority is revoked", 403, 4403));
     }
@@ -383,6 +383,10 @@ class HttpSseChannel implements BridgeConnectionChannel {
       throw new GatewayRbpFault("protocol", "SSE stream is already attached", 409, 4400);
     }
     this.#response = response;
+    // An HTTP/SSE stream carries the Gateway's registration authority.  Do
+    // not leave Nagle coalescing to decide whether the first lifecycle frame
+    // reaches the real HTTP client before its bounded startup deadline.
+    response.socket?.setNoDelay(true);
     response.once("close", this.onClose);
     response.once("error", this.onClose);
     if (response.destroyed || response.writableEnded) {
@@ -390,9 +394,7 @@ class HttpSseChannel implements BridgeConnectionChannel {
     }
     try {
       for (const serialized of this.#pending.splice(0)) {
-        if (!response.write(`event: rbp\ndata: ${serialized}\n\n`)) {
-          throw new Error("SSE stream applied backpressure while attaching");
-        }
+        await this.#writeFrame(response, serialized);
       }
     } catch (error) {
       if (error instanceof Error) this.#fail(error);
@@ -416,9 +418,48 @@ class HttpSseChannel implements BridgeConnectionChannel {
     if (response.destroyed || response.writableEnded) {
       this.#fail(new Error("SSE stream is closed"));
     }
+    await this.#writeFrame(response, serialized);
+  }
+
+  /**
+   * Resolving `write()` is only queue acceptance.  The callback is Node's
+   * delivery boundary for ServerResponse; a `false` return additionally
+   * requires a drain before another RBP frame can be accepted.  Keeping both
+   * waits here makes attach backlog and normal live delivery identical.
+   */
+  async #writeFrame(response: ServerResponse, serialized: string): Promise<void> {
+    const frame = `event: rbp\ndata: ${serialized}\n\n`;
     let writable: boolean;
     try {
-      writable = response.write(`event: rbp\ndata: ${serialized}\n\n`);
+      writable = await new Promise<boolean>((resolve, reject) => {
+        let settled = false;
+        let accepted = false;
+        const finish = (error?: Error): void => {
+          if (settled) return;
+          settled = true;
+          response.off("close", onClose);
+          response.off("error", onError);
+          if (error === undefined) resolve(accepted);
+          else reject(error);
+        };
+        const onClose = (): void => finish(new Error("SSE stream closed before write callback"));
+        const onError = (error: Error): void => finish(error);
+        // The callback is the only success path: `write()` returning true is
+        // not proof that bytes crossed the ServerResponse boundary.
+        response.once("close", onClose);
+        response.once("error", onError);
+        try {
+          accepted = response.write(frame, (error?: Error | null) => {
+            finish(error === undefined || error === null ? undefined : error);
+          });
+          const flush = (response as unknown as { flush?: () => void }).flush;
+          // Compression middleware may buffer SSE chunks after write().  Its
+          // optional flush is part of the same delivery boundary.
+          flush?.call(response);
+        } catch (error) {
+          finish(error instanceof Error ? error : new Error(String(error)));
+        }
+      });
     } catch (error) {
       if (error instanceof Error) this.#fail(error);
       this.#fail(new Error(String(error)));
@@ -956,7 +997,7 @@ export function createProductionRbpIngressHost(
               "X-Accel-Buffering": "no",
             });
             reply.raw.flushHeaders();
-            attachedEntry.channel.attach(reply.raw);
+            await attachedEntry.channel.attach(reply.raw);
             if (attachedEntry.state !== "registered") {
               attachedEntry.state = "sse_attached";
               attachedEntry.expiresAtMs = httpSseClock() + HTTP_SSE_ATTACH_TTL_MS;

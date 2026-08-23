@@ -8,6 +8,7 @@ import {
   StrictReadyProcess,
   type JsonObject,
   type JsonValue,
+  type ProcessTranscriptRecord,
 } from "./processHarness.js";
 import type { ProcessCommandDescriptor } from "./types.js";
 import {
@@ -66,7 +67,14 @@ export interface RbpSessionReadinessPollOptions {
 }
 
 export class RealTrioSessionReadinessPollError extends Error {
-  public constructor(message: string, readonly audits: readonly JsonObject[]) {
+  public constructor(
+    message: string,
+    readonly audits: readonly JsonObject[],
+    /** The final public Gateway v2/audit observation at the bounded deadline. */
+    readonly lastGatewayAudit: JsonObject | null = audits.at(-1) ?? null,
+    /** Real C# carrier stdout/stderr retained without reading its private state. */
+    readonly bridgeReceiveTranscript: readonly ProcessTranscriptRecord[] = [],
+  ) {
     super(message);
   }
 }
@@ -359,16 +367,29 @@ export async function startRealTrioSupervisor(input: RealTrioSupervisorLaunch): 
         if (binding !== "wss" && binding !== "streamable_http_sse") {
           throw new Error("real worker command lacks one supported binding");
         }
-        const sessionReadiness = await pollRbpSessionV2Readiness({
-          expectedBinding: binding,
-          isBridgeExited: () => bridge.process.exitCode !== null,
-          readSnapshot: async () => await publicGatewayControl(
-            endpoint,
-            input.gatewayControlToken,
-            certificateSha256,
-            "snapshot_audit",
-          ),
-        });
+        let sessionReadiness: RealTrioSessionReadiness;
+        try {
+          sessionReadiness = await pollRbpSessionV2Readiness({
+            expectedBinding: binding,
+            isBridgeExited: () => bridge.process.exitCode !== null,
+            readSnapshot: async () => await publicGatewayControl(
+              endpoint,
+              input.gatewayControlToken,
+              certificateSha256,
+              "snapshot_audit",
+            ),
+          });
+        } catch (error) {
+          if (error instanceof RealTrioSessionReadinessPollError) {
+            throw new RealTrioSessionReadinessPollError(
+              error.message,
+              error.audits,
+              error.lastGatewayAudit,
+              Object.freeze([...bridge.transcript]),
+            );
+          }
+          throw error;
+        }
         let stopped = false;
         const stop = async (): Promise<void> => {
           if (stopped) return;

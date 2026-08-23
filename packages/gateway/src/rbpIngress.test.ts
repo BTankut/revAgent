@@ -2064,6 +2064,71 @@ describe("GW-12 production RBP ingress", () => {
     });
   }
 
+  it("delivers the exact HTTP/SSE session_registered frame before the lifecycle POST settles", async () => {
+    const restartable = createRestartableTestStore();
+    const activeIdentity = identity(undefined, {
+      grantedConnectionCapabilities: ["transport_streamable_http"],
+    });
+    const authority = new GatewayBridgeSessionAuthority(restartable.store, activeIdentity);
+    const server = await startGatewayServer({
+      config,
+      ports: {
+        ...createFailClosedPorts(),
+        identity: activeIdentity,
+        protocolStore: restartable.store,
+        rbpIngress: createProductionRbpIngressHost({ authority }),
+      },
+    });
+    handles.push(server);
+    const baseUrl = `http://127.0.0.1:${String(server.port)}`;
+    const headers = {
+      Authorization: "Bearer device-token",
+      Accept: "application/json",
+      "Content-Type": "application/json",
+      "X-RBP-Versions": "1",
+    };
+    const created = await fetch(`${baseUrl}/bridge/v1/http/connections`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(hello()),
+    });
+    expect(created.status).toBe(201);
+    const connectionId = created.headers.get("RBP-Connection-Id");
+    if (connectionId === null) throw new Error("HTTP create omitted connection id");
+    const events = await fetch(
+      `${baseUrl}/bridge/v1/http/connections/${encodeURIComponent(connectionId)}/events`,
+      { headers: { Authorization: headers.Authorization, Accept: "text/event-stream" } },
+    );
+    expect(events.status).toBe(200);
+    if (events.body === null) throw new Error("SSE response omitted its body");
+    const reader = events.body.getReader();
+    const lifecyclePost = fetch(
+      `${baseUrl}/bridge/v1/http/connections/${encodeURIComponent(connectionId)}/messages`,
+      { method: "POST", headers, body: JSON.stringify(registration()) },
+    );
+    const deadline = Date.now() + 2_000;
+    const decoder = new TextDecoder();
+    let frame = "";
+    while (!frame.includes("\n\n")) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) throw new Error("session_registered SSE frame missed lifecycle deadline");
+      const next = await Promise.race([
+        reader.read(),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error("session_registered SSE frame missed lifecycle deadline")), remaining),
+        ),
+      ]);
+      expect(next.done).toBe(false);
+      frame += decoder.decode(next.value, { stream: true });
+    }
+    frame = frame.slice(0, frame.indexOf("\n\n") + 2);
+    expect(frame).toMatch(/^event: rbp\ndata: \{.+\}\n\n$/u);
+    expect(JSON.parse(frame.slice("event: rbp\ndata: ".length).trim()) as RbpEnvelope)
+      .toMatchObject({ type: "session_registered" });
+    expect((await lifecyclePost).status).toBe(202);
+    await reader.cancel();
+  });
+
   it("closes and removes an active HTTP/SSE binding on identity revoke, then returns 410", async () => {
     const restartable = createRestartableTestStore();
     let revoked = false;

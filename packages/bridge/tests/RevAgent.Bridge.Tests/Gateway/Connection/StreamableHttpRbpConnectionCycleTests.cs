@@ -83,6 +83,37 @@ public sealed class StreamableHttpRbpConnectionCycleTests
     }
 
     [Fact]
+    public async Task FragmentedMultiEventSseDeliversSessionRegisteredBeforeLaterFrames()
+    {
+        await using var harness = new HttpFallbackHarness();
+        await using IRbpConnectionCycle cycle = await harness.OpenAsync();
+        string registered = InboundSessionRegisteredJson();
+        string heartbeat = InboundHeartbeatAckJson();
+        const string Prefix = "event: rbp\r\ndata: ";
+        int split = registered.Length / 2;
+
+        // The real carrier sees arbitrary TLS/H1.1/H2 response chunks.  Do
+        // not let a partial session_registered frame be mistaken for a
+        // complete lifecycle event or bleed into the next SSE event.
+        harness.Events.WriteUtf8(Prefix + registered[..split]);
+        Task<RbpEnvelope> firstRead = cycle.ReceiveAsync();
+        await Task.Delay(20);
+        Assert.False(firstRead.IsCompleted);
+        harness.Events.WriteUtf8(
+            registered[split..] + "\r\n\r\n" +
+            "event: rbp\n" +
+            "data: " + heartbeat + "\n\n");
+
+        RbpEnvelope registeredEnvelope = await firstRead.WaitAsync(
+            TimeSpan.FromSeconds(2));
+        RbpEnvelope heartbeatEnvelope = await cycle.ReceiveAsync()
+            .WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.Equal("session_registered", registeredEnvelope.Type);
+        Assert.Equal("heartbeat_ack", heartbeatEnvelope.Type);
+    }
+
+    [Fact]
     public async Task UplinkUsesAuthenticatedJsonAndRequires202()
     {
         await using var harness = new HttpFallbackHarness();
@@ -316,6 +347,11 @@ public sealed class StreamableHttpRbpConnectionCycleTests
     private static string InboundHeartbeatAckJson() =>
         """
         {"v":1,"type":"heartbeat_ack","id":"019f9add-7a83-7d11-a6a9-d2f8108c0099","ts":"2026-07-26T10:00:00.000Z","payload":{"server_time":"2026-07-26T10:00:00.000Z","acks":[]}}
+        """;
+
+    private static string InboundSessionRegisteredJson() =>
+        """
+        {"v":1,"type":"session_registered","id":"019f9add-7a83-7d11-a6a9-d2f8108c0098","ts":"2026-07-26T10:00:00.000Z","payload":{"rsid":"018f7f7e-1234-7abc-8def-1234567890ab","resume_token":"resume-test-token","resume_expires_at":"2026-07-27T10:00:00.000Z","principal":{"tenant_id":"tenant-test","user_id":"user-test"},"seat":{"granted":true,"seat_id":"seat-test"},"granted_session_capabilities":[]}}
         """;
 
     private sealed class HttpFallbackHarness : IAsyncDisposable
