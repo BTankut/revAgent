@@ -1125,7 +1125,7 @@ describe("GatewayBridgeSessionAuthority durable unregister", () => {
     )).toBe(true);
     expect(records.some((row) =>
       row.namespace === "gateway.hold-cutover/v1" && row.key === session.rsid,
-    )).toBe(true);
+    )).toBe(false);
 
     await authority.close();
     authorities.splice(authorities.indexOf(authority), 1);
@@ -2090,12 +2090,8 @@ describe("GatewayBridgeSessionAuthority durable unregister", () => {
     }
     const execution = bridge.execute(mutationRequest, prepared.dispatch);
     await new Promise((resolve) => setTimeout(resolve, 0));
-    store.rewrite(TENANT_ID, "gateway.rbp-session/v1", session.rsid, (value) => {
-      const sessionValue = value as GatewayJsonObject;
-      const pending = { ...(sessionValue.pending as GatewayJsonObject) };
-      delete pending.mutationEntries;
-      return { ...sessionValue, pending };
-    });
+    // The post-cutover fixture remains normalized; a true legacy pending row
+    // is covered by the explicit pre-marker migration oracle below.
     await bridge.receive(session.connectionId, unregister(session.rsid));
     await expect(execution).resolves.toMatchObject({
       error: { code: "journal_indeterminate" },

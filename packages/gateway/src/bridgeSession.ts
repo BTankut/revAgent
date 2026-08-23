@@ -2365,7 +2365,7 @@ class SessionAggregateRepository {
     raw.stage({ namespace: GATEWAY_RBP_SESSION_V2_NAMESPACE, key: rsid, value: asJson(root), expect: currentRoot === null ? { kind: "absent" } : { kind: "version", version: currentRoot.version } });
     // This older marker remains exclusively a proof that legacy recovery holds
     // were normalized. It is not, and is never consulted as, session authority.
-    if (holdMarker === null) {
+    if (holdMarker === null && migration.counts.holds > 0) {
       const nowMs = record.updatedAtMs;
       const holdCutover: DurableHoldCutover = {
         schema: GATEWAY_HOLD_CUTOVER_NAMESPACE, tenantId, rsid,
