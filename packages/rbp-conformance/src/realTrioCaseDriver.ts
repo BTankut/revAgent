@@ -1,9 +1,13 @@
 import { caseProgram } from "./casePrograms.js";
 import type { CaseControlStep } from "./casePrograms.js";
-import { createHash } from "node:crypto";
-import { request as httpsRequest } from "node:https";
-import type { TLSSocket } from "node:tls";
 import type { JsonValue } from "./processHarness.js";
+import {
+  withRealTrioNorthMcpClient,
+  type RealTrioNorthCredential,
+  type RealTrioNorthWireEvidence,
+} from "./realTrioMcpClient.js";
+
+export type { RealTrioNorthCredential, RealTrioNorthWireEvidence } from "./realTrioMcpClient.js";
 
 /**
  * The real-trio case executor deliberately has a smaller contract than the
@@ -127,12 +131,6 @@ function objectRecord(value: unknown, label: string): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
-function mcpStructuredContent(response: unknown): Record<string, unknown> {
-  const envelope = objectRecord(response, "real trio MCP response");
-  const result = objectRecord(envelope.result, "real trio MCP response result");
-  return objectRecord(result.structuredContent, "real trio MCP structured content");
-}
-
 export interface RealTrioNorthToolCall {
   readonly toolName: string;
   readonly args: Readonly<Record<string, JsonValue>>;
@@ -155,95 +153,39 @@ export async function callRealTrioNorthTool(input: {
   readonly endpoint: string;
   readonly certificateSha256: string;
   readonly credential: RealTrioNorthCredential;
-  readonly effectiveMcpSessionId: string;
   readonly call: RealTrioNorthToolCall;
 }): Promise<RealTrioNorthToolResult> {
-  const callRequest = Object.freeze({
-    jsonrpc: "2.0",
-    id: input.call.requestId,
-    method: "tools/call",
-    params: Object.freeze({ name: input.call.toolName, arguments: input.call.args }),
+  return await withRealTrioNorthMcpClient(input, async (client) => {
+    const preview = await client.toolCall({
+      name: input.call.toolName, arguments: input.call.args, requestId: input.call.requestId,
+    });
+    const state = preview.content.state;
+    const requestId = preview.content.requestId;
+    if (typeof state !== "string" || typeof requestId !== "string") {
+      throw new Error("real trio MCP tool response lacks state or request id");
+    }
+    if (state !== "confirmation_required") {
+      return Object.freeze({ preview: preview.evidence, commit: null, state, requestId });
+    }
+    const confirmation = objectRecord(preview.content.confirmation, "real trio MCP confirmation");
+    const confirmToken = confirmation.confirmToken;
+    const originatingPreviewInvocationId = confirmation.originatingPreviewInvocationId;
+    if (typeof confirmToken !== "string" || confirmToken.length === 0 ||
+        typeof originatingPreviewInvocationId !== "string" || originatingPreviewInvocationId.length === 0) {
+      throw new Error("real trio MCP confirmation is malformed");
+    }
+    const commit = await client.toolCall({
+      name: input.call.toolName,
+      arguments: Object.freeze({ ...input.call.args, confirm_token: confirmToken,
+        originating_preview_invocation_id: originatingPreviewInvocationId }),
+      requestId: `${input.call.requestId}-commit`,
+    });
+    if (commit.content.state !== "completed" || typeof commit.content.requestId !== "string") {
+      throw new Error("real trio MCP confirmed tool call did not complete");
+    }
+    return Object.freeze({ preview: preview.evidence, commit: commit.evidence,
+      state: "completed", requestId: commit.content.requestId });
   });
-  const preview = await callRealTrioNorthMcp({ ...input, request: callRequest });
-  const previewContent = mcpStructuredContent(preview.response);
-  const state = previewContent.state;
-  const requestId = previewContent.requestId;
-  if (typeof state !== "string" || typeof requestId !== "string") {
-    throw new Error("real trio MCP tool response lacks state or request id");
-  }
-  if (state !== "confirmation_required") {
-    return Object.freeze({ preview: preview.evidence, commit: null, state, requestId });
-  }
-  const confirmation = objectRecord(previewContent.confirmation, "real trio MCP confirmation");
-  const confirmToken = confirmation.confirmToken;
-  const originatingPreviewInvocationId = confirmation.originatingPreviewInvocationId;
-  if (typeof confirmToken !== "string" || confirmToken.length === 0 ||
-      typeof originatingPreviewInvocationId !== "string" || originatingPreviewInvocationId.length === 0) {
-    throw new Error("real trio MCP confirmation is malformed");
-  }
-  const commit = await callRealTrioNorthMcp({
-    ...input,
-    request: Object.freeze({
-      jsonrpc: "2.0",
-      id: `${input.call.requestId}-commit`,
-      method: "tools/call",
-      params: Object.freeze({
-        name: input.call.toolName,
-        arguments: Object.freeze({
-          ...input.call.args,
-          confirm_token: confirmToken,
-          originating_preview_invocation_id: originatingPreviewInvocationId,
-        }),
-      }),
-    }),
-  });
-  const committed = mcpStructuredContent(commit.response);
-  if (committed.state !== "completed" || typeof committed.requestId !== "string") {
-    throw new Error("real trio MCP confirmed tool call did not complete");
-  }
-  return Object.freeze({
-    preview: preview.evidence,
-    commit: commit.evidence,
-    state: "completed",
-    requestId: committed.requestId,
-  });
-}
-
-/** Bearer material is deliberately short-lived in the caller and never copied into evidence. */
-export interface RealTrioNorthCredential {
-  readonly bearer: string;
-  readonly audience: string;
-  readonly credentialProvenance: "gateway_production_conformance";
-  readonly identityContract: "revagent.auth-context/v1";
-}
-
-export interface RealTrioNorthWireEvidence {
-  readonly schemaVersion: typeof REAL_TRIO_NORTH_EVIDENCE_SCHEMA;
-  readonly requestSha256: `sha256:${string}`;
-  readonly responseSha256: `sha256:${string}`;
-  readonly requestBytes: number;
-  readonly responseBytes: number;
-  readonly statusCode: number;
-  readonly effectiveMcpSessionId: string;
-}
-
-function sha256(bytes: Uint8Array): `sha256:${string}` {
-  return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
-}
-
-/** Accepts one ordinary JSON reply or the single JSON message in a bounded MCP SSE reply. */
-function parseNorthMcpResponse(bytes: Buffer): unknown {
-  const text = bytes.toString("utf8");
-  if (text.length === 0) return null;
-  if (!text.startsWith("event:") && !text.startsWith("data:")) {
-    return JSON.parse(text) as unknown;
-  }
-  const data = text.split(/\r?\n/u)
-    .filter((line) => line.startsWith("data:"))
-    .map((line) => line.slice("data:".length).trim())
-    .filter((line) => line.length > 0);
-  if (data.length !== 1) throw new Error("real trio MCP SSE response must contain exactly one data message");
-  return JSON.parse(data[0]!) as unknown;
 }
 
 /** Exact, authenticated control payload for the public north bearer route. */
@@ -260,65 +202,9 @@ export async function callRealTrioNorthMcp(input: {
   readonly endpoint: string;
   readonly certificateSha256: string;
   readonly credential: RealTrioNorthCredential;
-  readonly effectiveMcpSessionId: string;
   readonly request: Readonly<Record<string, unknown>>;
 }): Promise<{ readonly response: unknown; readonly evidence: RealTrioNorthWireEvidence }> {
-  if (!/^[-A-Za-z0-9._:]{1,512}$/u.test(input.effectiveMcpSessionId)) {
-    throw new Error("real trio effective MCP session id is invalid");
-  }
-  const url = new URL("/mcp", input.endpoint);
-  if (url.protocol !== "https:" || url.hostname !== "127.0.0.1" || url.port.length === 0) {
-    throw new Error("real trio north MCP endpoint must be numeric loopback TLS");
-  }
-  const payload = Buffer.from(JSON.stringify(input.request), "utf8");
-  return await new Promise((resolve, reject) => {
-    const operation = httpsRequest({
-      hostname: url.hostname,
-      port: url.port,
-      path: url.pathname,
-      method: "POST",
-      rejectUnauthorized: false,
-      headers: {
-        authorization: `Bearer ${input.credential.bearer}`,
-        accept: "application/json, text/event-stream",
-        "content-type": "application/json",
-        "content-length": payload.byteLength,
-        "mcp-session-id": input.effectiveMcpSessionId,
-      },
-    }, (response) => {
-      const peer = (response.socket as TLSSocket).getPeerCertificate(true).raw as Buffer | undefined;
-      const observed = peer === undefined ? null : sha256(peer);
-      if (observed !== input.certificateSha256) {
-        response.resume();
-        reject(new Error("real trio north MCP TLS pin mismatch"));
-        return;
-      }
-      const chunks: Buffer[] = [];
-      response.on("data", (chunk: Buffer) => chunks.push(chunk));
-      response.on("end", () => {
-        const bytes = Buffer.concat(chunks);
-        try {
-          const responseValue = parseNorthMcpResponse(bytes);
-          resolve(Object.freeze({
-            response: responseValue,
-            evidence: Object.freeze({
-              schemaVersion: REAL_TRIO_NORTH_EVIDENCE_SCHEMA,
-              requestSha256: sha256(payload),
-              responseSha256: sha256(bytes),
-              requestBytes: payload.byteLength,
-              responseBytes: bytes.byteLength,
-              statusCode: response.statusCode ?? 0,
-              effectiveMcpSessionId: input.effectiveMcpSessionId,
-            }),
-          }));
-        } catch (error) {
-          reject(error instanceof Error ? error : new Error(String(error)));
-        }
-      });
-    });
-    operation.once("error", reject);
-    operation.end(payload);
-  });
+  return await withRealTrioNorthMcpClient(input, async (client) => await client.request(input.request));
 }
 
 export interface RealTrioCaseControlSurface {

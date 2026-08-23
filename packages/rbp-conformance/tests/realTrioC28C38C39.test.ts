@@ -71,7 +71,6 @@ describe("WP-12 real-trio C28/C38/C39 case-driver admission", () => {
         credentialProvenance: "gateway_production_conformance",
         identityContract: "revagent.auth-context/v1",
       },
-      effectiveMcpSessionId: "real-case-session-1",
       request: { jsonrpc: "2.0", id: "x", method: "tools/list" },
     })).rejects.toThrow(/numeric loopback TLS/u);
   });
