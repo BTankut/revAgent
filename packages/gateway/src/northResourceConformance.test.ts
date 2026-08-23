@@ -13,6 +13,7 @@ import { GatewayDispatcher, type GatewayExecutor } from "./dispatch.js";
 import { EntitledCatalogView, entitleAll } from "./entitledRegistry.js";
 import {
   startNorthMcpEndpoint,
+  type NorthMcpEndpointOptions,
   type NorthMcpEndpointHandle,
 } from "./northMcpEndpoint.js";
 import { GatewayToolRegistry, M2_BOOTSTRAP_TOOL_RECORDS } from "./registry.js";
@@ -136,11 +137,16 @@ describe("GW-9 north MCP artifact resources", () => {
       bytes: Buffer.from("mark,count\nA,2\n", "utf8"),
     });
 
-    endpoint = await startNorthMcpEndpoint({
+    const observedScopes: unknown[] = [];
+    const northOptions: NorthMcpEndpointOptions = {
       dispatcher,
       registry,
       resourceAuthority: authority,
       resourceMaxInlineResultBytes: 1,
+      modeA: {
+        schemaBudgetBytes: 0,
+        pinnedToolNames: [row.name],
+      },
       catalogViewFor: () => catalog,
       invocationRouteFor: (authenticated, mcpSessionId, effectiveMcpRequestScope) => ({
         tenantId: authenticated.authContext.actor.tenantId,
@@ -182,7 +188,17 @@ describe("GW-9 north MCP artifact resources", () => {
           });
         },
       },
-    });
+    };
+    Object.defineProperty(
+      northOptions,
+      "__revAgentTestObserveEffectiveMcpScope",
+      {
+        configurable: true,
+        enumerable: false,
+        value: (observation: unknown) => observedScopes.push(observation),
+      },
+    );
+    endpoint = await startNorthMcpEndpoint(northOptions);
 
     client = new Client({ name: "GW-9 resource client", version: "0.1.0" });
     transport = new StreamableHTTPClientTransport(endpoint.endpoint, {
@@ -193,13 +209,22 @@ describe("GW-9 north MCP artifact resources", () => {
     const templates = await client.listResourceTemplates();
     expect(templates.resourceTemplates.map((template) => template.uriTemplate)).toEqual(
       expect.arrayContaining([
-        "revagent://artifact/{ref_id}",
-        "revagent://result/{ref_id}/{page}",
+        "revagent://artifact/p/{principal_sha256}/s/{session_sha256}/t/{tenant_sha256}/a/{actor_sha256}/r/{resource_sha256}",
+        "revagent://result/p/{principal_sha256}/s/{session_sha256}/t/{tenant_sha256}/a/{actor_sha256}/r/{resource_sha256}/page/{page}",
       ]),
     );
     expect(registry.records().some((record) => record.name.includes("file_fetch"))).toBe(
       false,
     );
+    expect(observedScopes.length).toBeGreaterThanOrEqual(2);
+    expect(observedScopes.length % 2).toBe(0);
+    for (let index = 0; index < observedScopes.length; index += 2) {
+      expect(observedScopes[index]).toMatchObject({ boundary: "mode_a" });
+      expect(observedScopes[index + 1]).toMatchObject({ boundary: "resource" });
+      expect((observedScopes[index] as { scope: unknown }).scope).toBe(
+        (observedScopes[index + 1] as { scope: unknown }).scope,
+      );
+    }
     const resource = await client.readResource({ uri: ref.uri });
     expect(resource.contents).toEqual([
       expect.objectContaining({
@@ -216,7 +241,7 @@ describe("GW-9 north MCP artifact resources", () => {
     expect(toolResult.structuredContent).toMatchObject({
       kind: "result_ref",
       refId: "tool-result",
-      uri: "revagent://result/tool-result/0",
+      uri: expect.stringMatching(/^revagent:\/\/result\/p\/[0-9a-f]{64}\/s\/[0-9a-f]{64}\/t\/[0-9a-f]{64}\/a\/[0-9a-f]{64}\/r\/[0-9a-f]{64}\/page\/0$/u),
     });
     const resultRef = toolResult.structuredContent as {
       readonly pageCount: number;
@@ -225,7 +250,7 @@ describe("GW-9 north MCP artifact resources", () => {
     const pages: Buffer[] = [];
     for (let page = 0; page < resultRef.pageCount; page += 1) {
       const resourcePage = await client.readResource({
-        uri: `revagent://result/tool-result/${String(page)}`,
+        uri: resultRef.uri.replace(/\/page\/0$/u, `/page/${String(page)}`),
       });
       const content = resourcePage.contents[0];
       if (content === undefined || !("blob" in content)) {
@@ -251,7 +276,7 @@ describe("GW-9 north MCP artifact resources", () => {
       },
     });
     await expect(
-      client.readResource({ uri: "revagent://result/tool-result/0" }),
+      client.readResource({ uri: resultRef.uri }),
     ).resolves.toMatchObject({
       contents: [expect.objectContaining({ blob: expect.any(String) })],
     });

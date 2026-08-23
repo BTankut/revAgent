@@ -70,6 +70,7 @@ export const NORTH_MODE_A_PINNED_TOOLS = Object.freeze([
   "core.session.status",
 ] as const);
 const DEFAULT_MODE_A_SESSION_TTL_MS = 30 * 60 * 1_000;
+const TEST_EFFECTIVE_SCOPE_OBSERVER = "__revAgentTestObserveEffectiveMcpScope";
 
 type AuthenticatedIncomingMessage = IncomingMessage & {
   auth?: AuthInfo;
@@ -186,6 +187,27 @@ export interface NorthMcpEndpointOptions {
   ) => void | Promise<void>;
   readonly host?: "127.0.0.1" | "localhost";
   readonly port?: number;
+}
+
+type EffectiveScopeObservationBoundary = "mode_a" | "resource";
+
+/**
+ * A deliberately non-enumerable, test-only hook. Production options have no
+ * serializable observer field and cannot receive raw identities through this
+ * seam; focused conformance tests install it with Object.defineProperty.
+ */
+function observeEffectiveScopeForTest(
+  options: NorthMcpEndpointOptions,
+  boundary: EffectiveScopeObservationBoundary,
+  scope: EffectiveMcpRequestScopeV1,
+): void {
+  const observer = Object.getOwnPropertyDescriptor(
+    options,
+    TEST_EFFECTIVE_SCOPE_OBSERVER,
+  )?.value;
+  if (typeof observer === "function") {
+    observer(Object.freeze({ boundary, scope }));
+  }
 }
 
 export interface NorthMcpEndpointHandle {
@@ -534,7 +556,11 @@ function registerGatewayResources(
   );
   const read = async (uri: URL) => {
     try {
-      const resource = await authority.readResource(scope, uri);
+      const resource = await authority.readResource(
+        scope,
+        effectiveScope,
+        uri,
+      );
       return {
         contents: [
           {
@@ -562,13 +588,19 @@ function registerGatewayResources(
   };
   server.registerResource(
     "artifact-ref",
-    new ResourceTemplate("revagent://artifact/{ref_id}", { list: undefined }),
+    new ResourceTemplate(
+      "revagent://artifact/p/{principal_sha256}/s/{session_sha256}/t/{tenant_sha256}/a/{actor_sha256}/r/{resource_sha256}",
+      { list: undefined },
+    ),
     { description: "Authenticated, expiring revAgent artifact." },
     read,
   );
   server.registerResource(
     "result-ref-page",
-    new ResourceTemplate("revagent://result/{ref_id}/{page}", { list: undefined }),
+    new ResourceTemplate(
+      "revagent://result/p/{principal_sha256}/s/{session_sha256}/t/{tenant_sha256}/a/{actor_sha256}/r/{resource_sha256}/page/{page}",
+      { list: undefined },
+    ),
     { description: "Authenticated, paged revAgent structured result." },
     read,
   );
@@ -969,6 +1001,20 @@ export function createNorthMcpHttpHandler(
         identityMcpSessionId: authenticated.authContext.session.mcpSessionId,
         nowMs: Date.now(),
       });
+      if (options.modeA !== undefined) {
+        observeEffectiveScopeForTest(
+          options,
+          "mode_a",
+          effectiveMcpRequestScope,
+        );
+      }
+      if (options.resourceAuthority !== undefined) {
+        observeEffectiveScopeForTest(
+          options,
+          "resource",
+          effectiveMcpRequestScope,
+        );
+      }
       const modeASession = modeASessionFor(
         authenticated,
         catalogView,
