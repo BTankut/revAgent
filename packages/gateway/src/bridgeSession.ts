@@ -2230,6 +2230,23 @@ class SessionAggregateRepository {
   public open(): Promise<StoreOutcome<void>> { return this.backing.open(); }
   public close(): Promise<StoreOutcome<void>> { return this.backing.close(); }
 
+  /** Read-only authority seam for recovery transactions. Tombstone is always
+   * checked before the marker; a valid marker makes any v1 read unreachable. */
+  public async readAuthoritative(
+    tx: Pick<StoreTransaction, "read" | "list">,
+    tenantId: string,
+    rsid: string,
+  ): Promise<StoredRecord<GatewayJsonValue> | null> {
+    const tombstone = await tx.read<GatewayJsonValue>(GATEWAY_RBP_UNREGISTER_NAMESPACE, rsid);
+    if (tombstone !== null) parseUnregisterTombstone(tombstone.value, { tenantId, rsid, stored: tombstone });
+    const marker = await tx.read<GatewayJsonValue>(GATEWAY_RBP_SESSION_CUTOVER_V2_NAMESPACE, rsid);
+    if (marker === null) return await tx.read<GatewayJsonValue>(GATEWAY_RBP_SESSION_NAMESPACE, rsid);
+    const parsedMarker = parseSessionCutoverV2(marker, tenantId, rsid);
+    const root = await tx.read<GatewayJsonValue>(GATEWAY_RBP_SESSION_V2_NAMESPACE, rsid);
+    if (root === null) throw new Error("v2 session marker has no root");
+    return await this.#loadMarked(tx, root, parsedMarker, tenantId, rsid);
+  }
+
   public async transact<T>(scope: { readonly tenantId: string }, work: (tx: StoreTransaction) => Promise<T> | T): Promise<StoreOutcome<T>> {
     return this.backing.transact(scope, async (raw) => {
       const staged = new Map<string, { readonly value: GatewayJsonValue | null; readonly expect: StoreExpectation }>();
@@ -2257,20 +2274,9 @@ class SessionAggregateRepository {
       };
       const load = async (rsid: string): Promise<StoredRecord<GatewayJsonValue> | null> => {
         if (loaded.has(rsid)) return loaded.get(rsid) ?? null;
-        // Tombstone is deliberately read before any session authority record.
-        await raw.read<GatewayJsonValue>(GATEWAY_RBP_UNREGISTER_NAMESPACE, rsid);
-        const marker = await raw.read<GatewayJsonValue>(GATEWAY_RBP_SESSION_CUTOVER_V2_NAMESPACE, rsid);
-        if (marker === null) {
-          const legacy = await raw.read<GatewayJsonValue>(GATEWAY_RBP_SESSION_NAMESPACE, rsid);
-          loaded.set(rsid, legacy);
-          return legacy;
-        }
-        const parsedMarker = parseSessionCutoverV2(marker, scope.tenantId, rsid);
-        const root = await raw.read<GatewayJsonValue>(GATEWAY_RBP_SESSION_V2_NAMESPACE, rsid);
-        if (root === null) throw new Error("v2 session marker has no root");
-        const virtual = await this.#loadMarked(raw, root, parsedMarker, scope.tenantId, rsid);
-        loaded.set(rsid, virtual);
-        return virtual;
+        const authoritative = await this.readAuthoritative(raw, scope.tenantId, rsid);
+        loaded.set(rsid, authoritative);
+        return authoritative;
       };
       const tx: StoreTransaction = {
         read: async <TValue extends GatewayJsonValue>(namespace: string, key: string) =>
@@ -2467,7 +2473,7 @@ class SessionAggregateRepository {
     return root;
   }
 
-  async #loadMarked(raw: StoreTransaction, stored: StoredRecord<GatewayJsonValue>, marker: DurableSessionCutoverV2, tenantId: string, rsid: string): Promise<StoredRecord<GatewayJsonValue>> {
+  async #loadMarked(raw: Pick<StoreTransaction, "read" | "list">, stored: StoredRecord<GatewayJsonValue>, marker: DurableSessionCutoverV2, tenantId: string, rsid: string): Promise<StoredRecord<GatewayJsonValue>> {
     const root = this.#parseRoot(stored, tenantId, rsid);
     if (root.rootVersion !== marker.rootVersion || digest(canonicalizeJson(stored.value as JsonValue)) !== marker.rootDigest || root.childrenDigest !== marker.childrenDigest) throw new Error("v2 marker proof does not match root");
     if (root.migration.deletionReceipt.state === "deleted") {
@@ -6820,10 +6826,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     tx: Pick<StoreTransaction, "read" | "list">,
     expected: GatewayExpectedDispatchBinding,
   ): Promise<GatewayBridgeEvidenceLookup> {
-    const stored = await tx.read<GatewayJsonValue>(
-      GATEWAY_RBP_SESSION_NAMESPACE,
-      expected.rsid,
-    );
+    const stored = await this.#readRecoveryAuthoritative(tx, expected.rsid);
     if (stored === null) return { kind: "not_durable_yet" };
     let session: DurableRbpSession;
     try {
@@ -6892,10 +6895,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         });
         return { kind: "not_authorized", reason: "session_unregistered" };
       }
-      const stored = await tx.read<GatewayJsonValue>(
-        GATEWAY_RBP_SESSION_NAMESPACE,
-        expected.rsid,
-      );
+      const stored = await this.#readRecoveryAuthoritative(tx, expected.rsid);
       if (stored === null) return { kind: "not_authorized", reason: "unknown_rsid" };
       const session = parseStoredSession(stored, stored.tenantId, expected.rsid);
       const fence = sessionEgressFence(session);
@@ -6924,6 +6924,22 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         message: error instanceof Error ? error.message : String(error),
       };
     }
+  }
+
+  async #readRecoveryAuthoritative(
+    tx: Pick<StoreTransaction, "read" | "list">,
+    rsid: string,
+  ): Promise<StoredRecord<GatewayJsonValue> | null> {
+    const marker = await tx.read<GatewayJsonValue>(GATEWAY_RBP_SESSION_CUTOVER_V2_NAMESPACE, rsid);
+    if (marker !== null) {
+      const tenantId = isRecord(marker.value) && typeof marker.value.tenantId === "string"
+        ? marker.value.tenantId
+        : "";
+      return await this.#sessionRepository.readAuthoritative(tx, tenantId, rsid);
+    }
+    const legacy = await tx.read<GatewayJsonValue>(GATEWAY_RBP_SESSION_NAMESPACE, rsid);
+    if (legacy === null) return null;
+    return await this.#sessionRepository.readAuthoritative(tx, legacy.tenantId, rsid);
   }
 
   async #register(
