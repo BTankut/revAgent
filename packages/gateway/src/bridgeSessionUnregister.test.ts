@@ -24,6 +24,7 @@ import {
   type IdentityPort,
 } from "./authContext.js";
 import {
+  GATEWAY_RBP_SESSION_CUTOVER_V2_NAMESPACE,
   GATEWAY_RBP_SESSION_V2_NAMESPACE,
   GATEWAY_RBP_UNREGISTER_NAMESPACE,
   GatewayBridgeSessionAuthority,
@@ -583,12 +584,21 @@ class ControlledStoreHarness {
 function sessionWrite(
   writes: readonly TestWrite[],
 ): Record<string, unknown> | null {
-  const value = writes.find(
+  const legacy = writes.find(
     (write) => write.namespace === "gateway.rbp-session/v1" && write.value !== null,
   )?.value;
-  return value !== null && typeof value === "object" && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : null;
+  if (legacy !== null && typeof legacy === "object" && !Array.isArray(legacy)) {
+    return legacy as Record<string, unknown>;
+  }
+  const root = writes.find(
+    (write) => write.namespace === GATEWAY_RBP_SESSION_V2_NAMESPACE && write.value !== null,
+  )?.value as Record<string, unknown> | undefined;
+  const egress = writes.find(
+    (write) => write.namespace === "gateway.rbp-session-egress/v2" && write.value !== null,
+  )?.value as { readonly fence?: unknown } | undefined;
+  if (root === undefined || egress?.fence === undefined) return null;
+  const sequence = root.sequence as Record<string, unknown> | undefined;
+  return { pending: sequence?.pending, egressFence: egress.fence };
 }
 
 function leaseTransition(
@@ -1060,25 +1070,24 @@ describe("GatewayBridgeSessionAuthority durable unregister", () => {
     )).toBe(true);
   });
 
-  it("adds a tombstone beside a legacy v1 session row without requiring v2 normalization", async () => {
+  it("keeps final tombstone authority beside the normalized v2 session root", async () => {
     const store = createRestartableTestStore();
     const authority = new GatewayBridgeSessionAuthority(store.store, identity());
     authorities.push(authority);
     await authority.open();
     const session = await register(authority);
-    const legacyBefore = store.snapshot().records.find(
+    expect(store.snapshot().records.some(
       (record) => record.namespace === "gateway.rbp-session/v1" && record.key === session.rsid,
-    );
-    expect(legacyBefore).toBeDefined();
-    expect(legacyBefore?.value).not.toHaveProperty("unregisterTombstone");
+    )).toBe(false);
 
     await authority.receive(session.connectionId, unregister(session.rsid));
 
     const rows = store.snapshot().records.filter((record) => record.key === session.rsid);
-    expect(rows.map((record) => record.namespace).sort()).toEqual([
-      "gateway.rbp-session/v1",
+    expect(rows.map((record) => record.namespace)).toEqual(expect.arrayContaining([
+      GATEWAY_RBP_SESSION_V2_NAMESPACE,
+      GATEWAY_RBP_SESSION_CUTOVER_V2_NAMESPACE,
       GATEWAY_RBP_UNREGISTER_NAMESPACE,
-    ]);
+    ]));
     expect(rows.find((record) => record.namespace === GATEWAY_RBP_UNREGISTER_NAMESPACE)?.value)
       .toMatchObject({ recordVersion: 1, tenantId: TENANT_ID, rsid: session.rsid });
   });
@@ -1417,12 +1426,12 @@ describe("GatewayBridgeSessionAuthority durable unregister", () => {
     expect(store.snapshot().some(
       (record) => record.namespace === GATEWAY_RBP_UNREGISTER_NAMESPACE,
     )).toBe(false);
-    const pendingSession = store.snapshot().find(
+    const pendingEgress = store.snapshot().find(
       (record) =>
-        record.namespace === "gateway.rbp-session/v1" &&
-        record.key === registered.payload.rsid,
+        record.namespace === "gateway.rbp-session-egress/v2" &&
+        record.key === `${registered.payload.rsid}/egress`,
     )?.value as GatewayJsonObject;
-    expect((pendingSession.egressFence as GatewayJsonObject).lease).toMatchObject({
+    expect((pendingEgress.fence as GatewayJsonObject).lease).toMatchObject({
       phase: "started",
     });
 
@@ -1513,9 +1522,9 @@ describe("GatewayBridgeSessionAuthority durable unregister", () => {
     await authority.open();
     const session = await register(authority);
     const reservedAtMs = Date.now();
-    store.rewrite(TENANT_ID, "gateway.rbp-session/v1", session.rsid, (value) => ({
+    store.rewrite(TENANT_ID, "gateway.rbp-session-egress/v2", `${session.rsid}/egress`, (value) => ({
       ...(value as GatewayJsonObject),
-      egressFence: {
+      fence: {
         version: 1,
         state: "open",
         epoch: 1,
@@ -1538,9 +1547,9 @@ describe("GatewayBridgeSessionAuthority durable unregister", () => {
     await expect(
       authority.createExecutor().execute(request(session.rsid, false)),
     ).rejects.toMatchObject({ httpStatus: 503, closeCode: 1011 });
-    store.rewrite(TENANT_ID, "gateway.rbp-session/v1", session.rsid, (value) => ({
+    store.rewrite(TENANT_ID, "gateway.rbp-session-egress/v2", `${session.rsid}/egress`, (value) => ({
       ...(value as GatewayJsonObject),
-      egressFence: {
+      fence: {
         version: 1,
         state: "open",
         epoch: 2,
