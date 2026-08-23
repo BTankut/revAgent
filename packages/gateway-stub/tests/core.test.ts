@@ -133,6 +133,105 @@ describe("Gateway stub shared FSM authority", () => {
     }
   });
 
+  it("rejects unprovisioned batch and document-context capability escalation", async () => {
+    const unprovisionedTable = structuredClone(tokenTable);
+    unprovisionedTable[TOKEN]!.provisionedCapabilities = [
+      "journal_v1",
+      "transport_streamable_http",
+    ];
+    const fixture = await connectedCore("wp07-unprovisioned-session", undefined, {
+      tokenTable: unprovisionedTable,
+    });
+    const batchId = uuid7(901);
+    const invocationId = uuid7(902);
+    const digestInput = {
+      batch_id: batchId,
+      atomic: true,
+      timeout_ms: 5_000,
+      recovery_clearances: [],
+      steps: [{
+        invocation_id: invocationId,
+        method: "inspect_fixture",
+        params: { value: 1 },
+        params_digest: makeParamsDigest({ value: 1 }),
+        policy: { class: "auto" as const, decision: "auto" as const, confirmation_id: null },
+        mutating: false as const,
+        mutation_scope: null,
+      }],
+    };
+    try {
+      expect(JSON.parse(fixture.transport.sent.at(-1)!) as RbpEnvelope).toMatchObject({
+        type: "session_registered",
+        payload: { granted_session_capabilities: [] },
+      });
+      await expect(fixture.core.dispatchBatch({
+        rsid: fixture.rsid,
+        payload: {
+          ...digestInput,
+          steps: digestInput.steps as [typeof digestInput.steps[number]],
+          batch_digest: makeBatchDigest(digestInput),
+        },
+      })).rejects.toThrow(/atomic batch is not granted/);
+      await expect(fixture.core.receiveFrame(
+        fixture.transport.connectionId,
+        encoder.encode(JSON.stringify({
+          v: 1,
+          type: "doc_context_update",
+          id: uuid7(903),
+          rsid: fixture.rsid,
+          seq: 1,
+          ack: 0,
+          ts: NOW,
+          payload: {
+            documents: sessionRegister().documents,
+            active_document: "doc-01",
+            active_view: null,
+          },
+        })),
+      )).rejects.toThrow(/doc_context_cached_v1/);
+    } finally {
+      await fixture.core.close();
+    }
+  });
+
+  it("does not retain session grants across an enrolled capability downgrade and revocation", async () => {
+    const path = await statePath("wp07-session-downgrade-revocation");
+    const core = await GatewayStubCore.create({ statePath: path, tokenTable });
+    const device = core.authenticate(TOKEN);
+    const connectionId = await core.allocateConnectionId(device);
+    const transport = new MemoryTransport(connectionId, "wss", device);
+    try {
+      core.attachConnection(transport);
+      await core.acceptHello(connectionId, hello());
+      core.activateConnection(connectionId);
+      device.provisionedCapabilities = device.provisionedCapabilities.filter(
+        (capability) =>
+          capability !== "batch_atomic" &&
+          capability !== "doc_context_cached_v1",
+      );
+      await core.receiveFrame(
+        connectionId,
+        encoder.encode(JSON.stringify(controlEnvelope(
+          "session_register",
+          sessionRegister(),
+          904,
+        ))),
+      );
+      expect(JSON.parse(transport.sent.at(-1)!) as RbpEnvelope).toMatchObject({
+        type: "session_registered",
+        payload: { granted_session_capabilities: [] },
+      });
+      await expect(core.setAuthStatus(TOKEN, "revoked")).resolves.toEqual([
+        connectionId,
+      ]);
+      expect(Object.values(core.snapshot().sessions)).toContainEqual(
+        expect.objectContaining({ revoked: true }),
+      );
+    } finally {
+      await core.close();
+    }
+  });
+
   it("binds hello and register to the enrolled claim while hostname stays metadata", async () => {
     const path = await statePath("credential-claim-binding");
     const core = await GatewayStubCore.create({ statePath: path, tokenTable });

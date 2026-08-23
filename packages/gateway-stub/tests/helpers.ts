@@ -33,6 +33,8 @@ export const tokenTable: StaticTokenTable = {
       "chunked_results",
       "artifact_result_v1",
       "transport_streamable_http",
+      "batch_atomic",
+      "doc_context_cached_v1",
     ],
   },
 };
