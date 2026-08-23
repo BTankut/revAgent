@@ -103,10 +103,23 @@ describe("WP-12 real-trio v2 session smoke reader", () => {
     });
   });
 
+  it("accepts the canonical nested HTTP lifecycle row without using timestamps as readiness", () => {
+    const snapshot = structuredClone(v2Snapshot);
+    const value = snapshot.sessions[0]!.value;
+    value.binding.binding = "streamable_http_sse";
+    value.lifecycle = { ...value.lifecycle, createdAtMs: 100, updatedAtMs: 200 };
+    expect(readRbpSessionV2Readiness(snapshot, "streamable_http_sse")).toEqual({
+      rsid: "018f7f7e-1234-7abc-8def-1234567890ab",
+      localSessionKey: "port:8080:pid:42:started:99",
+      grantedCapabilities: ["batch_atomic", "doc_context_cached_v1"],
+    });
+  });
+
   it.each([
     [{ sessions: [] }, /lacks one normalized v2/u],
     [{ sessions: [{ namespace: "gateway.rbp-session/v1", value: { grantedCapabilities: ["batch_atomic"] } }] }, /legacy or malformed/u],
     [{ sessions: [{ namespace: "gateway.rbp-session/v2", value: { schema: "gateway.rbp-session/v2", rsid: "r", binding: { binding: "wss", grantedCapabilities: ["batch_atomic"] }, lifecycle: { sessionLifecycle: { localSessionKey: "k" } }, grantedCapabilities: ["batch_atomic"] } }] }, /v2 session row is malformed/u],
+    [{ sessions: [{ namespace: "gateway.rbp-session/v2", value: { schema: "gateway.rbp-session/v2", rsid: "r", binding: { binding: "streamable_http_sse", grantedCapabilities: ["batch_atomic"] }, lifecycle: { createdAtMs: 1, updatedAtMs: 2 } } }] }, /v2 session row is malformed/u],
     [{ sessions: [{ namespace: "gateway.rbp-session/v2", value: { schema: "gateway.rbp-session/v2", rsid: "r", binding: { binding: "wss", grantedCapabilities: [] }, lifecycle: { sessionLifecycle: { localSessionKey: "k", phase: "registered", dispatchAllowed: true, rsid: "r" } } } }] }, /nested grants/u],
   ] as const)("rejects absent, legacy, or non-nested v2 session readiness %#", (snapshot, expected) => {
     expect(() => readRbpSessionV2Readiness(snapshot, "wss")).toThrow(expected);
@@ -175,7 +188,11 @@ describe("WP-12 real-trio v2 session smoke reader", () => {
       {
         sessions: [{
           namespace: "gateway.rbp-session/v2",
-          value: { localSessionKey: "must-not-leak", deviceToken: "must-not-leak" },
+          value: {
+            localSessionKey: "must-not-leak",
+            deviceToken: "must-not-leak",
+            lifecycle: { createdAtMs: 100, updatedAtMs: 200 },
+          },
         }],
       },
       [
@@ -206,8 +223,8 @@ describe("WP-12 real-trio v2 session smoke reader", () => {
           lifecyclePhase: "unknown",
           dispatchAllowed: false,
           localKeyPresent: false,
-          created: false,
-          updated: false,
+          created: true,
+          updated: true,
         }],
       }],
       bridgeTranscript: [{ stream: "stderr", at: "2026-08-23T00:00:00.000Z" }],

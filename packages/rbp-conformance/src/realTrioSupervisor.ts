@@ -105,8 +105,8 @@ function redactGatewayAudit(snapshot: JsonObject): JsonObject {
         lifecyclePhase: boundedText(sessionLifecycle.phase, 64) ?? "unknown",
         dispatchAllowed: sessionLifecycle.dispatchAllowed === true,
         localKeyPresent: boundedText(sessionLifecycle.localSessionKey, 512) !== null,
-        created: value.createdAt !== undefined || value.created_at !== undefined,
-        updated: value.updatedAt !== undefined || value.updated_at !== undefined,
+        created: lifecycle.createdAtMs !== undefined,
+        updated: lifecycle.updatedAtMs !== undefined,
       };
     });
   return Object.freeze({
@@ -314,8 +314,11 @@ export function readRbpSessionV2Readiness(
   const lifecycle = value.lifecycle.sessionLifecycle;
   const localSessionKey = lifecycle.localSessionKey;
   if (typeof localSessionKey !== "string" || localSessionKey.length === 0 ||
-      lifecycle.phase !== "registered" || lifecycle.dispatchAllowed !== true ||
-      lifecycle.rsid !== value.rsid) {
+      typeof lifecycle.phase !== "string" || typeof lifecycle.dispatchAllowed !== "boolean" ||
+      typeof lifecycle.rsid !== "string") {
+    throw new Error("real trio v2 session row is malformed");
+  }
+  if (lifecycle.phase !== "registered" || lifecycle.dispatchAllowed !== true || lifecycle.rsid !== value.rsid) {
     throw new Error("real trio v2 session is not active with a local session key");
   }
   return Object.freeze({
