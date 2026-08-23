@@ -1,4 +1,5 @@
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import type { IncomingMessage } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -43,7 +44,12 @@ import {
   buildGatewayInstructionPackage,
   gatewayClientInstructions,
 } from "./instructionPackage.js";
-import type { GatewayInvocationRoute } from "./invocationContext.js";
+import {
+  createEffectiveMcpRequestScopeV1,
+  type EffectiveMcpRequestScopeV1,
+  type GatewayInvocationRoute,
+} from "./invocationContext.js";
+import { isGatewayUuidV7 } from "./identifiers.js";
 import { buildNorthFirstSliceCallableRegistry } from "./northFirstSlice.js";
 import {
   type AuthenticatedNorthMcpRequest,
@@ -51,6 +57,7 @@ import {
   type NorthMcpEndpointHandle,
   startNorthMcpEndpoint,
 } from "./northMcpEndpoint.js";
+import type { GatewayResourceAuthority } from "./resourceAuthority.js";
 import {
   GatewayToolRegistry,
   type GatewayToolRecord,
@@ -189,12 +196,15 @@ function authenticatedRequest(
 function invocationRouteFor(
   authenticated: AuthorizedNorthMcpRequest,
   mcpSessionId: string,
+  effectiveMcpRequestScope: EffectiveMcpRequestScopeV1,
 ): GatewayInvocationRoute {
   expect(authenticated.authInfo).not.toHaveProperty("token");
   expect(authenticated.authInfo).not.toHaveProperty("extra");
   return Object.freeze({
     tenantId: authenticated.authContext.actor.tenantId,
+    principalKey: authenticated.principalKey,
     mcpSessionId,
+    effectiveMcpRequestScope,
     rsid: RSID,
     documentIdentity: Object.freeze({
       kind: "live" as const,
@@ -373,6 +383,283 @@ function deferred<T>(): {
 }
 
 describe("M2 north MCP first slice", () => {
+  it("binds one immutable effective MCP scope and mints a UUIDv7 only for stateless requests", () => {
+    const transportOnly = createEffectiveMcpRequestScopeV1({
+      principalKey: PRINCIPAL_KEY,
+      transportMcpSessionId: "transport-session",
+      identityMcpSessionId: null,
+      nowMs: 1_775_000_000_000,
+    });
+    const identityOnly = createEffectiveMcpRequestScopeV1({
+      principalKey: PRINCIPAL_KEY,
+      transportMcpSessionId: null,
+      identityMcpSessionId: "identity-session",
+      nowMs: 1_775_000_000_000,
+    });
+    const stateless = createEffectiveMcpRequestScopeV1({
+      principalKey: PRINCIPAL_KEY,
+      transportMcpSessionId: null,
+      identityMcpSessionId: null,
+      nowMs: 1_775_000_000_000,
+    });
+    const secondStateless = createEffectiveMcpRequestScopeV1({
+      principalKey: PRINCIPAL_KEY,
+      transportMcpSessionId: null,
+      identityMcpSessionId: null,
+      nowMs: 1_775_000_000_001,
+    });
+
+    expect(transportOnly.effectiveMcpSessionId).toBe("transport-session");
+    expect(identityOnly.effectiveMcpSessionId).toBe("identity-session");
+    expect(stateless.effectiveMcpSessionId).toMatch(/^stateless-request:/u);
+    expect(isGatewayUuidV7(stateless.effectiveMcpSessionId.slice(18))).toBe(true);
+    expect(secondStateless.effectiveMcpSessionId).not.toBe(
+      stateless.effectiveMcpSessionId,
+    );
+    expect(Object.isFrozen(stateless)).toBe(true);
+  });
+
+  it("rejects a transport/identity session mismatch before route resolution or dispatch", async () => {
+    const registry = buildNorthFirstSliceCallableRegistry(VERIFIED_CATALOG);
+    const dispatcher = new GatewayDispatcher(
+      registry,
+      [
+        {
+          binding: "bridge",
+          async execute(): Promise<GatewayExecutorOutcome> {
+            return { state: "completed", result: { unexpected: true } };
+          },
+        },
+      ],
+      dispatcherOptions(),
+    );
+    const dispatchSpy = vi.spyOn(dispatcher, "dispatch");
+    const routeSpy = vi.fn(invocationRouteFor);
+    const authInfo: AuthInfo = {
+      token: TOKEN,
+      clientId: "wp09-mismatch",
+      scopes: ["mcp:tools"],
+    };
+    const endpoint = await startNorthMcpEndpoint({
+      dispatcher,
+      registry,
+      catalogViewFor: () => FULL_CATALOG_VIEW,
+      invocationRouteFor: routeSpy,
+      requestState: { key: REQUEST_STATE_KEY },
+      resourceMetadataUrl: new URL(
+        "https://gateway.example.test/.well-known/oauth-protected-resource/mcp",
+      ),
+      authenticator: {
+        async authenticate(request) {
+          return request.headers.authorization === `Bearer ${TOKEN}`
+            ? authenticatedRequest(
+                PRINCIPAL_KEY,
+                authInfo,
+                "gateway-wp09",
+                "identity-session",
+              )
+            : null;
+        },
+      },
+    });
+    try {
+      const response = await fetch(endpoint.endpoint, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${TOKEN}`,
+          accept: "application/json, text/event-stream",
+          "content-type": "application/json",
+          "mcp-session-id": "transport-session",
+        },
+        body: JSON.stringify(modernToolCallBody("2026-07-28", "wp09-mismatch")),
+      });
+      expect(response.status).toBeGreaterThanOrEqual(400);
+      expect(dispatchSpy).not.toHaveBeenCalled();
+      expect(routeSpy).not.toHaveBeenCalled();
+    } finally {
+      await endpoint.close().catch(() => undefined);
+    }
+  });
+
+  it("keeps each request-local effective scope object across applicable north boundaries", async () => {
+    type Boundary = "mode_a" | "resource" | "route" | "dispatch" | "result";
+    const observed: Array<{
+      readonly boundary: Boundary;
+      readonly scope: EffectiveMcpRequestScopeV1;
+    }> = [];
+    const routeScopes: EffectiveMcpRequestScopeV1[] = [];
+    const executorScopes: EffectiveMcpRequestScopeV1[] = [];
+    const resultScopes: EffectiveMcpRequestScopeV1[] = [];
+    const resourceScopes: EffectiveMcpRequestScopeV1[] = [];
+    const eventSink = createCapturingEventSink();
+    const registry = buildNorthFirstSliceCallableRegistry(VERIFIED_CATALOG);
+    const catalogEntry = FULL_CATALOG_VIEW.get("core.ui.state");
+    if (catalogEntry === undefined) {
+      throw new Error("combined scope oracle catalog entry is unavailable");
+    }
+    const catalogView = new EntitledCatalogView([catalogEntry], entitleAll);
+    const dispatcher = new GatewayDispatcher(
+      registry,
+      [
+        {
+          binding: "bridge",
+          async execute(request): Promise<GatewayExecutorOutcome> {
+            const scope = request.context.effectiveMcpRequestScope;
+            if (scope === undefined) {
+              throw new Error("north dispatch omitted the effective MCP scope");
+            }
+            executorScopes.push(scope);
+            return { state: "completed", result: { bounded: true } };
+          },
+        },
+      ],
+      {
+        ...dispatcherOptions(),
+        eventSink,
+      },
+    );
+    const dispatchSpy = vi.spyOn(dispatcher, "dispatch");
+    const resourceAuthority: Pick<
+      GatewayResourceAuthority,
+      "boundResult" | "readResource"
+    > = {
+      async boundResult(input) {
+        resultScopes.push(input.effectiveMcpRequestScope);
+        return Object.freeze({ kind: "inline" as const, value: input.value });
+      },
+      async readResource(_scope, effectiveMcpRequestScope, uri) {
+        resourceScopes.push(effectiveMcpRequestScope);
+        return Object.freeze({
+          uri: uri.href,
+          contentType: "application/json",
+          bytes: Buffer.from("{}", "utf8"),
+          digest: `sha256:${"0".repeat(64)}` as `sha256:${string}`,
+          nextPageUri: null,
+        });
+      },
+    };
+    const options = {
+      dispatcher,
+      registry,
+      catalogViewFor: () => catalogView,
+      invocationRouteFor: (
+        authenticated: AuthorizedNorthMcpRequest,
+        mcpSessionId: string,
+        effectiveMcpRequestScope: EffectiveMcpRequestScopeV1,
+      ) => {
+        routeScopes.push(effectiveMcpRequestScope);
+        return invocationRouteFor(
+          authenticated,
+          mcpSessionId,
+          effectiveMcpRequestScope,
+        );
+      },
+      requestState: { key: REQUEST_STATE_KEY },
+      modeA: {
+        schemaBudgetBytes: 0,
+        pinnedToolNames: ["core.ui.state"],
+      },
+      resourceAuthority,
+      resourceMetadataUrl: new URL(
+        "https://gateway.example.test/.well-known/oauth-protected-resource/mcp",
+      ),
+      authenticator: {
+        async authenticate(request: IncomingMessage) {
+          return request.headers.authorization === `Bearer ${TOKEN}`
+            ? authenticatedRequest(PRINCIPAL_KEY, {
+                token: TOKEN,
+                clientId: "wp09-combined-oracle",
+                scopes: ["mcp:resources", "mcp:tools"],
+              })
+            : null;
+        },
+      },
+    };
+    Object.defineProperty(options, "__revAgentTestObserveEffectiveMcpScope", {
+      configurable: true,
+      enumerable: false,
+      value: (entry: {
+        readonly boundary: Boundary;
+        readonly scope: EffectiveMcpRequestScopeV1;
+      }) => observed.push(entry),
+    });
+    expect(Object.keys(options)).not.toContain(
+      "__revAgentTestObserveEffectiveMcpScope",
+    );
+
+    let endpoint: NorthMcpEndpointHandle | undefined;
+    let client: Client | undefined;
+    let transport: StreamableHTTPClientTransport | undefined;
+    try {
+      endpoint = await startNorthMcpEndpoint(options);
+      client = new Client({
+        name: "wp09 combined scope oracle",
+        version: "0.0.0-test",
+      });
+      transport = new StreamableHTTPClientTransport(endpoint.endpoint, {
+        requestInit: { headers: { authorization: `Bearer ${TOKEN}` } },
+      });
+      await client.connect(transport);
+      await expect(
+        client.callTool({ name: "core.ui.state", arguments: {} }),
+      ).resolves.toMatchObject({
+        structuredContent: { result: { bounded: true } },
+      });
+      await expect(
+        client.readResource({
+          uri: `revagent://artifact/p/${"a".repeat(64)}/s/${"b".repeat(64)}/t/${"c".repeat(64)}/a/${"d".repeat(64)}/r/${"e".repeat(64)}`,
+        }),
+      ).resolves.toMatchObject({ contents: [{ mimeType: "application/json" }] });
+
+      const toolScope = routeScopes.at(-1);
+      const dispatchScope = dispatchSpy.mock.calls.at(-1)?.[0]
+        .effectiveMcpRequestScope;
+      const contextScope = executorScopes.at(-1);
+      const auditScope = eventSink
+        .captured()
+        .map((event) =>
+          Object.getOwnPropertyDescriptor(event, "effectiveMcpRequestScope")
+            ?.value,
+        )
+        .find((scope): scope is EffectiveMcpRequestScopeV1 => scope !== undefined);
+      const resultScope = resultScopes.at(-1);
+      const resourceScope = resourceScopes.at(-1);
+      if (
+        toolScope === undefined ||
+        dispatchScope === undefined ||
+        contextScope === undefined ||
+        auditScope === undefined ||
+        resultScope === undefined ||
+        resourceScope === undefined
+      ) {
+        throw new Error("combined scope oracle did not reach every required boundary");
+      }
+
+      const requestBoundaryTable = [
+        ["tool route", toolScope, toolScope],
+        ["tool dispatch", dispatchScope, toolScope],
+        ["tool context", contextScope, toolScope],
+        ["tool audit", auditScope, toolScope],
+        ["tool result", resultScope, toolScope],
+        ["tool Mode-A", observed.find((entry) => entry.boundary === "mode_a" && entry.scope === toolScope)?.scope, toolScope],
+        ["resource read", resourceScope, resourceScope],
+        ["resource observer", observed.find((entry) => entry.boundary === "resource" && entry.scope === resourceScope)?.scope, resourceScope],
+        ["resource Mode-A", observed.find((entry) => entry.boundary === "mode_a" && entry.scope === resourceScope)?.scope, resourceScope],
+      ] as const;
+      for (const [boundary, actual, expected] of requestBoundaryTable) {
+        expect(actual, boundary).toBe(expected);
+        expect(Object.isFrozen(actual)).toBe(true);
+      }
+      expect(observed.some((entry) => entry.boundary === "dispatch" && entry.scope === toolScope)).toBe(true);
+      expect(observed.some((entry) => entry.boundary === "route" && entry.scope === toolScope)).toBe(true);
+      expect(observed.some((entry) => entry.boundary === "result" && entry.scope === toolScope)).toBe(true);
+    } finally {
+      await client?.close().catch(() => undefined);
+      await transport?.close().catch(() => undefined);
+      await endpoint?.close().catch(() => undefined);
+    }
+  }, 15_000);
+
   it("threads an ordinary MCP confirmation re-invocation without exposing controls to functional args", async () => {
     const catalogEntry = FULL_CATALOG_VIEW.get("core.parameter.set");
     if (catalogEntry === undefined) {

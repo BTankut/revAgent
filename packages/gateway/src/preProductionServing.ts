@@ -293,7 +293,7 @@ export async function preparePreProductionServing(
       );
       return {
         catalogViewFor: () => entitledCatalog,
-        invocationRouteFor: (authenticated, mcpSessionId) => {
+        invocationRouteFor: (authenticated, _mcpSessionId, effectiveMcpRequestScope) => {
           if (
             authenticated.authContext.actor.tenantId !== principal.tenantId ||
             authenticated.authContext.actor.userId !== principal.userId
@@ -304,7 +304,7 @@ export async function preparePreProductionServing(
             tenantId: principal.tenantId,
             userId: principal.userId,
             deviceId: device.deviceId,
-            mcpSessionId,
+            effectiveMcpRequestScope,
           });
         },
         dispatcher,

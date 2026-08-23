@@ -19,6 +19,7 @@ import {
   type BridgeConnectionChannel,
 } from "./bridgeSession.js";
 import { gatewayUuidV7 } from "./identifiers.js";
+import { createEffectiveMcpRequestScopeV1 } from "./invocationContext.js";
 import { createRestartableTestStore } from "./testAdapters.js";
 
 const TENANT_ID = "tenant-route";
@@ -207,7 +208,12 @@ function resolve(authority: GatewayBridgeSessionAuthority) {
     tenantId: TENANT_ID,
     userId: USER_ID,
     deviceId: DEVICE_ID,
-    mcpSessionId: MCP_SESSION_ID,
+    effectiveMcpRequestScope: createEffectiveMcpRequestScopeV1({
+      principalKey: `${TENANT_ID}:${USER_ID}`,
+      transportMcpSessionId: MCP_SESSION_ID,
+      identityMcpSessionId: null,
+      nowMs: 1_775_000_000_000,
+    }),
   });
 }
 
@@ -320,12 +326,17 @@ describe("GatewayBridgeSessionAuthority live document routing", () => {
     expect(resolve(created)).toEqual({
       tenantId: TENANT_ID,
       mcpSessionId: MCP_SESSION_ID,
+      effectiveMcpRequestScope: expect.objectContaining({
+        principalKey: `${TENANT_ID}:${USER_ID}`,
+        effectiveMcpSessionId: MCP_SESSION_ID,
+      }),
       rsid: session.rsid,
       documentIdentity: {
         kind: "live",
         session_document_id: "document-live",
       },
     });
+    expect(resolve(created).principalKey).toBe(`${TENANT_ID}:${USER_ID}`);
   });
 
   it("clears the live route when a later accepted context has no active document", async () => {

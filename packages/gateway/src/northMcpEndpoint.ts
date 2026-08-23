@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import {
   createServer,
   type IncomingMessage,
@@ -29,7 +29,12 @@ import type {
   GatewayJsonValue,
 } from "./dispatch.js";
 import type { CatalogEntry, EntitledCatalogView } from "./entitledRegistry.js";
-import type { GatewayInvocationRoute } from "./invocationContext.js";
+import {
+  createEffectiveMcpRequestScopeV1,
+  GatewayInvocationContextError,
+  type EffectiveMcpRequestScopeV1,
+  type GatewayInvocationRoute,
+} from "./invocationContext.js";
 import {
   PHASE1_INSTRUCTION_VERSION,
   buildGatewayInstructionPackage,
@@ -45,7 +50,7 @@ import {
 import type { GatewayToolRegistry } from "./registry.js";
 import {
   GatewayResourceError,
-  resourceScopeFromAuth,
+  resourceScopeFromEffectiveMcpRequestScope,
   type GatewayResourceAuthority,
 } from "./resourceAuthority.js";
 
@@ -65,6 +70,7 @@ export const NORTH_MODE_A_PINNED_TOOLS = Object.freeze([
   "core.session.status",
 ] as const);
 const DEFAULT_MODE_A_SESSION_TTL_MS = 30 * 60 * 1_000;
+const TEST_EFFECTIVE_SCOPE_OBSERVER = "__revAgentTestObserveEffectiveMcpScope";
 
 type AuthenticatedIncomingMessage = IncomingMessage & {
   auth?: AuthInfo;
@@ -148,6 +154,8 @@ export interface NorthMcpEndpointOptions {
   readonly invocationRouteFor: (
     authenticated: AuthorizedNorthMcpRequest,
     mcpSessionId: string,
+    /** Immutable ingress authority; resolvers must not reconstruct scope. */
+    effectiveMcpRequestScope: EffectiveMcpRequestScopeV1,
   ) => GatewayInvocationRoute | Promise<GatewayInvocationRoute>;
   readonly dispatcher: GatewayDispatcher;
   /** GW-9 scoped artifact/result resources; absent means no dynamic resource surface. */
@@ -179,6 +187,32 @@ export interface NorthMcpEndpointOptions {
   ) => void | Promise<void>;
   readonly host?: "127.0.0.1" | "localhost";
   readonly port?: number;
+}
+
+type EffectiveScopeObservationBoundary =
+  | "mode_a"
+  | "resource"
+  | "route"
+  | "dispatch"
+  | "result";
+
+/**
+ * A deliberately non-enumerable, test-only hook. Production options have no
+ * serializable observer field and cannot receive raw identities through this
+ * seam; focused conformance tests install it with Object.defineProperty.
+ */
+function observeEffectiveScopeForTest(
+  options: NorthMcpEndpointOptions,
+  boundary: EffectiveScopeObservationBoundary,
+  scope: EffectiveMcpRequestScopeV1,
+): void {
+  const observer = Object.getOwnPropertyDescriptor(
+    options,
+    TEST_EFFECTIVE_SCOPE_OBSERVER,
+  )?.value;
+  if (typeof observer === "function") {
+    observer(Object.freeze({ boundary, scope }));
+  }
 }
 
 export interface NorthMcpEndpointHandle {
@@ -307,6 +341,14 @@ function authBindingKey(authenticated: AuthorizedNorthMcpRequest): string {
     authenticated.authInfo.resource?.href ?? null,
     [...authenticated.authInfo.scopes].sort(),
   ]);
+}
+
+function effectiveScopeKey(scope: EffectiveMcpRequestScopeV1): string {
+  const hash = (value: string) =>
+    createHash("sha256").update(value).digest("hex");
+  // Never retain raw principal/session identifiers in the long-lived Mode-A
+  // discovery map. These two hashes are the durable key prefix.
+  return `p:${hash(scope.principalKey)}/s:${hash(scope.effectiveMcpSessionId)}`;
 }
 
 async function readJsonBody(request: IncomingMessage): Promise<unknown> {
@@ -510,16 +552,20 @@ function assertCallableCatalogCoherence(
 function registerGatewayResources(
   server: McpServer,
   authenticated: AuthorizedNorthMcpRequest,
+  effectiveScope: EffectiveMcpRequestScopeV1,
   authority: Pick<GatewayResourceAuthority, "readResource">,
 ): void {
-  const scope = resourceScopeFromAuth(
+  const scope = resourceScopeFromEffectiveMcpRequestScope(
     authenticated.authContext,
-    authenticated.authContext.session.mcpSessionId ??
-      authenticated.authContext.session.sessionId,
+    effectiveScope,
   );
   const read = async (uri: URL) => {
     try {
-      const resource = await authority.readResource(scope, uri);
+      const resource = await authority.readResource(
+        scope,
+        effectiveScope,
+        uri,
+      );
       return {
         contents: [
           {
@@ -547,13 +593,19 @@ function registerGatewayResources(
   };
   server.registerResource(
     "artifact-ref",
-    new ResourceTemplate("revagent://artifact/{ref_id}", { list: undefined }),
+    new ResourceTemplate(
+      "revagent://artifact/p/{principal_sha256}/s/{session_sha256}/t/{tenant_sha256}/a/{actor_sha256}/r/{resource_sha256}",
+      { list: undefined },
+    ),
     { description: "Authenticated, expiring revAgent artifact." },
     read,
   );
   server.registerResource(
     "result-ref-page",
-    new ResourceTemplate("revagent://result/{ref_id}/{page}", { list: undefined }),
+    new ResourceTemplate(
+      "revagent://result/p/{principal_sha256}/s/{session_sha256}/t/{tenant_sha256}/a/{actor_sha256}/r/{resource_sha256}/page/{page}",
+      { list: undefined },
+    ),
     { description: "Authenticated, paged revAgent structured result." },
     read,
   );
@@ -614,7 +666,11 @@ function createSessionServer(input: {
   readonly registry: GatewayToolRegistry;
   readonly modeASession?: ModeADiscoverySession;
   readonly notifyToolsChanged: () => void;
-  readonly requestScopeId: string;
+  readonly effectiveMcpRequestScope: EffectiveMcpRequestScopeV1;
+  readonly observeEffectiveScope?: (
+    boundary: EffectiveScopeObservationBoundary,
+    scope: EffectiveMcpRequestScopeV1,
+  ) => void;
   readonly resourceAuthority?: Pick<
     GatewayResourceAuthority,
     "boundResult" | "readResource"
@@ -663,7 +719,12 @@ function createSessionServer(input: {
   );
   registerInstructionResources(server, instructionPackage);
   if (input.resourceAuthority !== undefined) {
-    registerGatewayResources(server, input.authenticated, input.resourceAuthority);
+    registerGatewayResources(
+      server,
+      input.authenticated,
+      input.effectiveMcpRequestScope,
+      input.resourceAuthority,
+    );
   }
   if (input.modeASession !== undefined) {
     registerModeAMetaTools(
@@ -699,14 +760,31 @@ function createSessionServer(input: {
           }
         }
         const call = splitGatewayConfirmationArguments(record, args);
+        if (
+          ctx.sessionId !== undefined &&
+          ctx.sessionId !== input.effectiveMcpRequestScope.effectiveMcpSessionId
+        ) {
+          return toolResult(
+            Object.freeze({
+              ok: false as const,
+              state: "failed" as const,
+              toolName: record.name,
+              requestId: "effective-mcp-scope-rejected",
+              executorReached: false,
+              error: Object.freeze({
+                code: "invalid_invocation_context",
+                detailCode: "mcp_session_binding_mismatch",
+                message: "MCP request context changed after ingress binding",
+              }),
+            }),
+          );
+        }
         const mcpSessionId =
-          ctx.sessionId ??
-          input.authenticated.authContext.session.mcpSessionId ??
-          `stateless-request:${input.requestScopeId}`;
-        const confirmationSessionId =
-          input.authenticated.authContext.session.mcpSessionId ??
-          ctx.sessionId ??
-          input.authenticated.authContext.session.sessionId;
+          input.effectiveMcpRequestScope.effectiveMcpSessionId;
+        input.observeEffectiveScope?.(
+          "dispatch",
+          input.effectiveMcpRequestScope,
+        );
         const outcome = await trackPromise(
           input.inflightOperations,
           dispatcher.dispatch({
@@ -714,28 +792,48 @@ function createSessionServer(input: {
             args: call.args,
             auth: input.authenticated.authContext,
             mcpSessionId,
-            confirmationSessionId,
+            confirmationSessionId: mcpSessionId,
+            effectiveMcpRequestScope: input.effectiveMcpRequestScope,
             ...(call.confirmation === undefined
               ? {}
               : { confirmation: call.confirmation }),
-            resolveRoute: (authContext) =>
-              input.invocationRouteFor(
+            resolveRoute: (authContext) => {
+              if (
+                authContext.principalKey !==
+                input.effectiveMcpRequestScope.principalKey
+              ) {
+                throw new GatewayInvocationContextError(
+                  "mcp_session_binding_mismatch",
+                  "effective MCP route authority principal changed before dispatch",
+                );
+              }
+              input.observeEffectiveScope?.(
+                "route",
+                input.effectiveMcpRequestScope,
+              );
+              return input.invocationRouteFor(
                 Object.freeze({ ...input.authenticated, authContext }),
                 mcpSessionId,
-              ),
+                input.effectiveMcpRequestScope,
+              );
+            },
           }),
         );
         if (input.resourceAuthority === undefined) {
           return toolResult(outcome);
         }
-        const resourceScope = resourceScopeFromAuth(
+        const resourceScope = resourceScopeFromEffectiveMcpRequestScope(
           input.authenticated.authContext,
-          input.authenticated.authContext.session.mcpSessionId ??
-            input.authenticated.authContext.session.sessionId,
+          input.effectiveMcpRequestScope,
         );
         try {
+          input.observeEffectiveScope?.(
+            "result",
+            input.effectiveMcpRequestScope,
+          );
           const bounded = await input.resourceAuthority.boundResult({
             scope: resourceScope,
+            effectiveMcpRequestScope: input.effectiveMcpRequestScope,
             value: outcome as unknown as GatewayJsonValue,
             maxInlineBytes: input.resourceMaxInlineResultBytes,
           });
@@ -809,7 +907,7 @@ export function createNorthMcpHttpHandler(
   function modeASessionFor(
     authenticated: AuthorizedNorthMcpRequest,
     catalogView: EntitledCatalogView,
-    mcpConnectionId: string | null,
+    effectiveMcpRequestScope: EffectiveMcpRequestScopeV1,
   ): ModeADiscoverySession | undefined {
     if (options.modeA === undefined) {
       return undefined;
@@ -824,9 +922,7 @@ export function createNorthMcpHttpHandler(
       }
     }
 
-    const key = `${authBindingKey(authenticated)}\0${
-      mcpConnectionId ?? "initial-or-legacy"
-    }`;
+    const key = effectiveScopeKey(effectiveMcpRequestScope);
     const capabilityIndexDigest = catalogView.capabilityIndexDigest();
     const current = modeASessions.get(key);
     if (
@@ -920,10 +1016,30 @@ export function createNorthMcpHttpHandler(
       ) {
         throw new Error("invalid MCP connection identifier");
       }
+      const effectiveMcpRequestScope = createEffectiveMcpRequestScopeV1({
+        principalKey: authenticated.principalKey,
+        transportMcpSessionId: mcpConnectionId,
+        identityMcpSessionId: authenticated.authContext.session.mcpSessionId,
+        nowMs: Date.now(),
+      });
+      if (options.modeA !== undefined) {
+        observeEffectiveScopeForTest(
+          options,
+          "mode_a",
+          effectiveMcpRequestScope,
+        );
+      }
+      if (options.resourceAuthority !== undefined) {
+        observeEffectiveScopeForTest(
+          options,
+          "resource",
+          effectiveMcpRequestScope,
+        );
+      }
       const modeASession = modeASessionFor(
         authenticated,
         catalogView,
-        mcpConnectionId,
+        effectiveMcpRequestScope,
       );
       return createSessionServer({
         catalogView,
@@ -942,7 +1058,9 @@ export function createNorthMcpHttpHandler(
           : { resourceAuthority: options.resourceAuthority }),
         notifyToolsChanged: () => mcpHandler.notify.toolsChanged(),
         registry: options.registry,
-        requestScopeId: randomUUID(),
+        effectiveMcpRequestScope,
+        observeEffectiveScope: (boundary, scope) =>
+          observeEffectiveScopeForTest(options, boundary, scope),
         verifyRequestState: requestStateCodec.verify,
       });
     },

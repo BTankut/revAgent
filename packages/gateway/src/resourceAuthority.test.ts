@@ -1,13 +1,14 @@
 import { createHash } from "node:crypto";
 
 import type { ArtifactDescriptor, RbpStreamChunk } from "@revagent/protocol";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   GatewayResourceAuthority,
   type GatewayResourceError,
   type GatewayResourceScope,
 } from "./resourceAuthority.js";
+import { createEffectiveMcpRequestScopeV1 } from "./invocationContext.js";
 import {
   createMemoryObjectStore,
   createRestartableTestStore,
@@ -19,12 +20,28 @@ import type { GatewayProtocolStore } from "./store.js";
 const invocationId = "0197a3c2-0000-7000-8000-000000000010";
 const artifactA = "0197a3c2-0000-7000-8000-000000000201";
 const artifactB = "0197a3c2-0000-7000-8000-000000000202";
+type ScopedUriComparisonSlot = "p" | "s" | "t" | "a";
 const scope: GatewayResourceScope = Object.freeze({
   tenantId: "tenant-1",
   actorId: "user-1",
   principalKey: "tenant-1:user-1",
   mcpSessionId: "mcp-session-1",
 });
+const effectiveMcpRequestScope = createEffectiveMcpRequestScopeV1({
+  principalKey: scope.principalKey,
+  transportMcpSessionId: scope.mcpSessionId,
+  identityMcpSessionId: null,
+  nowMs: 1_775_000_000_000,
+});
+
+function effectiveScopeFor(input: GatewayResourceScope) {
+  return createEffectiveMcpRequestScopeV1({
+    principalKey: input.principalKey,
+    transportMcpSessionId: input.mcpSessionId,
+    identityMcpSessionId: null,
+    nowMs: 1_775_000_000_000,
+  });
+}
 
 function sha256(bytes: Uint8Array): `sha256:${string}` {
   return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
@@ -84,15 +101,17 @@ describe("GW-9 scoped artifact and result authority", () => {
   let objectStore: MemoryObjectStore;
   let authority: GatewayResourceAuthority;
   let refSequence: number;
+  let comparisonSlots: ScopedUriComparisonSlot[];
 
   beforeEach(async () => {
     now = 10_000;
     refSequence = 0;
+    comparisonSlots = [];
     restartableStore = createRestartableTestStore();
     protocolStore = restartableStore.store;
     await protocolStore.open();
     objectStore = createMemoryObjectStore();
-    authority = new GatewayResourceAuthority({
+    const authorityOptions = {
       protocolStore,
       objectStore,
       now: () => now,
@@ -101,7 +120,17 @@ describe("GW-9 scoped artifact and result authority", () => {
       maxResultBytes: 128,
       maxResultPageBytes: 8,
       defaultTtlMs: 1_000,
-    });
+    };
+    Object.defineProperty(
+      authorityOptions,
+      "__revAgentTestObserveScopedUriComparison",
+      {
+        configurable: true,
+        enumerable: false,
+        value: (slot: ScopedUriComparisonSlot) => comparisonSlots.push(slot),
+      },
+    );
+    authority = new GatewayResourceAuthority(authorityOptions);
   });
 
   it("uploads an allowlisted CSV and gives a file-aware executor bytes, never a path", async () => {
@@ -117,12 +146,16 @@ describe("GW-9 scoped artifact and result authority", () => {
 
     expect(ref).toMatchObject({
       kind: "artifact_ref",
-      uri: "revagent://artifact/ref-1",
+      uri: expect.stringMatching(/^revagent:\/\/artifact\/p\/[0-9a-f]{64}\/s\/[0-9a-f]{64}\/t\/[0-9a-f]{64}\/a\/[0-9a-f]{64}\/r\/[0-9a-f]{64}$/u),
       filename: "schedule.csv",
       contentType: "text/csv",
       byteSize: bytes.byteLength,
     });
-    const consumed = await authority.consumeArtifact(scope, ref.refId);
+    const consumed = await authority.consumeArtifact(
+      scope,
+      effectiveMcpRequestScope,
+      ref.refId,
+    );
     expect(Buffer.from(consumed.bytes).toString("utf8")).toBe(
       "mark,count\nA,2\n",
     );
@@ -143,7 +176,7 @@ describe("GW-9 scoped artifact and result authority", () => {
       filename: "pending.csv",
     });
     await expectResourceError(
-      authority.consumeArtifact(scope, ref.refId),
+      authority.consumeArtifact(scope, effectiveMcpRequestScope, ref.refId),
       "quarantined",
     );
   });
@@ -194,7 +227,7 @@ describe("GW-9 scoped artifact and result authority", () => {
     expect(objectStore.keys()).toEqual([]);
   });
 
-  it("enforces actor, principal, tenant, session, expiry, and stored-byte integrity", async () => {
+  it("hash-prefixes durable keys and rejects foreign effective scopes before metadata or object lookup", async () => {
     const ref = await authority.uploadArtifact({
       scope,
       filename: "source.tsv",
@@ -202,31 +235,88 @@ describe("GW-9 scoped artifact and result authority", () => {
       quarantineStatus: "released",
       bytes: Buffer.from("A\t2", "utf8"),
     });
-    for (const denied of [
-      { ...scope, actorId: "user-2" },
-      { ...scope, principalKey: "tenant-1:user-2" },
-      { ...scope, mcpSessionId: "mcp-session-2" },
-    ]) {
+    const objectGet = vi.spyOn(objectStore, "get");
+    const transact = vi.spyOn(protocolStore, "transact");
+    const uriParts = new URL(ref.uri).pathname.split("/");
+    const deniedUris = [
+      { label: "malformed", index: 1, value: "invalid-scope-label" },
+      { label: "principal", index: 2, value: "f".repeat(64) },
+      { label: "session", index: 4, value: "f".repeat(64) },
+      { label: "tenant", index: 6, value: "f".repeat(64) },
+      { label: "actor", index: 8, value: "f".repeat(64) },
+    ];
+    for (const denied of deniedUris) {
+      const deniedUri = new URL(ref.uri);
+      const parts = [...uriParts];
+      parts[denied.index] = denied.value;
+      deniedUri.pathname = parts.join("/");
+      comparisonSlots = [];
       await expectResourceError(
-        authority.consumeArtifact(denied, ref.refId),
+        authority.readResource(
+          scope,
+          effectiveMcpRequestScope,
+          deniedUri,
+        ),
         "scope_denied",
       );
+      expect(comparisonSlots).toEqual(["p", "s", "t", "a"]);
     }
+    comparisonSlots = [];
     await expectResourceError(
-      authority.consumeArtifact({ ...scope, tenantId: "tenant-2" }, ref.refId),
-      "not_found",
+      authority.readResource(
+        { ...scope, tenantId: "tenant-2" },
+        effectiveMcpRequestScope,
+        new URL(ref.uri),
+      ),
+      "scope_denied",
     );
+    expect(comparisonSlots).toEqual(["p", "s", "t", "a"]);
+    expect(objectGet).not.toHaveBeenCalled();
+    expect(transact).not.toHaveBeenCalled();
+
+    comparisonSlots = [];
+    await expectResourceError(
+      authority.readResource(
+        scope,
+        effectiveMcpRequestScope,
+        new URL(`revagent://artifact/${ref.refId}`),
+      ),
+      "scope_denied",
+    );
+    expect(comparisonSlots).toEqual(["p", "s", "t", "a"]);
+    expect(objectGet).not.toHaveBeenCalled();
+    expect(transact).not.toHaveBeenCalled();
+
+    const sameBearerOtherSession = Object.freeze({
+      ...scope,
+      mcpSessionId: "mcp-session-2",
+    });
+    comparisonSlots = [];
+    await expectResourceError(
+      authority.readResource(
+        sameBearerOtherSession,
+        effectiveScopeFor(sameBearerOtherSession),
+        new URL(ref.uri),
+      ),
+      "scope_denied",
+    );
+    expect(comparisonSlots).toEqual(["p", "s", "t", "a"]);
+    expect(objectGet).not.toHaveBeenCalled();
+    expect(transact).not.toHaveBeenCalled();
 
     const [key] = objectStore.keys();
+    expect(key).toMatch(
+      /^p:[0-9a-f]{64}\/s:[0-9a-f]{64}\/t:[0-9a-f]{64}\/a:[0-9a-f]{64}\/artifact_ref\/r:[0-9a-f]{64}$/u,
+    );
     objectStore.corrupt(key!, Buffer.from("changed", "utf8"));
     await expectResourceError(
-      authority.consumeArtifact(scope, ref.refId),
+      authority.consumeArtifact(scope, effectiveMcpRequestScope, ref.refId),
       "digest_mismatch",
     );
 
     now = ref.expiresAtMs;
     await expectResourceError(
-      authority.consumeArtifact(scope, ref.refId),
+      authority.consumeArtifact(scope, effectiveMcpRequestScope, ref.refId),
       "expired",
     );
   });
@@ -234,11 +324,17 @@ describe("GW-9 scoped artifact and result authority", () => {
   it("bounds oversized structured JSON into independently digest-checked pages", async () => {
     const value = Object.freeze({ rows: ["alpha", "beta", "gamma"] });
     await expect(
-      authority.boundResult({ scope, value, maxInlineBytes: 200 }),
+      authority.boundResult({
+        scope,
+        effectiveMcpRequestScope,
+        value,
+        maxInlineBytes: 200,
+      }),
     ).resolves.toEqual({ kind: "inline", value });
 
     const ref = await authority.boundResult({
       scope,
+      effectiveMcpRequestScope,
       value,
       maxInlineBytes: 4,
     });
@@ -251,12 +347,13 @@ describe("GW-9 scoped artifact and result authority", () => {
     for (let page = 0; page < ref.pageCount; page += 1) {
       const read = await authority.readResource(
         scope,
-        new URL(`revagent://result/${ref.refId}/${String(page)}`),
+        effectiveMcpRequestScope,
+        new URL(page === 0 ? ref.uri : ref.uri.replace(/\/page\/0$/u, `/page/${String(page)}`)),
       );
       expect(read.digest).toBe(sha256(read.bytes));
       expect(read.nextPageUri).toBe(
         page + 1 < ref.pageCount
-          ? `revagent://result/${ref.refId}/${String(page + 1)}`
+          ? ref.uri.replace(/\/page\/0$/u, `/page/${String(page + 1)}`)
           : null,
       );
       collected.push(Buffer.from(read.bytes));
@@ -265,6 +362,7 @@ describe("GW-9 scoped artifact and result authority", () => {
     await expectResourceError(
       authority.readResource(
         { ...scope, mcpSessionId: "foreign" },
+        effectiveScopeFor({ ...scope, mcpSessionId: "foreign" }),
         new URL(ref.uri),
       ),
       "scope_denied",
@@ -297,7 +395,7 @@ describe("GW-9 scoped artifact and result authority", () => {
       { filename: "detail.png", contentType: "image/png" },
     ]);
     await expect(
-      Promise.all(refs.map((ref) => authority.readResource(scope, new URL(ref.uri)))),
+      Promise.all(refs.map((ref) => authority.readResource(scope, effectiveMcpRequestScope, new URL(ref.uri)))),
     ).resolves.toMatchObject([
       { contentType: "image/png", nextPageUri: null },
       { contentType: "image/png", nextPageUri: null },
@@ -312,7 +410,7 @@ describe("GW-9 scoped artifact and result authority", () => {
       newRefId: () => "unused-after-restart",
     });
     await expect(
-      restartedAuthority.readResource(scope, new URL(refs[1]!.uri)),
+      restartedAuthority.readResource(scope, effectiveMcpRequestScope, new URL(refs[1]!.uri)),
     ).resolves.toMatchObject({ contentType: "image/png" });
   });
 

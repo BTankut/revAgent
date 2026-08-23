@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { makeParamsDigest, type JsonValue } from "@revagent/protocol";
 
 import type { AuthContext } from "./authContext.js";
+import { gatewayUuidV7 } from "./identifiers.js";
 import type {
   GatewayExecutorBinding,
   GatewayMutationScopePolicy,
@@ -9,6 +10,64 @@ import type {
 } from "./registry.js";
 
 export type GatewayParamsDigest = `sha256:${string}`;
+
+/**
+ * The sole MCP session identity admitted for one north request.  It is minted
+ * once at ingress and deliberately carries the authenticated principal so
+ * downstream authority cannot accidentally mix a transport session with an
+ * identity-session or a different bearer.
+ */
+export interface EffectiveMcpRequestScopeV1 {
+  readonly contractVersion: "revagent.effective-mcp-request-scope/v1";
+  readonly principalKey: string;
+  readonly effectiveMcpSessionId: string;
+  readonly transportMcpSessionId: string | null;
+  readonly identityMcpSessionId: string | null;
+}
+
+/** Validates the frozen scope supplied to a downstream authority boundary. */
+export function assertEffectiveMcpRequestScopeV1(input: {
+  readonly scope: EffectiveMcpRequestScopeV1;
+  readonly auth: AuthContext;
+  readonly mcpSessionId: string;
+}): void {
+  const { scope, auth, mcpSessionId } = input;
+  if (
+    !Object.isFrozen(scope) ||
+    scope.contractVersion !== "revagent.effective-mcp-request-scope/v1"
+  ) {
+    throw new GatewayInvocationContextError(
+      "invalid_invocation_route",
+      "effective MCP request scope must be a frozen v1 authority object",
+    );
+  }
+  requireBoundedString(scope.principalKey, "effective scope principalKey", "invalid_auth_context");
+  requireBoundedString(scope.effectiveMcpSessionId, "effective MCP sessionId", "invalid_invocation_route");
+  for (const [name, value] of [
+    ["effective transport MCP sessionId", scope.transportMcpSessionId],
+    ["effective identity MCP sessionId", scope.identityMcpSessionId],
+  ] as const) {
+    if (value !== null) {
+      requireBoundedString(value, name, "invalid_invocation_route");
+    }
+  }
+  if (scope.principalKey !== auth.principalKey || mcpSessionId !== scope.effectiveMcpSessionId) {
+    throw new GatewayInvocationContextError(
+      "mcp_session_binding_mismatch",
+      "dispatch MCP authority does not match the effective ingress scope",
+    );
+  }
+  if (
+    scope.transportMcpSessionId !== null &&
+    scope.identityMcpSessionId !== null &&
+    scope.transportMcpSessionId !== scope.identityMcpSessionId
+  ) {
+    throw new GatewayInvocationContextError(
+      "mcp_session_binding_mismatch",
+      "effective MCP scope has conflicting transport and identity sessions",
+    );
+  }
+}
 
 export type GatewayDocumentIdentity =
   | {
@@ -40,7 +99,11 @@ export type GatewayMutationScope =
  */
 export interface GatewayInvocationRoute {
   readonly tenantId: string;
+  /** Principal selected with the tenant/session route; never inferred later. */
+  readonly principalKey: string;
   readonly mcpSessionId: string;
+  /** Exact immutable carrier received from north ingress; never reconstructed. */
+  readonly effectiveMcpRequestScope: EffectiveMcpRequestScopeV1;
   readonly rsid: string;
   readonly documentIdentity: GatewayDocumentIdentity;
 }
@@ -57,6 +120,8 @@ export interface GatewayInvocationContext {
   readonly gatewaySessionId: string;
   readonly oauthClientId: string;
   readonly mcpSessionId: string;
+  /** Authoritative constructors always set this; legacy synthetic fixtures do not. */
+  readonly effectiveMcpRequestScope?: EffectiveMcpRequestScopeV1;
   readonly rsid: string;
   readonly toolName: string;
   readonly toolVersion: string;
@@ -83,6 +148,7 @@ export type GatewayInvocationContextErrorCode =
   | "expired_auth_context"
   | "invalid_auth_context"
   | "invalid_document_identity"
+  | "mcp_session_binding_mismatch"
   | "invalid_invocation_route"
   | "mutation_scope_policy_unsupported"
   | "session_binding_mismatch"
@@ -110,6 +176,60 @@ function requireBoundedString(
       `${name} must be a non-empty, trimmed string of at most ${maxLength} characters`,
     );
   }
+}
+
+/**
+ * Resolves the only MCP session identity allowed to cross the north boundary.
+ * A transport/identity disagreement is a pre-dispatch authority failure.  A
+ * request with neither identity receives a UUIDv7-scoped stateless identity;
+ * it is intentionally never derived from the Gateway session identifier.
+ */
+export function createEffectiveMcpRequestScopeV1(input: {
+  readonly principalKey: string;
+  readonly transportMcpSessionId: string | null;
+  readonly identityMcpSessionId: string | null;
+  readonly nowMs: number;
+}): EffectiveMcpRequestScopeV1 {
+  requireBoundedString(
+    input.principalKey,
+    "principalKey",
+    "invalid_auth_context",
+  );
+  for (const [name, value] of [
+    ["transport MCP sessionId", input.transportMcpSessionId],
+    ["identity MCP sessionId", input.identityMcpSessionId],
+  ] as const) {
+    if (value !== null) {
+      requireBoundedString(value, name, "invalid_invocation_route");
+    }
+  }
+  if (
+    input.transportMcpSessionId !== null &&
+    input.identityMcpSessionId !== null &&
+    input.transportMcpSessionId !== input.identityMcpSessionId
+  ) {
+    throw new GatewayInvocationContextError(
+      "mcp_session_binding_mismatch",
+      "transport MCP session does not match the authenticated identity session",
+    );
+  }
+  if (!Number.isSafeInteger(input.nowMs) || input.nowMs < 0) {
+    throw new GatewayInvocationContextError(
+      "invalid_invocation_route",
+      "effective MCP scope clock must return a non-negative safe integer",
+    );
+  }
+  const effectiveMcpSessionId =
+    input.transportMcpSessionId ??
+    input.identityMcpSessionId ??
+    `stateless-request:${gatewayUuidV7(input.nowMs)}`;
+  return Object.freeze({
+    contractVersion: "revagent.effective-mcp-request-scope/v1" as const,
+    principalKey: input.principalKey,
+    effectiveMcpSessionId,
+    transportMcpSessionId: input.transportMcpSessionId,
+    identityMcpSessionId: input.identityMcpSessionId,
+  });
 }
 
 export function canonicalParamsDigest(value: unknown): GatewayParamsDigest {
@@ -173,10 +293,22 @@ export function deriveGatewayInvocationAuthority(input: {
   readonly auth: AuthContext;
   readonly route: GatewayInvocationRoute;
   readonly mcpSessionId: string;
+  readonly effectiveMcpRequestScope: EffectiveMcpRequestScopeV1;
   readonly mutationScopePolicy: GatewayMutationScopePolicy;
   readonly startedAtMs: number;
 }): GatewayInvocationAuthority {
   const { auth, route } = input;
+  assertEffectiveMcpRequestScopeV1({
+    scope: input.effectiveMcpRequestScope,
+    auth,
+    mcpSessionId: input.mcpSessionId,
+  });
+  if (route.effectiveMcpRequestScope !== input.effectiveMcpRequestScope) {
+    throw new GatewayInvocationContextError(
+      "mcp_session_binding_mismatch",
+      "invocation route did not retain the ingress effective MCP scope",
+    );
+  }
   if (auth.actor.type !== "user" || auth.session.clientType !== "mcp") {
     throw new GatewayInvocationContextError(
       "invalid_auth_context",
@@ -221,6 +353,11 @@ export function deriveGatewayInvocationAuthority(input: {
     "invalid_invocation_route",
   );
   requireBoundedString(
+    route.principalKey,
+    "route principalKey",
+    "invalid_invocation_route",
+  );
+  requireBoundedString(
     input.mcpSessionId,
     "MCP sessionId",
     "invalid_invocation_route",
@@ -235,6 +372,12 @@ export function deriveGatewayInvocationAuthority(input: {
     throw new GatewayInvocationContextError(
       "tenant_binding_mismatch",
       "invocation route tenant does not match the authenticated actor",
+    );
+  }
+  if (route.principalKey !== auth.principalKey) {
+    throw new GatewayInvocationContextError(
+      "session_binding_mismatch",
+      "invocation route principal does not match the authenticated actor",
     );
   }
   if (route.mcpSessionId !== input.mcpSessionId) {
@@ -284,6 +427,7 @@ export function createGatewayInvocationContext(input: {
   readonly auth: AuthContext;
   readonly route: GatewayInvocationRoute;
   readonly mcpSessionId: string;
+  readonly effectiveMcpRequestScope: EffectiveMcpRequestScopeV1;
   readonly invocationId: string;
   readonly toolName: string;
   readonly toolVersion: string;
@@ -297,6 +441,11 @@ export function createGatewayInvocationContext(input: {
   readonly startedAtMs: number;
 }): GatewayInvocationContext {
   const { auth, route } = input;
+  assertEffectiveMcpRequestScopeV1({
+    scope: input.effectiveMcpRequestScope,
+    auth,
+    mcpSessionId: input.mcpSessionId,
+  });
   requireBoundedString(
     input.invocationId,
     "invocationId",
@@ -370,6 +519,7 @@ export function createGatewayInvocationContext(input: {
     gatewaySessionId: auth.session.sessionId,
     oauthClientId,
     mcpSessionId: input.mcpSessionId,
+    effectiveMcpRequestScope: input.effectiveMcpRequestScope,
     rsid: route.rsid,
     toolName: input.toolName,
     toolVersion: input.toolVersion,

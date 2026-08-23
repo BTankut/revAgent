@@ -23,6 +23,7 @@ import {
   type GatewayEventSink,
 } from "./events.js";
 import {
+  assertEffectiveMcpRequestScopeV1,
   createGatewayInvocationContext,
   deriveGatewayInvocationAuthority,
   GatewayInvocationContextError,
@@ -30,6 +31,7 @@ import {
   type GatewayInvocationContext,
   type GatewayInvocationAuthority,
   type GatewayInvocationRoute,
+  type EffectiveMcpRequestScopeV1,
 } from "./invocationContext.js";
 import { gatewayUuidV7 } from "./identifiers.js";
 import type {
@@ -604,6 +606,7 @@ interface DispatchAuditInput {
   readonly auth: DispatchAuditIdentity;
   readonly route: GatewayInvocationRoute | undefined;
   readonly mcpSessionId: string;
+  readonly effectiveMcpRequestScope?: EffectiveMcpRequestScopeV1;
   readonly toolName: string;
   readonly invocationId: string | null;
   readonly attemptId?: string;
@@ -631,11 +634,14 @@ export interface GatewayDispatchRequest {
   readonly args: unknown;
   readonly auth: AuthContext;
   readonly mcpSessionId: string;
+  /** Required immutable carrier minted once at north ingress. */
+  readonly effectiveMcpRequestScope: EffectiveMcpRequestScopeV1;
   /** Stable confirmation authority when transport requests are stateless. */
   readonly confirmationSessionId?: string;
   readonly confirmation?: GatewayConfirmationControl;
   readonly resolveRoute: (
     auth: AuthContext,
+    effectiveMcpRequestScope: EffectiveMcpRequestScopeV1,
   ) => GatewayInvocationRoute | Promise<GatewayInvocationRoute>;
 }
 
@@ -710,7 +716,9 @@ function snapshotInvocationRoute(
         });
   return Object.freeze({
     tenantId: route.tenantId,
+    principalKey: route.principalKey,
     mcpSessionId: route.mcpSessionId,
+    effectiveMcpRequestScope: route.effectiveMcpRequestScope,
     rsid: route.rsid,
     documentIdentity,
   });
@@ -855,6 +863,39 @@ export class GatewayDispatcher {
   public async dispatch(
     input: GatewayDispatchRequest,
   ): Promise<GatewayDispatchOutcome> {
+    try {
+      assertEffectiveMcpRequestScopeV1({
+        scope: input.effectiveMcpRequestScope,
+        auth: input.auth,
+        mcpSessionId: input.mcpSessionId,
+      });
+      if (
+        input.confirmationSessionId !== undefined &&
+        input.confirmationSessionId !==
+          input.effectiveMcpRequestScope.effectiveMcpSessionId
+      ) {
+        throw new GatewayInvocationContextError(
+          "mcp_session_binding_mismatch",
+          "confirmation authority must use the effective MCP request scope",
+        );
+      }
+    } catch (error) {
+      return Object.freeze({
+        ok: false as const,
+        state: "failed" as const,
+        toolName: input.toolName,
+        requestId: "effective-mcp-scope-rejected",
+        executorReached: false,
+        error: Object.freeze({
+          code: "invalid_invocation_context" as const,
+          detailCode:
+            error instanceof GatewayInvocationContextError
+              ? error.code
+              : "mcp_session_binding_mismatch",
+          message: errorMessage(error),
+        }),
+      });
+    }
     const tool = this.#registry.get(input.toolName);
     if (
       tool?.policyClass === "confirm" &&
@@ -1007,11 +1048,15 @@ export class GatewayDispatcher {
     );
 
     try {
-      route = snapshotInvocationRoute(await input.resolveRoute(auth));
+      route = snapshotInvocationRoute(await input.resolveRoute(
+        auth,
+        input.effectiveMcpRequestScope,
+      ));
       authority = deriveGatewayInvocationAuthority({
         auth,
         route,
         mcpSessionId: input.mcpSessionId,
+        effectiveMcpRequestScope: input.effectiveMcpRequestScope,
         mutationScopePolicy: tool.mutationScopePolicy,
         startedAtMs,
       });
@@ -1086,6 +1131,7 @@ export class GatewayDispatcher {
             auth,
             route: route!,
             mcpSessionId: input.mcpSessionId,
+            effectiveMcpRequestScope: input.effectiveMcpRequestScope,
             invocationId,
             toolName: tool.name,
             toolVersion: tool.version,
@@ -1182,6 +1228,7 @@ export class GatewayDispatcher {
           userId: auth.actor.userId,
           gatewaySessionId: auth.session.sessionId,
           confirmationSessionId,
+          effectiveMcpRequestScope: input.effectiveMcpRequestScope,
           oauthClientId: auth.session.oauthClientId,
           rsid: route!.rsid,
           toolName: tool.name,
@@ -1215,6 +1262,7 @@ export class GatewayDispatcher {
         const requestedAudit = await this.#emitConfirmationEvent({
           auth: auditIdentity,
           confirmationSessionId,
+          effectiveMcpRequestScope: input.effectiveMcpRequestScope,
           status: "requested",
           tool,
           confirmationId: issued.pendingAction.confirmationId,
@@ -1518,11 +1566,15 @@ export class GatewayDispatcher {
     }
 
     try {
-      route = snapshotInvocationRoute(await input.resolveRoute(auth));
+      route = snapshotInvocationRoute(await input.resolveRoute(
+        auth,
+        input.effectiveMcpRequestScope,
+      ));
       authority = deriveGatewayInvocationAuthority({
         auth,
         route,
         mcpSessionId: input.mcpSessionId,
+        effectiveMcpRequestScope: input.effectiveMcpRequestScope,
         mutationScopePolicy: tool.mutationScopePolicy,
         startedAtMs,
       });
@@ -1663,6 +1715,7 @@ export class GatewayDispatcher {
             auth,
             route: route!,
             mcpSessionId: input.mcpSessionId,
+            effectiveMcpRequestScope: input.effectiveMcpRequestScope,
             invocationId,
             toolName: tool.name,
             toolVersion: tool.version,
@@ -1756,6 +1809,7 @@ export class GatewayDispatcher {
                   originatingPreviewInvocationId:
                     input.confirmation!.originatingPreviewInvocationId,
                   commitInvocationId: invocationId,
+                  effectiveMcpRequestScope: input.effectiveMcpRequestScope,
                   binding: {
                     tenantId: auth.actor.tenantId,
                     principalKey: auth.principalKey,
@@ -1858,6 +1912,7 @@ export class GatewayDispatcher {
           const approvalAudit = await this.#emitConfirmationEvent({
             auth: auditIdentity,
             confirmationSessionId,
+            effectiveMcpRequestScope: input.effectiveMcpRequestScope,
             status: "approved",
             tool,
             confirmationId,
@@ -2186,7 +2241,10 @@ export class GatewayDispatcher {
 
     let route: GatewayInvocationRoute;
     try {
-      route = snapshotInvocationRoute(await input.resolveRoute(auth));
+      route = snapshotInvocationRoute(await input.resolveRoute(
+        auth,
+        input.effectiveMcpRequestScope,
+      ));
     } catch (error) {
       const outcome: GatewayDispatchOutcome = {
         ok: false,
@@ -2215,6 +2273,7 @@ export class GatewayDispatcher {
         auth,
         route,
         mcpSessionId: input.mcpSessionId,
+        effectiveMcpRequestScope: input.effectiveMcpRequestScope,
         invocationId,
         toolName: tool.name,
         toolVersion: tool.version,
@@ -2402,6 +2461,7 @@ export class GatewayDispatcher {
   async #emitConfirmationEvent(input: {
     readonly auth: DispatchAuditIdentity;
     readonly confirmationSessionId: string;
+    readonly effectiveMcpRequestScope?: EffectiveMcpRequestScopeV1;
     readonly status: "requested" | "approved" | "denied" | "expired";
     readonly tool: GatewayToolRecord;
     readonly confirmationId: string | null;
@@ -2422,7 +2482,7 @@ export class GatewayDispatcher {
     const recordedAtMs = this.#clock();
     this.#eventSequence += 1;
     const recordedAt = new Date(recordedAtMs).toISOString();
-    const event: GatewayEventEnvelope = Object.freeze({
+    const event: GatewayEventEnvelope = {
       schema: REVAGENT_EVENT_SCHEMA,
       event_id: this.#newEventId(recordedAtMs),
       event_type: "tool.confirmation",
@@ -2458,7 +2518,16 @@ export class GatewayDispatcher {
         reason: input.reason,
         recorded_at_ms: recordedAtMs,
       }),
-    });
+    };
+    if (input.effectiveMcpRequestScope !== undefined) {
+      Object.defineProperty(event, "effectiveMcpRequestScope", {
+        value: input.effectiveMcpRequestScope,
+        enumerable: false,
+        writable: false,
+        configurable: false,
+      });
+    }
+    Object.freeze(event);
     try {
       const emitted = await this.#eventSink.emit(event);
       return emitted.ok
@@ -2536,7 +2605,7 @@ export class GatewayDispatcher {
       completed_at_ms: completedAtMs,
       duration_ms: Math.max(0, completedAtMs - input.startedAtMs),
     });
-    const event: GatewayEventEnvelope = Object.freeze({
+    const event: GatewayEventEnvelope = {
       schema: REVAGENT_EVENT_SCHEMA,
       event_id: this.#newEventId(completedAtMs),
       event_type: "tool.invocation",
@@ -2552,7 +2621,20 @@ export class GatewayDispatcher {
         input.context?.gatewaySessionId ?? input.auth.session.sessionId,
       seq: this.#eventSequence,
       payload,
-    });
+    };
+    const effectiveMcpRequestScope =
+      input.context?.effectiveMcpRequestScope ??
+      input.route?.effectiveMcpRequestScope ??
+      input.effectiveMcpRequestScope;
+    if (effectiveMcpRequestScope !== undefined) {
+      Object.defineProperty(event, "effectiveMcpRequestScope", {
+        value: effectiveMcpRequestScope,
+        enumerable: false,
+        writable: false,
+        configurable: false,
+      });
+    }
+    Object.freeze(event);
 
     try {
       const emitted = await this.#eventSink.emit(event);

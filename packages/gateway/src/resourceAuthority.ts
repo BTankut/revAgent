@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 
 import {
   appendStreamChunk,
@@ -10,11 +10,16 @@ import {
 
 import type { AuthContext } from "./authContext.js";
 import type { GatewayJsonValue } from "./dispatch.js";
+import type { EffectiveMcpRequestScopeV1 } from "./invocationContext.js";
 import type { GatewayProtocolStore, ObjectStorePort } from "./store.js";
 
 const RESOURCE_NAMESPACE = "gateway_resource_v1";
 const SHA256_PATTERN = /^sha256:[0-9a-f]{64}$/u;
+const SHA256_HEX_PATTERN = /^[0-9a-f]{64}$/u;
+const SHA256_HEX_SENTINEL = "0".repeat(64);
 const SAFE_FILENAME_PATTERN = /^[^\\/:<>"|?*\u0000-\u001f\u007f]+$/u;
+const TEST_SCOPE_URI_COMPARISON_OBSERVER =
+  "__revAgentTestObserveScopedUriComparison";
 
 export const GW9_ALLOWED_UPLOAD_CONTENT_TYPES = Object.freeze([
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -47,6 +52,17 @@ export function resourceScopeFromAuth(
     principalKey: auth.principalKey,
     mcpSessionId,
   });
+}
+
+/** Keeps resource authority on the ingress-created effective MCP scope. */
+export function resourceScopeFromEffectiveMcpRequestScope(
+  auth: AuthContext,
+  scope: EffectiveMcpRequestScopeV1,
+): GatewayResourceScope {
+  if (scope.principalKey !== auth.principalKey) {
+    fail("scope_denied", "effective MCP scope principal does not match auth");
+  }
+  return resourceScopeFromAuth(auth, scope.effectiveMcpSessionId);
 }
 
 export type GatewayResourceKind = "artifact_ref" | "result_ref";
@@ -273,8 +289,62 @@ function asJsonRecord(value: unknown): ResourceRecord | null {
   return record as ResultRecord;
 }
 
-function recordKey(kind: GatewayResourceKind, refId: string): string {
-  return `${kind}:${refId}`;
+function scopeHash(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+type ScopedUriComparisonSlot = "p" | "s" | "t" | "a";
+type ScopedUriComparisonObserver = (slot: ScopedUriComparisonSlot) => void;
+
+function sameHash(
+  expected: string,
+  supplied: string,
+  slot: ScopedUriComparisonSlot,
+  observer: ScopedUriComparisonObserver | undefined,
+): boolean {
+  const suppliedIsHash = SHA256_HEX_PATTERN.test(supplied);
+  const normalizedSupplied = suppliedIsHash ? supplied : SHA256_HEX_SENTINEL;
+  // All scope positions compare exactly 32 bytes, even when the supplied URI
+  // component is malformed. Never return before the fixed-width comparison.
+  const matches = timingSafeEqual(
+    Buffer.from(expected, "hex"),
+    Buffer.from(normalizedSupplied, "hex"),
+  );
+  observer?.(slot);
+  return matches && suppliedIsHash;
+}
+
+function assertEffectiveScope(
+  scope: GatewayResourceScope,
+  effectiveMcpRequestScope: EffectiveMcpRequestScopeV1,
+): void {
+  if (
+    !Object.isFrozen(effectiveMcpRequestScope) ||
+    effectiveMcpRequestScope.contractVersion !==
+      "revagent.effective-mcp-request-scope/v1" ||
+    effectiveMcpRequestScope.principalKey !== scope.principalKey ||
+    effectiveMcpRequestScope.effectiveMcpSessionId !== scope.mcpSessionId
+  ) {
+    fail("scope_denied", "resource authority scope does not match ingress scope");
+  }
+}
+
+function recordKey(
+  scope: GatewayResourceScope,
+  kind: GatewayResourceKind,
+  refId: string,
+): string {
+  // Scope hashes make a foreign principal/session miss metadata before an
+  // object-store lookup and avoid persisting raw session or principal values.
+  return recordKeyFromHash(scope, kind, scopeHash(refId));
+}
+
+function recordKeyFromHash(
+  scope: GatewayResourceScope,
+  kind: GatewayResourceKind,
+  refHash: string,
+): string {
+  return `p:${scopeHash(scope.principalKey)}/s:${scopeHash(scope.mcpSessionId)}/a:${scopeHash(scope.actorId)}/${kind}/r:${refHash}`;
 }
 
 function storageKey(
@@ -283,17 +353,90 @@ function storageKey(
   refId: string,
   digest: `sha256:${string}`,
 ): string {
-  const tenant = createHash("sha256").update(scope.tenantId).digest("hex");
+  const tenant = scopeHash(scope.tenantId);
+  const principal = scopeHash(scope.principalKey);
+  const session = scopeHash(scope.mcpSessionId);
+  const actor = scopeHash(scope.actorId);
   const opaqueRef = createHash("sha256").update(`${refId}\u0000${digest}`).digest("hex");
-  return `gateway-resources/${tenant}/${kind}/${opaqueRef}`;
+  return `p:${principal}/s:${session}/t:${tenant}/a:${actor}/${kind}/r:${opaqueRef}`;
 }
 
-function artifactUri(refId: string): string {
-  return `revagent://artifact/${encodeURIComponent(refId)}`;
+function artifactUri(scope: GatewayResourceScope, refId: string): string {
+  return `revagent://artifact/p/${scopeHash(scope.principalKey)}/s/${scopeHash(scope.mcpSessionId)}/t/${scopeHash(scope.tenantId)}/a/${scopeHash(scope.actorId)}/r/${scopeHash(refId)}`;
 }
 
-function resultUri(refId: string, page = 0): string {
-  return `revagent://result/${encodeURIComponent(refId)}/${String(page)}`;
+function resultUri(scope: GatewayResourceScope, refId: string, page = 0): string {
+  return `revagent://result/p/${scopeHash(scope.principalKey)}/s/${scopeHash(scope.mcpSessionId)}/t/${scopeHash(scope.tenantId)}/a/${scopeHash(scope.actorId)}/r/${scopeHash(refId)}/page/${String(page)}`;
+}
+
+interface ParsedScopedResourceUri {
+  readonly kind: GatewayResourceKind;
+  readonly refHash: string;
+  readonly page: number;
+}
+
+/**
+ * Rejects legacy/unscoped URIs before touching protocol metadata or object
+ * storage.  Hash comparisons deliberately stay constant-time so foreign
+ * session probes cannot distinguish an otherwise valid resource locator.
+ */
+function parseScopedResourceUri(
+  scope: GatewayResourceScope,
+  effectiveMcpRequestScope: EffectiveMcpRequestScopeV1,
+  uri: URL,
+  comparisonObserver: ScopedUriComparisonObserver | undefined,
+): ParsedScopedResourceUri {
+  assertScope(scope);
+  assertEffectiveScope(scope, effectiveMcpRequestScope);
+  const parts = uri.pathname.split("/").filter(Boolean);
+  const expectedPrincipal = scopeHash(scope.principalKey);
+  const expectedSession = scopeHash(scope.mcpSessionId);
+  const expectedTenant = scopeHash(scope.tenantId);
+  const expectedActor = scopeHash(scope.actorId);
+  const parsedPrincipal = parts[1] ?? "";
+  const parsedSession = parts[3] ?? "";
+  const parsedTenant = parts[5] ?? "";
+  const parsedActor = parts[7] ?? "";
+  const parsedRef = parts[9] ?? "";
+  let invalid =
+    Number(uri.protocol !== "revagent:") |
+    Number(parts[0] !== "p") |
+    Number(parts[2] !== "s") |
+    Number(parts[4] !== "t") |
+    Number(parts[6] !== "a") |
+    Number(parts[8] !== "r") |
+    Number(!SHA256_HEX_PATTERN.test(parsedRef));
+  invalid |= Number(
+    !sameHash(
+      expectedPrincipal,
+      parsedPrincipal,
+      "p",
+      comparisonObserver,
+    ),
+  );
+  invalid |= Number(
+    !sameHash(expectedSession, parsedSession, "s", comparisonObserver),
+  );
+  invalid |= Number(
+    !sameHash(expectedTenant, parsedTenant, "t", comparisonObserver),
+  );
+  invalid |= Number(
+    !sameHash(expectedActor, parsedActor, "a", comparisonObserver),
+  );
+  if (invalid !== 0) {
+    fail("scope_denied", "resource URI is not bound to the effective MCP scope");
+  }
+  if (uri.hostname === "artifact" && parts.length === 10) {
+    return Object.freeze({ kind: "artifact_ref" as const, refHash: parsedRef, page: 0 });
+  }
+  if (uri.hostname === "result" && parts.length === 12) {
+    const page = Number(parts[11]);
+    if (!Number.isSafeInteger(page) || page < 0 || String(page) !== parts[11]) {
+      fail("not_found", "result_ref page was not found");
+    }
+    return Object.freeze({ kind: "result_ref" as const, refHash: parsedRef, page });
+  }
+  fail("not_found", "resource URI does not match a scoped artifact or result ref");
 }
 
 function splitResultBytes(bytes: Uint8Array, pageSize: number): readonly Uint8Array[] {
@@ -313,6 +456,7 @@ export class GatewayResourceAuthority {
   readonly #maxResultBytes: number;
   readonly #maxResultPageBytes: number;
   readonly #defaultTtlMs: number;
+  readonly #scopeUriComparisonObserver: ScopedUriComparisonObserver | undefined;
 
   public constructor(options: GatewayResourceAuthorityOptions) {
     this.#protocolStore = options.protocolStore;
@@ -323,6 +467,12 @@ export class GatewayResourceAuthority {
     this.#maxResultBytes = options.maxResultBytes ?? 32 * 1024 * 1024;
     this.#maxResultPageBytes = options.maxResultPageBytes ?? 512 * 1024;
     this.#defaultTtlMs = options.defaultTtlMs ?? 15 * 60 * 1_000;
+    const observer = Object.getOwnPropertyDescriptor(
+      options,
+      TEST_SCOPE_URI_COMPARISON_OBSERVER,
+    )?.value;
+    this.#scopeUriComparisonObserver =
+      typeof observer === "function" ? observer : undefined;
     for (const [name, value] of Object.entries({
       maxUploadBytes: this.#maxUploadBytes,
       maxResultBytes: this.#maxResultBytes,
@@ -424,11 +574,13 @@ export class GatewayResourceAuthority {
 
   public async boundResult(input: {
     readonly scope: GatewayResourceScope;
+    readonly effectiveMcpRequestScope: EffectiveMcpRequestScopeV1;
     readonly value: GatewayJsonValue;
     readonly maxInlineBytes: number;
     readonly expiresAtMs?: number;
   }): Promise<BoundedGatewayResult> {
     assertScope(input.scope);
+    assertEffectiveScope(input.scope, input.effectiveMcpRequestScope);
     if (!Number.isSafeInteger(input.maxInlineBytes) || input.maxInlineBytes < 0) {
       fail("invalid_input", "maxInlineBytes must be a non-negative safe integer");
     }
@@ -484,7 +636,7 @@ export class GatewayResourceAuthority {
     return Object.freeze({
       kind: "result_ref" as const,
       refId,
-      uri: resultUri(refId),
+      uri: resultUri(input.scope, refId),
       contentType: "application/json" as const,
       byteSize: bytes.byteLength,
       digest,
@@ -495,56 +647,58 @@ export class GatewayResourceAuthority {
 
   public async consumeArtifact(
     scope: GatewayResourceScope,
+    effectiveMcpRequestScope: EffectiveMcpRequestScopeV1,
     refId: string,
   ): Promise<GatewayResourceRead> {
-    const record = await this.#readRecord(scope, "artifact_ref", refId);
-    if (record.kind !== "artifact_ref") {
-      fail("not_found", "artifact_ref was not found");
-    }
-    const bytes = await this.#verifiedBytes(scope, record);
-    return Object.freeze({
-      uri: artifactUri(refId),
-      contentType: record.contentType,
-      bytes,
-      digest: record.digest,
-      nextPageUri: null,
-    });
+    return this.readResource(
+      scope,
+      effectiveMcpRequestScope,
+      new URL(artifactUri(scope, refId)),
+    );
   }
 
   public async readResource(
     scope: GatewayResourceScope,
+    effectiveMcpRequestScope: EffectiveMcpRequestScopeV1,
     uri: URL,
   ): Promise<GatewayResourceRead> {
-    assertScope(scope);
-    if (uri.protocol !== "revagent:") {
-      fail("not_found", "resource URI is outside the revAgent namespace");
-    }
-    const parts = uri.pathname.split("/").filter(Boolean).map(decodeURIComponent);
-    if (uri.hostname === "artifact" && parts.length === 1) {
-      return this.consumeArtifact(scope, parts[0]!);
-    }
-    if (uri.hostname === "result" && parts.length === 2) {
-      const refId = parts[0]!;
-      const page = Number(parts[1]);
-      const record = await this.#readRecord(scope, "result_ref", refId);
+    const parsed = parseScopedResourceUri(
+      scope,
+      effectiveMcpRequestScope,
+      uri,
+      this.#scopeUriComparisonObserver,
+    );
+    const record = await this.#readRecord(scope, parsed.kind, parsed.refHash);
+    if (record.kind !== "artifact_ref") {
       if (record.kind !== "result_ref") {
-        fail("not_found", "result_ref was not found");
+        fail("not_found", "artifact_ref was not found");
       }
-      if (!Number.isSafeInteger(page) || page < 0 || page >= record.pageCount) {
-        fail("not_found", "result_ref page was not found");
-      }
-      const allBytes = await this.#verifiedBytes(scope, record);
-      const start = page * record.pageSize;
-      const bytes = allBytes.slice(start, Math.min(start + record.pageSize, allBytes.byteLength));
+    }
+    if (record.kind === "artifact_ref") {
+      const bytes = await this.#verifiedBytes(scope, record);
       return Object.freeze({
-        uri: resultUri(refId, page),
+        uri: artifactUri(scope, record.refId),
         contentType: record.contentType,
         bytes,
-        digest: sha256(bytes),
-        nextPageUri: page + 1 < record.pageCount ? resultUri(refId, page + 1) : null,
+        digest: record.digest,
+        nextPageUri: null,
       });
     }
-    fail("not_found", "resource URI does not match an artifact or result ref");
+    if (!Number.isSafeInteger(parsed.page) || parsed.page < 0 || parsed.page >= record.pageCount) {
+      fail("not_found", "result_ref page was not found");
+    }
+    const allBytes = await this.#verifiedBytes(scope, record);
+    const start = parsed.page * record.pageSize;
+    const bytes = allBytes.slice(start, Math.min(start + record.pageSize, allBytes.byteLength));
+    return Object.freeze({
+      uri: resultUri(scope, record.refId, parsed.page),
+      contentType: record.contentType,
+      bytes,
+      digest: sha256(bytes),
+      nextPageUri: parsed.page + 1 < record.pageCount
+        ? resultUri(scope, record.refId, parsed.page + 1)
+        : null,
+    });
   }
 
   async #storeArtifact(input: {
@@ -639,7 +793,7 @@ export class GatewayResourceAuthority {
     return Object.freeze(records.map((record) => Object.freeze({
       kind: "artifact_ref" as const,
       refId: record.refId,
-      uri: artifactUri(record.refId),
+      uri: artifactUri(scope, record.refId),
       filename: record.filename,
       contentType: record.contentType,
       byteSize: record.byteSize,
@@ -658,7 +812,7 @@ export class GatewayResourceAuthority {
         for (const record of records) {
           tx.stage({
             namespace: RESOURCE_NAMESPACE,
-            key: recordKey(record.kind, record.refId),
+            key: recordKey(scope, record.kind, record.refId),
             value: record as unknown as GatewayJsonValue,
             expect: { kind: "absent" },
           });
@@ -675,7 +829,7 @@ export class GatewayResourceAuthority {
   ): Promise<void> {
     const outcome = await this.#protocolStore.transact(
       { tenantId: scope.tenantId },
-      (tx) => tx.read(RESOURCE_NAMESPACE, recordKey(kind, refId)),
+      (tx) => tx.read(RESOURCE_NAMESPACE, recordKey(scope, kind, refId)),
     );
     if (!outcome.ok) {
       fail("storage_unavailable", outcome.message);
@@ -688,15 +842,15 @@ export class GatewayResourceAuthority {
   async #readRecord(
     scope: GatewayResourceScope,
     kind: GatewayResourceKind,
-    refId: string,
+    refHash: string,
   ): Promise<ResourceRecord> {
     assertScope(scope);
-    if (refId.length < 1 || refId.length > 200 || /[\u0000\r\n/\\]/u.test(refId)) {
+    if (!SHA256_HEX_PATTERN.test(refHash)) {
       fail("not_found", "resource ref is invalid");
     }
     const outcome = await this.#protocolStore.transact(
       { tenantId: scope.tenantId },
-      (tx) => tx.read(RESOURCE_NAMESPACE, recordKey(kind, refId)),
+      (tx) => tx.read(RESOURCE_NAMESPACE, recordKeyFromHash(scope, kind, refHash)),
     );
     if (!outcome.ok) {
       fail("storage_unavailable", outcome.message);
@@ -705,12 +859,14 @@ export class GatewayResourceAuthority {
     if (record === null || record.kind !== kind) {
       fail("not_found", "resource ref was not found");
     }
+    // The scope-hashed metadata key above is the primary isolation barrier.
+    // Keep this defensive invariant in case a backing store is corrupted.
     if (
       record.actorId !== scope.actorId ||
       record.principalKey !== scope.principalKey ||
       record.mcpSessionId !== scope.mcpSessionId
     ) {
-      fail("scope_denied", "resource ref does not belong to this actor and MCP session");
+      fail("not_found", "resource ref was not found");
     }
     if (this.#now() >= record.expiresAtMs) {
       fail("expired", "resource ref has expired");
