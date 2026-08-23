@@ -1,3 +1,5 @@
+using System.Diagnostics;
+using System.Net;
 using System.Net.Http;
 using System.Net.Security;
 using System.Net.WebSockets;
@@ -87,7 +89,13 @@ internal static class Program
             var router = new AddinSessionRouter(transport);
             var claims = new RbpCredentialClaimBinding(enrollment);
             var catalog = new WorkerAddinSessionCatalog(
-                new AddinDiscovery(transport), router, Configuration(options),
+                new AddinDiscovery(
+                    transport,
+                    new FixtureAddinProcessAttestor(
+                        options.FixtureProcessId,
+                        options.AddinPort)),
+                router,
+                Configuration(options),
                 () => new StaticCredentialProvider(options.DeviceId, options.DeviceToken, options.Fingerprint),
                 async (rsid, token) => (await journal.GetStoredSessionAsync(rsid, token).ConfigureAwait(false))?.LocalSessionKey,
                 "wp12-real-worker-host", hostname: "localhost", credentialClaims: claims);
@@ -130,6 +138,107 @@ internal static class Program
             ["addin.scanStartPort"] = new(BridgeConfigurationSourceKind.Environment, "WP12_TEST"),
             ["addin.scanEndPort"] = new(BridgeConfigurationSourceKind.Environment, "WP12_TEST"),
         }));
+
+    /// <summary>
+    /// TEST-HOST-ONLY attestation for the separately supervised Node fixture.
+    /// It deliberately does not relax production Windows attestation: the
+    /// fixture PID is supplied by the parent after its strict READY record and
+    /// the connected server endpoint must be that exact IPv4 loopback port.
+    /// The observed process start time makes PID reuse fail closed between the
+    /// pre-dispatch and post-response checks.
+    /// </summary>
+    private sealed class FixtureAddinProcessAttestor : IAddinProcessAttestor
+    {
+        private const string FixtureRevitVersion = "2025";
+        private const string FixtureImagePath = "addin-loopback-fixture/test-only";
+        private readonly int _fixtureProcessId;
+        private readonly int _fixturePort;
+
+        internal FixtureAddinProcessAttestor(int fixtureProcessId, int fixturePort)
+        {
+            if (fixtureProcessId <= 0) throw new ArgumentOutOfRangeException(nameof(fixtureProcessId));
+            if (fixturePort is < 1 or > 65535) throw new ArgumentOutOfRangeException(nameof(fixturePort));
+            _fixtureProcessId = fixtureProcessId;
+            _fixturePort = fixturePort;
+        }
+
+        public Task<AddinProcessAttestation> AttestBeforeDispatchAsync(
+            AddinConnectedPeer peer,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            EnsureExactFixtureEndpoint(peer);
+            return Task.FromResult(ReadLiveFixtureAttestation());
+        }
+
+        public Task VerifyAfterResponseAsync(
+            AddinConnectedPeer peer,
+            AddinProcessAttestation attestation,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            EnsureExactFixtureEndpoint(peer);
+            AddinProcessAttestation live = ReadLiveFixtureAttestation();
+            if (attestation == null || attestation.Identity != live.Identity ||
+                !string.Equals(attestation.RevitVersion, FixtureRevitVersion, StringComparison.Ordinal) ||
+                !string.Equals(attestation.ImagePath, FixtureImagePath, StringComparison.Ordinal))
+            {
+                throw Failure("addin_fixture_process_identity_changed", "The test fixture process identity changed during the loopback call.");
+            }
+
+            return Task.CompletedTask;
+        }
+
+        private void EnsureExactFixtureEndpoint(AddinConnectedPeer peer)
+        {
+            ArgumentNullException.ThrowIfNull(peer);
+            if (!peer.ServerEndPoint.Address.Equals(IPAddress.Loopback) ||
+                peer.ServerEndPoint.Port != _fixturePort ||
+                !IPAddress.IsLoopback(peer.ClientEndPoint.Address))
+            {
+                throw Failure("addin_fixture_endpoint_mismatch", "The test fixture connection was not the exact IPv4 loopback endpoint declared at READY.");
+            }
+        }
+
+        private AddinProcessAttestation ReadLiveFixtureAttestation()
+        {
+            try
+            {
+                using Process process = Process.GetProcessById(_fixtureProcessId);
+                process.Refresh();
+                if (process.HasExited)
+                {
+                    throw Failure("addin_fixture_process_exited", "The declared test fixture process has exited.");
+                }
+
+                long startTime = process.StartTime.ToUniversalTime().ToFileTimeUtc();
+                if (startTime <= 0)
+                {
+                    throw Failure("addin_fixture_process_identity_invalid", "The declared test fixture process has no stable start identity.");
+                }
+
+                return new AddinProcessAttestation(
+                    new AddinProcessIdentity(_fixtureProcessId, startTime),
+                    FixtureRevitVersion,
+                    FixtureImagePath);
+            }
+            catch (AddinProcessAttestationException)
+            {
+                throw;
+            }
+            catch (ArgumentException exception)
+            {
+                throw Failure("addin_fixture_process_unavailable", "The declared test fixture process is unavailable.", exception);
+            }
+            catch (InvalidOperationException exception)
+            {
+                throw Failure("addin_fixture_process_unavailable", "The declared test fixture process is unavailable.", exception);
+            }
+        }
+
+        private static AddinProcessAttestationException Failure(string code, string message, Exception? inner = null) =>
+            new(code, message, inner);
+    }
 
     private sealed class StaticEnrollment(string deviceId, string token, string fingerprint) : IRbpEnrollmentStateProvider
     {
@@ -188,11 +297,11 @@ internal static class Program
         return string.Equals(actual, expected, StringComparison.Ordinal);
     }
 
-    private sealed record Options(Uri GatewayUri, int AddinPort, string InstallRoot, string StateRoot, string DeviceId, string DeviceToken, string Fingerprint, string CertificateSha256, string Binding)
+    private sealed record Options(Uri GatewayUri, int AddinPort, int FixtureProcessId, string InstallRoot, string StateRoot, string DeviceId, string DeviceToken, string Fingerprint, string CertificateSha256, string Binding)
     {
         public static Options Parse(IReadOnlyList<string> args)
         {
-            if (args.Count != 18) throw new ArgumentException("real worker host requires exactly nine --key value pairs");
+            if (args.Count != 20) throw new ArgumentException("real worker host requires exactly ten --key value pairs");
             var values = new Dictionary<string, string>(StringComparer.Ordinal);
             for (int index = 0; index < args.Count; index += 2)
             {
@@ -205,7 +314,8 @@ internal static class Program
             string expectedScheme = binding == "wss" ? "wss" : "https";
             if (endpoint.Scheme != expectedScheme || endpoint.Host != "localhost") throw new ArgumentException("test host permits only pinned localhost Gateway endpoints for its selected binding");
             if (!int.TryParse(Required("--addin-port"), out int port) || port is < 1 or > 65535) throw new ArgumentException("invalid addin port");
-            Options result = new(endpoint, port, Required("--install-root"), Required("--state-root"), Required("--device-id"), Required("--device-token"), Required("--fingerprint"), Required("--certificate-sha256"), binding);
+            if (!int.TryParse(Required("--fixture-pid"), out int fixturePid) || fixturePid <= 0) throw new ArgumentException("invalid fixture pid");
+            Options result = new(endpoint, port, fixturePid, Required("--install-root"), Required("--state-root"), Required("--device-id"), Required("--device-token"), Required("--fingerprint"), Required("--certificate-sha256"), binding);
             if (values.Count != 0 || !result.Fingerprint.StartsWith("sha256:", StringComparison.Ordinal) || result.CertificateSha256.Length != 64) throw new ArgumentException("invalid test identity or certificate pin");
             return result;
         }

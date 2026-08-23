@@ -95,6 +95,53 @@ export function bridgeEndpointForBinding(endpoint: string, workerArgs: readonly 
   return bridge.toString().replace(/\/$/u, "");
 }
 
+/**
+ * Binds the C# test host to the exact process and IPv4 endpoint that emitted
+ * the fixture's strict READY record.  This is intentionally separate from
+ * the bridge endpoint derivation: a fixture cannot substitute a hostname,
+ * IPv6 address, or a stale process id through token replacement.
+ */
+export function fixtureAttestationTokens(
+  readiness: JsonObject,
+  processId: number,
+): Readonly<Record<"fixture_port" | "fixture_pid", string>> {
+  if (readiness.host !== "127.0.0.1") {
+    throw new Error("real trio fixture READY host is not exact IPv4 loopback");
+  }
+  const port = readiness.port;
+  if (typeof port !== "number" || !Number.isSafeInteger(port) || port < 1 || port > 65_535) {
+    throw new Error("real trio fixture readiness lacks an exact loopback port");
+  }
+  if (!Number.isSafeInteger(processId) || processId < 1) {
+    throw new Error("real trio fixture process lacks an exact pid");
+  }
+  return Object.freeze({ fixture_port: String(port), fixture_pid: String(processId) });
+}
+
+/**
+ * The real-worker command is a closed test-only contract.  Requiring both
+ * placeholders before starting it means malformed fixture identity cannot
+ * create a bridge connection and therefore cannot register a catalog route.
+ */
+export function fixtureAttestedWorkerCommand(
+  worker: RealTrioSupervisorCommand,
+  tokens: Readonly<Record<"fixture_port" | "fixture_pid", string>>,
+): RealTrioSupervisorCommand {
+  const required: ReadonlyArray<readonly [string, string]> = [
+    ["--addin-port", "{{fixture_port}}"],
+    ["--fixture-pid", "{{fixture_pid}}"],
+  ];
+  for (const [key, placeholder] of required) {
+    const indexes = worker.args
+      .map((entry, index) => entry === key ? index : -1)
+      .filter((index) => index >= 0);
+    if (indexes.length !== 1 || worker.args[indexes[0]! + 1] !== placeholder) {
+      throw new Error(`real worker command does not bind exact ${key} fixture attestation input`);
+    }
+  }
+  return replaceTokens(worker, tokens);
+}
+
 async function publicGatewayControl(
   endpoint: string,
   controlToken: string,
@@ -179,16 +226,15 @@ export async function startRealTrioSupervisor(input: RealTrioSupervisorLaunch): 
         requiredActions: ["snapshot_evidence", "shutdown"],
       });
       try {
-        const fixturePort = fixture.readiness.port;
-        if (!Number.isSafeInteger(fixturePort) || Number(fixturePort) < 1) throw new Error("fixture readiness lacks a loopback port");
+        const fixtureTokens = fixtureAttestationTokens(fixture.readiness, fixture.pid);
         const credential = await publicGatewayControl(endpoint, input.gatewayControlToken, certificateSha256, "issue_device_credential");
         if (typeof credential.deviceId !== "string" || typeof credential.deviceProof !== "string") throw new Error("Gateway public control did not issue a bridge credential");
+        const fixtureBoundWorker = fixtureAttestedWorkerCommand(input.bridgeWorker, fixtureTokens);
         const bridge = await StrictJsonlProcess.start({
           componentId: "bridge_simulator",
-          command: command(replaceTokens({ ...input.bridgeWorker, executable: bridgeExecutable }, {
+          command: command(replaceTokens({ ...fixtureBoundWorker, executable: bridgeExecutable }, {
             gateway_endpoint: bridgeEndpointForBinding(endpoint, input.bridgeWorker.args),
             gateway_certificate_sha256: certificateSha256.replace("sha256:", ""),
-            fixture_port: String(fixturePort),
             device_id: credential.deviceId,
             device_proof: credential.deviceProof,
           })),
