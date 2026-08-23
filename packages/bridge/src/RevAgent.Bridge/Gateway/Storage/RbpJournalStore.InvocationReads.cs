@@ -19,7 +19,7 @@ internal sealed partial class RbpJournalStore
         recovery_clearances_jcs,state,terminal_outcome_json,result_digest,
         verification_hold_id,verification_correlation_json,
         late_terminal_outcome_json,late_result_digest,created_at_ms,
-        started_at_ms,finished_at_ms
+        started_at_ms,finished_at_ms,carrier_plan_id
         """;
 
     private const string HoldColumns =
@@ -80,18 +80,78 @@ internal sealed partial class RbpJournalStore
             reader.GetString(10),
             reader.IsDBNull(3) ? null : reader.GetString(3),
             reader.IsDBNull(4) ? null : reader.GetInt64(4));
+        RbpInvocationState state = FromStorageState(reader.GetString(11));
+        string? terminalOutcome = reader.IsDBNull(12) ? null : reader.GetString(12);
+        string? resultDigest = reader.IsDBNull(13) ? null : reader.GetString(13);
+        string? holdId = reader.IsDBNull(14) ? null : reader.GetString(14);
+        string? correlation = reader.IsDBNull(15) ? null : reader.GetString(15);
+        string? lateOutcome = reader.IsDBNull(16) ? null : reader.GetString(16);
+        string? lateDigest = reader.IsDBNull(17) ? null : reader.GetString(17);
+        long created = reader.GetInt64(18);
+        long? started = reader.IsDBNull(19) ? null : reader.GetInt64(19);
+        long? finished = reader.IsDBNull(20) ? null : reader.GetInt64(20);
+        string? carrierPlanId = reader.IsDBNull(21) ? null : reader.GetString(21);
+        reader.Close();
+        RbpCarrierPlan? carrierPlan = carrierPlanId is null
+            ? null
+            : ReadCarrierPlan(command.Connection!, carrierPlanId);
         return new RbpStoredInvocation(
             identity,
-            FromStorageState(reader.GetString(11)),
-            reader.IsDBNull(12) ? null : reader.GetString(12),
-            reader.IsDBNull(13) ? null : reader.GetString(13),
-            reader.IsDBNull(14) ? null : reader.GetString(14),
-            reader.IsDBNull(15) ? null : reader.GetString(15),
-            reader.IsDBNull(16) ? null : reader.GetString(16),
-            reader.IsDBNull(17) ? null : reader.GetString(17),
-            reader.GetInt64(18),
-            reader.IsDBNull(19) ? null : reader.GetInt64(19),
-            reader.IsDBNull(20) ? null : reader.GetInt64(20));
+            state,
+            terminalOutcome,
+            resultDigest,
+            holdId,
+            correlation,
+            lateOutcome,
+            lateDigest,
+            created,
+            started,
+            finished,
+            carrierPlan);
+    }
+
+    private static RbpCarrierPlan? ReadCarrierPlan(
+        SqliteConnection connection,
+        string planId)
+    {
+        using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT carrier_key,prefixes_jcs,prefix_digest,terminal_jcs,terminal_digest
+            FROM rbp_carrier_plans WHERE plan_id=$plan_id;
+            """;
+        command.Parameters.AddWithValue("$plan_id", planId);
+        using SqliteDataReader reader = command.ExecuteReader();
+        if (!reader.Read())
+        {
+            throw RbpJournalSerialization.Corrupt(
+                "An invocation references a missing carrier plan.");
+        }
+
+        using JsonDocument prefixesDocument = JsonDocument.Parse(reader.GetString(1));
+        if (prefixesDocument.RootElement.ValueKind != JsonValueKind.Array)
+        {
+            throw RbpJournalSerialization.Corrupt("Carrier prefixes are not an array.");
+        }
+
+        var prefixes = new List<RbpCarrierPlanFrame>();
+        foreach (JsonElement value in prefixesDocument.RootElement.EnumerateArray())
+        {
+            if (value.ValueKind != JsonValueKind.Object ||
+                value.GetProperty("type").GetString() is not { Length: > 0 } type ||
+                !value.TryGetProperty("payload", out JsonElement payload))
+            {
+                throw RbpJournalSerialization.Corrupt("Carrier prefix is malformed.");
+            }
+            prefixes.Add(new RbpCarrierPlanFrame(type, payload.Clone()));
+        }
+        using JsonDocument terminalDocument = JsonDocument.Parse(reader.GetString(3));
+        return new RbpCarrierPlan(
+            planId,
+            reader.GetString(0),
+            prefixes.AsReadOnly(),
+            terminalDocument.RootElement.Clone(),
+            reader.GetString(2),
+            reader.GetString(4));
     }
 
     private static RbpVerificationHold? FindHoldByExactScope(

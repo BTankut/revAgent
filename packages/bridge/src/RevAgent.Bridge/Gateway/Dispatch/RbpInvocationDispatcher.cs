@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using Newtonsoft.Json.Linq;
 using RevAgent.Bridge.AddinLoopback;
@@ -400,6 +401,16 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
         JsonElement outcome = RequireOutcome(
             stored.TerminalOutcomeJson,
             "terminal");
+        if (stored.CarrierPlan is { } plan)
+        {
+            IReadOnlyList<RbpInvocationAnswer> prefixes = plan.OrderedPrefixes
+                .Select(frame => new RbpInvocationAnswer(frame.Type, frame.Payload))
+                .ToArray();
+            return RbpInvocationAnswer.Result(
+                RbpInvocationPayloads.ReplayTerminal(plan.TerminalPayload),
+                prefixes,
+                plan.CarrierKey);
+        }
         return RbpInvocationAnswer.Result(
             RbpInvocationPayloads.ReplayTerminal(outcome));
     }
@@ -668,7 +679,10 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
                 new RbpInvocationTerminal(
                     terminalState,
                     body,
-                    digest),
+                    digest,
+                    carrierKey is null
+                        ? null
+                        : CreateCarrierPlan(carrierKey, prefixes, body)),
                 DurableDecisionToken)
             .ConfigureAwait(false);
 
@@ -856,6 +870,42 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
     /// </remarks>
     private static string JournalEvidenceDigest(JsonElement body) =>
         Rfc8785Json.Sha256Digest(body);
+
+    private static RbpCarrierPlan CreateCarrierPlan(
+        string carrierKey,
+        IReadOnlyList<RbpInvocationAnswer> prefixes,
+        JsonElement terminal)
+    {
+        if (prefixes.Count == 0)
+        {
+            throw new RbpDispatchException(
+                RbpDispatchErrorCode.Environment,
+                "A carrier terminal cannot be persisted without prefix frames.");
+        }
+
+        RbpCarrierPlanFrame[] frames = prefixes
+            .Select(value => new RbpCarrierPlanFrame(value.Type, value.Payload.Clone()))
+            .ToArray();
+        JsonElement serializedPrefixes = JsonSerializer.SerializeToElement(
+            frames.Select(frame => new { type = frame.Type, payload = frame.Payload }));
+        string prefixDigest = RawJsonDigest(serializedPrefixes.GetRawText());
+        string terminalDigest = RawJsonDigest(terminal.GetRawText());
+        byte[] identity = Encoding.UTF8.GetBytes(
+            carrierKey + "\n" + prefixDigest + "\n" + terminalDigest);
+        string planId = "sha256:" + Convert.ToHexString(SHA256.HashData(identity))
+            .ToLowerInvariant();
+        return new RbpCarrierPlan(
+            planId,
+            carrierKey,
+            Array.AsReadOnly(frames),
+            terminal.Clone(),
+            prefixDigest,
+            terminalDigest);
+    }
+
+    private static string RawJsonDigest(string json) => "sha256:" +
+        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(json)))
+            .ToLowerInvariant();
 
     private static string ComputeResultDigest(byte[] rawResponsePayload) =>
         "sha256:" +

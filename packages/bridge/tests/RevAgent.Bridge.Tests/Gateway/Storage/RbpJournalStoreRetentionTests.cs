@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Microsoft.Data.Sqlite;
 using RevAgent.Bridge.Gateway.Protocol;
 using RevAgent.Bridge.Gateway.Storage;
 
@@ -84,6 +85,38 @@ public sealed class RbpJournalStoreRetentionTests
         Assert.Equal(0, outside.PrunedTransportSessions);
         Assert.Null(await store.GetInvocationAsync(old.IdempotencyKey));
         Assert.NotNull(await store.GetInvocationAsync(young.IdempotencyKey));
+    }
+
+    [Fact]
+    public async Task UnacknowledgedCarrierDoesNotBlockPairedOrOrdinaryRetention()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        await using RbpJournalStore store = OpenStore(directory);
+        _ = await store.PersistRegisteredSessionAsync(
+            RbpJournalTestData.Registration(expiresInHours: 24 * 365));
+        RbpInvocationIdentity acknowledged = ReadIdentity(
+            "0197a3c2-0000-7000-8000-0000000000c1");
+        RbpInvocationIdentity unacknowledged = ReadIdentity(
+            "0197a3c2-0000-7000-8000-0000000000c2");
+        RbpInvocationIdentity ordinary = ReadIdentity(
+            "0197a3c2-0000-7000-8000-0000000000c3");
+        await CompleteReadAsync(store, acknowledged);
+        await CompleteReadAsync(store, unacknowledged);
+        await CompleteReadAsync(store, ordinary);
+        await AttachCarrierPlanAsync(store, acknowledged, 'a', acknowledged: true);
+        await AttachCarrierPlanAsync(store, unacknowledged, 'b', acknowledged: false);
+
+        AdvanceDays(8);
+        RbpJournalRetentionResult swept = await store.ApplyRetentionAsync(
+            RbpJournalStore.MinimumRetentionPeriod);
+
+        Assert.Equal(2, swept.PrunedInvocations);
+        Assert.Equal(1, swept.PrunedCarrierPlans);
+        Assert.Null(await store.GetInvocationAsync(acknowledged.IdempotencyKey));
+        Assert.Null(await store.GetInvocationAsync(ordinary.IdempotencyKey));
+        RbpStoredInvocation retained = Assert.IsType<RbpStoredInvocation>(
+            await store.GetInvocationAsync(unacknowledged.IdempotencyKey));
+        Assert.NotNull(retained.CarrierPlan);
     }
 
     [Fact]
@@ -336,6 +369,48 @@ public sealed class RbpJournalStoreRetentionTests
         _ = await store.PersistInvocationTerminalAsync(
             identity.IdempotencyKey,
             Terminal(RbpInvocationState.Completed, """{"ok":true}"""));
+    }
+
+    private async Task AttachCarrierPlanAsync(
+        RbpJournalStore store,
+        RbpInvocationIdentity identity,
+        char marker,
+        bool acknowledged)
+    {
+        string planId = "sha256:" + new string(marker, 64);
+        string carrierKey = new string(marker, 64);
+        string digest = "sha256:" + new string('d', 64);
+        await store.ExecuteImmediateAsync(
+            context =>
+            {
+                using SqliteCommand insert = context.CreateCommand("""
+                    INSERT INTO rbp_carrier_plans(
+                      plan_id,idempotency_key,carrier_key,prefixes_jcs,prefix_digest,
+                      terminal_jcs,terminal_digest,created_at_ms,terminal_rsid,
+                      terminal_sequence,acknowledged_at_ms
+                    ) VALUES(
+                      $plan,$key,$carrier,'[]',$digest,'{}',$digest,$now,'rs-test',
+                      $sequence,$acknowledged);
+                    """);
+                insert.Parameters.AddWithValue("$plan", planId);
+                insert.Parameters.AddWithValue("$key", identity.IdempotencyKey);
+                insert.Parameters.AddWithValue("$carrier", carrierKey);
+                insert.Parameters.AddWithValue("$digest", digest);
+                insert.Parameters.AddWithValue("$now", _nowMilliseconds);
+                insert.Parameters.AddWithValue("$sequence", marker == 'a' ? 1 : 2);
+                insert.Parameters.AddWithValue(
+                    "$acknowledged",
+                    acknowledged ? _nowMilliseconds : DBNull.Value);
+                _ = insert.ExecuteNonQuery();
+                using SqliteCommand attach = context.CreateCommand("""
+                    UPDATE rbp_invocations SET carrier_plan_id=$plan
+                    WHERE idempotency_key=$key;
+                    """);
+                attach.Parameters.AddWithValue("$plan", planId);
+                attach.Parameters.AddWithValue("$key", identity.IdempotencyKey);
+                Assert.Equal(1, attach.ExecuteNonQuery());
+                return true;
+            });
     }
 
     private static async Task<string> InstallIndeterminateHoldAsync(

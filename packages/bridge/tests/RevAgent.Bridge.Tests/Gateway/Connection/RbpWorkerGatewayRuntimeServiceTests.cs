@@ -348,6 +348,119 @@ public sealed partial class RbpConnectionCoordinatorTests
     }
 
     [Fact]
+    public async Task WorkerRuntimePeriodicallySweepsOnlyExpiredFencedCarrierSpools()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        var clock = new ManualCoordinatorClock();
+        await using RbpJournalStore store = OpenStore(directory, clock);
+        RbpArtifactCarrierProducer producer =
+            RbpArtifactCarrierProducer.CreateProduction(directory.Path, store);
+        RbpCarrierEmission emission = Assert.IsType<RbpCarrierEmission>(
+            await producer.TryPrepareAsync(
+                "rs-sweep",
+                Json("""{"invocation_id":"sweep-carrier"}"""),
+                JsonSerializer.SerializeToElement(new
+                {
+                    payload = new string(
+                        'x', RbpArtifactCarrierProducer.MaximumChunkBytes + 1),
+                }),
+                CancellationToken.None));
+        producer.RecordTerminalQueued(emission.CarrierKey, "rs-sweep", 1);
+        string carrierRoot = Path.Combine(
+            directory.Path, "artifact-spool", emission.CarrierKey);
+        File.SetLastWriteTimeUtc(
+            Path.Combine(carrierRoot, "terminal.ack.json"),
+            DateTime.UtcNow.AddDays(-8));
+
+        var responder = new ScriptedGatewayResponder(clock);
+        var cycle = new FakeConnectionCycle(responder.Respond);
+        RbpConnectionCoordinator coordinator = Coordinator(
+            new FakeConnectionCycleFactory(cycle),
+            store,
+            new MutableSessionCatalog(),
+            clock);
+        await using var runtime = new WorkerGatewayRuntime(
+            coordinator,
+            carrierProducer: producer,
+            carrierSweepInterval: TimeSpan.FromMilliseconds(10));
+        var service = new WorkerGatewayRuntimeService(
+            () => runtime,
+            new RuntimeLifetime(),
+            new RuntimeLog(),
+            new WorkerExitState());
+
+        await service.StartAsync(CancellationToken.None);
+        try
+        {
+            await EventuallyAsync(() => !Directory.Exists(carrierRoot));
+        }
+        finally
+        {
+            await service.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task WorkerCarrierPumpReachesBoundedJournalRetention()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        var clock = new ManualCoordinatorClock();
+        RbpJournalStore store = OpenStore(directory, clock);
+        _ = await store.PersistRegisteredSessionAsync(
+            RbpJournalTestData.Registration(expiresInHours: 24 * 365));
+        const string invocationId = "0197a3c2-0000-7000-8000-000000000411";
+        var identity = new RbpInvocationIdentity(
+            "rs-test",
+            invocationId,
+            "get_current_view_info",
+            false,
+            null,
+            "sha256:" + new string('a', 64),
+            "{}",
+            "[]");
+        _ = await store.AdmitInvocationAsync(identity);
+        await store.MarkInvocationExecutingAsync(identity.IdempotencyKey);
+        _ = await store.PersistInvocationTerminalAsync(
+            identity.IdempotencyKey,
+            new RbpInvocationTerminal(
+                RbpInvocationState.Completed,
+                Json("""{"ok":true}"""),
+                "sha256:" + new string('b', 64)));
+        clock.Advance(TimeSpan.FromDays(8));
+
+        RbpArtifactCarrierProducer producer =
+            RbpArtifactCarrierProducer.CreateProduction(directory.Path, store);
+        var responder = new ScriptedGatewayResponder(clock);
+        var cycle = new FakeConnectionCycle(responder.Respond);
+        RbpConnectionCoordinator coordinator = Coordinator(
+            new FakeConnectionCycleFactory(cycle),
+            store,
+            new MutableSessionCatalog(),
+            clock);
+        await using var runtime = new WorkerGatewayRuntime(
+            coordinator,
+            ownedJournal: store,
+            carrierProducer: producer,
+            carrierSweepInterval: TimeSpan.FromMilliseconds(10));
+        var service = new WorkerGatewayRuntimeService(
+            () => runtime,
+            new RuntimeLifetime(),
+            new RuntimeLog(),
+            new WorkerExitState());
+
+        await service.StartAsync(CancellationToken.None);
+        try
+        {
+            await EventuallyAsync(async () =>
+                await store.GetInvocationAsync(identity.IdempotencyKey) is null);
+        }
+        finally
+        {
+            await service.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
     public async Task WorkerCatalogProjectsDiscoveryIntoFrozenRegistrations()
     {
         using var directory = new RbpJournalTestDirectory();
