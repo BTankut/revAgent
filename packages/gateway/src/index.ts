@@ -438,6 +438,7 @@ export {
   type GatewayServerPorts,
   type GatewayServerTlsMaterial,
 } from "./server.js";
+export { startProductionGatewayHost } from "./productionConformanceHost.js";
 // GW-3 executor and policy seed.
 export {
   DYNAMIC_CODE_TOOL,

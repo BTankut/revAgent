@@ -93,6 +93,18 @@ export type {
   RealTrioComponentId,
   RealTrioProcessIdentity,
 } from "./realTrioAttestation.js";
+export {
+  PRODUCTION_TRIO_COMPONENTS,
+  PRODUCTION_TRIO_CONFORMANCE_CONTRACT,
+  attestProductionGatewayModuleGraph,
+  validateProductionTrioRuntimeAttestation,
+} from "./productionTrioConformance.js";
+export type {
+  ProductionTrioAdapterIdentity,
+  ProductionTrioComponent,
+  ProductionTrioModuleHash,
+  ProductionTrioRuntimeAttestation,
+} from "./productionTrioConformance.js";
 export type {
   CaseStackSupervisorOptions,
   FixtureBindPolicyProbeInput,

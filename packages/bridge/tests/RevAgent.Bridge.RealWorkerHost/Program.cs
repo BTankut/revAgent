@@ -189,11 +189,12 @@ internal static class Program
                 if (!args[index].StartsWith("--", StringComparison.Ordinal) || !values.TryAdd(args[index], args[index + 1])) throw new ArgumentException("invalid real worker host arguments");
             }
             string Required(string key) => values.Remove(key, out string? value) && !string.IsNullOrWhiteSpace(value) ? value : throw new ArgumentException($"missing {key}");
-            Uri endpoint = new(Required("--gateway-uri"), UriKind.Absolute);
-            if (endpoint.Scheme != "wss" || endpoint.Host != "localhost") throw new ArgumentException("test host permits only localhost WSS Gateway endpoints");
-            if (!int.TryParse(Required("--addin-port"), out int port) || port is < 1 or > 65535) throw new ArgumentException("invalid addin port");
             string binding = Required("--binding");
             if (binding is not ("wss" or "streamable_http_sse")) throw new ArgumentException("invalid binding");
+            Uri endpoint = new(Required("--gateway-uri"), UriKind.Absolute);
+            string expectedScheme = binding == "wss" ? "wss" : "https";
+            if (endpoint.Scheme != expectedScheme || endpoint.Host != "localhost") throw new ArgumentException("test host permits only pinned localhost Gateway endpoints for its selected binding");
+            if (!int.TryParse(Required("--addin-port"), out int port) || port is < 1 or > 65535) throw new ArgumentException("invalid addin port");
             Options result = new(endpoint, port, Required("--install-root"), Required("--state-root"), Required("--device-id"), Required("--device-token"), Required("--fingerprint"), Required("--certificate-sha256"), binding);
             if (values.Count != 0 || !result.Fingerprint.StartsWith("sha256:", StringComparison.Ordinal) || result.CertificateSha256.Length != 64) throw new ArgumentException("invalid test identity or certificate pin");
             return result;
