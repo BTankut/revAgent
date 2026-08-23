@@ -364,6 +364,59 @@ describe("GatewayBridgeSessionAuthority live document routing", () => {
     ]);
   });
 
+  it("grants the complete provisioned HTTP carrier and session capability sets", async () => {
+    const fixture = createRestartableTestStore();
+    const resources = new GatewayResourceAuthority({
+      protocolStore: fixture.store,
+      objectStore: createMemoryObjectStore(),
+    });
+    const created = new GatewayBridgeSessionAuthority(
+      fixture.store,
+      identity({
+        connectionCapabilities: [
+          "journal_v1",
+          "transport_streamable_http",
+          "chunked_results",
+          "artifact_result_v1",
+        ],
+        sessionCapabilities: ["batch_atomic", "doc_context_cached_v1"],
+      }),
+      { resourceAuthority: resources },
+    );
+    authorities.push(created);
+    await created.open();
+    const offered = hello();
+    offered.payload.capabilities = [
+      "journal_v1",
+      "transport_streamable_http",
+      "chunked_results",
+      "artifact_result_v1",
+    ];
+    const openedChannel = channel();
+    const opened = await created.openConnection({
+      deviceToken: DEVICE_TOKEN,
+      binding: "http_sse",
+      hello: offered,
+      channel: openedChannel,
+    });
+    expect(opened.helloAck.payload.granted_capabilities).toEqual([
+      "journal_v1",
+      "chunked_results",
+      "artifact_result_v1",
+      "transport_streamable_http",
+    ]);
+    const register = registration("http-full-grants");
+    register.payload.session_capabilities = [
+      "batch_atomic",
+      "doc_context_cached_v1",
+    ];
+    await created.receive(opened.connectionId, register);
+    expect(registeredFrame(openedChannel).payload.granted_session_capabilities).toEqual([
+      "batch_atomic",
+      "doc_context_cached_v1",
+    ]);
+  });
+
   it("grants carrier capabilities only to an exact-store ready authority", async () => {
     const fixture = createRestartableTestStore();
     const resources = new GatewayResourceAuthority({

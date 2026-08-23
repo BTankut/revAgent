@@ -5,6 +5,8 @@ import {
   bridgeEndpointForBinding,
   fixtureAttestationTokens,
   fixtureAttestedWorkerCommand,
+  issueDeviceCredentialControlPayload,
+  persistedBindingForReadiness,
   pollRbpSessionV2Readiness,
   realTrioFailureDiagnostics,
   RealTrioSessionReadinessPollError,
@@ -42,12 +44,35 @@ describe("WP-12 real trio bridge endpoint derivation", () => {
 
 describe("WP-12 real-trio public credential provisioning", () => {
   it.each([
+    ["wss", "wss"],
+    ["streamable_http_sse", "http_sse"],
+  ] as const)("maps external %s to persisted readiness %s only", (binding, expected) => {
+    expect(persistedBindingForReadiness(binding)).toBe(expected);
+  });
+
+  it.each([
     ["wss", ["journal_v1", "chunked_results", "artifact_result_v1"]],
     ["streamable_http_sse", ["journal_v1", "chunked_results", "artifact_result_v1", "transport_streamable_http"]],
   ] as const)("uses one exact credential schema for %s with non-empty session grants", (binding, connectionCapabilities) => {
     expect(realTrioCredentialRequest(binding)).toEqual({
       binding,
       connectionCapabilities,
+      sessionCapabilities: ["batch_atomic", "doc_context_cached_v1"],
+    });
+  });
+
+  it("serializes issue_device_credential with only exact connection and session fields", () => {
+    expect(issueDeviceCredentialControlPayload(
+      realTrioCredentialRequest("streamable_http_sse"),
+    )).toEqual({
+      action: "issue_device_credential",
+      binding: "streamable_http_sse",
+      connectionCapabilities: [
+        "journal_v1",
+        "chunked_results",
+        "artifact_result_v1",
+        "transport_streamable_http",
+      ],
       sessionCapabilities: ["batch_atomic", "doc_context_cached_v1"],
     });
   });

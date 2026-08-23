@@ -72,6 +72,7 @@ import type {
 import { GATEWAY_RECOVERY_NAMESPACE } from "./recoveryAuthority.js";
 import type {
   GatewayProtocolStore,
+  ObjectStorePort,
   StoreExpectation,
   StoreOutcome,
   StoreTransaction,
@@ -2887,6 +2888,19 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
 
   #carrierReady(): boolean {
     return this.#resourceAuthority?.isBridgeCarrierReady(this.store) === true;
+  }
+
+  /**
+   * Composition-only identity check.  Carrier capabilities must be backed by
+   * the one protocol/object-store pair installed in the host, never merely by
+   * a similarly configured authority.
+   */
+  public hasExactCarrierComposition(
+    resourceAuthority: GatewayResourceAuthority,
+    objectStore: ObjectStorePort,
+  ): boolean {
+    return this.#resourceAuthority === resourceAuthority &&
+      resourceAuthority.isBridgeCarrierReady(this.store, objectStore);
   }
 
   #carrierScope(record: DurableRbpSession): {

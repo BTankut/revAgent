@@ -1,4 +1,5 @@
 import { GatewayBridgeSessionAuthority } from "./bridgeSession.js";
+import { GatewayResourceAuthority } from "./resourceAuthority.js";
 import { isFactoryConformanceRbpIngressHost, type ConformanceRbpIngressHost } from "./rbpIngress.js";
 import {
   startGatewayServer,
@@ -16,6 +17,8 @@ export async function startProductionGatewayHost(input: {
   readonly server: Omit<GatewayServerOptions, "ports">;
   readonly ports: GatewayServerOptions["ports"];
   readonly authority: GatewayBridgeSessionAuthority;
+  /** The exact durable carrier authority composed with the bridge authority. */
+  readonly resourceAuthority: GatewayResourceAuthority;
   /** Installed before listen by this conformance-only composition. */
   readonly mountConformanceControl?: (app: FastifyInstance) => void;
   /** Deliberate, value-free admission token. No other host profile may use conformance ports. */
@@ -48,6 +51,13 @@ export async function startProductionGatewayHost(input: {
   }
   if (!(input.authority instanceof GatewayBridgeSessionAuthority) || input.ports.identity !== input.authority.identity || input.ports.protocolStore !== input.authority.store) {
     throw new Error("productionGatewayHost requires one exact authority/identity/store graph");
+  }
+  if (!(input.resourceAuthority instanceof GatewayResourceAuthority) ||
+      !input.authority.hasExactCarrierComposition(
+        input.resourceAuthority,
+        input.ports.objectStore,
+      )) {
+    throw new Error("productionGatewayHost requires one exact bridge/resource/store/object-store carrier graph");
   }
   const ingress = input.ports.rbpIngress;
   if (!isFactoryConformanceRbpIngressHost(ingress) || ingress.authority !== input.authority || ingress.delegate.authority !== input.authority || ingress.mount !== ingress.delegate.mount || ingress.handleUpgrade !== ingress.delegate.handleUpgrade || ingress.start !== ingress.delegate.start || ingress.close !== ingress.delegate.close) {

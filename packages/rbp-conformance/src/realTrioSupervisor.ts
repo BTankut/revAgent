@@ -61,6 +61,7 @@ export interface RealTrioSessionReadiness {
 }
 
 export type RealTrioBinding = "wss" | "streamable_http_sse";
+type PersistedRealTrioBinding = "wss" | "http_sse";
 
 export interface RealTrioCredentialRequest {
   readonly binding: RealTrioBinding;
@@ -95,9 +96,33 @@ export function realTrioCredentialRequest(binding: RealTrioBinding): RealTrioCre
   });
 }
 
+/**
+ * Conformance names the external HTTP carrier `streamable_http_sse`, while
+ * the durable Gateway session records its canonical `http_sse` selector.
+ * This mapping is intentionally limited to readiness inspection; no command
+ * or credential path is rewritten.
+ */
+export function persistedBindingForReadiness(
+  binding: RealTrioBinding,
+): PersistedRealTrioBinding {
+  return binding === "streamable_http_sse" ? "http_sse" : binding;
+}
+
+/** Exact public control payload; no permissive argument bag is accepted. */
+export function issueDeviceCredentialControlPayload(
+  request: RealTrioCredentialRequest,
+): JsonObject {
+  return {
+    action: "issue_device_credential",
+    binding: request.binding,
+    connectionCapabilities: [...request.connectionCapabilities],
+    sessionCapabilities: [...request.sessionCapabilities],
+  };
+}
+
 export interface RbpSessionReadinessPollOptions {
   readonly readSnapshot: () => Promise<JsonObject>;
-  readonly expectedBinding: "wss" | "streamable_http_sse";
+  readonly expectedBinding: PersistedRealTrioBinding;
   readonly isBridgeExited: () => boolean;
   readonly timeoutMs?: number;
   readonly intervalMs?: number;
@@ -231,7 +256,7 @@ function hashPrefix(value: string): string {
 
 function traceReadinessSnapshot(
   snapshot: JsonObject,
-  expectedBinding: "wss" | "streamable_http_sse",
+  expectedBinding: PersistedRealTrioBinding,
   stableCount: number,
   priorFingerprint: string | null,
 ): RealTrioReadinessTrace {
@@ -371,7 +396,7 @@ function isObject(value: unknown): value is JsonObject {
  */
 export function readRbpSessionV2Readiness(
   snapshot: JsonObject,
-  expectedBinding: "wss" | "streamable_http_sse",
+  expectedBinding: PersistedRealTrioBinding,
 ): RealTrioSessionReadiness {
   const rows = snapshot.sessions;
   if (!Array.isArray(rows) || rows.length !== 1 || !isObject(rows[0])) {
@@ -466,11 +491,14 @@ async function publicGatewayControl(
   endpoint: string,
   controlToken: string,
   expectedCertificateSha256: string,
-  action: "issue_device_credential" | "snapshot_audit",
-  arguments_: Readonly<Record<string, JsonValue>> = {},
+  payloadObject: JsonObject,
 ): Promise<JsonObject> {
   const url = new URL("/__conformance/v1/control", endpoint);
-  const payload = Buffer.from(JSON.stringify({ action, ...arguments_ }), "utf8");
+  const action = payloadObject.action;
+  if (action !== "issue_device_credential" && action !== "snapshot_audit") {
+    throw new Error("Gateway public control action is invalid");
+  }
+  const payload = Buffer.from(JSON.stringify(payloadObject), "utf8");
   return await new Promise<JsonObject>((resolve, reject) => {
     const operation = httpsRequest({ hostname: url.hostname, port: url.port, path: url.pathname, method: "POST", rejectUnauthorized: false, headers: { "content-type": "application/json", "content-length": payload.byteLength, "x-rbp-test-control": controlToken } }, (response) => {
       const peer = (response.socket as TLSSocket).getPeerCertificate(true).raw as Buffer | undefined;
@@ -584,12 +612,12 @@ export async function startRealTrioSupervisor(input: RealTrioSupervisorLaunch): 
           throw new Error("real worker command lacks one supported binding");
         }
         const credentialRequest = realTrioCredentialRequest(binding);
+        const credentialControl = issueDeviceCredentialControlPayload(credentialRequest);
         const credential = await publicGatewayControl(
           endpoint,
           input.gatewayControlToken,
           certificateSha256,
-          "issue_device_credential",
-          credentialRequest,
+          credentialControl,
         );
         assertProductionCredential(credential, credentialRequest, endpoint);
         const fixtureBoundWorker = fixtureAttestedWorkerCommand(input.bridgeWorker, fixtureTokens);
@@ -608,13 +636,13 @@ export async function startRealTrioSupervisor(input: RealTrioSupervisorLaunch): 
         let sessionReadiness: RealTrioSessionReadiness;
         try {
           sessionReadiness = await pollRbpSessionV2Readiness({
-            expectedBinding: binding,
+            expectedBinding: persistedBindingForReadiness(binding),
             isBridgeExited: () => bridge.process.exitCode !== null,
             readSnapshot: async () => await publicGatewayControl(
               endpoint,
               input.gatewayControlToken,
               certificateSha256,
-              "snapshot_audit",
+              { action: "snapshot_audit" },
             ),
           });
         } catch (error) {

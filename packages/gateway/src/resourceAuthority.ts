@@ -759,8 +759,13 @@ export class GatewayResourceAuthority {
    * and has a non-stub object-store port.  No serving path calls this as a
    * production readiness assertion.
    */
-  public isBridgeCarrierReady(protocolStore: GatewayProtocolStore): boolean {
-    return this.#protocolStore === protocolStore && this.#objectStore.kind !== "unavailable";
+  public isBridgeCarrierReady(
+    protocolStore: GatewayProtocolStore,
+    objectStore?: ObjectStorePort,
+  ): boolean {
+    return this.#protocolStore === protocolStore &&
+      (objectStore === undefined || this.#objectStore === objectStore) &&
+      this.#objectStore.kind !== "unavailable";
   }
 
   /** Durable receipt/ack plus Bridge inbound sequence in one Tx-B commit. */

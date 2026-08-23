@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 
 import { GatewayBridgeSessionAuthority } from "./bridgeSession.js";
+import { GatewayResourceAuthority } from "./resourceAuthority.js";
 import {
   ConformanceCredentialAuthority,
   DigestFileConformanceObjectStore,
@@ -106,7 +107,17 @@ export async function runProductionConformanceHostCli(args: readonly string[]): 
   const protocolStore = new SqliteConformanceProtocolStore(options.root);
   const opened = await protocolStore.open();
   if (!opened.ok) throw new Error("conformance protocol store did not open");
-  const authority = new GatewayBridgeSessionAuthority(protocolStore, identity);
+  // The carrier and the host ports must use one exact durable pair.  This is
+  // deliberately composed before ingress so carrier capability grants cannot
+  // pass a readiness check against an unrelated object store.
+  const objectStore = new DigestFileConformanceObjectStore(options.root);
+  const resourceAuthority = new GatewayResourceAuthority({
+    protocolStore,
+    objectStore,
+  });
+  const authority = new GatewayBridgeSessionAuthority(protocolStore, identity, {
+    resourceAuthority,
+  });
   const ingress = createConformanceRbpIngressHost({ authority });
   const supporting = createConformanceSupportingPorts();
   let conformanceEndpoint: string | null = null;
@@ -115,6 +126,7 @@ export async function runProductionConformanceHostCli(args: readonly string[]): 
     const handle = await startProductionGatewayHost({
       hostProfile: "production_conformance",
       authority,
+      resourceAuthority,
       server: {
         config: {
           nodeEnv: "test",
@@ -130,7 +142,7 @@ export async function runProductionConformanceHostCli(args: readonly string[]): 
       ports: {
         identity,
         protocolStore,
-        objectStore: new DigestFileConformanceObjectStore(options.root),
+        objectStore,
         entitlement: supporting.entitlement,
         events: supporting.events,
         guardrails: supporting.guardrails,

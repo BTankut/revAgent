@@ -5,6 +5,7 @@ import { conformanceConnectionCapabilitiesForBinding, validateConformanceDeviceP
 import type { GatewayServerOptions } from "./server.js";
 import { createFailClosedPorts } from "./server.js";
 import { GatewayBridgeSessionAuthority } from "./bridgeSession.js";
+import { GatewayResourceAuthority } from "./resourceAuthority.js";
 import { ConformanceCredentialAuthority, DigestFileConformanceObjectStore, SqliteConformanceProtocolStore, createConformanceSupportingPorts } from "./conformanceEphemeralAdapters.js";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -47,17 +48,51 @@ describe("productionGatewayHost", () => {
       sessionCapabilities: [],
     })).toBeNull();
   });
+  it("requires one exact bridge/resource/protocol/object-store identity graph", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "revagent-carrier-graph-"));
+    try {
+      const identity = new ConformanceCredentialAuthority([]);
+      const protocolStore = new SqliteConformanceProtocolStore(root);
+      await protocolStore.open();
+      const objectStore = new DigestFileConformanceObjectStore(root);
+      const resources = new GatewayResourceAuthority({ protocolStore, objectStore });
+      const authority = new GatewayBridgeSessionAuthority(protocolStore, identity, {
+        resourceAuthority: resources,
+      });
+      const otherObjects = new DigestFileConformanceObjectStore(`${root}-other`);
+      const otherStore = new SqliteConformanceProtocolStore(`${root}-store`);
+      await otherStore.open();
+      const unavailableResources = new GatewayResourceAuthority({
+        protocolStore,
+        objectStore: { kind: "unavailable" } as never,
+      });
+
+      expect(authority.hasExactCarrierComposition(resources, objectStore)).toBe(true);
+      expect(authority.hasExactCarrierComposition(resources, otherObjects)).toBe(false);
+      expect(resources.isBridgeCarrierReady(otherStore, objectStore)).toBe(false);
+      expect(unavailableResources.isBridgeCarrierReady(protocolStore)).toBe(false);
+
+      await otherStore.close();
+      await protocolStore.close();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+      await rm(`${root}-other`, { recursive: true, force: true });
+      await rm(`${root}-store`, { recursive: true, force: true });
+    }
+  });
   it("is explicitly non-production and numeric-loopback only before any port can start", async () => {
     await expect(startProductionGatewayHost({
       server: server("production", "127.0.0.1"),
       ports: null as unknown as GatewayServerOptions["ports"],
       authority: null as unknown as never,
+      resourceAuthority: null as unknown as never,
       hostProfile: "production_conformance",
     })).rejects.toThrow(/conformance-only/u);
     await expect(startProductionGatewayHost({
       server: server("test", "localhost"),
       ports: null as unknown as GatewayServerOptions["ports"],
       authority: null as unknown as never,
+      resourceAuthority: null as unknown as never,
       hostProfile: "production_conformance",
     })).rejects.toThrow(/numeric loopback/u);
   });
@@ -66,11 +101,13 @@ describe("productionGatewayHost", () => {
     await expect(startProductionGatewayHost({
       server: { ...server("test", "127.0.0.1"), tls: { key: Buffer.from("test"), cert: Buffer.from("test") } }, ports,
       authority: null as unknown as never,
+      resourceAuthority: null as unknown as never,
       hostProfile: "not_conformance" as never,
     })).rejects.toThrow(/host profile/u);
     await expect(startProductionGatewayHost({
       server: { ...server("test", "127.0.0.1"), tls: { key: Buffer.from("test"), cert: Buffer.from("test") } }, ports,
       authority: null as unknown as never,
+      resourceAuthority: null as unknown as never,
       hostProfile: "production_conformance",
     })).rejects.toThrow(/explicit conformance identity/u);
   });
@@ -79,6 +116,7 @@ describe("productionGatewayHost", () => {
       server: server("test", "127.0.0.1"),
       ports: null as unknown as GatewayServerOptions["ports"],
       authority: null as unknown as never,
+      resourceAuthority: null as unknown as never,
       hostProfile: "production_conformance",
     })).rejects.toThrow(/loopback TLS/u);
   });
@@ -87,12 +125,16 @@ describe("productionGatewayHost", () => {
     try {
       const identity = new ConformanceCredentialAuthority([]);
       const protocolStore = new SqliteConformanceProtocolStore(root); await protocolStore.open();
-      const authority = new GatewayBridgeSessionAuthority(protocolStore, identity);
+      const objectStore = new DigestFileConformanceObjectStore(root);
+      const resources = new GatewayResourceAuthority({ protocolStore, objectStore });
+      const authority = new GatewayBridgeSessionAuthority(protocolStore, identity, {
+        resourceAuthority: resources,
+      });
       const supporting = createConformanceSupportingPorts();
       const forged = { kind: "conformance" as const, enabled: true as const, mountPrefix: "/bridge/v1" as const, authority, delegate: { authority }, refuse: () => ({ ok: false as const, port: "rbp_ingress" as const, code: "unavailable" as const, message: "forged" }), mount: () => { throw new Error("listener must not mount"); } };
       await expect(startProductionGatewayHost({
         server: { ...server("test", "127.0.0.1"), tls: { key: Buffer.from("test"), cert: Buffer.from("test") } },
-        ports: { identity, protocolStore, objectStore: new DigestFileConformanceObjectStore(root), entitlement: supporting.entitlement, events: supporting.events, guardrails: supporting.guardrails, rbpIngress: forged as never }, authority, hostProfile: "production_conformance",
+        ports: { identity, protocolStore, objectStore, entitlement: supporting.entitlement, events: supporting.events, guardrails: supporting.guardrails, rbpIngress: forged as never }, authority, resourceAuthority: resources, hostProfile: "production_conformance",
       })).rejects.toThrow(/exact validated conformance ingress/u);
       await protocolStore.close();
     } finally { await rm(root, { recursive: true, force: true }); }
