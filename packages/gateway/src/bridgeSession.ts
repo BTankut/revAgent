@@ -2363,6 +2363,10 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
             10_000,
           );
           if (!sessions.ok) return sessions;
+          for (const rsid of sessions.value) {
+            const imported = await this.#importLegacySessionAtStartup(tenantId, rsid);
+            if (!imported.ok) return imported;
+          }
         }
         return Object.freeze({ ok: true as const, value: undefined });
       });
@@ -7766,6 +7770,73 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       expect: { kind: "absent" },
     });
     return scopeDigest;
+  }
+
+  /** Startup-only v1 recovery import.  Every source is read in the same CAS
+   * transaction as the normalized children, index and marker; no request path
+   * can observe an import in progress. */
+  async #importLegacySessionAtStartup(tenantId: string, rsid: string): Promise<StoreOutcome<void>> {
+    return this.store.transact({ tenantId }, async (tx) => {
+      const sessionStored = await tx.read<GatewayJsonValue>(GATEWAY_RBP_SESSION_NAMESPACE, rsid);
+      if (sessionStored === null) return undefined;
+      const session = parseStoredSession(sessionStored, tenantId, rsid);
+      const tombstone = await tx.read<GatewayJsonValue>(GATEWAY_RBP_UNREGISTER_NAMESPACE, rsid);
+      if (tombstone !== null) parseUnregisterTombstone(tombstone.value, { tenantId, rsid, stored: tombstone });
+      const marker = await tx.read<GatewayJsonValue>(GATEWAY_HOLD_CUTOVER_NAMESPACE, rsid);
+      if (marker !== null) {
+        parseHoldCutover(marker, tenantId, rsid);
+        return undefined;
+      }
+      const recovery = await tx.read<GatewayJsonValue>(GATEWAY_RECOVERY_NAMESPACE, rsid);
+      if (recovery === null) return undefined;
+      if (recovery.namespace !== GATEWAY_RECOVERY_NAMESPACE || recovery.tenantId !== tenantId || recovery.key !== rsid) {
+        throw new Error("legacy recovery source identity is invalid");
+      }
+      const holds = parseLegacyRecoveryHolds(recovery.value, rsid);
+      // Two child writes per imported hold plus session and marker writes.
+      // Refuse rather than relying on an adapter's transaction limit.
+      if (holds.length > 62) throw new Error("startup legacy import exceeds 128 write limit");
+      const importedDigests: `sha256:${string}`[] = [];
+      for (const legacy of holds) {
+        if (legacy.state === "cleared" || legacy.state === "resolved_pending_bridge") {
+          throw new Error("startup legacy import requires a quarantined resolution migration");
+        }
+        importedDigests.push(await this.#ensureNormalizedConflictPair(tx, tenantId, rsid, {
+          holdId: legacy.holdId as `vh:${string}`,
+          mutationScope: legacy.mutationScope,
+          mutationScopeJcs: mutationScopeKey(legacy.mutationScope),
+          originIdempotencyKeys: legacy.originIdempotencyKeys,
+        }, this.#clock()));
+      }
+      const facts = legacyCutoverFacts(session, holds);
+      const nowMs = this.#clock();
+      const nextSession: DurableRbpSession = {
+        ...session,
+        normalizedConflictIndex: {
+          version: 1,
+          state: "complete",
+          scopeDigests: [...new Set(importedDigests)].sort(),
+        },
+      };
+      tx.stage({ namespace: GATEWAY_RBP_SESSION_NAMESPACE, key: rsid, value: asJson(nextSession), expect: { kind: "version", version: sessionStored.version } });
+      const cutover: DurableHoldCutover = {
+        schema: GATEWAY_HOLD_CUTOVER_NAMESPACE,
+        tenantId,
+        rsid,
+        createdAtMs: nowMs,
+        updatedAtMs: nowMs,
+        recordVersion: 1,
+        legacyDigest: facts.legacyDigest,
+        importedHoldCount: facts.importedHoldCount,
+        importedConflictCount: facts.importedConflictCount,
+        importedResolutionCount: facts.importedResolutionCount,
+        targetGeneration: "normalized-v1",
+        state: "normalized_authoritative",
+        cutoverAtMs: nowMs,
+      };
+      tx.stage({ namespace: GATEWAY_HOLD_CUTOVER_NAMESPACE, key: rsid, value: asJson(cutover), expect: { kind: "absent" } });
+      return undefined;
+    });
   }
 
   async #assertCutoverSemanticProof(
