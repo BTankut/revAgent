@@ -1809,6 +1809,7 @@ export class GatewayDispatcher {
                   originatingPreviewInvocationId:
                     input.confirmation!.originatingPreviewInvocationId,
                   commitInvocationId: invocationId,
+                  effectiveMcpRequestScope: input.effectiveMcpRequestScope,
                   binding: {
                     tenantId: auth.actor.tenantId,
                     principalKey: auth.principalKey,
