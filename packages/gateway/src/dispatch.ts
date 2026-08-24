@@ -17,6 +17,7 @@ import {
   confirmationSessionIdFor,
   type GatewayConfirmationAuthority,
 } from "./confirmationAuthority.js";
+import { GatewayRbpFault } from "./bridgeSession.js";
 import {
   REVAGENT_EVENT_SCHEMA,
   type GatewayEventEnvelope,
@@ -209,6 +210,13 @@ export type GatewayDispatchOutcome =
            * surfaced through the north result carrier.
            */
           | "dispatch_unavailable";
+        /**
+         * Present only on the fixed, read-only dispatch_unavailable carrier.
+         * These are closed diagnostic enums, not executor-provided values.
+         */
+        readonly phase?: DispatchUnavailablePhase;
+        readonly class?: DispatchUnavailableClass;
+        readonly upstreamCode?: GatewayRbpFaultCode;
         /** Omitted only for the fixed read-only dispatch_unavailable shape. */
         readonly message?: string;
         readonly executorCode?: string;
@@ -228,6 +236,32 @@ type GatewaySuccessfulDispatchOutcome = Extract<
   GatewayDispatchOutcome,
   { readonly ok: true }
 >;
+
+type DispatchUnavailablePhase =
+  | "window_acquire"
+  | "executor"
+  | "result_normalize"
+  | "window_release"
+  | "audit_finish";
+
+type DispatchUnavailableClass =
+  | "gateway_rbp_fault"
+  | "abort"
+  | "error"
+  | "unknown";
+
+type GatewayRbpFaultCode =
+  | "auth"
+  | "protocol"
+  | "unsupported"
+  | "unavailable";
+
+const GATEWAY_RBP_FAULT_CODES = new Set<GatewayRbpFaultCode>([
+  "auth",
+  "protocol",
+  "unsupported",
+  "unavailable",
+]);
 
 export type { GatewayInvocationContext } from "./invocationContext.js";
 
@@ -358,15 +392,52 @@ function dispatchUnavailableOutcome(input: {
   readonly toolName: string;
   readonly requestId: string;
   readonly executorReached: boolean;
+  readonly phase: DispatchUnavailablePhase;
+  readonly error: unknown;
 }): GatewayDispatchOutcome {
+  const diagnostic = dispatchUnavailableDiagnostic(input.error);
   return Object.freeze({
     ok: false as const,
     state: "failed" as const,
     toolName: input.toolName,
     requestId: input.requestId,
     executorReached: input.executorReached,
-    error: Object.freeze({ code: "dispatch_unavailable" as const }),
+    error: Object.freeze({
+      code: "dispatch_unavailable" as const,
+      phase: input.phase,
+      class: diagnostic.class,
+      ...(diagnostic.upstreamCode === undefined
+        ? {}
+        : { upstreamCode: diagnostic.upstreamCode }),
+    }),
   });
+}
+
+function dispatchUnavailableDiagnostic(error: unknown): Readonly<{
+  readonly class: DispatchUnavailableClass;
+  readonly upstreamCode?: GatewayRbpFaultCode;
+}> {
+  if (error instanceof GatewayRbpFault) {
+    return Object.freeze({
+      class: "gateway_rbp_fault",
+      ...(GATEWAY_RBP_FAULT_CODES.has(error.code)
+        ? { upstreamCode: error.code }
+        : {}),
+    });
+  }
+  // A DOMException numeric code is the platform type signal. Deliberately do
+  // not classify by Error.name or arbitrary object fields.
+  if (
+    typeof DOMException !== "undefined" &&
+    error instanceof DOMException &&
+    error.code === DOMException.ABORT_ERR
+  ) {
+    return Object.freeze({ class: "abort" });
+  }
+  if (error instanceof Error) {
+    return Object.freeze({ class: "error" });
+  }
+  return Object.freeze({ class: "unknown" });
 }
 
 function normalizeExecutorOutcome(input: {
@@ -2327,12 +2398,8 @@ export class GatewayDispatcher {
     // This is deliberately the only broad normalization boundary for the
     // non-mutating dispatcher. Route/authentication/authority failures above,
     // durable mutation paths, and north resource delivery remain outside it.
-    let phase:
-      | "context"
-      | "policy"
-      | "executor_resolution"
-      | "serialized_execution"
-      | "executor_execution" = "context";
+    let phase: DispatchUnavailablePhase = "window_acquire";
+    let failurePhase: DispatchUnavailablePhase | null = null;
     let executorReached = false;
     try {
       let context: GatewayInvocationContext;
@@ -2376,7 +2443,6 @@ export class GatewayDispatcher {
         });
       }
 
-      phase = "policy";
     if (tool.policyClass !== "auto") {
       const outcome: GatewayDispatchOutcome = {
         ok: false,
@@ -2398,7 +2464,6 @@ export class GatewayDispatcher {
       });
     }
 
-      phase = "executor_resolution";
     const executor = this.#executors.get(tool.executor);
     if (executor === undefined) {
       const outcome: GatewayDispatchOutcome = {
@@ -2421,9 +2486,10 @@ export class GatewayDispatcher {
       });
     }
 
-      phase = "serialized_execution";
+      phase = "window_acquire";
       return await this.#serialize(context.rsid, async () => {
       const recovery = this.#recoveryAuthority;
+      phase = "window_acquire";
       const window = await recovery.acquireInvocationWindow({
         tenantId: auth.actor.tenantId,
         rsid: context.rsid,
@@ -2458,7 +2524,8 @@ export class GatewayDispatcher {
                     message: window.message,
                   },
         };
-        return this.#finish(outcome, {
+        phase = "audit_finish";
+        return await this.#finish(outcome, {
           ...auditBase,
           route,
           tool,
@@ -2469,8 +2536,7 @@ export class GatewayDispatcher {
       }
 
       try {
-        let outcome: GatewayDispatchOutcome;
-        phase = "executor_execution";
+        phase = "executor";
         executorReached = true;
         const executorOutcome: unknown = await runWithGatewayInvocationContext(
           context,
@@ -2485,14 +2551,16 @@ export class GatewayDispatcher {
               context,
             }),
         );
-        outcome = normalizeExecutorOutcome({
+        phase = "result_normalize";
+        const outcome: GatewayDispatchOutcome = normalizeExecutorOutcome({
           tool,
           requestId: invocationId,
           executorOutcome,
           threw: false,
         });
 
-        return this.#finish(outcome, {
+        phase = "audit_finish";
+        return await this.#finish(outcome, {
           ...auditBase,
           route,
           tool,
@@ -2500,19 +2568,24 @@ export class GatewayDispatcher {
           authority,
           executorReached: true,
         });
+      } catch (error) {
+        failurePhase ??= phase;
+        throw error;
       } finally {
-        await recovery.releaseInvocationWindow({
-          tenantId: auth.actor.tenantId,
-          rsid: context.rsid,
-          attemptId,
-        });
+        phase = "window_release";
+        try {
+          await recovery.releaseInvocationWindow({
+            tenantId: auth.actor.tenantId,
+            rsid: context.rsid,
+            attemptId,
+          });
+        } catch (error) {
+          failurePhase ??= phase;
+          throw error;
+        }
       }
     });
     } catch (error) {
-      // Keep phase strictly internal: executorReached says only that the
-      // execution boundary was entered, never that a terminal result exists.
-      void error;
-      void phase;
       if (authority.mutating) {
         throw error;
       }
@@ -2520,6 +2593,8 @@ export class GatewayDispatcher {
         toolName: input.toolName,
         requestId: invocationId,
         executorReached,
+        phase: failurePhase ?? phase,
+        error,
       });
     }
   }

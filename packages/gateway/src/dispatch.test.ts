@@ -29,6 +29,7 @@ import {
   type GatewayExecutorOutcome,
   type GatewayExecutorRequest,
 } from "./dispatch.js";
+import { GatewayRbpFault } from "./bridgeSession.js";
 import {
   GATEWAY_CONFIRMATION_AUDIT_NAMESPACE,
   GatewayConfirmationAuthority,
@@ -998,12 +999,12 @@ describe("GatewayDispatcher fail-closed boundaries", () => {
   });
 
   it.each([
-    ["Error", () => new Error("read-executor-secret")],
-    ["cancellation", () => new DOMException("cancelled", "AbortError")],
-    ["unknown", () => Object.freeze({ private: "read-executor-secret" })],
+    ["Error", () => new Error("read-executor-secret"), "error"],
+    ["cancellation", () => new DOMException("cancelled", "AbortError"), "abort"],
+    ["unknown", () => Object.freeze({ private: "read-executor-secret" }), "unknown"],
   ] as const)(
     "normalizes a read executor %s without leaking it",
-    async (_kind, createThrown) => {
+    async (_kind, createThrown, errorClass) => {
       const harness = createDispatcher({
         execute: async () => {
           throw createThrown();
@@ -1019,7 +1020,7 @@ describe("GatewayDispatcher fail-closed boundaries", () => {
         toolName: autoRecord.name,
         requestId: "invocation-1",
         executorReached: true,
-        error: { code: "dispatch_unavailable" },
+        error: { code: "dispatch_unavailable", phase: "executor", class: errorClass },
       });
       expect(JSON.stringify(outcome)).not.toContain("read-executor-secret");
       expect(harness.executionCount()).toBe(1);
@@ -1047,10 +1048,56 @@ describe("GatewayDispatcher fail-closed boundaries", () => {
       toolName: autoRecord.name,
       requestId: "invocation-1",
       executorReached: false,
-      error: { code: "dispatch_unavailable" },
+      error: { code: "dispatch_unavailable", phase: "window_acquire", class: "error" },
     });
     expect(JSON.stringify(outcome)).not.toContain("read-window-secret");
     expect(harness.executionCount()).toBe(0);
+  });
+
+  it.each(["auth", "protocol", "unsupported", "unavailable"] as const)(
+    "retains only an allowlisted Gateway RBP fault code for a read executor",
+    async (upstreamCode) => {
+      const harness = createDispatcher({
+        execute: async () => {
+          throw new GatewayRbpFault(upstreamCode, "must-not-leak", 503, 1011);
+        },
+      });
+      const outcome = await harness.dispatcher.dispatch(
+        dispatchInput({ value: "ready" }),
+      );
+      expect(outcome).toEqual({
+        ok: false,
+        state: "failed",
+        toolName: autoRecord.name,
+        requestId: "invocation-1",
+        executorReached: true,
+        error: {
+          code: "dispatch_unavailable",
+          phase: "executor",
+          class: "gateway_rbp_fault",
+          upstreamCode,
+        },
+      });
+      expect(JSON.stringify(outcome)).not.toContain("must-not-leak");
+    },
+  );
+
+  it("does not classify an arbitrary Error name or code as an RBP fault", async () => {
+    const thrown = Object.assign(new Error("must-not-leak"), {
+      name: "GatewayRbpFault",
+      code: "protocol",
+    });
+    const harness = createDispatcher({
+      execute: async () => { throw thrown; },
+    });
+    await expect(harness.dispatcher.dispatch(dispatchInput({ value: "ready" })))
+      .resolves.toMatchObject({
+        error: {
+          code: "dispatch_unavailable",
+          phase: "executor",
+          class: "error",
+        },
+      });
   });
 
   it("normalizes a read failure after Bridge contact without treating contact as terminal", async () => {
@@ -1074,7 +1121,7 @@ describe("GatewayDispatcher fail-closed boundaries", () => {
       toolName: autoRecord.name,
       requestId: "invocation-1",
       executorReached: true,
-      error: { code: "dispatch_unavailable" },
+      error: { code: "dispatch_unavailable", phase: "window_release", class: "error" },
     });
     expect(JSON.stringify(outcome)).not.toContain("read-release-secret");
     expect(harness.executionCount()).toBe(1);

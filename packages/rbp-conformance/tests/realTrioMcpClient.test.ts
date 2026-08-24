@@ -201,6 +201,79 @@ describe("strict real-trio Streamable HTTP MCP client", () => {
     } } satisfies Partial<RealTrioNorthToolResultError>);
   });
 
+  it.each([
+    ["structured", (diagnostic: Readonly<Record<string, unknown>>) => ({ structuredContent: diagnostic })],
+    ["fallback", (diagnostic: Readonly<Record<string, unknown>>) => ({
+      content: [{ type: "text", text: JSON.stringify(diagnostic) }],
+    })],
+  ] as const)("retains the same fixed read-only dispatch diagnostic from %s content", async (_source, encode) => {
+    const diagnostic = Object.freeze({
+      state: "failed",
+      error: Object.freeze({
+        code: "dispatch_unavailable",
+        phase: "executor",
+        class: "gateway_rbp_fault",
+        upstreamCode: "unavailable",
+      }),
+    });
+    const server = await testServer({ toolCallResult: {
+      isError: true,
+      ...encode(diagnostic),
+    } });
+    await expect(withRealTrioNorthMcpClient({ ...server, credential }, async (client) =>
+      await client.toolCall({ name: "core.ui.state", arguments: {}, requestId: `read-phase-${_source}` }),
+    )).rejects.toMatchObject({ evidence: {
+      diagnostic: {
+        nestedErrorCodePresent: true,
+        phasePresent: true,
+        classPresent: true,
+        upstreamCodePresent: true,
+        nestedErrorCode: "dispatch_unavailable",
+        phase: "executor",
+        class: "gateway_rbp_fault",
+        upstreamCode: "unavailable",
+      },
+    } } satisfies Partial<RealTrioNorthToolResultError>);
+  });
+
+  it("redacts malformed read-only dispatch diagnostic values without retaining arbitrary fields", async () => {
+    const secret = "must-not-retain";
+    const server = await testServer({ toolCallResult: {
+      isError: true,
+      structuredContent: {
+        error: {
+          code: "dispatch_unavailable",
+          phase: `executor-${secret}`,
+          class: "GatewayRbpFault",
+          upstreamCode: "injected",
+          message: secret,
+          route: secret,
+          args: { secret },
+        },
+      },
+    } });
+    try {
+      await withRealTrioNorthMcpClient({ ...server, credential }, async (client) =>
+        await client.toolCall({ name: "core.ui.state", arguments: {}, requestId: "read-phase-redact" }),
+      );
+      throw new Error("expected MCP tool result rejection");
+    } catch (error) {
+      expect(error).toBeInstanceOf(RealTrioNorthToolResultError);
+      const evidence = (error as RealTrioNorthToolResultError).evidence;
+      expect(evidence.diagnostic).toMatchObject({
+        phasePresent: true,
+        classPresent: true,
+        upstreamCodePresent: true,
+        phase: "unclassified",
+        class: "unclassified",
+        upstreamCode: "unclassified",
+      });
+      expect(JSON.stringify(evidence)).not.toContain(secret);
+      expect(JSON.stringify(evidence)).not.toContain("route");
+      expect(JSON.stringify(evidence)).not.toContain("args");
+    }
+  });
+
   it("keeps post-dispatch delivery diagnostics allowlisted while isError remains fatal", async () => {
     const server = await testServer({ toolCallResult: {
       isError: true,

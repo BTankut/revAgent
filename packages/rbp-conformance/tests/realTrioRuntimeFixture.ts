@@ -584,11 +584,19 @@ export interface RealTrioMcpToolResultFailure {
     readonly reasonPresent: boolean;
     readonly codePresent: boolean;
     readonly errorCodePresent: boolean;
+    readonly nestedErrorCodePresent: boolean;
+    readonly phasePresent: boolean;
+    readonly classPresent: boolean;
+    readonly upstreamCodePresent: boolean;
     readonly deliveryOutcomePresent: boolean;
     readonly state: string | null;
     readonly reason: string | null;
     readonly code: string | null;
     readonly errorCode: string | null;
+    readonly nestedErrorCode: string | null;
+    readonly phase: string | null;
+    readonly class: string | null;
+    readonly upstreamCode: string | null;
     readonly deliveryOutcome: string | null;
   }>;
 }
@@ -639,11 +647,19 @@ function copyMcpToolResultFailure(
       reasonPresent: diagnostic.reasonPresent,
       codePresent: diagnostic.codePresent,
       errorCodePresent: diagnostic.errorCodePresent,
+      nestedErrorCodePresent: diagnostic.nestedErrorCodePresent,
+      phasePresent: diagnostic.phasePresent,
+      classPresent: diagnostic.classPresent,
+      upstreamCodePresent: diagnostic.upstreamCodePresent,
       deliveryOutcomePresent: diagnostic.deliveryOutcomePresent,
       state: diagnostic.state,
       reason: diagnostic.reason,
       code: diagnostic.code,
       errorCode: diagnostic.errorCode,
+      nestedErrorCode: diagnostic.nestedErrorCode,
+      phase: diagnostic.phase,
+      class: diagnostic.class,
+      upstreamCode: diagnostic.upstreamCode,
       deliveryOutcome: diagnostic.deliveryOutcome,
     }),
   });

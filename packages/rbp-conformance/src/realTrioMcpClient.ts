@@ -11,7 +11,17 @@ const SAFE_TOOL_DIAGNOSTIC_ENUMS = new Set([
   "completed", "failed", "guarded", "indeterminate", "unknown",
   "result_delivery_unavailable", "journal_indeterminate", "delivered",
   "not_delivered", "pending", "unavailable", "post_dispatch",
-  "not_reclassified",
+  "not_reclassified", "dispatch_unavailable",
+]);
+const DISPATCH_UNAVAILABLE_PHASES = new Set([
+  "window_acquire", "executor", "result_normalize", "window_release",
+  "audit_finish",
+]);
+const DISPATCH_UNAVAILABLE_CLASSES = new Set([
+  "gateway_rbp_fault", "abort", "error", "unknown",
+]);
+const GATEWAY_RBP_FAULT_CODES = new Set([
+  "auth", "protocol", "unsupported", "unavailable",
 ]);
 
 export interface RealTrioNorthCredential {
@@ -77,6 +87,9 @@ export interface RealTrioNorthToolResultEvidence {
     readonly codePresent: boolean;
     readonly errorCodePresent: boolean;
     readonly nestedErrorCodePresent: boolean;
+    readonly phasePresent: boolean;
+    readonly classPresent: boolean;
+    readonly upstreamCodePresent: boolean;
     readonly deliveryOutcomePresent: boolean;
     readonly deliveryPhasePresent: boolean;
     readonly mutationDispositionPresent: boolean;
@@ -85,6 +98,9 @@ export interface RealTrioNorthToolResultEvidence {
     readonly code: string | null;
     readonly errorCode: string | null;
     readonly nestedErrorCode: string | null;
+    readonly phase: string | null;
+    readonly class: string | null;
+    readonly upstreamCode: string | null;
     readonly deliveryOutcome: string | null;
     readonly deliveryPhase: string | null;
     readonly mutationDisposition: string | null;
@@ -352,6 +368,24 @@ function boundedDiagnosticEnum(value: unknown): string {
     ? value : "unclassified";
 }
 
+function boundedDiagnosticDispatchPhase(value: unknown): string {
+  return typeof value === "string" && DISPATCH_UNAVAILABLE_PHASES.has(value)
+    ? value
+    : "unclassified";
+}
+
+function boundedDiagnosticDispatchClass(value: unknown): string {
+  return typeof value === "string" && DISPATCH_UNAVAILABLE_CLASSES.has(value)
+    ? value
+    : "unclassified";
+}
+
+function boundedDiagnosticGatewayRbpFaultCode(value: unknown): string {
+  return typeof value === "string" && GATEWAY_RBP_FAULT_CODES.has(value)
+    ? value
+    : "unclassified";
+}
+
 /**
  * This function intentionally does not compare or trust tool result content:
  * isError was already rejected by strictToolContent. It only classifies a
@@ -390,6 +424,9 @@ function boundedToolDiagnostic(
     codePresent: diagnostic !== null && "code" in diagnostic,
     errorCodePresent: diagnostic !== null && "errorCode" in diagnostic,
     nestedErrorCodePresent: error !== null && "code" in error,
+    phasePresent: error !== null && "phase" in error,
+    classPresent: error !== null && "class" in error,
+    upstreamCodePresent: error !== null && "upstreamCode" in error,
     deliveryOutcomePresent: diagnostic !== null && "deliveryOutcome" in diagnostic,
     deliveryPhasePresent: delivery !== null && "phase" in delivery,
     mutationDispositionPresent: delivery !== null && "mutationDisposition" in delivery,
@@ -398,6 +435,12 @@ function boundedToolDiagnostic(
     code: value("code"),
     errorCode: value("errorCode"),
     nestedErrorCode: error !== null && "code" in error ? boundedDiagnosticEnum(error.code) : null,
+    phase: error !== null && "phase" in error
+      ? boundedDiagnosticDispatchPhase(error.phase) : null,
+    class: error !== null && "class" in error
+      ? boundedDiagnosticDispatchClass(error.class) : null,
+    upstreamCode: error !== null && "upstreamCode" in error
+      ? boundedDiagnosticGatewayRbpFaultCode(error.upstreamCode) : null,
     deliveryOutcome: value("deliveryOutcome"),
     deliveryPhase: delivery !== null && "phase" in delivery
       ? boundedDiagnosticEnum(delivery.phase) : null,
