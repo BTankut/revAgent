@@ -118,6 +118,15 @@ export interface ObjectStorePort {
   }): Promise<
     GatewayPortResult<{ readonly bytes: Uint8Array; readonly contentType: string }>
   >;
+  /**
+   * Optional explicit absence probe.  `null` means the backing store has
+   * positively established not-found; a refusal remains unavailable/unknown.
+   * It is only consumed by C39's authenticated deletion retry path.
+   */
+  getOptional?(input: {
+    readonly tenantId: string;
+    readonly storageKey: string;
+  }): Promise<GatewayPortResult<{ readonly bytes: Uint8Array; readonly contentType: string } | null>>;
   head(input: {
     readonly tenantId: string;
     readonly storageKey: string;
@@ -140,10 +149,13 @@ export interface ProtectedObjectBinding {
   readonly principalKey: string;
   readonly effectiveMcpSessionId: string;
   readonly sessionBindingId: string;
+  readonly sessionBindingVersion: number;
   readonly rsid: string;
   readonly recoveryInvocationId: string;
   readonly originInvocationId: string;
   readonly originResultDigest: string;
+  /** Domain-separated result-ref identity, never the raw origin digest. */
+  readonly resultRefDigest: string;
   readonly bridgeSequence: number;
   readonly chunkIndex: number;
   readonly plainDigest: string;
@@ -158,17 +170,38 @@ export interface ProtectedObjectStorePort {
     readonly ready: boolean;
     readonly reason: "ready" | "unsupported_platform" | "not_configured" | "key_unavailable";
   };
+  /**
+   * Returns the key id that will be used for a new protected object.  C39
+   * persists this before the object write so rotation cannot strand a
+   * crash-window object outside the durable live-key inventory.
+   */
+  activeKid(): Promise<string | null>;
   putProtected(input: {
     readonly storageKey: string;
     readonly contentType: string;
     readonly bytes: Uint8Array;
     readonly binding: ProtectedObjectBinding;
+    /** Recovery durability pins the pre-reserved live key across restart. */
+    readonly kid?: string;
   }): Promise<GatewayPortResult<{ readonly storageKey: string }>>;
   getProtected(input: {
     readonly storageKey: string;
     readonly contentType: string;
     readonly binding: ProtectedObjectBinding;
   }): Promise<GatewayPortResult<{ readonly bytes: Uint8Array; readonly contentType: string }>>;
+  /**
+   * Authenticated ciphertext deletion.  The wrapper verifies the exact
+   * envelope/AAD/plain identity using its own backing store before deletion;
+   * callers never receive an ordinary object-store delete capability.
+   */
+  deleteProtected(input: {
+    readonly storageKey: string;
+    readonly contentType: string;
+    readonly binding: ProtectedObjectBinding;
+    readonly expectedKid: string;
+    /** Exact durable deletion claim; absence is never accepted without it. */
+    readonly deletionClaim: { readonly id: string; readonly version: number };
+  }): Promise<GatewayPortResult<{ readonly state: "deleted" | "missing" }>>;
 }
 
 export function createUnavailableProtocolStore(): GatewayProtocolStore {

@@ -11,7 +11,7 @@ const bytes = Buffer.from("C39 payload that must never reach the backing object 
 const key = Buffer.alloc(32, 7);
 const inventory = { kind: "conformance" as const, async listLiveKids() { return []; } };
 const binding = (overrides: Partial<ProtectedObjectBinding> = {}): ProtectedObjectBinding => ({
-  tenantId: "tenant", userId: "user", principalKey: "tenant:user", effectiveMcpSessionId: "mcp-session", sessionBindingId: "binding", rsid: "rsid", recoveryInvocationId: "018f2d10-1111-7000-8000-111111111111", originInvocationId: "018f2d10-2222-7000-8000-222222222222", originResultDigest: digest(Buffer.from("origin")), bridgeSequence: 4, chunkIndex: 0, plainDigest: digest(bytes), plainLength: bytes.byteLength, purpose: "dispatch_payload_recovery", expiresAtMs: 1_900_000_000_000, ...overrides,
+  tenantId: "tenant", userId: "user", principalKey: "tenant:user", effectiveMcpSessionId: "mcp-session", sessionBindingId: "binding", sessionBindingVersion: 1, rsid: "rsid", recoveryInvocationId: "018f2d10-1111-7000-8000-111111111111", originInvocationId: "018f2d10-2222-7000-8000-222222222222", originResultDigest: digest(Buffer.from("origin")), resultRefDigest: digest(Buffer.from("result-ref")), bridgeSequence: 4, chunkIndex: 0, plainDigest: digest(bytes), plainLength: bytes.byteLength, purpose: "dispatch_payload_recovery", expiresAtMs: 1_900_000_000_000, ...overrides,
 });
 
 class MemoryObjectStore implements ObjectStorePort {
@@ -19,8 +19,9 @@ class MemoryObjectStore implements ObjectStorePort {
   readonly values = new Map<string, { bytes: Uint8Array; contentType: string }>();
   async put(input: { tenantId: string; storageKey: string; bytes: Uint8Array; contentType: string }): Promise<GatewayPortResult<{ storageKey: string }>> { this.values.set(`${input.tenantId}/${input.storageKey}`, { bytes: Buffer.from(input.bytes), contentType: input.contentType }); return { ok: true, value: { storageKey: input.storageKey } }; }
   async get(input: { tenantId: string; storageKey: string }): Promise<GatewayPortResult<{ bytes: Uint8Array; contentType: string }>> { const value = this.values.get(`${input.tenantId}/${input.storageKey}`); return value === undefined ? { ok: false, port: "object_store", code: "unavailable", message: "missing" } : { ok: true, value: { bytes: Buffer.from(value.bytes), contentType: value.contentType } }; }
+  async getOptional(input: { tenantId: string; storageKey: string }): Promise<GatewayPortResult<{ bytes: Uint8Array; contentType: string } | null>> { const value = this.values.get(`${input.tenantId}/${input.storageKey}`); return { ok: true, value: value === undefined ? null : { bytes: Buffer.from(value.bytes), contentType: value.contentType } }; }
   async head(input: { tenantId: string; storageKey: string }): Promise<GatewayPortResult<{ byteSize: number }>> { const result = await this.get(input); return result.ok ? { ok: true, value: { byteSize: result.value.bytes.byteLength } } : result; }
-  async delete(): Promise<GatewayPortResult<void>> { return { ok: true, value: undefined }; }
+  async delete(input: { tenantId: string; storageKey: string }): Promise<GatewayPortResult<void>> { this.values.delete(`${input.tenantId}/${input.storageKey}`); return { ok: true, value: undefined }; }
 }
 
 describe("C39 protected object encryption", () => {
@@ -72,5 +73,36 @@ describe("C39 protected object encryption", () => {
     expect(result).toMatchObject({ ok: false });
     expect(randomCalls).toBe(0);
     expect(inner.values.size).toBe(0);
+  });
+
+  it("rejects raw-origin digest reuse as a result-reference/AAD identity", async () => {
+    const inner = new MemoryObjectStore();
+    const subject = new EncryptedProtectedObjectStore(inner, new ConformanceProtectedObjectKeyProvider("k1", new Map([["k1", key]]), inventory));
+    const rawOrigin = digest(Buffer.from("origin"));
+    await expect(subject.putProtected({ storageKey: digest(bytes), contentType: "application/json", bytes, binding: binding({ originResultDigest: rawOrigin, resultRefDigest: rawOrigin }) })).resolves.toMatchObject({ ok: false });
+    expect(inner.values.size).toBe(0);
+  });
+
+  it("authenticates the exact protected envelope before deleting from its own backend", async () => {
+    const inner = new MemoryObjectStore();
+    const subject = new EncryptedProtectedObjectStore(inner, new ConformanceProtectedObjectKeyProvider("k1", new Map([["k1", key]]), inventory));
+    const storageKey = digest(bytes);
+    await subject.putProtected({ storageKey, contentType: "application/json", bytes, binding: binding(), kid: "k1" });
+    const deletionClaim = Object.freeze({ id: "delete-claim", version: 2 });
+    await expect(subject.deleteProtected({ storageKey, contentType: "application/json", binding: binding(), expectedKid: "wrong", deletionClaim })).resolves.toMatchObject({ ok: false });
+    expect(inner.values.size).toBe(1);
+    await expect(subject.deleteProtected({ storageKey, contentType: "application/json", binding: binding(), expectedKid: "k1", deletionClaim })).resolves.toMatchObject({ ok: true, value: { state: "deleted" } });
+    expect(inner.values.size).toBe(0);
+    await expect(subject.deleteProtected({ storageKey, contentType: "application/json", binding: binding(), expectedKid: "k1", deletionClaim })).resolves.toMatchObject({ ok: true, value: { state: "missing" } });
+  });
+
+  it("does not collapse an unavailable optional probe into claimed missing", async () => {
+    const inner = new MemoryObjectStore();
+    const subject = new EncryptedProtectedObjectStore(inner, new ConformanceProtectedObjectKeyProvider("k1", new Map([["k1", key]]), inventory));
+    const storageKey = digest(bytes);
+    await subject.putProtected({ storageKey, contentType: "application/json", bytes, binding: binding(), kid: "k1" });
+    inner.getOptional = async () => ({ ok: false as const, port: "object_store" as const, code: "unavailable" as const, message: "backend unavailable" });
+    await expect(subject.deleteProtected({ storageKey, contentType: "application/json", binding: binding(), expectedKid: "k1", deletionClaim: { id: "delete-claim", version: 2 } })).resolves.toMatchObject({ ok: false });
+    expect(inner.values.size).toBe(1);
   });
 });

@@ -11,7 +11,8 @@ import {
 import type { AuthContext } from "./authContext.js";
 import type { GatewayJsonValue } from "./dispatch.js";
 import type { EffectiveMcpRequestScopeV1 } from "./invocationContext.js";
-import type { GatewayProtocolStore, ObjectStorePort, StoreTransaction } from "./store.js";
+import type { GatewayProtocolStore, ObjectStorePort, ProtectedObjectBinding, ProtectedObjectStorePort, StoreTransaction } from "./store.js";
+import type { ProtectedObjectLiveKeyInventoryPort } from "./protectedObjectKeyProvider.js";
 
 const RESOURCE_NAMESPACE = "gateway_resource_v1";
 /** DC-10 durable carrier state.  These are deliberately separate from the
@@ -23,6 +24,8 @@ const RESOURCE_SET_MEMBER_NAMESPACE = "gateway.resource-set-member/v1";
 const CARRIER_ACK_NAMESPACE = "gateway.carrier-ack/v1";
 const CARRIER_IDENTITY_NAMESPACE = "gateway.carrier-identity/v1";
 const CARRIER_TERMINAL_NAMESPACE = "gateway.carrier-terminal/v1";
+const RECOVERY_CHUNK_NAMESPACE = "gateway.recovery-chunk/v1";
+const RECOVERY_COMPLETION_NAMESPACE = "gateway.recovery-completion/v1";
 const SHA256_PATTERN = /^sha256:[0-9a-f]{64}$/u;
 const SHA256_HEX_PATTERN = /^[0-9a-f]{64}$/u;
 const SHA256_HEX_SENTINEL = "0".repeat(64);
@@ -90,7 +93,7 @@ interface ResourceRecordBase {
    * Earlier v1 rows predate this field and are treated as active for a
    * backwards-compatible, one-way import.
    */
-  readonly lifecycle?: "allocating" | "assembling" | "verified" | "active" | "gc_claimed";
+  readonly lifecycle?: "allocating" | "assembling" | "verified" | "active" | "gc_claimed" | "deleting";
   readonly gcLease?: {
     readonly owner: string;
     readonly claimToken: string;
@@ -121,6 +124,8 @@ interface ResultRecord extends ResourceRecordBase {
   readonly pageSize: number;
   readonly pageCount: number;
   readonly storageKey: string;
+  /** Present only for C39 encrypted omitted-payload recovery results. */
+  readonly protectedRecovery?: RecoveryProtectedRef;
 }
 
 type ResourceRecord = ArtifactRecord | ResultRecord;
@@ -189,6 +194,88 @@ export interface GatewayResourceAuthorityOptions {
   readonly defaultTtlMs?: number;
   /** Deterministic owner for bounded, fenced expiry collection. */
   readonly gcOwnerId?: string;
+  /** C39 is disabled unless both the cryptographic store and reauth fence are supplied. */
+  readonly protectedObjectStore?: ProtectedObjectStorePort;
+  /** Must return the currently bound session identity/version, or null. */
+  readonly reauthorizeRecoveryScope?: (input: RecoveryOwner) => Promise<RecoveryCurrentAuthorization | null> | RecoveryCurrentAuthorization | null;
+}
+
+export interface RecoveryOwner {
+  readonly tenantId: string;
+  readonly userId: string;
+  readonly principalKey: string;
+  readonly effectiveMcpSessionId: string;
+  readonly sessionBindingId: string;
+  readonly sessionBindingVersion: number;
+  readonly rsid: string;
+  readonly recoveryInvocationId: string;
+  readonly originInvocationId: string;
+  readonly originResultDigest: `sha256:${string}`;
+}
+
+export interface RecoveryCurrentAuthorization {
+  readonly sessionBindingId: string;
+  readonly sessionBindingVersion: number;
+}
+
+export interface StageRecoveryChunkInput {
+  readonly scope: GatewayResourceScope;
+  readonly effectiveMcpRequestScope: EffectiveMcpRequestScopeV1;
+  readonly owner: RecoveryOwner;
+  readonly bridgeSequence: number;
+  readonly chunkIndex: number;
+  /** Canonical base64 only; recovery never accepts a JSON object here. */
+  readonly data: string;
+  readonly contentType: "application/json";
+  readonly expiresAtMs?: number;
+}
+
+export interface FinalizeRecoveryResultInput {
+  readonly scope: GatewayResourceScope;
+  readonly effectiveMcpRequestScope: EffectiveMcpRequestScopeV1;
+  readonly owner: RecoveryOwner;
+  readonly terminalChunkCount: number;
+  readonly terminalByteLength: number;
+  readonly expiresAtMs?: number;
+}
+
+interface RecoveryProtectedRef {
+  readonly schemaVersion: "revagent-gateway-recovery/v1";
+  readonly owner: RecoveryOwner;
+  readonly kid: string;
+  readonly storageKey: string;
+  readonly plainDigest: `sha256:${string}`;
+  readonly resultRefDigest: `sha256:${string}`;
+  readonly plainLength: number;
+  readonly bridgeSequence: number;
+  readonly chunkIndex: number;
+  readonly activatedSessionBindingId?: string;
+  readonly activatedSessionBindingVersion?: number;
+}
+
+interface RecoveryChunkRecord {
+  readonly schemaVersion: "revagent-gateway-recovery/v1";
+  readonly state: "writing" | "active" | "deleting";
+  readonly owner: RecoveryOwner;
+  readonly bridgeSequence: number;
+  readonly chunkIndex: number;
+  readonly kid: string;
+  readonly storageKey: string;
+  readonly plainDigest: `sha256:${string}`;
+  readonly resultRefDigest: `sha256:${string}`;
+  readonly plainLength: number;
+  readonly expiresAtMs: number;
+  readonly deletionClaim?: { readonly id: string; readonly version: number };
+}
+
+interface RecoveryCompletionRecord {
+  readonly schemaVersion: "revagent-gateway-recovery/v1";
+  readonly state: "writing" | "active";
+  readonly owner: RecoveryOwner;
+  readonly refId: string;
+  readonly expiresAtMs: number;
+  readonly activatedSessionBindingId?: string;
+  readonly activatedSessionBindingVersion?: number;
 }
 
 export interface GatewayResourceGcResult {
@@ -451,12 +538,13 @@ function asJsonRecord(value: unknown): ResourceRecord | null {
     record.lifecycle !== "assembling" &&
     record.lifecycle !== "verified" &&
     record.lifecycle !== "active" &&
-    record.lifecycle !== "gc_claimed"
+    record.lifecycle !== "gc_claimed" &&
+    record.lifecycle !== "deleting"
   ) {
     return null;
   }
   if (record.gcLease !== undefined && (
-    record.lifecycle !== "gc_claimed" ||
+    (record.lifecycle !== "gc_claimed" && record.lifecycle !== "deleting") ||
     typeof record.gcLease.owner !== "string" ||
     record.gcLease.owner.length < 1 ||
     typeof record.gcLease.claimToken !== "string" ||
@@ -511,7 +599,102 @@ function asJsonRecord(value: unknown): ResourceRecord | null {
   ) {
     return null;
   }
+  if (result.protectedRecovery !== undefined && !validRecoveryProtectedRef(result.protectedRecovery)) {
+    return null;
+  }
   return record as ResultRecord;
+}
+
+function validRecoveryOwner(value: unknown): value is RecoveryOwner {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const owner = value as Partial<RecoveryOwner>;
+  return typeof owner.tenantId === "string" && typeof owner.userId === "string" && typeof owner.principalKey === "string" && typeof owner.effectiveMcpSessionId === "string" && typeof owner.sessionBindingId === "string" && Number.isSafeInteger(owner.sessionBindingVersion) && owner.sessionBindingVersion! >= 1 && typeof owner.rsid === "string" && typeof owner.recoveryInvocationId === "string" && typeof owner.originInvocationId === "string" && typeof owner.originResultDigest === "string" && owner.tenantId.length > 0 && owner.userId.length > 0 && owner.principalKey.length > 0 && owner.effectiveMcpSessionId.length > 0 && owner.sessionBindingId.length > 0 && owner.rsid.length > 0 && UUID_V7_PATTERN.test(owner.recoveryInvocationId) && UUID_V7_PATTERN.test(owner.originInvocationId) && SHA256_PATTERN.test(owner.originResultDigest);
+}
+
+function sameRecoveryOwner(left: RecoveryOwner, right: RecoveryOwner): boolean {
+  return left.tenantId === right.tenantId && left.userId === right.userId && left.principalKey === right.principalKey && left.effectiveMcpSessionId === right.effectiveMcpSessionId && left.sessionBindingId === right.sessionBindingId && left.sessionBindingVersion === right.sessionBindingVersion && left.rsid === right.rsid && left.recoveryInvocationId === right.recoveryInvocationId && left.originInvocationId === right.originInvocationId && left.originResultDigest === right.originResultDigest;
+}
+
+function validRecoveryProtectedRef(value: unknown): value is RecoveryProtectedRef {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const record = value as Partial<RecoveryProtectedRef>;
+  return record.schemaVersion === "revagent-gateway-recovery/v1" && validRecoveryOwner(record.owner) && typeof record.kid === "string" && /^[A-Za-z0-9._-]{1,64}$/u.test(record.kid) && typeof record.storageKey === "string" && SHA256_PATTERN.test(record.storageKey) && typeof record.plainDigest === "string" && SHA256_PATTERN.test(record.plainDigest) && typeof record.resultRefDigest === "string" && SHA256_PATTERN.test(record.resultRefDigest) && record.plainDigest !== record.resultRefDigest && Number.isSafeInteger(record.plainLength) && record.plainLength! >= 0 && Number.isSafeInteger(record.bridgeSequence) && record.bridgeSequence! >= 0 && Number.isSafeInteger(record.chunkIndex) && record.chunkIndex! >= 0 && ((record.activatedSessionBindingId === undefined && record.activatedSessionBindingVersion === undefined) || (typeof record.activatedSessionBindingId === "string" && record.activatedSessionBindingId.length > 0 && Number.isSafeInteger(record.activatedSessionBindingVersion) && record.activatedSessionBindingVersion! >= 1));
+}
+
+function asRecoveryChunk(value: unknown): RecoveryChunkRecord | null {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Partial<RecoveryChunkRecord>;
+  if (record.schemaVersion !== "revagent-gateway-recovery/v1" || (record.state !== "writing" && record.state !== "active" && record.state !== "deleting") || !validRecoveryOwner(record.owner) || typeof record.kid !== "string" || !/^[A-Za-z0-9._-]{1,64}$/u.test(record.kid) || typeof record.storageKey !== "string" || !SHA256_PATTERN.test(record.storageKey) || typeof record.plainDigest !== "string" || !SHA256_PATTERN.test(record.plainDigest) || typeof record.resultRefDigest !== "string" || !SHA256_PATTERN.test(record.resultRefDigest) || record.resultRefDigest === record.plainDigest || !Number.isSafeInteger(record.plainLength) || record.plainLength! < 0 || record.plainLength! > 1_048_576 || !Number.isSafeInteger(record.bridgeSequence) || record.bridgeSequence! < 0 || !Number.isSafeInteger(record.chunkIndex) || record.chunkIndex! < 0 || !Number.isSafeInteger(record.expiresAtMs) || record.expiresAtMs! < 1 || ((record.state === "deleting") !== (record.deletionClaim !== undefined)) || (record.deletionClaim !== undefined && (!/^[A-Za-z0-9._:-]{1,256}$/u.test(record.deletionClaim.id) || !Number.isSafeInteger(record.deletionClaim.version) || record.deletionClaim.version < 1))) return null;
+  return record as RecoveryChunkRecord;
+}
+
+function asRecoveryCompletion(value: unknown): RecoveryCompletionRecord | null {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Partial<RecoveryCompletionRecord>;
+  return record.schemaVersion === "revagent-gateway-recovery/v1" && (record.state === "writing" || record.state === "active") && validRecoveryOwner(record.owner) && typeof record.refId === "string" && record.refId.length > 0 && record.refId.length <= 200 && !/[\u0000\r\n/\\]/u.test(record.refId) && Number.isSafeInteger(record.expiresAtMs) && record.expiresAtMs! > 0 && ((record.state === "writing" && record.activatedSessionBindingId === undefined && record.activatedSessionBindingVersion === undefined) || (record.state === "active" && record.activatedSessionBindingId === record.owner.sessionBindingId && record.activatedSessionBindingVersion === record.owner.sessionBindingVersion)) ? record as RecoveryCompletionRecord : null;
+}
+
+function sameRecoveryChunk(record: RecoveryChunkRecord, owner: RecoveryOwner, sequence: number, index: number, digest: string, length: number): boolean {
+  return sameRecoveryOwner(record.owner, owner) && record.bridgeSequence === sequence && record.chunkIndex === index && record.plainDigest === digest && record.plainLength === length;
+}
+
+function decodeRecoveryChunk(data: string): Uint8Array {
+  if (typeof data !== "string" || data.length === 0 || data.length > 1_398_104) fail("protocol_fault", "recovery chunk is invalid");
+  const bytes = Buffer.from(data, "base64");
+  try {
+    if (bytes.byteLength > 1_048_576 || bytes.toString("base64") !== data) fail("protocol_fault", "recovery chunk is invalid");
+    return new Uint8Array(bytes);
+  } finally { bytes.fill(0); }
+}
+
+export function recoveryResultRefDigest(bytes: Uint8Array): `sha256:${string}` {
+  return `sha256:${createHash("sha256").update("revagent/c39-result-ref/v1\0", "utf8").update(bytes).digest("hex")}`;
+}
+
+function recoveryBinding(owner: RecoveryOwner, bridgeSequence: number, chunkIndex: number, plainDigest: `sha256:${string}`, resultRefDigest: `sha256:${string}`, plainLength: number, expiresAtMs: number): ProtectedObjectBinding {
+  return Object.freeze({ tenantId: owner.tenantId, userId: owner.userId, principalKey: owner.principalKey, effectiveMcpSessionId: owner.effectiveMcpSessionId, sessionBindingId: owner.sessionBindingId, sessionBindingVersion: owner.sessionBindingVersion, rsid: owner.rsid, recoveryInvocationId: owner.recoveryInvocationId, originInvocationId: owner.originInvocationId, originResultDigest: owner.originResultDigest, resultRefDigest, bridgeSequence, chunkIndex, plainDigest, plainLength, purpose: "dispatch_payload_recovery", expiresAtMs });
+}
+
+function recoveryIdentityHash(owner: RecoveryOwner): string { return createHash("sha256").update(JSON.stringify([owner.tenantId, owner.userId, owner.principalKey, owner.effectiveMcpSessionId, owner.sessionBindingId, owner.sessionBindingVersion, owner.rsid, owner.recoveryInvocationId, owner.originInvocationId, owner.originResultDigest])).digest("hex"); }
+function recoveryChunkKey(owner: RecoveryOwner, index: number): string { return `r:${recoveryIdentityHash(owner)}/chunk:${String(index)}`; }
+function recoveryCompletionKey(owner: RecoveryOwner): string { return `r:${recoveryIdentityHash(owner)}/completion`; }
+function recoveryStorageKey(owner: RecoveryOwner, kind: "chunk" | "result", index: number): `sha256:${string}` { return `sha256:${createHash("sha256").update(`revagent.c39/${kind}/${recoveryIdentityHash(owner)}/${String(index)}`).digest("hex")}`; }
+
+/**
+ * The key provider receives no caller-controlled key names.  It derives its
+ * mandatory rotation inventory from durable C39 rows, including crash-window
+ * `writing` objects.  Any inventory uncertainty fails closed as `null`.
+ */
+export class ResourceAuthorityProtectedKeyInventoryPort implements ProtectedObjectLiveKeyInventoryPort {
+  readonly kind = "durable" as const;
+  readonly #store: GatewayProtocolStore;
+  readonly #now: () => number;
+  public constructor(store: GatewayProtocolStore, options: { readonly now?: () => number } = {}) { this.#store = store; this.#now = options.now ?? Date.now; }
+  async listLiveKids(): Promise<readonly string[] | null> {
+    const tenants = await this.#store.startupCoordinator.listTenantIds(10_000);
+    if (!tenants.ok) return null;
+    const kids = new Set<string>();
+    for (const tenantId of tenants.value) {
+      const rows = await this.#store.transact({ tenantId }, async (tx) => ({
+        chunks: await tx.list(RECOVERY_CHUNK_NAMESPACE),
+        refs: await tx.list(RESOURCE_NAMESPACE),
+      }));
+      if (!rows.ok) return null;
+      for (const row of rows.value.chunks) {
+        const chunk = asRecoveryChunk(row.value);
+        if (chunk === null) return null;
+        // A deletion claim still owns ciphertext until the object-store delete
+        // has confirmed; preserve its kid through that final crash window.
+        if (chunk.state === "deleting" || ((chunk.state === "writing" || chunk.state === "active") && chunk.expiresAtMs > this.#now())) kids.add(chunk.kid);
+      }
+      for (const row of rows.value.refs) {
+        const resource = asJsonRecord(row.value);
+        if (resource === null) return null;
+        if (resource.kind === "result_ref" && resource.protectedRecovery !== undefined && ((resource.lifecycle ?? "active") === "deleting" || resource.expiresAtMs > this.#now())) kids.add(resource.protectedRecovery.kid);
+      }
+    }
+    return Object.freeze([...kids].sort());
+  }
 }
 
 function scopeHash(value: string): string {
@@ -752,6 +935,8 @@ export class GatewayResourceAuthority {
   readonly #defaultTtlMs: number;
   readonly #gcOwnerId: string;
   readonly #scopeUriComparisonObserver: ScopedUriComparisonObserver | undefined;
+  readonly #protectedObjectStore: ProtectedObjectStorePort | undefined;
+  readonly #reauthorizeRecoveryScope: ((input: RecoveryOwner) => Promise<RecoveryCurrentAuthorization | null> | RecoveryCurrentAuthorization | null) | undefined;
 
   public constructor(options: GatewayResourceAuthorityOptions) {
     this.#protocolStore = options.protocolStore;
@@ -763,6 +948,8 @@ export class GatewayResourceAuthority {
     this.#maxResultPageBytes = options.maxResultPageBytes ?? 512 * 1024;
     this.#defaultTtlMs = options.defaultTtlMs ?? 15 * 60 * 1_000;
     this.#gcOwnerId = options.gcOwnerId ?? `gateway-resource-gc:${randomUUID()}`;
+    this.#protectedObjectStore = options.protectedObjectStore;
+    this.#reauthorizeRecoveryScope = options.reauthorizeRecoveryScope;
     const observer = Object.getOwnPropertyDescriptor(
       options,
       TEST_SCOPE_URI_COMPARISON_OBSERVER,
@@ -782,6 +969,100 @@ export class GatewayResourceAuthority {
     if (this.#gcOwnerId.length < 1 || this.#gcOwnerId.length > 512 || /[\u0000\r\n]/u.test(this.#gcOwnerId)) {
       throw new RangeError("gcOwnerId must be a bounded non-empty string");
     }
+  }
+
+  /**
+   * Stages one omitted-payload receipt.  It is intentionally not a generic
+   * object upload: the caller presents the complete recovery owner tuple and
+   * a strictly ordered bridge receipt.  No URI or plaintext is returned.
+   */
+  public async stageRecoveryChunk(input: StageRecoveryChunkInput): Promise<void> {
+    assertScope(input.scope);
+    assertEffectiveScope(input.scope, input.effectiveMcpRequestScope);
+    this.#assertRecoveryOwner(input.scope, input.owner);
+    const protectedStore = this.#recoveryStore();
+    if (input.contentType !== "application/json" || !Number.isSafeInteger(input.bridgeSequence) || input.bridgeSequence < 0 || !Number.isSafeInteger(input.chunkIndex) || input.chunkIndex < 0) {
+      fail("protocol_fault", "recovery chunk identity is invalid");
+    }
+    const bytes = decodeRecoveryChunk(input.data);
+    try {
+    const expiresAtMs = this.#recoveryExpiry(input.expiresAtMs);
+    const key = recoveryChunkKey(input.owner, input.chunkIndex);
+    const storageKey = recoveryStorageKey(input.owner, "chunk", input.chunkIndex);
+    const digest = sha256(bytes);
+    const existing = await this.#protocolStore.transact({ tenantId: input.scope.tenantId }, (tx) => tx.read<GatewayJsonValue>(RECOVERY_CHUNK_NAMESPACE, key));
+    if (!existing.ok) fail("storage_unavailable", "recovery receipt unavailable");
+    const previous = asRecoveryChunk(existing.value?.value);
+    if (previous !== null) {
+      if (!sameRecoveryChunk(previous, input.owner, input.bridgeSequence, input.chunkIndex, digest, bytes.byteLength) || previous.expiresAtMs !== expiresAtMs) {
+        fail("not_found", "recovery receipt unavailable");
+      }
+      if (previous.state === "active") return;
+      await this.#writeProtectedRecoveryChunk(input.scope, protectedStore, previous, bytes);
+      return;
+    }
+    if (input.chunkIndex > 0) {
+      const prior = await this.#protocolStore.transact({ tenantId: input.scope.tenantId }, (tx) => tx.read<GatewayJsonValue>(RECOVERY_CHUNK_NAMESPACE, recoveryChunkKey(input.owner, input.chunkIndex - 1)));
+      const priorRecord = prior.ok ? asRecoveryChunk(prior.value?.value) : null;
+      if (priorRecord === null || priorRecord.state !== "active" || priorRecord.bridgeSequence >= input.bridgeSequence) fail("not_found", "recovery receipt unavailable");
+    }
+    const kid = await protectedStore.activeKid();
+    if (kid === null) fail("storage_unavailable", "recovery key is unavailable");
+    const record: RecoveryChunkRecord = Object.freeze({ schemaVersion: "revagent-gateway-recovery/v1", state: "writing", owner: input.owner, bridgeSequence: input.bridgeSequence, chunkIndex: input.chunkIndex, kid, storageKey, plainDigest: digest, resultRefDigest: recoveryResultRefDigest(bytes), plainLength: bytes.byteLength, expiresAtMs });
+    const reserved = await this.#protocolStore.transact({ tenantId: input.scope.tenantId }, (tx) => {
+      tx.stage({ namespace: RECOVERY_CHUNK_NAMESPACE, key, value: record as unknown as GatewayJsonValue, expect: { kind: "absent" } });
+    });
+    if (reserved.ok) {
+      await this.#writeProtectedRecoveryChunk(input.scope, protectedStore, record, bytes);
+      return;
+    }
+    // A CAS loser never reports a transient write as failure without reading
+    // the exact durable receipt: identical callers join the same lifecycle.
+    const joined = await this.#protocolStore.transact({ tenantId: input.scope.tenantId }, (tx) => tx.read<GatewayJsonValue>(RECOVERY_CHUNK_NAMESPACE, key));
+    const winner = joined.ok ? asRecoveryChunk(joined.value?.value) : null;
+    if (winner === null || !sameRecoveryChunk(winner, input.owner, input.bridgeSequence, input.chunkIndex, digest, bytes.byteLength) || winner.expiresAtMs !== expiresAtMs) fail("not_found", "recovery receipt unavailable");
+    if (winner.state !== "active") await this.#writeProtectedRecoveryChunk(input.scope, protectedStore, winner, bytes);
+    } finally { bytes.fill(0); }
+  }
+
+  /**
+   * Produces a normal scoped result_ref only after all receipts are durable,
+   * decryptable, exact-digest verified, and reauthorized at the post-stream
+   * boundary.  It returns reference metadata only.
+   */
+  public async finalizeRecoveryResultRef(input: FinalizeRecoveryResultInput): Promise<GatewayResultRef> {
+    assertScope(input.scope); assertEffectiveScope(input.scope, input.effectiveMcpRequestScope);
+    this.#assertRecoveryOwner(input.scope, input.owner);
+    const protectedStore = this.#recoveryStore();
+    if (!Number.isSafeInteger(input.terminalChunkCount) || input.terminalChunkCount < 1 || !Number.isSafeInteger(input.terminalByteLength) || input.terminalByteLength < 0 || input.terminalByteLength > this.#maxResultBytes) fail("protocol_fault", "recovery terminal is invalid");
+    const chunks = await this.#loadRecoveryChunks(input.scope, input.owner, input.terminalChunkCount);
+    // A recovered ref can never outlive any of its raw receipts; the terminal
+    // caller may shorten but cannot extend that bounded lifetime.
+    const expiry = Math.min(this.#recoveryExpiry(input.expiresAtMs), ...chunks.map((chunk) => chunk.expiresAtMs));
+    const completionKey = recoveryCompletionKey(input.owner);
+    const prior = await this.#protocolStore.transact({ tenantId: input.scope.tenantId }, (tx) => tx.read<GatewayJsonValue>(RECOVERY_COMPLETION_NAMESPACE, completionKey));
+    if (!prior.ok) fail("storage_unavailable", "recovery completion unavailable");
+    const previous = asRecoveryCompletion(prior.value?.value);
+    if (previous !== null) {
+      if (!sameRecoveryOwner(previous.owner, input.owner) || previous.expiresAtMs !== expiry) fail("not_found", "recovery completion unavailable");
+      if (previous.state === "active") return this.#deliverRecoveryResultRef(input.scope, input.owner, previous.refId);
+      return this.#resumeRecoveryFinalize(input, protectedStore, previous);
+    }
+    const bytes = await this.#readRecoveryBytes(input.scope, protectedStore, chunks);
+    try {
+      if (bytes.byteLength !== input.terminalByteLength || sha256(bytes) !== input.owner.originResultDigest) fail("not_found", "recovery terminal unavailable");
+      const refId = this.#validatedRefId();
+      const completion: RecoveryCompletionRecord = Object.freeze({ schemaVersion: "revagent-gateway-recovery/v1", state: "writing", owner: input.owner, refId, expiresAtMs: expiry });
+      const stored = await this.#protocolStore.transact({ tenantId: input.scope.tenantId }, (tx) => {
+        tx.stage({ namespace: RECOVERY_COMPLETION_NAMESPACE, key: completionKey, value: completion as unknown as GatewayJsonValue, expect: { kind: "absent" } });
+      });
+      if (stored.ok) return await this.#resumeRecoveryFinalize(input, protectedStore, completion, bytes);
+      const joined = await this.#protocolStore.transact({ tenantId: input.scope.tenantId }, (tx) => tx.read<GatewayJsonValue>(RECOVERY_COMPLETION_NAMESPACE, completionKey));
+      const winner = joined.ok ? asRecoveryCompletion(joined.value?.value) : null;
+      if (winner === null || !sameRecoveryOwner(winner.owner, input.owner) || winner.expiresAtMs !== expiry) fail("not_found", "recovery completion unavailable");
+      if (winner.state === "active") return this.#deliverRecoveryResultRef(input.scope, input.owner, winner.refId);
+      return await this.#resumeRecoveryFinalize(input, protectedStore, winner, bytes);
+    } finally { bytes.fill(0); }
   }
 
   /**
@@ -1092,17 +1373,21 @@ export class GatewayResourceAuthority {
       fail("not_found", "result_ref page was not found");
     }
     const allBytes = await this.#verifiedBytes(scope, record);
-    const start = parsed.page * record.pageSize;
-    const bytes = allBytes.slice(start, Math.min(start + record.pageSize, allBytes.byteLength));
-    return Object.freeze({
-      uri: resultUri(scope, record.refId, parsed.page),
-      contentType: record.contentType,
-      bytes,
-      digest: sha256(bytes),
-      nextPageUri: parsed.page + 1 < record.pageCount
-        ? resultUri(scope, record.refId, parsed.page + 1)
-        : null,
-    });
+    try {
+      const start = parsed.page * record.pageSize;
+      // `slice` makes the page the caller-owned transfer buffer; the complete
+      // protected result is wiped before this method returns.
+      const bytes = new Uint8Array(allBytes.subarray(start, Math.min(start + record.pageSize, allBytes.byteLength)));
+      return Object.freeze({
+        uri: resultUri(scope, record.refId, parsed.page),
+        contentType: record.contentType,
+        bytes,
+        digest: sha256(bytes),
+        nextPageUri: parsed.page + 1 < record.pageCount
+          ? resultUri(scope, record.refId, parsed.page + 1)
+          : null,
+      });
+    } finally { allBytes.fill(0); }
   }
 
   /**
@@ -1133,10 +1418,9 @@ export class GatewayResourceAuthority {
       const claim = await this.#claimExpired(input.tenantId, candidate.key, candidate.version, now);
       if (claim === null) { retained += 1; continue; }
       claimed += 1;
-      const removed = await this.#objectStore.delete({
-        tenantId: input.tenantId,
-        storageKey: claim.record.storageKey,
-      });
+      const removed = claim.record.kind === "result_ref" && claim.record.protectedRecovery !== undefined
+        ? await this.#deleteProtectedRecoveryObject(claim.record.protectedRecovery, claim.record.expiresAtMs, Object.freeze({ id: claim.record.gcLease!.claimToken, version: claim.version }))
+        : await this.#objectStore.delete({ tenantId: input.tenantId, storageKey: claim.record.storageKey });
       // Object stores must make delete retry/not-found success. A non-success
       // response is deliberately retained for retry rather than losing the
       // metadata proof while bytes may still exist.
@@ -1147,7 +1431,7 @@ export class GatewayResourceAuthority {
         const currentRecord = asJsonRecord(current.value);
         if (
           currentRecord === null ||
-          currentRecord.lifecycle !== "gc_claimed" ||
+          (currentRecord.lifecycle !== "gc_claimed" && currentRecord.lifecycle !== "deleting") ||
           currentRecord.gcLease?.owner !== this.#gcOwnerId ||
           currentRecord.gcLease.claimToken !== claim.record.gcLease?.claimToken ||
           currentRecord.gcLease.expiresAtMs !== claim.record.gcLease?.expiresAtMs
@@ -1158,8 +1442,63 @@ export class GatewayResourceAuthority {
       if (!finalized.ok || !finalized.value) { retained += 1; continue; }
       deleted += 1;
     }
-    const carrier = await this.#collectExpiredCarrierSets(input.tenantId, Math.max(0, limit - candidates.value.length), now);
-    return Object.freeze({ scanned: candidates.value.length + carrier.scanned, claimed: claimed + carrier.claimed, deleted: deleted + carrier.deleted, retained: retained + carrier.retained });
+    const remaining = Math.max(0, limit - candidates.value.length);
+    const carrier = await this.#collectExpiredCarrierSets(input.tenantId, remaining, now);
+    const recovery = await this.#collectExpiredRecovery(input.tenantId, Math.max(0, remaining - carrier.scanned), now);
+    return Object.freeze({ scanned: candidates.value.length + carrier.scanned + recovery.scanned, claimed: claimed + carrier.claimed + recovery.claimed, deleted: deleted + carrier.deleted + recovery.deleted, retained: retained + carrier.retained + recovery.retained });
+  }
+
+  /** C39 cleanup has no replay path: delete encrypted bytes before removing a
+   * terminally expired private receipt, then remove its completion marker. */
+  async #collectExpiredRecovery(tenantId: string, limit: number, now: number): Promise<GatewayResourceGcResult> {
+    if (limit < 1) return Object.freeze({ scanned: 0, claimed: 0, deleted: 0, retained: 0 });
+    const listed = await this.#protocolStore.transact({ tenantId }, async (tx) => (await tx.list(RECOVERY_CHUNK_NAMESPACE)).map((row) => ({ row, record: asRecoveryChunk(row.value) })).filter((item) => item.record !== null && item.record.expiresAtMs <= now).slice(0, Math.min(100, limit)));
+    if (!listed.ok) fail("storage_unavailable", "recovery GC unavailable");
+    let claimed = 0; let deleted = 0; let retained = 0;
+    for (const item of listed.value) {
+      const record = item.record!;
+      if (record.state === "active") {
+        const completion = await this.#protocolStore.transact({ tenantId }, (tx) => tx.read<GatewayJsonValue>(RECOVERY_COMPLETION_NAMESPACE, recoveryCompletionKey(record.owner)));
+        const terminal = completion.ok ? asRecoveryCompletion(completion.value?.value) : null;
+        // A terminal in progress owns its active receipts for restart.  Once
+        // active, resource GC has already fenced the public ref before this
+        // private-chunk collector can remove the ciphertext.
+        if (terminal !== null && terminal.state !== "active") { retained += 1; continue; }
+      }
+      const claim = await this.#protocolStore.transact({ tenantId }, async (tx): Promise<RecoveryChunkRecord | null> => {
+        const current = await tx.read<GatewayJsonValue>(RECOVERY_CHUNK_NAMESPACE, item.row.key);
+        const candidate = asRecoveryChunk(current?.value);
+        if (current === null || candidate === null || candidate.expiresAtMs > now) return null;
+        if (candidate.state === "deleting") return candidate;
+        const deleting: RecoveryChunkRecord = Object.freeze({ ...candidate, state: "deleting", deletionClaim: Object.freeze({ id: randomUUID(), version: current.version + 1 }) });
+        tx.stage({ namespace: RECOVERY_CHUNK_NAMESPACE, key: current.key, value: deleting as unknown as GatewayJsonValue, expect: { kind: "version", version: current.version } });
+        return deleting;
+      });
+      if (!claim.ok || claim.value === null) { retained += 1; continue; }
+      claimed += 1;
+      const removed = await this.#deleteProtectedRecoveryObject(claim.value, claim.value.expiresAtMs, claim.value.deletionClaim!);
+      // `missing` is idempotent only after this exact row has been CAS-marked
+      // deleting.  Tamper/key/decrypt failures remain opaque non-success.
+      if (!removed.ok) { retained += 1; continue; }
+      const finalized = await this.#protocolStore.transact({ tenantId }, async (tx) => {
+        const current = await tx.read<GatewayJsonValue>(RECOVERY_CHUNK_NAMESPACE, item.row.key);
+        const deleting = asRecoveryChunk(current?.value);
+        if (current === null || deleting?.state !== "deleting" || deleting.deletionClaim?.id !== claim.value!.deletionClaim!.id || deleting.deletionClaim.version !== claim.value!.deletionClaim!.version) return false;
+        tx.stage({ namespace: RECOVERY_CHUNK_NAMESPACE, key: current.key, value: null, expect: { kind: "version", version: current.version } });
+        return true;
+      });
+      if (!finalized.ok || !finalized.value) { retained += 1; continue; }
+      deleted += 1;
+    }
+    const completions = await this.#protocolStore.transact({ tenantId }, async (tx) => {
+      const chunks = (await tx.list(RECOVERY_CHUNK_NAMESPACE)).map((row) => asRecoveryChunk(row.value)).filter((record): record is RecoveryChunkRecord => record !== null);
+      for (const row of await tx.list(RECOVERY_COMPLETION_NAMESPACE)) {
+        const completion = asRecoveryCompletion(row.value);
+        if (completion !== null && completion.expiresAtMs <= now && !chunks.some((chunk) => sameRecoveryOwner(chunk.owner, completion.owner))) tx.stage({ namespace: RECOVERY_COMPLETION_NAMESPACE, key: row.key, value: null, expect: { kind: "version", version: row.version } });
+      }
+    });
+    if (!completions.ok) retained += 1;
+    return Object.freeze({ scanned: listed.value.length, claimed, deleted, retained });
   }
 
   /** Carrier expiry is independently fenced: bytes first, then every private
@@ -1817,6 +2156,21 @@ export class GatewayResourceAuthority {
     scope: GatewayResourceScope,
     record: ArtifactRecord | ResultRecord,
   ): Promise<Uint8Array> {
+    if (record.kind === "result_ref" && record.protectedRecovery !== undefined) {
+      const protectedStore = this.#recoveryStore();
+      const recovery = record.protectedRecovery;
+      // A resource URI remains insufficient by itself: every read repeats the
+      // live owner/binding decision before decrypting the protected result.
+      const completion = await this.#protocolStore.transact({ tenantId: scope.tenantId }, (tx) => tx.read<GatewayJsonValue>(RECOVERY_COMPLETION_NAMESPACE, recoveryCompletionKey(recovery.owner)));
+      const terminal = completion.ok ? asRecoveryCompletion(completion.value?.value) : null;
+      if (!sameRecoveryOwner(recovery.owner, { ...recovery.owner, tenantId: scope.tenantId, userId: scope.actorId, principalKey: scope.principalKey, effectiveMcpSessionId: scope.mcpSessionId }) || terminal === null || terminal.state !== "active" || terminal.refId !== record.refId || terminal.activatedSessionBindingId !== recovery.owner.sessionBindingId || terminal.activatedSessionBindingVersion !== recovery.owner.sessionBindingVersion || recovery.activatedSessionBindingId !== recovery.owner.sessionBindingId || recovery.activatedSessionBindingVersion !== recovery.owner.sessionBindingVersion || await this.#reauthorize(recovery.owner) === null) {
+        fail("not_found", "resource ref was not found");
+      }
+      const stored = await protectedStore.getProtected({ storageKey: recovery.storageKey, contentType: record.contentType, binding: recoveryBinding(recovery.owner, recovery.bridgeSequence, recovery.chunkIndex, recovery.plainDigest, recovery.resultRefDigest, recovery.plainLength, record.expiresAtMs) });
+      if (!stored.ok || stored.value.bytes.byteLength !== record.byteSize || sha256(stored.value.bytes) !== recovery.plainDigest || recoveryResultRefDigest(stored.value.bytes) !== recovery.resultRefDigest || record.digest !== recovery.resultRefDigest) fail("not_found", "resource ref was not found");
+      // Explicit ownership transfer to the authorized reader/finalizer.
+      return stored.value.bytes;
+    }
     const stored = await this.#objectStore.get({
       tenantId: scope.tenantId,
       storageKey: record.storageKey,
@@ -1860,14 +2214,14 @@ export class GatewayResourceAuthority {
       const record = asJsonRecord(stored.value);
       if (record === null || record.expiresAtMs > now) return null;
       if (
-        record.lifecycle === "gc_claimed" &&
+        (record.lifecycle === "gc_claimed" || record.lifecycle === "deleting") &&
         record.gcLease !== undefined &&
         record.gcLease.expiresAtMs > now &&
         record.gcLease.owner !== this.#gcOwnerId
       ) return null;
       const next = Object.freeze({
         ...record,
-        lifecycle: "gc_claimed" as const,
+        lifecycle: record.kind === "result_ref" && record.protectedRecovery !== undefined ? "deleting" as const : "gc_claimed" as const,
         gcLease: Object.freeze({
           owner: this.#gcOwnerId,
           claimToken: randomUUID(),
@@ -1882,6 +2236,180 @@ export class GatewayResourceAuthority {
     const observed = await this.#protocolStore.transact({ tenantId }, (tx) => tx.read<GatewayJsonValue>(RESOURCE_NAMESPACE, key));
     if (!observed.ok || observed.value === null) return null;
     return { record: claim.value, version: observed.value.version };
+  }
+
+  #recoveryStore(): ProtectedObjectStorePort {
+    if (this.#protectedObjectStore === undefined || this.#reauthorizeRecoveryScope === undefined) {
+      fail("storage_unavailable", "recovery authority is not configured");
+    }
+    return this.#protectedObjectStore;
+  }
+
+  async #deleteProtectedRecoveryObject(
+    record: Pick<RecoveryProtectedRef | RecoveryChunkRecord, "owner" | "kid" | "storageKey" | "plainDigest" | "resultRefDigest" | "plainLength" | "bridgeSequence" | "chunkIndex">,
+    expiresAtMs: number,
+    deletionClaim: { readonly id: string; readonly version: number },
+  ): Promise<{ readonly ok: boolean }> {
+    const removed = await this.#recoveryStore().deleteProtected({
+      storageKey: record.storageKey,
+      contentType: "application/json",
+      expectedKid: record.kid,
+      deletionClaim,
+      binding: recoveryBinding(record.owner, record.bridgeSequence, record.chunkIndex, record.plainDigest, record.resultRefDigest, record.plainLength, expiresAtMs),
+    });
+    return removed.ok ? Object.freeze({ ok: true }) : Object.freeze({ ok: false });
+  }
+
+  #assertRecoveryOwner(scope: GatewayResourceScope, owner: RecoveryOwner): void {
+    if (!validRecoveryOwner(owner) || owner.tenantId !== scope.tenantId || owner.userId !== scope.actorId || owner.principalKey !== scope.principalKey || owner.effectiveMcpSessionId !== scope.mcpSessionId) {
+      fail("scope_denied", "recovery owner is not bound to the current scope");
+    }
+  }
+
+  async #reauthorize(owner: RecoveryOwner): Promise<RecoveryCurrentAuthorization | null> {
+    try {
+      const current = await this.#reauthorizeRecoveryScope!(owner);
+      return current !== null && current.sessionBindingId === owner.sessionBindingId && current.sessionBindingVersion === owner.sessionBindingVersion ? current : null;
+    } catch { return null; }
+  }
+
+  #recoveryExpiry(requested: number | undefined): number {
+    const expiry = this.#expiry(requested);
+    return expiry;
+  }
+
+  async #writeProtectedRecoveryChunk(
+    scope: GatewayResourceScope,
+    protectedStore: ProtectedObjectStorePort,
+    record: RecoveryChunkRecord,
+    bytes: Uint8Array,
+  ): Promise<void> {
+    if (bytes.byteLength !== record.plainLength || sha256(bytes) !== record.plainDigest) fail("not_found", "recovery receipt unavailable");
+    const written = await protectedStore.putProtected({ storageKey: record.storageKey, contentType: "application/json", bytes, kid: record.kid, binding: recoveryBinding(record.owner, record.bridgeSequence, record.chunkIndex, record.plainDigest, record.resultRefDigest, record.plainLength, record.expiresAtMs) });
+    if (!written.ok || written.value.storageKey !== record.storageKey) fail("storage_unavailable", "recovery object was not durably written");
+    const activated = await this.#protocolStore.transact({ tenantId: scope.tenantId }, async (tx) => {
+      const current = await tx.read<GatewayJsonValue>(RECOVERY_CHUNK_NAMESPACE, recoveryChunkKey(record.owner, record.chunkIndex));
+      const candidate = asRecoveryChunk(current?.value);
+      if (current === null || candidate === null || !sameRecoveryChunk(candidate, record.owner, record.bridgeSequence, record.chunkIndex, record.plainDigest, record.plainLength)) return false;
+      if (candidate.state === "active") return true;
+      tx.stage({ namespace: RECOVERY_CHUNK_NAMESPACE, key: current.key, value: { ...candidate, state: "active" } as unknown as GatewayJsonValue, expect: { kind: "version", version: current.version } });
+      return true;
+    });
+    if (!activated.ok || !activated.value) fail("storage_unavailable", "recovery receipt was not activated");
+  }
+
+  async #loadRecoveryChunks(scope: GatewayResourceScope, owner: RecoveryOwner, count: number): Promise<readonly RecoveryChunkRecord[]> {
+    const loaded = await this.#protocolStore.transact({ tenantId: scope.tenantId }, async (tx) => {
+      const values: RecoveryChunkRecord[] = [];
+      let total = 0;
+      let previousSequence = -1;
+      for (let index = 0; index < count; index += 1) {
+        const current = asRecoveryChunk((await tx.read<GatewayJsonValue>(RECOVERY_CHUNK_NAMESPACE, recoveryChunkKey(owner, index)))?.value);
+        if (current === null || current.state !== "active" || !sameRecoveryOwner(current.owner, owner) || current.chunkIndex !== index || current.bridgeSequence <= previousSequence) return null;
+        total += current.plainLength;
+        if (total > this.#maxResultBytes) return null;
+        previousSequence = current.bridgeSequence;
+        values.push(current);
+      }
+      return Object.freeze(values);
+    });
+    if (!loaded.ok || loaded.value === null) fail("not_found", "recovery terminal unavailable");
+    return loaded.value;
+  }
+
+  async #readRecoveryBytes(scope: GatewayResourceScope, protectedStore: ProtectedObjectStorePort, chunks: readonly RecoveryChunkRecord[]): Promise<Uint8Array> {
+    const pieces: Uint8Array[] = [];
+    let total = 0;
+    try {
+      for (const chunk of chunks) {
+        const recovered = await protectedStore.getProtected({ storageKey: chunk.storageKey, contentType: "application/json", binding: recoveryBinding(chunk.owner, chunk.bridgeSequence, chunk.chunkIndex, chunk.plainDigest, chunk.resultRefDigest, chunk.plainLength, chunk.expiresAtMs) });
+        if (!recovered.ok || recovered.value.contentType !== "application/json" || recovered.value.bytes.byteLength !== chunk.plainLength || sha256(recovered.value.bytes) !== chunk.plainDigest) {
+          if (recovered.ok) recovered.value.bytes.fill(0);
+          fail("not_found", "recovery terminal unavailable");
+        }
+        total += recovered.value.bytes.byteLength;
+        if (total > this.#maxResultBytes) { recovered.value.bytes.fill(0); fail("oversize", "recovery terminal exceeds configured limit"); }
+        const piece = new Uint8Array(recovered.value.bytes);
+        recovered.value.bytes.fill(0);
+        pieces.push(piece);
+      }
+      const result = new Uint8Array(total);
+      let offset = 0;
+      for (const piece of pieces) { result.set(piece, offset); offset += piece.byteLength; }
+      return result;
+    } finally { for (const piece of pieces) piece.fill(0); }
+  }
+
+  async #resumeRecoveryFinalize(input: FinalizeRecoveryResultInput, protectedStore: ProtectedObjectStorePort, completion: RecoveryCompletionRecord, knownBytes?: Uint8Array): Promise<GatewayResultRef> {
+    const chunks = knownBytes === undefined ? await this.#loadRecoveryChunks(input.scope, input.owner, input.terminalChunkCount) : [];
+    const bytes = knownBytes ?? await this.#readRecoveryBytes(input.scope, protectedStore, chunks);
+    try {
+      if (bytes.byteLength !== input.terminalByteLength || sha256(bytes) !== input.owner.originResultDigest) fail("not_found", "recovery terminal unavailable");
+      const existing = await this.#protocolStore.transact({ tenantId: input.scope.tenantId }, (tx) => tx.read<GatewayJsonValue>(RESOURCE_NAMESPACE, recordKey(input.scope, "result_ref", completion.refId)));
+      if (!existing.ok) fail("storage_unavailable", "recovery result unavailable");
+      let record = asJsonRecord(existing.value?.value);
+      if (record !== null && (record.kind !== "result_ref" || record.protectedRecovery === undefined || !sameRecoveryOwner(record.protectedRecovery.owner, input.owner))) fail("not_found", "recovery result unavailable");
+      if (record === null) {
+        const kid = await protectedStore.activeKid();
+        if (kid === null) fail("storage_unavailable", "recovery key is unavailable");
+        const protectedRecovery: RecoveryProtectedRef = Object.freeze({ schemaVersion: "revagent-gateway-recovery/v1", owner: input.owner, kid, storageKey: recoveryStorageKey(input.owner, "result", 0), plainDigest: input.owner.originResultDigest, resultRefDigest: recoveryResultRefDigest(bytes), plainLength: bytes.byteLength, bridgeSequence: chunks.at(-1)?.bridgeSequence ?? input.terminalChunkCount - 1, chunkIndex: input.terminalChunkCount });
+        const next: ResultRecord = Object.freeze({ schemaVersion: "revagent-gateway-resource/v1", kind: "result_ref", refId: completion.refId, actorId: input.scope.actorId, principalKey: input.scope.principalKey, mcpSessionId: input.scope.mcpSessionId, createdAtMs: this.#now(), expiresAtMs: completion.expiresAtMs, contentType: "application/json", byteSize: bytes.byteLength, digest: protectedRecovery.resultRefDigest, pageSize: this.#maxResultPageBytes, pageCount: Math.max(1, Math.ceil(bytes.byteLength / this.#maxResultPageBytes)), storageKey: protectedRecovery.storageKey, lifecycle: "allocating", protectedRecovery });
+        const reserved = await this.#writeRecords(input.scope, [next]);
+        if (reserved) record = next;
+        else {
+          const joined = await this.#protocolStore.transact({ tenantId: input.scope.tenantId }, (tx) => tx.read<GatewayJsonValue>(RESOURCE_NAMESPACE, recordKey(input.scope, "result_ref", completion.refId)));
+          const winner = joined.ok ? asJsonRecord(joined.value?.value) : null;
+          if (winner === null || winner.kind !== "result_ref" || winner.protectedRecovery === undefined || !sameRecoveryOwner(winner.protectedRecovery.owner, input.owner) || winner.protectedRecovery.resultRefDigest !== recoveryResultRefDigest(bytes)) fail("not_found", "recovery result unavailable");
+          record = winner;
+        }
+      }
+      if ((record.lifecycle ?? "active") !== "active") {
+        const protectedRecovery = record.protectedRecovery!;
+        const written = await protectedStore.putProtected({ storageKey: protectedRecovery.storageKey, contentType: "application/json", bytes, kid: protectedRecovery.kid, binding: recoveryBinding(protectedRecovery.owner, protectedRecovery.bridgeSequence, protectedRecovery.chunkIndex, protectedRecovery.plainDigest, protectedRecovery.resultRefDigest, protectedRecovery.plainLength, record.expiresAtMs) });
+        if (!written.ok || written.value.storageKey !== protectedRecovery.storageKey) fail("storage_unavailable", "recovery result was not written");
+      }
+      // This is the post-stream authorization fence: encrypted bytes may
+      // exist, but they remain unreadable until this current binding is CASed.
+      const authorization = await this.#reauthorize(input.owner);
+      if (authorization === null || !await this.#activateRecoveryResult(input.scope, record, authorization)) fail("scope_denied", "recovery scope is no longer authorized");
+      const completed = await this.#protocolStore.transact({ tenantId: input.scope.tenantId }, async (tx) => {
+        const current = await tx.read<GatewayJsonValue>(RECOVERY_COMPLETION_NAMESPACE, recoveryCompletionKey(input.owner));
+        const candidate = asRecoveryCompletion(current?.value);
+        if (current === null || candidate === null || candidate.refId !== completion.refId || !sameRecoveryOwner(candidate.owner, input.owner)) return false;
+        if (candidate.state === "active") return candidate.activatedSessionBindingId === authorization.sessionBindingId && candidate.activatedSessionBindingVersion === authorization.sessionBindingVersion;
+        tx.stage({ namespace: RECOVERY_COMPLETION_NAMESPACE, key: current.key, value: { ...candidate, state: "active", activatedSessionBindingId: authorization.sessionBindingId, activatedSessionBindingVersion: authorization.sessionBindingVersion } as unknown as GatewayJsonValue, expect: { kind: "version", version: current.version } });
+        return true;
+      });
+      if (!completed.ok || !completed.value) fail("storage_unavailable", "recovery completion was not activated");
+      return this.#deliverRecoveryResultRef(input.scope, input.owner, completion.refId);
+    } finally { if (knownBytes === undefined) bytes.fill(0); }
+  }
+
+  async #recoveryResultRef(scope: GatewayResourceScope, refId: string): Promise<GatewayResultRef> {
+    const record = await this.#readRecord(scope, "result_ref", scopeHash(refId));
+    if (record.kind !== "result_ref" || record.protectedRecovery === undefined) fail("not_found", "recovery result unavailable");
+    return Object.freeze({ kind: "result_ref", refId: record.refId, uri: resultUri(scope, record.refId), contentType: "application/json", byteSize: record.byteSize, digest: record.digest, pageCount: record.pageCount, expiresAtMs: record.expiresAtMs });
+  }
+
+  async #activateRecoveryResult(scope: GatewayResourceScope, record: ResultRecord, authorization: RecoveryCurrentAuthorization): Promise<boolean> {
+    const activated = await this.#protocolStore.transact({ tenantId: scope.tenantId }, async (tx) => {
+      const current = await tx.read<GatewayJsonValue>(RESOURCE_NAMESPACE, recordKey(scope, "result_ref", record.refId));
+      const candidate = asJsonRecord(current?.value);
+      if (current === null || candidate === null || candidate.kind !== "result_ref" || candidate.protectedRecovery === undefined || !sameRecoveryOwner(candidate.protectedRecovery.owner, record.protectedRecovery!.owner)) return false;
+      const currentActivation = candidate.protectedRecovery.activatedSessionBindingId;
+      if ((candidate.lifecycle ?? "active") === "active") return currentActivation === authorization.sessionBindingId && candidate.protectedRecovery.activatedSessionBindingVersion === authorization.sessionBindingVersion;
+      tx.stage({ namespace: RESOURCE_NAMESPACE, key: current.key, value: { ...candidate, lifecycle: "active", protectedRecovery: { ...candidate.protectedRecovery, activatedSessionBindingId: authorization.sessionBindingId, activatedSessionBindingVersion: authorization.sessionBindingVersion } } as unknown as GatewayJsonValue, expect: { kind: "version", version: current.version } });
+      return true;
+    });
+    return activated.ok && activated.value;
+  }
+
+  async #deliverRecoveryResultRef(scope: GatewayResourceScope, owner: RecoveryOwner, refId: string): Promise<GatewayResultRef> {
+    const completion = await this.#protocolStore.transact({ tenantId: scope.tenantId }, (tx) => tx.read<GatewayJsonValue>(RECOVERY_COMPLETION_NAMESPACE, recoveryCompletionKey(owner)));
+    if (!completion.ok) fail("not_found", "recovery result unavailable");
+    const current = asRecoveryCompletion(completion.value?.value);
+    if (current === null || current.state !== "active" || current.refId !== refId || !sameRecoveryOwner(current.owner, owner) || current.activatedSessionBindingId !== owner.sessionBindingId || current.activatedSessionBindingVersion !== owner.sessionBindingVersion || await this.#reauthorize(owner) === null) fail("not_found", "recovery result unavailable");
+    return this.#recoveryResultRef(scope, refId);
   }
 
   #expiry(requested: number | undefined): number {
