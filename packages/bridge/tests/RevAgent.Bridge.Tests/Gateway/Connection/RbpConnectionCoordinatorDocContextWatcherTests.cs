@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Reflection;
 using System.Text;
 using System.Text.Json;
 using RevAgent.Bridge.AddinLoopback;
@@ -120,6 +121,65 @@ public sealed partial class RbpConnectionCoordinatorTests
             transcript,
             StringComparison.Ordinal);
         Assert.DoesNotContain("rs-sensitive", transcript, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task CoordinatorPayloadObservationsFailClosedWithoutChangingWireOrAuthState()
+    {
+        await using var harness = await DocContextHarness.StartAsync(
+            DocContextLocalSession(8091, 1011));
+        await EventuallyAsync(
+            () => harness.SentDocContextUpdates().Length == 1);
+        await EventuallyAsync(() => harness.Observations.Count > 0);
+
+        int wireBefore = harness.SentDocContextUpdates().Length;
+        int callsBefore = harness.Channel.CallCount;
+        int observationsBefore = harness.Observations.Count;
+        using JsonDocument duplicate = JsonDocument.Parse(
+            "{\"outer\":{\"same\":1,\"same\":2}}");
+
+        foreach ((string Stage, string Outcome) in new[]
+                 {
+                     ("queue", "durably_queued"),
+                     ("send", "sent"),
+                     ("failure", "send_deferred"),
+                 })
+        {
+            InvokeCoordinatorObservation(
+                harness.Coordinator,
+                Stage,
+                Outcome,
+                duplicate.RootElement,
+                sequence: 41);
+        }
+
+        await Task.Delay(30);
+        Assert.Equal(observationsBefore, harness.Observations.Count);
+        Assert.Equal(wireBefore, harness.SentDocContextUpdates().Length);
+        Assert.Equal(callsBefore, harness.Channel.CallCount);
+
+        using JsonDocument valid = JsonDocument.Parse("{\"z\":2,\"a\":1}");
+        InvokeCoordinatorObservation(
+            harness.Coordinator,
+            "queue",
+            "durably_queued",
+            valid.RootElement,
+            sequence: 42);
+        await EventuallyAsync(() => harness.Observations.Any(
+            observation => observation.Stage == "queue" &&
+                observation.Outcome == "durably_queued" &&
+                observation.Sequence == 42));
+
+        RbpDocumentContextObservation observed = harness.Observations.Single(
+            observation => observation.Stage == "queue" &&
+                observation.Outcome == "durably_queued" &&
+                observation.Sequence == 42);
+        Assert.Equal(
+            RbpDocumentContextObservation.MakeContextDigest(valid.RootElement),
+            observed.ContextDigest);
+        Assert.NotNull(observed.ContextDigest);
+        Assert.Equal(wireBefore, harness.SentDocContextUpdates().Length);
+        Assert.Equal(callsBefore, harness.Channel.CallCount);
     }
 
     [Fact]
@@ -383,6 +443,31 @@ public sealed partial class RbpConnectionCoordinatorTests
         return JsonDocument.Parse(File.ReadAllBytes(path));
     }
 
+    private static void InvokeCoordinatorObservation(
+        RbpConnectionCoordinator coordinator,
+        string stage,
+        string outcome,
+        JsonElement payload,
+        long sequence)
+    {
+        MethodInfo method = typeof(RbpConnectionCoordinator).GetMethod(
+            "ObserveDocumentContext",
+            BindingFlags.Instance | BindingFlags.NonPublic) ??
+            throw new MissingMethodException(
+                nameof(RbpConnectionCoordinator),
+                "ObserveDocumentContext");
+        _ = method.Invoke(
+            coordinator,
+            new object?[]
+            {
+                stage,
+                outcome,
+                "rs-8091",
+                payload,
+                sequence,
+            });
+    }
+
     /// <summary>
     /// A scripted stand-in for the routed add-in invocation channel. It
     /// records every routed method name so the tests can prove the frozen
@@ -557,6 +642,7 @@ public sealed partial class RbpConnectionCoordinatorTests
             Cycle = cycle;
             Channel = channel;
             Observations = observations;
+            Coordinator = coordinator;
             _run = coordinator.RunAsync(_stop.Token);
         }
 
@@ -569,6 +655,8 @@ public sealed partial class RbpConnectionCoordinatorTests
         internal ScriptedDocContextChannel Channel { get; }
 
         internal ConcurrentQueue<RbpDocumentContextObservation> Observations { get; }
+
+        internal RbpConnectionCoordinator Coordinator { get; }
 
         internal RbpEnvelope[] SentDocContextUpdates() =>
             Cycle.Sent
@@ -626,7 +714,12 @@ public sealed partial class RbpConnectionCoordinatorTests
                 inboundJournal: null,
                 clock,
                 new FixedRandomSource(0),
-                watcher);
+                watcher,
+                onDocumentContextObservation: observation =>
+                {
+                    observations.Enqueue(observation);
+                    return ValueTask.CompletedTask;
+                });
             return new DocContextHarness(
                 directory,
                 store,

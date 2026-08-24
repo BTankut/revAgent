@@ -169,11 +169,26 @@ internal sealed partial class RbpConnectionCoordinator
             return;
         }
 
+        if (!RbpDocumentContextObservation.TryCreate(
+                stage,
+                outcome,
+                rsid,
+                payload,
+                sequence,
+                out RbpDocumentContextObservation? observation) ||
+            observation is null)
+        {
+            // Payload-bearing lifecycle diagnostics are admitted only with a
+            // canonical, domain-separated context digest. This is
+            // diagnostic-only: it does not affect the already chosen queue,
+            // send, retransmission, or authorization behavior.
+            return;
+        }
+
         try
         {
             _ = _onDocumentContextObservation(
-                RbpDocumentContextObservation.Create(
-                    stage, outcome, rsid, payload, sequence))
+                observation)
                 .AsTask().ContinueWith(
                     completed => _ = completed.Exception,
                     CancellationToken.None,
