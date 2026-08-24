@@ -7,6 +7,11 @@ export const REAL_TRIO_NORTH_EVIDENCE_SCHEMA = "rbp-real-trio-north-evidence/v1"
 const MAX_NORTH_RESPONSE_BYTES = 256 * 1024;
 const MAX_FALLBACK_TEXT_BYTES = 64 * 1024;
 const SESSION_ID = /^[-A-Za-z0-9._:]{1,512}$/u;
+const SAFE_TOOL_DIAGNOSTIC_ENUMS = new Set([
+  "completed", "failed", "guarded", "indeterminate", "unknown",
+  "result_delivery_unavailable", "journal_indeterminate", "delivered",
+  "not_delivered", "pending", "unavailable",
+]);
 
 export interface RealTrioNorthCredential {
   readonly bearer: string;
@@ -42,14 +47,43 @@ export interface RealTrioNorthToolResultEvidence {
   readonly httpStatus: number;
   readonly responseBytes: number;
   readonly responseSha256: `sha256:${string}`;
-  readonly resultKeySet: readonly string[] | null;
+  /** Fixed result-shape presence bits; arbitrary result keys are never retained. */
+  readonly resultKeyPresence: Readonly<{
+    readonly isError: boolean;
+    readonly structuredContent: boolean;
+    readonly content: boolean;
+  }> | null;
   readonly isError: boolean | null;
   readonly contentCount: number | null;
   readonly contentItems: readonly Readonly<{
-    readonly type: string | null;
+    readonly type: "text" | "other" | null;
     readonly textUtf8Bytes: number | null;
     readonly textSha256: `sha256:${string}` | null;
   }>[];
+  /**
+   * Error-only diagnostic classification. Values are allowlisted enum strings
+   * or `unclassified`; no error message, arbitrary key, or tool payload is
+   * retained. These observations never turn an isError result into success.
+   */
+  readonly diagnostic: Readonly<{
+    readonly source: "structured_content" | "fallback_text" | "none";
+    readonly structuredContentPresent: boolean;
+    readonly structuredContentObject: boolean;
+    readonly fallbackTextPresent: boolean;
+    readonly fallbackTextObject: boolean;
+    readonly statePresent: boolean;
+    readonly reasonPresent: boolean;
+    readonly codePresent: boolean;
+    readonly errorCodePresent: boolean;
+    readonly nestedErrorCodePresent: boolean;
+    readonly deliveryOutcomePresent: boolean;
+    readonly state: string | null;
+    readonly reason: string | null;
+    readonly code: string | null;
+    readonly errorCode: string | null;
+    readonly nestedErrorCode: string | null;
+    readonly deliveryOutcome: string | null;
+  }>;
 }
 
 export class RealTrioNorthToolResultError extends Error {
@@ -279,21 +313,84 @@ export function boundedToolResultEvidence(
     result = "result" in envelope ? record(envelope.result, "real trio MCP response result") : null;
   } catch { /* malformed envelopes intentionally reduce to null shape evidence */ }
   const content = result !== null && Array.isArray(result.content) ? result.content : null;
+  const diagnostic = boundedToolDiagnostic(result, content);
   return Object.freeze({
     httpStatus: wire.statusCode,
     responseBytes: wire.responseBytes,
     responseSha256: wire.responseSha256,
-    resultKeySet: result === null ? null : Object.freeze(Object.keys(result).sort().slice(0, 64)),
+    resultKeyPresence: result === null ? null : Object.freeze({
+      isError: "isError" in result,
+      structuredContent: "structuredContent" in result,
+      content: "content" in result,
+    }),
     isError: result === null || typeof result.isError !== "boolean" ? null : result.isError,
     contentCount: content === null ? null : content.length,
     contentItems: Object.freeze((content ?? []).slice(0, 8).map((value) => {
       const item = value !== null && typeof value === "object" && !Array.isArray(value)
         ? value as Record<string, unknown> : null;
       const text = item !== null && typeof item.text === "string" ? item.text : null;
-      return Object.freeze({ type: item !== null && typeof item.type === "string" ? item.type : null,
+      return Object.freeze({ type: item === null || typeof item.type !== "string" ? null : item.type === "text" ? "text" : "other",
         textUtf8Bytes: text === null ? null : Buffer.byteLength(text, "utf8"),
         textSha256: text === null ? null : sha256(Buffer.from(text, "utf8")) });
     })),
+    diagnostic,
+  });
+}
+
+function asStrictObject(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown> : null;
+}
+
+function boundedDiagnosticEnum(value: unknown): string {
+  return typeof value === "string" && value.length <= 64 && SAFE_TOOL_DIAGNOSTIC_ENUMS.has(value)
+    ? value : "unclassified";
+}
+
+/**
+ * This function intentionally does not compare or trust tool result content:
+ * isError was already rejected by strictToolContent. It only classifies a
+ * fixed allowlist of fields for failure diagnosis.
+ */
+function boundedToolDiagnostic(
+  result: Record<string, unknown> | null,
+  content: unknown[] | null,
+): RealTrioNorthToolResultEvidence["diagnostic"] {
+  const structuredContentPresent = result !== null && "structuredContent" in result;
+  const structured = structuredContentPresent ? asStrictObject(result!.structuredContent) : null;
+  const fallbackTextPresent = content?.length === 1 && (() => {
+    const item = asStrictObject(content[0]);
+    return item?.type === "text" && typeof item.text === "string" &&
+      item.text.length > 0 && Buffer.byteLength(item.text, "utf8") <= MAX_FALLBACK_TEXT_BYTES;
+  })();
+  let fallback: Record<string, unknown> | null = null;
+  if (fallbackTextPresent) {
+    const text = (content![0] as Record<string, unknown>).text as string;
+    try { fallback = asStrictObject(JSON.parse(text) as unknown); } catch { /* invalid fallback stays unclassified */ }
+  }
+  const source = structured !== null ? "structured_content" : fallback !== null ? "fallback_text" : "none";
+  const diagnostic = structured ?? fallback;
+  const error = diagnostic !== null && "error" in diagnostic ? asStrictObject(diagnostic.error) : null;
+  const value = (key: "state" | "reason" | "code" | "errorCode" | "deliveryOutcome"): string | null =>
+    diagnostic !== null && key in diagnostic ? boundedDiagnosticEnum(diagnostic[key]) : null;
+  return Object.freeze({
+    source,
+    structuredContentPresent,
+    structuredContentObject: structured !== null,
+    fallbackTextPresent: fallbackTextPresent === true,
+    fallbackTextObject: fallback !== null,
+    statePresent: diagnostic !== null && "state" in diagnostic,
+    reasonPresent: diagnostic !== null && "reason" in diagnostic,
+    codePresent: diagnostic !== null && "code" in diagnostic,
+    errorCodePresent: diagnostic !== null && "errorCode" in diagnostic,
+    nestedErrorCodePresent: error !== null && "code" in error,
+    deliveryOutcomePresent: diagnostic !== null && "deliveryOutcome" in diagnostic,
+    state: value("state"),
+    reason: value("reason"),
+    code: value("code"),
+    errorCode: value("errorCode"),
+    nestedErrorCode: error !== null && "code" in error ? boundedDiagnosticEnum(error.code) : null,
+    deliveryOutcome: value("deliveryOutcome"),
   });
 }
 

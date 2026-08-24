@@ -21,6 +21,7 @@ afterEach(async () => { await Promise.all(closers.splice(0).map(async (close) =>
 
 async function testServer(input: {
   readonly mode?: "ok" | "tool_error" | "tool_is_error" | "tool_bad_text";
+  readonly toolCallResult?: Readonly<Record<string, unknown>>;
   readonly initializeSessionHeader?: string;
   readonly notificationSessionHeader?: string;
   readonly emptyResponseMethod?: "initialize" | "notifications/initialized" | "tools/call";
@@ -46,10 +47,10 @@ async function testServer(input: {
           ? { jsonrpc: "2.0", id: body.id, error: { code: -32001, message: "redacted" } }
           : input.mode === "tool_is_error" && method === "tools/call"
             ? { jsonrpc: "2.0", id: body.id, result: { isError: true, content: [{ type: "text", text: "{\"redacted\":true}" }] } }
-            : input.mode === "tool_bad_text" && method === "tools/call"
+          : input.mode === "tool_bad_text" && method === "tools/call"
               ? { jsonrpc: "2.0", id: body.id, result: { content: [{ type: "text", text: "not-json" }] } }
           : { jsonrpc: "2.0", id: body.id, result: method === "tools/call"
-            ? { structuredContent: { state: "completed", requestId: "server-request" } } : {} };
+            ? input.toolCallResult ?? { structuredContent: { state: "completed", requestId: "server-request" } } : {} };
       const empty = method === input.emptyResponseMethod;
       response.writeHead(empty ? input.emptyResponseStatus ?? 204 :
         method === "notifications/initialized" ? input.notificationResponseStatus ?? 200 : 200, {
@@ -141,7 +142,7 @@ describe("strict real-trio Streamable HTTP MCP client", () => {
     const server = await testServer({ mode: "tool_error" });
     await expect(withRealTrioNorthMcpClient({ ...server, credential }, async (client) =>
       await client.toolCall({ name: "core.ui.state", arguments: {}, requestId: "tool-error" }),
-    )).rejects.toMatchObject({ name: "RealTrioNorthMcpError", evidence: expect.objectContaining({ jsonRpcErrorCode: -32001, methodSha256: expect.any(String) }), toolResultEvidence: expect.objectContaining({ resultKeySet: null, contentCount: null }) } satisfies Partial<RealTrioNorthMcpError>);
+    )).rejects.toMatchObject({ name: "RealTrioNorthMcpError", evidence: expect.objectContaining({ jsonRpcErrorCode: -32001, methodSha256: expect.any(String) }), toolResultEvidence: expect.objectContaining({ resultKeyPresence: null, contentCount: null }) } satisfies Partial<RealTrioNorthMcpError>);
   });
 
   it("rejects isError before fallback parsing and retains bounded tool-result evidence", async () => {
@@ -159,8 +160,65 @@ describe("strict real-trio Streamable HTTP MCP client", () => {
     await expect(withRealTrioNorthMcpClient({ ...server, credential }, async (client) =>
       await client.toolCall({ name: "core.ui.state", arguments: {}, requestId: "tool-bad-text" }),
     )).rejects.toMatchObject({ name: "RealTrioNorthToolResultError", evidence: {
-      resultKeySet: ["content"], isError: null, contentCount: 1,
+      resultKeyPresence: { isError: false, structuredContent: false, content: true }, isError: null, contentCount: 1,
       contentItems: [{ type: "text", textUtf8Bytes: 8, textSha256: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u) }],
+    } } satisfies Partial<RealTrioNorthToolResultError>);
+  });
+
+  it("fails closed on isError before fallback parsing while retaining only fixed diagnostic classifications", async () => {
+    const secret = "do-not-retain-".repeat(20);
+    const server = await testServer({ toolCallResult: {
+      isError: true,
+      structuredContent: {
+        state: "completed",
+        reason: "result_delivery_unavailable",
+        code: "journal_indeterminate",
+        errorCode: "unknown",
+        deliveryOutcome: "result_delivery_unavailable",
+        error: { code: "unknown", message: secret, payload: { secret } },
+        message: secret,
+        arbitrary: secret,
+      },
+      // Deliberately invalid text proves the isError path never falls through
+      // to fallback parsing or structured/text equality.
+      content: [{ type: "text", text: "not-json" }],
+    } });
+    await expect(withRealTrioNorthMcpClient({ ...server, credential }, async (client) =>
+      await client.toolCall({ name: "core.ui.state", arguments: {}, requestId: "diagnostic-is-error" }),
+    )).rejects.toMatchObject({ name: "RealTrioNorthToolResultError", evidence: {
+      isError: true,
+      resultKeyPresence: { isError: true, structuredContent: true, content: true },
+      contentCount: 1,
+      diagnostic: {
+        source: "structured_content",
+        structuredContentPresent: true, structuredContentObject: true,
+        fallbackTextPresent: true, fallbackTextObject: false,
+        statePresent: true, reasonPresent: true, codePresent: true, errorCodePresent: true,
+        nestedErrorCodePresent: true, deliveryOutcomePresent: true,
+        state: "completed", reason: "result_delivery_unavailable", code: "journal_indeterminate",
+        errorCode: "unknown", nestedErrorCode: "unknown", deliveryOutcome: "result_delivery_unavailable",
+      },
+    } } satisfies Partial<RealTrioNorthToolResultError>);
+  });
+
+  it("classifies only allowlisted short fallback diagnostic enums and redacts malicious values", async () => {
+    const server = await testServer({ toolCallResult: {
+      isError: true,
+      content: [{ type: "text", text: JSON.stringify({
+        reason: "result_delivery_unavailable", code: "journal_indeterminate", errorCode: "unknown",
+        state: "x".repeat(65), deliveryOutcome: { raw: "not-an-enum" },
+        error: { code: "still-not-an-enum", message: "never-retain" }, message: "never-retain",
+      }) }],
+    } });
+    await expect(withRealTrioNorthMcpClient({ ...server, credential }, async (client) =>
+      await client.toolCall({ name: "core.ui.state", arguments: {}, requestId: "fallback-diagnostic-is-error" }),
+    )).rejects.toMatchObject({ name: "RealTrioNorthToolResultError", evidence: {
+      diagnostic: {
+        source: "fallback_text", structuredContentPresent: false, structuredContentObject: false,
+        fallbackTextPresent: true, fallbackTextObject: true,
+        reason: "result_delivery_unavailable", code: "journal_indeterminate", errorCode: "unknown",
+        state: "unclassified", deliveryOutcome: "unclassified", nestedErrorCode: "unclassified",
+      },
     } } satisfies Partial<RealTrioNorthToolResultError>);
   });
 
