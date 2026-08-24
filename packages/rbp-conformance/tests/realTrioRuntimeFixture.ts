@@ -2084,6 +2084,7 @@ export async function startRealTrioRuntimeFixture(
         let firstSnapshot: RealTrioDocumentContextSnapshot;
         let refreshBaseline: RealTrioGatewayAuditBaseline;
         let refreshSeed: RealTrioPreControlWatcherSeed;
+        let lastBaselineReason = "transition";
         for (;;) {
           const candidateFirstAudit = await readCapturedRealCaseAudit(supervisor, refreshAuditCapture);
           const candidateFirstSnapshot = supervisor.readDocumentContextSnapshot();
@@ -2102,6 +2103,14 @@ export async function startRealTrioRuntimeFixture(
             candidateBaseline?.acceptedObservationOrdinal === undefined && candidateBaseline?.currentIdentity === undefined;
           const current = candidateFirstAudit.documentContextCurrentRoute !== null && candidateSecondAudit.documentContextCurrentRoute !== null &&
             candidateBaseline?.acceptedObservationOrdinal !== undefined && candidateBaseline?.currentIdentity !== undefined;
+          const reason = candidateBaseline === null || secondBaseline === null ? "malformed" :
+            candidateFirstSnapshot.generation !== candidateSecondSnapshot.generation ? "snapshot_generation" :
+            BigInt(candidateSecondSnapshot.highWaterCursor) < BigInt(candidateFirstSnapshot.highWaterCursor) ? "highwater_decrease" :
+            candidateSeed === null ? "seed_missing" :
+            !sameBaseline && candidateBaseline.processEpoch !== secondBaseline.processEpoch ? "audit_epoch" :
+            !sameBaseline && candidateBaseline.currentIdentity !== secondBaseline.currentIdentity ? "current_identity" :
+            !sameBaseline && candidateBaseline.acceptedObservationOrdinal !== secondBaseline.acceptedObservationOrdinal ? "accepted_ordinal" :
+            (!absent && !current) ? "route_shape_mixed" : "rows";
           if (candidateFirstSnapshot.generation === candidateSecondSnapshot.generation &&
               BigInt(candidateSecondSnapshot.highWaterCursor) >= BigInt(candidateFirstSnapshot.highWaterCursor) &&
               sameBaseline && (absent || current) && candidateSeed !== null) {
@@ -2109,7 +2118,8 @@ export async function startRealTrioRuntimeFixture(
             refreshBaseline = candidateBaseline!; refreshSeed = candidateSeed;
             break;
           }
-          if (Date.now() >= deadline) throw new Error("real trio route refresh baseline did not stabilize: transition_or_mismatch");
+          lastBaselineReason = reason;
+          if (Date.now() >= deadline) throw new Error(`real trio route refresh baseline did not stabilize:${lastBaselineReason}`);
           await new Promise<void>((resolve) => setTimeout(resolve, 100));
         }
         /* Stable pair captured above; do not average or mix observations. */
