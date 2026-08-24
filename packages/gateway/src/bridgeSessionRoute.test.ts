@@ -360,10 +360,10 @@ describe("GatewayBridgeSessionAuthority live document routing", () => {
   });
 
   it("D2a accepts capture only through explicit internal fixture policy injection", async () => {
-    const calls: string[] = [];
+    const calls: Array<{ toolName: string; executorMethod: string; mutating: boolean }> = [];
     const policy: ConformanceOriginResendPolicy = {
       kind: "internal_d2b_conformance",
-      allowCapture(input) { calls.push(input.originInvocationId); return true; },
+      allowCapture(input) { calls.push({ toolName: input.toolName, executorMethod: input.executorMethod ?? "", mutating: input.mutating ?? true }); return true; },
       takeResumeRequest() { return null; },
       clear() {},
     };
@@ -378,7 +378,7 @@ describe("GatewayBridgeSessionAuthority live document routing", () => {
     void created.createExecutor().execute({ ...baseRequest, toolName: "conformance.fixture.c39_multifile", args: c39Args, context: { ...baseRequest.context, toolName: "conformance.fixture.c39_multifile", paramsDigest: makeParamsDigest(c39Args as unknown as Parameters<typeof makeParamsDigest>[0]) } });
     await emittedInvoke(session.channel);
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
-    expect(calls).toEqual([invocationId]);
+    expect(calls).toEqual([{ toolName: "conformance.fixture.c39_multifile", executorMethod: "fixture_multi_file_output", mutating: false }]);
   });
 
   it("separates connection and session grants and quarantines unavailable result capabilities", async () => {

@@ -611,9 +611,22 @@ interface D2ConformanceOriginPayload {
  */
 export interface ConformanceOriginResendPolicy {
   readonly kind: "internal_d2b_conformance" | "never";
-  allowCapture(input: Pick<D2ConformanceOriginPayload, "tenantId" | "userId" | "rsid" | "originInvocationId" | "method" | "toolName">): boolean;
+  /** Profile-only decision over server-observed call material; never owner authority. */
+  allowCapture(input: {
+    readonly toolName: "conformance.fixture.c39_multifile";
+    readonly toolVersion?: "1.0.0";
+    readonly executorMethod?: "fixture_multi_file_output";
+    readonly params?: JsonValue;
+    readonly mutating?: false;
+    /** Observed-only provenance; policy cannot return or alter authority. */
+    readonly tenantId: string;
+    readonly userId: string;
+    readonly rsid: string;
+    readonly originInvocationId: string;
+    readonly method: "fixture_multi_file_output";
+  }): boolean;
   /** New D2 lifecycle contract: reading a request must not consume it. */
-  peekResumeRequest?(input: { readonly tenantId: string; readonly userId: string; readonly deviceId: string; readonly seatId: string; readonly rsid: string; readonly sessionBindingId: string }): { readonly originInvocationId: string; readonly originIdempotencyKey: string; readonly principalKey: string; readonly effectiveMcpSessionId: string } | null;
+  peekResumeRequest?(input: { readonly tenantId: string; readonly userId: string; readonly deviceId: string; readonly seatId: string; readonly rsid: string; readonly sessionBindingId: string }): { readonly originInvocationId: string; readonly originIdempotencyKey: string } | null;
   /** Compatibility adapter for pre-lifecycle D2b hosts; removed by the host slice. */
   takeResumeRequest(input: { readonly tenantId: string; readonly userId: string; readonly rsid: string; readonly sessionBindingId: string }): { readonly originInvocationId: string; readonly originIdempotencyKey: string } | null;
   clear(input: { readonly rsid: string; readonly originInvocationId: string }): void;
@@ -7753,7 +7766,18 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       innerPayloadBytes: bytes,
       innerPayloadDigest: digest(bytes.toString("utf8")),
     });
-    if (!this.#d2ConformanceOriginResendPolicy.allowCapture(candidate)) {
+    if (!this.#d2ConformanceOriginResendPolicy.allowCapture({
+      toolName: "conformance.fixture.c39_multifile",
+      toolVersion: "1.0.0",
+      executorMethod: "fixture_multi_file_output",
+      params: input.envelope.payload.params as JsonValue,
+      mutating: false,
+      tenantId: candidate.tenantId,
+      userId: candidate.userId,
+      rsid: candidate.rsid,
+      originInvocationId: candidate.originInvocationId,
+      method: candidate.method,
+    })) {
       bytes.fill(0);
       return;
     }
@@ -7869,9 +7893,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     });
     if (request === undefined || request === null) return;
     const captured = this.#d2ConformancePayloads.get(`${record.rsid}/${request.originInvocationId}`);
-    if (captured === undefined || captured.originIdempotencyKey !== request.originIdempotencyKey ||
-      captured.principalKey !== request.principalKey ||
-      captured.effectiveMcpSessionId !== request.effectiveMcpSessionId) return;
+    if (captured === undefined || captured.originIdempotencyKey !== request.originIdempotencyKey) return;
     await this.#resumeCapturedConformanceOrigin({
       tenantId: captured.tenantId,
       userId: captured.userId,
