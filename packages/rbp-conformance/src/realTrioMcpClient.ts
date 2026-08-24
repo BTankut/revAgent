@@ -127,17 +127,31 @@ function record(value: unknown, label: string): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
-/** Accept exactly one normal JSON response or one SSE data message. */
-function parseWireResponse(bytes: Buffer): unknown {
+/** Accept exactly one bounded JSON response or one terminated SSE data event. */
+export function parseRealTrioWireResponse(bytes: Buffer): unknown {
   if (bytes.byteLength === 0) throw new Error("real trio MCP response is empty");
   const text = bytes.toString("utf8");
-  if (!text.startsWith("event:") && !text.startsWith("data:")) return JSON.parse(text) as unknown;
-  const messages = text.split(/\r?\n/u)
-    .filter((line) => line.startsWith("data:"))
-    .map((line) => line.slice("data:".length).trim())
-    .filter((line) => line.length > 0);
-  if (messages.length !== 1) throw new Error("real trio MCP SSE response must contain exactly one data message");
-  return JSON.parse(messages[0]!) as unknown;
+  if (!text.startsWith("event:") && !text.startsWith("data:") && !text.startsWith(":")) {
+    return JSON.parse(text) as unknown;
+  }
+  const normalized = text.replaceAll("\r\n", "\n");
+  if (!normalized.endsWith("\n\n")) {
+    throw new Error("real trio MCP SSE response is unterminated");
+  }
+  const data: string[] = [];
+  for (const event of normalized.slice(0, -2).split("\n\n")) {
+    if (event.length === 0) throw new Error("real trio MCP SSE response has an empty event");
+    for (const line of event.split("\n")) {
+      if (line.startsWith(":")) continue; // Server-sent keepalive/comment.
+      if (line.startsWith("event:")) continue;
+      if (!line.startsWith("data:")) throw new Error("real trio MCP SSE response has an invalid field");
+      const payload = line.slice("data:".length).trim();
+      if (payload.length === 0) throw new Error("real trio MCP SSE response has an empty data event");
+      data.push(payload);
+    }
+  }
+  if (data.length !== 1) throw new Error("real trio MCP SSE response must contain exactly one data message");
+  return JSON.parse(data[0]!) as unknown;
 }
 
 function jsonRpcErrorCode(value: unknown): number | null {
@@ -539,7 +553,7 @@ async function rawRequest(input: {
           const statusCode = response.statusCode ?? 0;
           assertResponseStatus(input.method, statusCode, bytes.byteLength);
           const responseValue = permitsEmptyNotificationResponse(input.method, statusCode, bytes.byteLength)
-            ? null : parseWireResponse(bytes);
+            ? null : parseRealTrioWireResponse(bytes);
           const evidence = Object.freeze({ schemaVersion: REAL_TRIO_NORTH_EVIDENCE_SCHEMA,
             requestSha256: sha256(payload), responseSha256: sha256(bytes), methodSha256: sha256(Buffer.from(input.method, "utf8")),
             requestBytes: payload.byteLength, responseBytes: bytes.byteLength, statusCode,

@@ -8,6 +8,7 @@ import { createEphemeralLoopbackTlsIdentity } from "../src/ephemeralTlsIdentity.
 import {
   RealTrioNorthMcpError,
   RealTrioNorthToolResultError,
+  parseRealTrioWireResponse,
   parseOmittedPayloadCoordinateCarrier,
   strictToolContent,
   withRealTrioNorthMcpClient,
@@ -72,6 +73,21 @@ async function testServer(input: {
 }
 
 describe("strict real-trio Streamable HTTP MCP client", () => {
+  it("accepts one terminated SSE data event after bounded keepalive comments", () => {
+    expect(parseRealTrioWireResponse(Buffer.from(
+      ': keepalive\n\nevent: message\ndata: {"jsonrpc":"2.0","id":"x","result":{}}\n\n', "utf8",
+    ))).toMatchObject({ jsonrpc: "2.0", id: "x", result: {} });
+  });
+
+  it.each([
+    ': keepalive\ndata: {"jsonrpc":"2.0"}\n',
+    'data: {"jsonrpc":"2.0"}\n\ndata: {"jsonrpc":"2.0"}\n\n',
+    'data:\n\n',
+    'retry: 1\ndata: {"jsonrpc":"2.0"}\n\n',
+  ])("rejects malformed, multiple, or unterminated SSE response %j", (wire) => {
+    expect(() => parseRealTrioWireResponse(Buffer.from(wire, "utf8"))).toThrow();
+  });
+
   it("accepts only the exact C39 omitted-payload coordinate carrier", () => {
     const valid = {
       code: "payload_omitted",
