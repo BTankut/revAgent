@@ -84,7 +84,13 @@ import type {
   GatewayInvocationRoute,
 } from "./invocationContext.js";
 import { createGatewayDispatchProofAuthority } from "./invocationContext.js";
+import {
+  BridgeCarrierTerminalAborted,
+  BRIDGE_CARRIER_COMMIT_OK,
+} from "./resourceAuthority.js";
 import type {
+  BridgeCarrierCommitResult,
+  BridgeCarrierCommitMode,
   GatewayResourceAuthority,
   GatewayResourceScope,
 } from "./resourceAuthority.js";
@@ -9403,15 +9409,81 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     connection: LiveConnection,
     envelope: Extract<RbpEnvelope, { rsid: string; type: "result" }>,
     authorityTicket: TenantAuthorityTicket,
+    admission: TerminalAdmission,
+    mode: BridgeCarrierCommitMode,
     committed: { current: DurableRbpSession | null },
     completion: { current: GatewayExecutorOutcome | null },
-  ): Promise<void> {
+  ): Promise<BridgeCarrierCommitResult> {
+    // Re-read final unregister authority in the *shared* resource Tx-C before
+    // staging any session, ACK, or activation row.  A matching tombstone is a
+    // normal terminal abort; a mismatched tombstone is never attributable to
+    // this carrier and remains an auth failure.
+    const tombstoneStored = await tx.read<GatewayJsonValue>(
+      GATEWAY_RBP_UNREGISTER_NAMESPACE,
+      admission.rsid,
+    );
+    if (tombstoneStored !== null) {
+      const tombstone = parseUnregisterTombstone(tombstoneStored.value, {
+        tenantId: admission.tenantId,
+        rsid: admission.rsid,
+        stored: tombstoneStored,
+      });
+      if (
+        tombstone.sessionBindingId === admission.sessionBindingId &&
+        tombstone.acceptedConnectionId === admission.connectionId
+      ) {
+        return { kind: "aborted", reason: "terminal_revoked" };
+      }
+      throw new Error("carrier terminal tombstone does not match admission");
+    }
+    const preflightStored = await this.#sessionRepository.readAuthoritative(
+      tx,
+      admission.tenantId,
+      admission.rsid,
+    );
+    if (preflightStored === null) throw new Error("carrier terminal session is missing");
+    const preflight = parseStoredSession(preflightStored, admission.tenantId, admission.rsid);
+    const preflightFence = sessionEgressFence(preflight);
+    if (preflightFence.state === "revocation_pending") {
+      if (
+        preflight.sessionBindingId === admission.sessionBindingId &&
+        preflight.connectionId === admission.connectionId
+      ) {
+        return { kind: "aborted", reason: "terminal_revoked" };
+      }
+      throw new Error("carrier terminal revoked session does not match admission");
+    }
+    if (preflightFence.state !== "open") throw new Error("carrier terminal session is not open");
+    if (preflight.pending === null) {
+      const accepted = acceptInboundData(preflight.sequence, envelope as DataEnvelopeSnapshot);
+      const replay = preflight.evidence.some((entry) =>
+        entry.terminalCarrierDigest === admission.terminalCarrierDigest &&
+        entry.terminalDigest === admission.terminalDigest &&
+        sameJson(entry.terminalTruth ?? null, admission.terminalTruth),
+      );
+      if (!replay || accepted.kind !== "duplicate") {
+        throw new Error("carrier terminal no longer matches the active exact dispatch");
+      }
+      committed.current = preflight;
+      completion.current = terminalOutcome(envelope);
+      return BRIDGE_CARRIER_COMMIT_OK;
+    }
+    if (mode === "verify") {
+      throw new Error("carrier activation exists without its exact Bridge terminal");
+    }
+    const preflightAdmission = terminalAdmissionFor(preflight, connection.connectionId, envelope);
+    if (!sameJson(preflightAdmission, admission)) {
+      throw new Error("carrier terminal admission changed before stage C");
+    }
     committed.current = await this.#sessionRepository.stageAuthoritativeOnRaw(
       tx,
       active.tenantId,
       active.rsid,
       (stored, record) => {
         this.#assertAuthorityTicket(authorityTicket, connection, { session: record });
+        if (sessionEgressFence(record).state !== "open") {
+          throw new Error("carrier terminal session was revoked during stage C");
+        }
         const accepted = acceptInboundData(record.sequence, envelope as DataEnvelopeSnapshot);
         if (accepted.kind === "protocol_fault" || accepted.kind === "gap") {
           throw new Error("carrier terminal sequence is not acceptable");
@@ -9420,6 +9492,10 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         const pending = record.pending;
         if (pending === null || pending.invocationId !== envelope.payload.invocation_id) {
           throw new Error("carrier terminal does not match the active invocation");
+        }
+        const currentAdmission = terminalAdmissionFor(record, connection.connectionId, envelope);
+        if (!sameJson(currentAdmission, admission)) {
+          throw new Error("carrier terminal admission changed during stage C");
         }
         const existing = record.evidence.find((candidate) => candidate.envelopeDigest === pending.envelopeDigest);
         const dispatchReceipt = pending.dispatchReceipt ?? null;
@@ -9470,7 +9546,9 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
           envelopeDigest: pending.envelopeDigest,
           acceptance,
           journal,
-          terminalTruth: durableTerminalTruth(envelope),
+          terminalTruth: admission.terminalTruth,
+          terminalDigest: admission.terminalDigest,
+          terminalCarrierDigest: admission.terminalCarrierDigest,
         };
         completion.current = terminalOutcome(envelope);
         return nextSessionRecord(stored, record, {
@@ -9484,6 +9562,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         }, this.#clock());
       },
     );
+    return BRIDGE_CARRIER_COMMIT_OK;
   }
 
   /**
@@ -9767,55 +9846,77 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         throw new GatewayRbpFault("unsupported", "result carrier was not granted", 403, 4403);
       }
       const { scope, effective } = this.#carrierScope(active.record);
+      // Freeze immutable admission and resource scope before Stage C.  Retries
+      // reuse this exact proof; they never rerun the Bridge or mint handles.
+      const admission = terminalAdmissionFor(active.record, connection.connectionId, envelope);
       const committed: { current: DurableRbpSession | null } = { current: null };
       const completion: { current: GatewayExecutorOutcome | null } = { current: null };
-      if (manifest === null) {
-        const chunked = envelope.payload as typeof envelope.payload & {
-          readonly stream_id: "result";
-          readonly content_type: string;
-          readonly total_chunks: number;
-          readonly total_size: number;
-          readonly sha256: string;
-        };
-        const carrierResult = await this.#resourceAuthority.acceptBridgeChunkedResultTerminal({
-          scope,
-          effectiveMcpRequestScope: effective,
-          rsid: active.rsid,
-          invocationId: envelope.payload.invocation_id,
-          manifest: {
-            kind: "chunked_result",
-            descriptor: {
-              stream_id: chunked.stream_id,
-              content_type: chunked.content_type,
-              total_chunks: chunked.total_chunks,
-              total_size: chunked.total_size,
-              sha256: chunked.sha256,
+      try {
+        if (manifest === null) {
+          const chunked = envelope.payload as typeof envelope.payload & {
+            readonly stream_id: "result";
+            readonly content_type: string;
+            readonly total_chunks: number;
+            readonly total_size: number;
+            readonly sha256: string;
+          };
+          const carrierResult = await this.#resourceAuthority.acceptBridgeChunkedResultTerminal({
+            scope,
+            effectiveMcpRequestScope: effective,
+            rsid: active.rsid,
+            invocationId: envelope.payload.invocation_id,
+            manifest: {
+              kind: "chunked_result",
+              descriptor: {
+                stream_id: chunked.stream_id,
+                content_type: chunked.content_type,
+                total_chunks: chunked.total_chunks,
+                total_size: chunked.total_size,
+                sha256: chunked.sha256,
+              },
             },
-          },
-          commitBridge: async (tx) => await this.#commitCarrierTerminal(tx, active, connection, envelope, authorityTicket, committed, completion),
-        });
-        completion.current = envelope.payload.status === "guarded"
-          ? { state: "guarded", reason: envelope.payload.guarded_reason, result: carrierResult }
-          : { state: "completed", result: carrierResult };
-      } else {
-        await this.#resourceAuthority.acceptBridgeTerminal({
-          scope,
-          effectiveMcpRequestScope: effective,
-          rsid: active.rsid,
-          invocationId: envelope.payload.invocation_id,
-          manifest,
-          commitBridge: async (tx) => await this.#commitCarrierTerminal(tx, active, connection, envelope, authorityTicket, committed, completion),
-        });
+            commitBridge: async (tx, mode) => await this.#commitCarrierTerminal(tx, active, connection, envelope, authorityTicket, admission, mode, committed, completion),
+          });
+          completion.current = envelope.payload.status === "guarded"
+            ? { state: "guarded", reason: envelope.payload.guarded_reason, result: carrierResult }
+            : { state: "completed", result: carrierResult };
+        } else {
+          await this.#resourceAuthority.acceptBridgeTerminal({
+            scope,
+            effectiveMcpRequestScope: effective,
+            rsid: active.rsid,
+            invocationId: envelope.payload.invocation_id,
+            manifest,
+            commitBridge: async (tx, mode) => await this.#commitCarrierTerminal(tx, active, connection, envelope, authorityTicket, admission, mode, committed, completion),
+          });
+        }
+      } catch (error: unknown) {
+        if (error instanceof BridgeCarrierTerminalAborted) {
+          await this.#persistLateTerminalEvidence(admission);
+          return;
+        }
+        throw error;
       }
       if (committed.current === null || completion.current === null) {
         throw new GatewayRbpFault("unavailable", "carrier terminal commit was not observable", 503, 1011);
       }
       active.record = committed.current;
+      let deliveryAuthorized = true;
+      try {
+        this.#assertAuthorityTicket(authorityTicket, connection, { session: committed.current });
+      } catch {
+        deliveryAuthorized = false;
+      }
+      if (!deliveryAuthorized && this.#ticketScopeIsRevokedOrBlocked(authorityTicket)) {
+        await this.#revokeStaleAuthorizedSession(connection, envelope.rsid);
+      }
       const waiter = this.#waiters.get(envelope.payload.invocation_id);
       if (waiter !== undefined) {
         clearTimeout(waiter.timer);
         this.#waiters.delete(envelope.payload.invocation_id);
-        waiter.resolve(completion.current);
+        waiter.resolve(deliveryAuthorized
+          ? completion.current
+          : { state: "failed", error: { code: "executor_unavailable", message: "identity revocation suppressed terminal delivery" } });
       }
       return;
     }

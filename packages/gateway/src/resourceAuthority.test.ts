@@ -4,6 +4,7 @@ import type { ArtifactDescriptor, RbpStreamChunk } from "@revagent/protocol";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  BridgeCarrierTerminalAborted,
   GatewayResourceAuthority,
   type GatewayResourceError,
   type GatewayResourceScope,
@@ -607,6 +608,44 @@ describe("GW-9 scoped artifact and result authority", () => {
     const committed = restartableStore.snapshot().records;
     expect(committed.find((row) => row.namespace === bridgeNamespace && row.key === "terminal")).toBeDefined();
     expect(committed.find((row) => row.namespace === "gateway.carrier-ack/v1" && (row.value as { state?: string }).state === "terminal_accepted")).toBeDefined();
+  });
+
+  it("aborts both terminal carrier forms before activation or terminal ACK", async () => {
+    const artifactBytes = new Uint8Array([8, 6, 7, 5]);
+    const jsonBytes = Buffer.from('{"private":true}', "utf8");
+    const abort = () => ({ kind: "aborted" as const, reason: "terminal_revoked" as const });
+    await authority.acceptBridgeChunk({
+      scope, effectiveMcpRequestScope, rsid: "rsid-abort-artifact", invocationId,
+      sequence: 17, chunk: artifactChunk(artifactA, 0, artifactBytes), commitBridge: () => undefined,
+    });
+    await expect(authority.acceptBridgeTerminal({
+      scope, effectiveMcpRequestScope, rsid: "rsid-abort-artifact", invocationId,
+      manifest: {
+        kind: "artifact_result",
+        descriptors: [descriptor(artifactA, 0, artifactBytes, "private.png")],
+        artifactReferences: [{ artifact_id: artifactA, artifact_index: 0 }],
+      },
+      commitBridge: abort,
+    })).rejects.toBeInstanceOf(BridgeCarrierTerminalAborted);
+    await authority.acceptBridgeChunk({
+      scope, effectiveMcpRequestScope, rsid: "rsid-abort-json", invocationId,
+      sequence: 19, chunk: resultChunk(jsonBytes), commitBridge: () => undefined,
+    });
+    await expect(authority.acceptBridgeChunkedResultTerminal({
+      scope, effectiveMcpRequestScope, rsid: "rsid-abort-json", invocationId,
+      manifest: {
+        kind: "chunked_result",
+        descriptor: { stream_id: "result", content_type: "application/json", total_chunks: 1, total_size: jsonBytes.byteLength, sha256: sha256(jsonBytes) },
+      },
+      commitBridge: abort,
+    })).rejects.toBeInstanceOf(BridgeCarrierTerminalAborted);
+    const records = restartableStore.snapshot().records;
+    expect(records.filter((row) => row.namespace === "gateway_resource_v1")).toEqual([]);
+    expect(records.filter((row) => row.namespace === "gateway.carrier-ack/v1" && (row.value as { seq?: string }).seq === "terminal")).toEqual([]);
+    expect(records.filter((row) => row.namespace === "gateway.resource-set/v1").map((row) => row.value)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ rsid: "rsid-abort-artifact", state: "verified" }),
+      expect.objectContaining({ rsid: "rsid-abort-json", state: "declared" }),
+    ]));
   });
 
   it("serializes concurrent carrier replays onto one durable identity and rejects a terminal conflict", async () => {
