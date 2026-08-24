@@ -199,6 +199,19 @@ internal static class Program
         // This is intentionally a projection rather than an object dump.
         // Keep the real-process transcript value-free even if the observation
         // record grows in a production caller.
+        //
+        // A payload-bearing observation is only safe to admit when the watcher
+        // already supplied its canonical context digest.  This host is a
+        // diagnostic sink, so it must neither re-canonicalize a payload nor
+        // manufacture a correlate when that proof is absent.
+        if (!IsDiagnosticSha256(observation.RsidHash) ||
+            (observation.PayloadHash is not null &&
+             (!IsDiagnosticSha256(observation.PayloadHash) ||
+              !IsBareLowercaseSha256(observation.ContextDigest))))
+        {
+            return ValueTask.CompletedTask;
+        }
+
         WriteObservation(new
         {
             contractVersion = observation.ContractVersion,
@@ -208,10 +221,31 @@ internal static class Program
             outcome = observation.Outcome,
             rsidHash = observation.RsidHash,
             payloadHash = observation.PayloadHash,
+            contextDigest = observation.ContextDigest,
             sequence = observation.Sequence,
         });
         return ValueTask.CompletedTask;
     }
+
+    private static bool IsBareLowercaseSha256(string? value)
+    {
+        if (value is null || value.Length != 64)
+            return false;
+
+        foreach (char character in value)
+        {
+            if ((character < '0' || character > '9') &&
+                (character < 'a' || character > 'f'))
+                return false;
+        }
+
+        return true;
+    }
+
+    private static bool IsDiagnosticSha256(string? value) =>
+        value is not null &&
+        value.StartsWith("sha256:", StringComparison.Ordinal) &&
+        IsBareLowercaseSha256(value["sha256:".Length..]);
 
     private static void ObserveSseReceive(RbpSseReceiveObservation observation) =>
         WriteObservation(new
