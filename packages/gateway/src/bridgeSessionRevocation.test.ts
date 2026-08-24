@@ -26,6 +26,7 @@ import {
   type BridgeConnectionChannel,
 } from "./bridgeSession.js";
 import { gatewayUuidV7 } from "./identifiers.js";
+import { createEffectiveMcpRequestScopeV1 } from "./invocationContext.js";
 import {
   createPreProductionIdentityAuthority,
   type PreProductionDeviceRevocation,
@@ -721,6 +722,12 @@ function executorRequest(
 ): GatewayExecutorRequest {
   const args: GatewayJsonObject = { probe: "wp06-terminal" };
   const invocationId = id();
+  const effectiveMcpRequestScope = createEffectiveMcpRequestScopeV1({
+    principalKey: `${TENANT_A}:${userId}`,
+    transportMcpSessionId: "mcp-wp06",
+    identityMcpSessionId: null,
+    nowMs: Date.now(),
+  });
   return {
     toolName: "core.get_status",
     toolVersion: "1.0.0",
@@ -736,6 +743,7 @@ function executorRequest(
       gatewaySessionId: "gateway-wp06",
       oauthClientId: "oauth-wp06",
       mcpSessionId: "mcp-wp06",
+      effectiveMcpRequestScope,
       rsid,
       toolName: "core.get_status",
       toolVersion: "1.0.0",
