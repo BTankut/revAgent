@@ -155,6 +155,7 @@ interface RealTrioDocumentContextCorrelation {
 }
 
 interface RealTrioGatewayAuditBaseline {
+  readonly processEpoch: string;
   readonly observationOrdinal: number;
 }
 
@@ -234,6 +235,10 @@ function isSha256(value: unknown): value is `sha256:${string}` {
 function isCanonicalUtc(value: unknown): value is string {
   return typeof value === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(value) &&
     Number.isFinite(Date.parse(value)) && new Date(value).toISOString() === value;
+}
+
+function isProcessEpoch(value: unknown): value is string {
+  return typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(value);
 }
 
 function digest(value: unknown): string {
@@ -511,6 +516,8 @@ export function hasGatewayAcceptedDocumentContextRoute(
   baseline: RealTrioGatewayAuditBaseline,
 ): boolean {
   if (!isObject(audit) || !Array.isArray(audit.documentContextUpdates) ||
+      audit.documentContextEpochSchema !== "revagent.wp12-document-context-epoch/v1" ||
+      audit.documentContextProcessEpoch !== baseline.processEpoch || !isProcessEpoch(audit.documentContextProcessEpoch) ||
       !Number.isSafeInteger(audit.documentContextObservationHighWaterOrdinal) ||
       Number(audit.documentContextObservationHighWaterOrdinal) < baseline.observationOrdinal ||
       !isCanonicalUtc(expected.sendRecordedAt)) return false;
@@ -526,9 +533,11 @@ export function hasGatewayAcceptedDocumentContextRoute(
 }
 
 export function gatewayAuditBaseline(audit: unknown): RealTrioGatewayAuditBaseline | null {
-  if (!isObject(audit) || !Number.isSafeInteger(audit.documentContextObservationHighWaterOrdinal) ||
+  if (!isObject(audit) || audit.documentContextEpochSchema !== "revagent.wp12-document-context-epoch/v1" ||
+      !isProcessEpoch(audit.documentContextProcessEpoch) || !Number.isSafeInteger(audit.documentContextObservationHighWaterOrdinal) ||
       Number(audit.documentContextObservationHighWaterOrdinal) < 0) return null;
-  return Object.freeze({ observationOrdinal: Number(audit.documentContextObservationHighWaterOrdinal) });
+  return Object.freeze({ processEpoch: audit.documentContextProcessEpoch,
+    observationOrdinal: Number(audit.documentContextObservationHighWaterOrdinal) });
 }
 
 async function waitForPostRouteDocumentContextHeartbeatAck(input: {

@@ -100,9 +100,11 @@ describe("WP-12 real-trio fixture document route gate", () => {
   it("requires Gateway accepted-route correlation with the intended send", () => {
     const expected = { rsidHash: `sha256:${"a".repeat(64)}` as const, sequence: 7,
       sendTranscriptIndex: 3, sendRecordedAt: "2026-08-24T00:00:01.000Z" };
-    const baseline = gatewayAuditBaseline({ documentContextObservationHighWaterOrdinal: 4 })!;
+    const epoch = "123e4567-e89b-42d3-a456-426614174000";
+    const baseline = gatewayAuditBaseline({ documentContextEpochSchema: "revagent.wp12-document-context-epoch/v1",
+      documentContextProcessEpoch: epoch, documentContextObservationHighWaterOrdinal: 4 })!;
     const audit = (rsidHash: string, observedSequence: number, observationOrdinal = 5,
-      observedAtUtc = "2026-08-24T00:00:01.000Z", highWater = observationOrdinal) => ({ documentContextObservationHighWaterOrdinal: highWater, documentContextUpdates: [{
+      observedAtUtc = "2026-08-24T00:00:01.000Z", highWater = observationOrdinal, processEpoch = epoch) => ({ documentContextEpochSchema: "revagent.wp12-document-context-epoch/v1", documentContextProcessEpoch: processEpoch, documentContextObservationHighWaterOrdinal: highWater, documentContextUpdates: [{
       contractVersion: "revagent.wp12-document-context-audit/v1",
       event: "gateway.doc_context_update_observation", stage: "accepted", rsidHash, observedSequence, observationOrdinal, observedAtUtc,
     }] });
@@ -114,10 +116,11 @@ describe("WP-12 real-trio fixture document route gate", () => {
     expect(hasGatewayAcceptedDocumentContextRoute(audit(expected.rsidHash, 7, 5, "2026-08-24T00:00:00.999Z"), expected, baseline)).toBe(false);
     expect(hasGatewayAcceptedDocumentContextRoute(audit(expected.rsidHash, 7, 5, "2026-08-24T00:00:01.000Z", 3), expected, baseline)).toBe(false);
     expect(hasGatewayAcceptedDocumentContextRoute(audit(expected.rsidHash, 7, 0), expected, baseline)).toBe(false);
+    expect(hasGatewayAcceptedDocumentContextRoute(audit(expected.rsidHash, 7, 5, "2026-08-24T00:00:01.000Z", 5, "123e4567-e89b-42d3-a456-426614174001"), expected, baseline)).toBe(false);
     const duplicate = audit(expected.rsidHash, 7);
     duplicate.documentContextUpdates.push(duplicate.documentContextUpdates[0]!);
     expect(hasGatewayAcceptedDocumentContextRoute(duplicate, expected, baseline)).toBe(false);
-    expect(hasGatewayAcceptedDocumentContextRoute({ documentContextObservationHighWaterOrdinal: 6, documentContextUpdates: [] }, expected, baseline)).toBe(false);
+    expect(hasGatewayAcceptedDocumentContextRoute({ documentContextEpochSchema: "revagent.wp12-document-context-epoch/v1", documentContextProcessEpoch: epoch, documentContextObservationHighWaterOrdinal: 6, documentContextUpdates: [] }, expected, baseline)).toBe(false);
   });
 
   it("selects only the controlled post-ACK send and rejects a borrowed historical route", () => {

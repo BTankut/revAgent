@@ -1,4 +1,4 @@
-import { createHash, timingSafeEqual, X509Certificate } from "node:crypto";
+import { createHash, randomUUID, timingSafeEqual, X509Certificate } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
@@ -43,6 +43,7 @@ const REQUIRED_CONNECTION_CAPABILITIES = Object.freeze([
 ]);
 
 const REAL_CASE_AUDIT_SCHEMA = "revagent.wp12-real-case-audit/v1" as const;
+const DOCUMENT_CONTEXT_EPOCH_SCHEMA = "revagent.wp12-document-context-epoch/v1" as const;
 
 function digest(value: unknown): `sha256:${string}` {
   return `sha256:${createHash("sha256").update(JSON.stringify(value)).digest("hex")}`;
@@ -217,6 +218,7 @@ export async function runProductionConformanceHostCli(args: readonly string[]): 
     readonly ordinal: number;
     readonly observedAtUtc: string;
   }>> = [];
+  const documentContextProcessEpoch = randomUUID();
   let documentContextObservationOrdinal = 0;
   const authority = new GatewayBridgeSessionAuthority(protocolStore, identity, {
     resourceAuthority,
@@ -438,6 +440,8 @@ export async function runProductionConformanceHostCli(args: readonly string[]): 
               rows,
               documentContextUpdates,
               documentContextObservations: Object.freeze([...documentContextObservations]),
+              documentContextEpochSchema: DOCUMENT_CONTEXT_EPOCH_SCHEMA,
+              documentContextProcessEpoch,
               documentContextObservationHighWaterOrdinal: documentContextObservationOrdinal,
               counts: Object.freeze({ records: records.length, auditAccesses: auditAccesses.length }),
               frontier: digest(rows),

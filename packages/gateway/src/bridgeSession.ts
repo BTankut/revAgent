@@ -6849,6 +6849,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     let releaseFailure: unknown = null;
     let sendBegan = false;
     try {
+      await this.#assertDispatchReservationCurrent(connection, started, authorityTicket);
       this.#assertAuthorityTicket(authorityTicket, connection, {
         session: started.record,
       });
@@ -6862,6 +6863,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       sendBegan = true;
       const sendOperation = connection.send(serialized);
       await sendOperation;
+      await this.#assertDispatchReservationCurrent(connection, started, authorityTicket);
     } catch (error) {
       sendFailure = error;
     } finally {
@@ -6880,6 +6882,30 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       await this.#revokeStaleAuthorizedSession(connection, reservation.rsid);
     }
     if (sendFailure !== null) throw sendFailure;
+  }
+
+  /** Re-checks the exact durable reservation immediately around transport I/O. */
+  async #assertDispatchReservationCurrent(
+    connection: LiveConnection,
+    reservation: DurableEgressReservation,
+    authorityTicket: TenantAuthorityTicket,
+  ): Promise<void> {
+    const active = this.#active.get(reservation.rsid);
+    const stored = await this.#readStoredSession(reservation.tenantId, reservation.rsid);
+    if (active === undefined || active.tenantId !== reservation.tenantId ||
+        active.record.connectionId !== connection.connectionId || stored === null) {
+      throw new GatewayRbpFault("unavailable", "dispatch route changed during reserved send", 503, 1011);
+    }
+    const record = parseStoredSession(stored, reservation.tenantId, reservation.rsid);
+    const lease = sessionEgressFence(record).lease;
+    if (record.connectionId !== connection.connectionId ||
+        record.sessionBindingId !== reservation.record.sessionBindingId ||
+        !record.sessionLifecycle.dispatchAllowed || record.liveDocumentRoute === null ||
+        !sameJson(record.liveDocumentRoute, reservation.record.liveDocumentRoute) ||
+        lease === null || lease.phase !== "started" || !sameJson(lease, reservation.lease)) {
+      throw new GatewayRbpFault("unavailable", "dispatch reservation no longer authorizes its route", 503, 1011);
+    }
+    this.#assertAuthorityTicket(authorityTicket, connection, { session: record });
   }
 
   async #revokeStaleAuthorizedSession(
