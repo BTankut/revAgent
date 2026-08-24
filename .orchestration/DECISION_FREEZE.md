@@ -81,3 +81,11 @@ Use exact existing terminal literals, validators, and serializer: result invocat
 ### C39-C1d schema-literal correction
 
 The prior `payload_omitted=true` phrase was a mapping error and is superseded. The exact existing RBP chunked-terminal oneOf is: `kind=invocation`, `invocation_id`, `status=completed`, `replayed=false`, `late_after_indeterminate=false`, `result_digest=origin`, `metrics{execute_ms:0,request_bytes:0,response_bytes:0,framing:"length-prefixed"}`, `chunked=true`, `stream_id=result`, `content_type=application/json`, `total_chunks`, `total_size`, and `sha256=result_digest`. There is no `result` or `payload_omitted` member; presence is rejected. This is a Decision Freeze correction preserving the unchanged wire, not a semantic expansion. Validator and round-trip tests are mandatory.
+
+### C39-D truthful origin observation
+
+Ordinary `WorkerGatewayComposition` is sealed `Never`; no environment, CLI, MCP, config, or live-Revit selector can activate observation. Only `RealWorkerHost` test composition may inject an internal one-shot policy after `FixtureAddinProcessAttestor` proves the exact fixture binary/process, method `fixture_multi_file_output`, nonmutating request, and provenance marker.
+
+The genuine add-in response is hashed. C# persists the normal completed terminal unchanged plus the existing encrypted v7 raw recovery payload and an in-memory marker `(rsid,idempotency/origin,digest,attestation)`; no DB/schema marker. A bounded conformance fault closes transport after journal commit but before any normal terminal byte reaches Gateway. Journal reconnect/replay only (no add-in call) verifies current attestation, normal completed row, raw digest, and marker, then emits the existing replayed terminal. Gateway persists ordinary production evidence and exact ACK; only afterward may public recovery run.
+
+The marker binds replay terminal sequence and outer digest, survives lost/duplicate/foreign ACK, and is consumed only by exact Gateway durable ACK. Marker/process/attestation loss yields normal fail-safe replay with no C39 admission. No raw or marker logs. Recovery semantics/C2 remain production. Required WSS+HTTP tests cover origin count one, suppression/replay, lost ACK, process restart, nonfixture rejection, and absence of live selectors.
