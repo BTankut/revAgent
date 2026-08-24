@@ -8024,7 +8024,12 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       evidence.noSendReceipt !== null &&
       (evidence.noSendAuthorityDigest === undefined ||
         evidence.noSendAuthorityDigest === null ||
-        evidence.noSendAuthorityDigest !== evidence.noSendReceipt.authorityDigest)
+        evidence.noSendAuthorityDigest !== evidence.noSendReceipt.authorityDigest ||
+        (() => {
+          const { authorityDigest: _authorityDigest, recordedAtMs: _recordedAtMs, ...coordinates } = evidence.noSendReceipt!;
+          return noSendAuthorityDigest({ ...coordinates, binding: session.binding }) !==
+            evidence.noSendReceipt!.authorityDigest;
+        })())
     ) {
       return { kind: "protocol_fault", reason: "no_send_authority_mismatch" };
     }
