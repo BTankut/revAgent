@@ -291,6 +291,12 @@ internal sealed record RbpRecoveryCarrierReservation(
     long? TombstonedAtMilliseconds,
     string? TombstoneReason);
 
+internal sealed record RbpRecoveryTerminalPlan(
+    string RecoveryInvocationId, string Rsid, long FinalSequence,
+    long AcknowledgementBaseline, JsonElement TerminalPayload,
+    string TerminalDigest, string State, long CreatedAtMilliseconds,
+    long ExpiresAtMilliseconds, long? ConfirmedAtMilliseconds);
+
 /// <summary>Single domain-separated, non-wire commitment for C39 carrier state.</summary>
 internal static class RbpRecoveryCarrierCommitment
 {

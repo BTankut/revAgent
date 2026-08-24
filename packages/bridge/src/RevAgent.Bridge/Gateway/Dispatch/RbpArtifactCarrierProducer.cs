@@ -387,7 +387,7 @@ internal sealed class RbpArtifactCarrierProducer
         return document.RootElement.Clone();
     }
 
-    private static JsonElement ReplaceChunkedResultTerminal(
+    internal static JsonElement ReplaceChunkedResultTerminal(
         JsonElement body, int totalChunks, int totalSize, string digest)
     {
         using var buffer = new MemoryStream();

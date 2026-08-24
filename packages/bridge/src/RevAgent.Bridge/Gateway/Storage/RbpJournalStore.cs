@@ -826,6 +826,9 @@ internal sealed partial class RbpJournalStore : IAsyncDisposable
             "CREATE INDEX ix_rbp_recovery_carrier_recovery ON rbp_recovery_carrier_reservations(recovery_invocation_id,phase)");
         RequireForeignKey(connection, "rbp_recovery_carrier_reservations", "rsid", "rbp_sessions");
         RequireForeignKey(connection, "rbp_recovery_sequence_tombstones", "rsid", "rbp_sessions");
+        if (schemaVersion >= 9 && !TableExists(connection, "rbp_recovery_terminal_plans"))
+            throw new RbpJournalException(RbpJournalErrorCode.MigrationMismatch,
+                "The C39 recovery terminal plan table is missing.");
     }
 
     private static void RequireExactColumns(SqliteConnection connection, string table,

@@ -2,11 +2,46 @@ using System.Security.Cryptography;
 using System.Text.Json;
 using Microsoft.Data.Sqlite;
 using RevAgent.Bridge.Gateway.Protocol;
+using RevAgent.Bridge.Gateway.Dispatch;
 
 namespace RevAgent.Bridge.Gateway.Storage;
 
 internal sealed partial class RbpJournalStore
 {
+    /// <summary>v9-only forward terminal reservation after the final partial ACK.</summary>
+    internal Task<RbpRecoveryTerminalPlan> ReserveRecoveryTerminalAsync(
+        string recoveryInvocationId, string rsid, JsonElement invocationBody,
+        CancellationToken cancellationToken = default)
+    {
+        long now = NowMilliseconds();
+        return ExecuteImmediateAsync(context =>
+        {
+            RbpRecoveryCarrierReservation reservation = ReadRecoveryCarrierReservation(context, recoveryInvocationId) ??
+                throw new RbpJournalException(RbpJournalErrorCode.ProtocolConflict, "Recovery reservation is missing.");
+            if (!string.Equals(reservation.Rsid, rsid, StringComparison.Ordinal) || reservation.PlanVersion != 1 ||
+                reservation.Phase != RbpRecoveryCarrierPhase.Completed)
+                throw new RbpJournalException(RbpJournalErrorCode.ProtocolConflict, "Only a completed v9-eligible recovery carrier can reserve its terminal.");
+            LoadedSequence sequence = LoadSequence(context, rsid);
+            long terminalSequence = sequence.State.NextTxSequence ?? throw new RbpJournalException(RbpJournalErrorCode.ProtocolConflict, "Sequence exhausted.");
+            JsonElement terminal = RbpArtifactCarrierProducer.ReplaceChunkedResultTerminal(
+                invocationBody, reservation.ChunkCount, reservation.PlaintextLength, reservation.ResultDigest);
+            string terminalJcs = Rfc8785Json.Canonicalize(terminal);
+            string digest = Rfc8785Json.Sha256Digest(terminal);
+            using SqliteCommand insert = context.CreateCommand("""
+                INSERT INTO rbp_recovery_terminal_plans(recovery_invocation_id,rsid,final_sequence,acknowledgement_baseline,terminal_jcs,terminal_digest,state,created_at_ms,expires_at_ms,confirmed_at_ms)
+                VALUES($recovery,$rsid,$seq,$ack,$jcs,$digest,'reserved',$now,$expires,NULL);
+                """);
+            insert.Parameters.AddWithValue("$recovery", recoveryInvocationId); insert.Parameters.AddWithValue("$rsid", rsid);
+            insert.Parameters.AddWithValue("$seq", terminalSequence); insert.Parameters.AddWithValue("$ack", sequence.State.LastPeerAcknowledgement);
+            insert.Parameters.AddWithValue("$jcs", terminalJcs); insert.Parameters.AddWithValue("$digest", digest);
+            insert.Parameters.AddWithValue("$now", now); insert.Parameters.AddWithValue("$expires", reservation.ExpiresAtMilliseconds);
+            if (insert.ExecuteNonQuery() != 1) throw RbpJournalSerialization.Corrupt("Recovery terminal reservation insert failed.");
+            PersistSequenceState(context, sequence.State with { HighestTxSequence = terminalSequence, NextTxSequence = terminalSequence + 1 }, now);
+            return new RbpRecoveryTerminalPlan(recoveryInvocationId, rsid, terminalSequence,
+                sequence.State.LastPeerAcknowledgement, terminal, digest, "reserved", now,
+                reservation.ExpiresAtMilliseconds, null);
+        }, cancellationToken);
+    }
     internal Task<RbpSequenceState> LoadSequenceAsync(
         string rsid,
         CancellationToken cancellationToken = default)

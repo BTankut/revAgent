@@ -5,7 +5,7 @@ namespace RevAgent.Bridge.Gateway.Storage;
 
 internal static class RbpJournalSchema
 {
-    internal const int CurrentVersion = 8;
+    internal const int CurrentVersion = 9;
     internal const string StoreFormat = "revagent-rbp-journal";
 
     private const string TransportLifecycleSchema = """
@@ -565,10 +565,30 @@ internal static class RbpJournalSchema
         """;
 
     internal static RbpJournalMigration RecoveryCarrierReservationMigration { get; } = new(
-        CurrentVersion,
+        8,
         "WP-12",
         "rbp_correlated_recovery_carrier_reservation_v8",
         RecoveryCarrierReservationSchema);
+
+    private const string RecoveryTerminalPlanSchema = """
+        CREATE TABLE rbp_recovery_terminal_plans(
+          recovery_invocation_id TEXT PRIMARY KEY REFERENCES rbp_recovery_carrier_reservations(recovery_invocation_id) ON DELETE RESTRICT,
+          rsid TEXT NOT NULL REFERENCES rbp_sessions(rsid) ON DELETE RESTRICT,
+          final_sequence INTEGER NOT NULL UNIQUE CHECK(final_sequence>=1 AND final_sequence<=9007199254740991),
+          acknowledgement_baseline INTEGER NOT NULL CHECK(acknowledgement_baseline>=0),
+          terminal_jcs TEXT NOT NULL CHECK(length(terminal_jcs)>0),
+          terminal_digest TEXT NOT NULL CHECK(length(terminal_digest)=71),
+          state TEXT NOT NULL CHECK(state IN ('reserved','confirmed','tombstoned')),
+          created_at_ms INTEGER NOT NULL CHECK(created_at_ms>=0),
+          expires_at_ms INTEGER NOT NULL CHECK(expires_at_ms>=created_at_ms),
+          confirmed_at_ms INTEGER
+        ) STRICT;
+        CREATE UNIQUE INDEX ux_rbp_recovery_terminal_active_rsid
+          ON rbp_recovery_terminal_plans(rsid) WHERE state='reserved';
+        """;
+
+    internal static RbpJournalMigration RecoveryTerminalPlanMigration { get; } = new(
+        CurrentVersion, "WP-12", "rbp_correlated_recovery_terminal_plan_v9", RecoveryTerminalPlanSchema);
 
     internal static IReadOnlyList<RbpJournalMigration> BuildMigrationChain(
         IReadOnlyList<RbpJournalMigration>? additional)
@@ -583,6 +603,7 @@ internal static class RbpJournalSchema
             CarrierPlanSpoolReleaseMigration,
             RecoveryPayloadMigration,
             RecoveryCarrierReservationMigration,
+            RecoveryTerminalPlanMigration,
         };
         if (additional is not null)
         {
