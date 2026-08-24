@@ -27,6 +27,57 @@ namespace RevAgent.Bridge.Tests.Gateway.Storage;
 public sealed class RbpJournalPowerCutTests
 {
     [Theory]
+    [InlineData("c1d-final-partial-ack")]
+    [InlineData("c1d-terminal-insert")]
+    [InlineData("c1d-terminal-sequence-reserve")]
+    [InlineData("c1d-terminal-confirm")]
+    [InlineData("c1d-terminal-ack")]
+    public async Task KillAtEveryC1dTerminalBoundaryLeavesOnlyThePriorCommittedAuthority(string mode)
+    {
+        using var directory = new RbpJournalTestDirectory();
+        RbpJournalPowerCutReadiness readiness =
+            await RbpJournalPowerCutProcess.KillAtAsync(mode, directory.JournalPath);
+        AssertKilledUnderProductionDurability(readiness);
+        RbpJournalPowerCutFiles.AssertWalRecoveryPending(directory.JournalPath);
+
+        await using (RbpJournalStore recovered = await OpenRecoveredAsync(directory))
+        {
+            await AssertIntegrityCheckIsOkAsync(recovered);
+            RbpSequenceState sequence = await recovered.LoadSequenceAsync(
+                RbpJournalPowerCutData.Rsid);
+            int plans = await recovered.ReadAsync(connection =>
+            {
+                using SqliteCommand command = connection.CreateCommand();
+                command.CommandText = "SELECT COUNT(*) FROM rbp_recovery_terminal_plans;";
+                return Convert.ToInt32(command.ExecuteScalar());
+            });
+            await AssertRecoveryRawPresentAsync(recovered);
+
+            if (string.Equals(mode, "c1d-final-partial-ack", StringComparison.Ordinal))
+            {
+                Assert.Equal(0, plans);
+                Assert.Equal(1, sequence.HighestTxSequence);
+                Assert.Equal(0, sequence.LastPeerAcknowledgement);
+            }
+            else if (string.Equals(mode, "c1d-terminal-insert", StringComparison.Ordinal) ||
+                     string.Equals(mode, "c1d-terminal-sequence-reserve", StringComparison.Ordinal))
+            {
+                Assert.Equal(0, plans);
+                Assert.Equal(1, sequence.HighestTxSequence);
+                Assert.Equal(1, sequence.LastPeerAcknowledgement);
+            }
+            else
+            {
+                Assert.Equal(1, plans);
+                Assert.Equal(2, sequence.HighestTxSequence);
+                Assert.Equal(1, sequence.LastPeerAcknowledgement);
+            }
+        }
+
+        RbpJournalPowerCutFiles.AssertRecoveredFileSetIsSane(directory.JournalPath);
+    }
+
+    [Theory]
     [InlineData(RbpJournalPowerCutMode.RecoveryValidatedRaw)]
     [InlineData(RbpJournalPowerCutMode.RecoveryPlanInserted)]
     [InlineData(RbpJournalPowerCutMode.RecoverySequenceReserved)]

@@ -574,10 +574,12 @@ internal static class RbpJournalSchema
         CREATE TABLE rbp_recovery_terminal_plans(
           recovery_invocation_id TEXT PRIMARY KEY REFERENCES rbp_recovery_carrier_reservations(recovery_invocation_id) ON DELETE RESTRICT,
           rsid TEXT NOT NULL REFERENCES rbp_sessions(rsid) ON DELETE RESTRICT,
+          plan_version INTEGER NOT NULL CHECK(plan_version=9),
           final_sequence INTEGER NOT NULL UNIQUE CHECK(final_sequence>=1 AND final_sequence<=9007199254740991),
           acknowledgement_baseline INTEGER NOT NULL CHECK(acknowledgement_baseline>=0),
           terminal_jcs TEXT NOT NULL CHECK(length(terminal_jcs)>0),
-          terminal_digest TEXT NOT NULL CHECK(length(terminal_digest)=71),
+          terminal_digest TEXT NOT NULL CHECK(length(terminal_digest)=71 AND substr(terminal_digest,1,7)='sha256:' AND substr(terminal_digest,8) NOT GLOB '*[^0-9a-f]*'),
+          payload_commitment TEXT NOT NULL CHECK(length(payload_commitment)=71 AND substr(payload_commitment,1,7)='sha256:' AND substr(payload_commitment,8) NOT GLOB '*[^0-9a-f]*'),
           state TEXT NOT NULL CHECK(state IN ('reserved','confirmed','tombstoned')),
           created_at_ms INTEGER NOT NULL CHECK(created_at_ms>=0),
           expires_at_ms INTEGER NOT NULL CHECK(expires_at_ms>=created_at_ms),
@@ -585,6 +587,8 @@ internal static class RbpJournalSchema
         ) STRICT;
         CREATE UNIQUE INDEX ux_rbp_recovery_terminal_active_rsid
           ON rbp_recovery_terminal_plans(rsid) WHERE state='reserved';
+        CREATE INDEX ix_rbp_recovery_terminal_recovery_state
+          ON rbp_recovery_terminal_plans(recovery_invocation_id,state);
         """;
 
     internal static RbpJournalMigration RecoveryTerminalPlanMigration { get; } = new(

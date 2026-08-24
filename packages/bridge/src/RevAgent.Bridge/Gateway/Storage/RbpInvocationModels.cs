@@ -292,10 +292,43 @@ internal sealed record RbpRecoveryCarrierReservation(
     string? TombstoneReason);
 
 internal sealed record RbpRecoveryTerminalPlan(
-    string RecoveryInvocationId, string Rsid, long FinalSequence,
-    long AcknowledgementBaseline, JsonElement TerminalPayload,
-    string TerminalDigest, string State, long CreatedAtMilliseconds,
+    string RecoveryInvocationId, string Rsid, int PlanVersion,
+    long FinalSequence, long AcknowledgementBaseline,
+    JsonElement TerminalPayload, string TerminalDigest,
+    string PayloadCommitment, string State, long CreatedAtMilliseconds,
     long ExpiresAtMilliseconds, long? ConfirmedAtMilliseconds);
+
+/// <summary>
+/// Domain-separated non-wire commitment for C39's one terminal after the
+/// protected partial-result carrier.  This is deliberately separate from the
+/// v8 chunk commitment: a terminal cannot be substituted for a chunk simply
+/// because both describe the same recovery invocation.
+/// </summary>
+internal static class RbpRecoveryTerminalCommitment
+{
+    internal const int PlanVersion = 9;
+
+    internal static string Compute(
+        string rsid,
+        string recoveryInvocationId,
+        long finalSequence,
+        long acknowledgementBaseline,
+        string terminalDigest,
+        string terminalJcs,
+        long expiresAtMilliseconds) =>
+        Rfc8785Json.Sha256Digest(JsonSerializer.SerializeToElement(new
+        {
+            domain = "revagent/recovery-terminal-commitment/v9",
+            rsid,
+            recovery_invocation_id = recoveryInvocationId,
+            plan_version = PlanVersion,
+            final_sequence = finalSequence,
+            acknowledgement_baseline = acknowledgementBaseline,
+            terminal_digest = terminalDigest,
+            terminal_jcs = terminalJcs,
+            expires_at_ms = expiresAtMilliseconds,
+        }));
+}
 
 /// <summary>Single domain-separated, non-wire commitment for C39 carrier state.</summary>
 internal static class RbpRecoveryCarrierCommitment

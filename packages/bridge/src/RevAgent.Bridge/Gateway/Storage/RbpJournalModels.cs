@@ -115,6 +115,10 @@ internal enum RbpJournalFaultPoint
     RecoveryTombstoneRawDeleted,
     RecoveryMinimalTombstonePersisted,
     RecoveryDetailedAuditPruned,
+    RecoveryTerminalPlanInserted,
+    RecoveryTerminalSequenceReserved,
+    RecoveryTerminalMaterializationConfirmed,
+    RecoveryTerminalEqualAcknowledgement,
 }
 
 internal interface IRbpJournalFaultInjector

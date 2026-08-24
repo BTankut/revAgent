@@ -826,9 +826,27 @@ internal sealed partial class RbpJournalStore : IAsyncDisposable
             "CREATE INDEX ix_rbp_recovery_carrier_recovery ON rbp_recovery_carrier_reservations(recovery_invocation_id,phase)");
         RequireForeignKey(connection, "rbp_recovery_carrier_reservations", "rsid", "rbp_sessions");
         RequireForeignKey(connection, "rbp_recovery_sequence_tombstones", "rsid", "rbp_sessions");
-        if (schemaVersion >= 9 && !TableExists(connection, "rbp_recovery_terminal_plans"))
-            throw new RbpJournalException(RbpJournalErrorCode.MigrationMismatch,
-                "The C39 recovery terminal plan table is missing.");
+        if (schemaVersion < 9) return;
+        RequireExactColumns(connection, "rbp_recovery_terminal_plans",
+            new[]
+            {
+                ("recovery_invocation_id", "TEXT"), ("rsid", "TEXT"),
+                ("plan_version", "INTEGER"), ("final_sequence", "INTEGER"),
+                ("acknowledgement_baseline", "INTEGER"), ("terminal_jcs", "TEXT"),
+                ("terminal_digest", "TEXT"), ("payload_commitment", "TEXT"),
+                ("state", "TEXT"), ("created_at_ms", "INTEGER"),
+                ("expires_at_ms", "INTEGER"), ("confirmed_at_ms", "INTEGER"),
+            });
+        RequireIndex(connection, "rbp_recovery_terminal_plans",
+            "ux_rbp_recovery_terminal_active_rsid", unique: true, partial: true,
+            new[] { "rsid" },
+            "CREATE UNIQUE INDEX ux_rbp_recovery_terminal_active_rsid ON rbp_recovery_terminal_plans(rsid) WHERE state='reserved'");
+        RequireIndex(connection, "rbp_recovery_terminal_plans",
+            "ix_rbp_recovery_terminal_recovery_state", unique: false, partial: false,
+            new[] { "recovery_invocation_id", "state" },
+            "CREATE INDEX ix_rbp_recovery_terminal_recovery_state ON rbp_recovery_terminal_plans(recovery_invocation_id,state)");
+        RequireForeignKey(connection, "rbp_recovery_terminal_plans", "recovery_invocation_id", "rbp_recovery_carrier_reservations");
+        RequireForeignKey(connection, "rbp_recovery_terminal_plans", "rsid", "rbp_sessions");
     }
 
     private static void RequireExactColumns(SqliteConnection connection, string table,

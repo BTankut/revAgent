@@ -205,6 +205,48 @@ public static class RbpJournalPowerCutChild
                 _ = await store.ApplyRetentionAsync(TimeSpan.FromDays(7));
                 return;
 
+            case "c1d-final-partial-ack":
+                RbpRecoveryCarrierReservationRequest finalPartial =
+                    await PrepareRecoveryTerminalAsync(store);
+                _ = await store.PersistProtectedRecoveryTerminalAndReserveAsync(finalPartial);
+                _ = await store.MarkRecoveryCarrierSendStartedAsync(finalPartial.RecoveryInvocationId);
+                suspender.Arm(RbpJournalFaultPoint.RecoveryEqualAcknowledgement);
+                _ = await store.ApplyRecoveryCarrierFenceAcknowledgementAsync(finalPartial.Rsid, 1);
+                return;
+
+            case "c1d-terminal-insert":
+                RbpRecoveryCarrierReservationRequest terminalInsert =
+                    await PrepareCompletedRecoveryCarrierAsync(store);
+                suspender.Arm(RbpJournalFaultPoint.RecoveryTerminalPlanInserted);
+                _ = await store.ReserveRecoveryTerminalAsync(
+                    terminalInsert.RecoveryInvocationId, terminalInsert.Rsid);
+                return;
+
+            case "c1d-terminal-sequence-reserve":
+                RbpRecoveryCarrierReservationRequest terminalReserve =
+                    await PrepareCompletedRecoveryCarrierAsync(store);
+                suspender.Arm(RbpJournalFaultPoint.RecoveryTerminalSequenceReserved);
+                _ = await store.ReserveRecoveryTerminalAsync(
+                    terminalReserve.RecoveryInvocationId, terminalReserve.Rsid);
+                return;
+
+            case "c1d-terminal-confirm":
+                RbpRecoveryTerminalPlan terminalConfirm = await PrepareV9TerminalAsync(store);
+                suspender.Arm(RbpJournalFaultPoint.RecoveryTerminalMaterializationConfirmed);
+                _ = await store.ConfirmRecoveryTerminalMaterializationAsync(
+                    terminalConfirm.RecoveryInvocationId, terminalConfirm.Rsid,
+                    terminalConfirm.PlanVersion, terminalConfirm.FinalSequence,
+                    terminalConfirm.PayloadCommitment);
+                return;
+
+            case "c1d-terminal-ack":
+                RbpRecoveryTerminalPlan terminalAck = await PrepareV9TerminalAsync(store);
+                suspender.Arm(RbpJournalFaultPoint.RecoveryTerminalEqualAcknowledgement);
+                _ = await store.ApplyRecoveryTerminalAcknowledgementAsync(
+                    terminalAck.Rsid, terminalAck.FinalSequence,
+                    gatewayDeliveryReceiptRecorded: true, sourceReleaseEligible: true);
+                return;
+
             default:
                 throw new ArgumentOutOfRangeException(
                     nameof(mode),
@@ -236,6 +278,26 @@ public static class RbpJournalPowerCutChild
             "{\"decision\":\"auto\"}", "[]");
         _ = await store.AdmitInvocationAsync(recovery);
         await store.MarkInvocationExecutingAsync(recovery.IdempotencyKey);
+        return request;
+    }
+
+    private static async Task<RbpRecoveryTerminalPlan> PrepareV9TerminalAsync(
+        RbpJournalStore store)
+    {
+        RbpRecoveryCarrierReservationRequest request =
+            await PrepareCompletedRecoveryCarrierAsync(store);
+        return await store.ReserveRecoveryTerminalAsync(
+            request.RecoveryInvocationId, request.Rsid);
+    }
+
+    private static async Task<RbpRecoveryCarrierReservationRequest>
+        PrepareCompletedRecoveryCarrierAsync(RbpJournalStore store)
+    {
+        RbpRecoveryCarrierReservationRequest request =
+            await PrepareRecoveryTerminalAsync(store);
+        _ = await store.PersistProtectedRecoveryTerminalAndReserveAsync(request);
+        _ = await store.MarkRecoveryCarrierSendStartedAsync(request.RecoveryInvocationId);
+        _ = await store.ApplyRecoveryCarrierFenceAcknowledgementAsync(request.Rsid, 1);
         return request;
     }
 
