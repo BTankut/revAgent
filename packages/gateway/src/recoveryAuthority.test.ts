@@ -14,6 +14,7 @@ import {
   type InvokeEnvelope,
   type JsonValue,
   type MutationScope,
+  type RbpEnvelope,
   type RecoveryClearance,
 } from "@revagent/protocol";
 import { describe, expect, it } from "vitest";
@@ -3066,7 +3067,7 @@ function realHello(principal: string): import("@revagent/protocol").HelloEnvelop
   };
 }
 
-function realRegistration(principal: string): import("@revagent/protocol").SessionRegister {
+function realRegistration(principal: string): Extract<RbpEnvelope, { type: "session_register" }> {
   return {
     v: 1,
     type: "session_register",
