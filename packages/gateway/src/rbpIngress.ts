@@ -45,6 +45,7 @@ const RBP_WSS_DEFAULT_SEND_COMPLETION_TIMEOUT_MS = 5_000;
 const RBP_WSS_MIN_SEND_COMPLETION_TIMEOUT_MS = 1;
 const RBP_WSS_MAX_SEND_COMPLETION_TIMEOUT_MS = 60_000;
 const RBP_DISPATCH_REVALIDATION_TIMEOUT_MS = 5_000;
+const RBP_DISPATCH_CLEANUP_TIMEOUT_MS = 250;
 const HTTP_SSE_GLOBAL_CONNECTION_LIMIT = 1_024;
 const HTTP_SSE_TENANT_CONNECTION_LIMIT = 128;
 const HTTP_SSE_DEVICE_CONNECTION_LIMIT = 8;
@@ -79,8 +80,33 @@ async function boundedDispatchRevalidate(
     }
   } catch (error) {
     controller.abort();
-    await handoff.cancelBeforeStart();
+    const released = await boundedDispatchCancellation(handoff);
+    if (!released) {
+      throw new Error("dispatch cancellation cleanup is uncertain; durable reservation remains frozen");
+    }
     throw error;
+  } finally {
+    if (timer !== null) clearTimeout(timer);
+  }
+}
+
+async function boundedDispatchCancellation(
+  handoff: DispatchTransportHandoff,
+): Promise<boolean> {
+  const cleanup = handoff.cancelBeforeStart();
+  // A late store completion must never create an unhandled rejection after a
+  // transport queue has advanced past this cancelled generation.
+  void cleanup.catch(() => undefined);
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  try {
+    return await Promise.race([
+      cleanup,
+      new Promise<boolean>((resolve) => {
+        timer = setTimeout(() => resolve(false), RBP_DISPATCH_CLEANUP_TIMEOUT_MS);
+      }),
+    ]);
+  } catch {
+    return false;
   } finally {
     if (timer !== null) clearTimeout(timer);
   }
@@ -574,9 +600,21 @@ class HttpSseChannel implements BridgeConnectionChannel {
         this.#observe("queued");
       } else {
         if (response.destroyed || response.writableEnded) throw new Error("SSE stream is closed");
+        controller = new AbortController();
+        const inFlight: SsePendingDispatchEntry = {
+          serialized,
+          handoff,
+          controller,
+          generation: ++this.#dispatchGeneration,
+          resolveStarted,
+          rejectStarted,
+          resolveCompletion,
+          rejectCompletion,
+          cancelled: () => cancelled,
+        };
+        this.#inFlight.add(inFlight);
         void (async () => {
           try {
-            controller = new AbortController();
             await boundedDispatchRevalidate(handoff, controller);
             if (cancelled) throw new Error("SSE dispatch queue cancelled before invocation");
             // #writeFrame invokes response.write synchronously before it
@@ -592,6 +630,8 @@ class HttpSseChannel implements BridgeConnectionChannel {
             const failure = error instanceof Error ? error : new Error(String(error));
             rejectStarted(failure);
             rejectCompletion(failure);
+          } finally {
+            this.#inFlight.delete(inFlight);
           }
         })();
       }
@@ -615,7 +655,7 @@ class HttpSseChannel implements BridgeConnectionChannel {
       const failure = new Error("SSE dispatch queue cancelled before invocation");
       rejectStarted(failure);
       rejectCompletion(failure);
-      return await handoff.cancelBeforeStart();
+      return await boundedDispatchCancellation(handoff);
     };
     return { started, completion, cancel };
   }
@@ -705,13 +745,13 @@ class HttpSseChannel implements BridgeConnectionChannel {
     const cancelled = new Error("SSE dispatch queue cancelled before invocation");
     for (const pending of this.#pending.splice(0)) {
       pending.controller?.abort();
-      if (pending.handoff !== null) void pending.handoff.cancelBeforeStart().catch(() => undefined);
+      if (pending.handoff !== null) void boundedDispatchCancellation(pending.handoff);
       pending.rejectStarted?.(cancelled);
       pending.rejectCompletion?.(cancelled);
     }
     for (const pending of this.#inFlight) {
       pending.controller?.abort();
-      if (pending.handoff !== null) void pending.handoff.cancelBeforeStart().catch(() => undefined);
+      if (pending.handoff !== null) void boundedDispatchCancellation(pending.handoff);
       pending.rejectStarted?.(cancelled);
       pending.rejectCompletion?.(cancelled);
     }
@@ -1555,7 +1595,7 @@ export function createProductionRbpIngressHost(
                 cancelled = true;
                 controller.abort();
                 rejectStart(new Error("WSS dispatch queue cancelled before invocation"));
-                return await handoff.cancelBeforeStart();
+                return await boundedDispatchCancellation(handoff);
               },
             };
           };

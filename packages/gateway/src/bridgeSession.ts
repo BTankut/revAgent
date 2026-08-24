@@ -7078,12 +7078,6 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       completedAndVerified = true;
     } catch (error) {
       sendFailure = error;
-      if (started === null && !provenPreStartCancellation) {
-        // A direct/no-handoff carrier that failed before promotion is still
-        // provably pre-start.  Release only if the exact reservation remains;
-        // a concurrent revoke/replace simply wins this CAS and stays fenced.
-        provenPreStartCancellation = await this.#releaseReservedEgressLease(reservation);
-      }
     } finally {
       try {
         // Only a successfully completed and post-send verified transport can
