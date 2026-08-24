@@ -23,7 +23,6 @@ import {
   type RealTrioAuditControlFailure,
   type RealTrioAuditControlOutcome,
   type RealTrioSupervisorResult,
-  PublicGatewayControlError,
   classifyRealTrioAuditControlFailure,
 } from "../src/realTrioSupervisor.js";
 import { stableJson } from "../src/stableJson.js";
@@ -1376,14 +1375,6 @@ function currentAcceptedObservationState(
   return "not_fresh";
 }
 
-function hasOneCurrentAcceptedObservation(
-  audit: unknown,
-  current: CurrentRouteAuditIdentity,
-  baseline: RealTrioGatewayAuditBaseline,
-): boolean {
-  return currentAcceptedObservationState(audit, current, baseline) === "one";
-}
-
 function cursorState(input: RealTrioCurrentRouteSelectorInput): "ok" | "expired" | "invalid" {
   if (input.rows.length === 0) return "ok";
   const first = input.rows[0];
@@ -1793,36 +1784,6 @@ export function hasRealTrioLiveDocumentRoute(
   const route = (lifecycle as Record<string, unknown>).liveDocumentRoute;
   return route !== null && typeof route === "object" && !Array.isArray(route) &&
     (route as Record<string, unknown>).sessionDocumentId === expectedDocumentId;
-}
-
-async function waitForLiveDocumentRoute(input: {
-  readonly endpoint: string;
-  readonly controlToken: string;
-  readonly certificateSha256: string;
-  readonly supervisor: RealTrioSupervisorResult;
-  readonly expected: RealTrioDocumentContextCorrelation;
-  readonly gatewayBaseline: RealTrioGatewayAuditBaseline;
-  readonly timeoutMs?: number;
-}): Promise<void> {
-  const deadline = Date.now() + (input.timeoutMs ?? DOCUMENT_CONTEXT_WATCHER_TIMEOUT_MS);
-  for (;;) {
-    if (input.supervisor.readDocumentContextFailureState().childExited) {
-      throw new Error("real trio child exited before document-context route");
-    }
-    const snapshot = await publicGatewayControl(
-      input.endpoint,
-      input.controlToken,
-      input.certificateSha256,
-      { action: "snapshot_audit" },
-    );
-    const audit = await input.supervisor.readRealCaseAudit();
-    if (hasRealTrioLiveDocumentRoute(snapshot) &&
-        hasGatewayAcceptedDocumentContextRoute(audit, input.expected, input.gatewayBaseline)) return;
-    if (Date.now() >= deadline) {
-      throw new Error("real trio fixture document context did not produce a live Gateway route");
-    }
-    await new Promise<void>((resolve) => setTimeout(resolve, 250));
-  }
 }
 
 async function documentContextFailureError(input: {

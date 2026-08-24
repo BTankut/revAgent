@@ -299,18 +299,17 @@ describe("WP-12 real-trio fixture document route gate", () => {
 
   it("selects only the current coherent route lifecycle when seq1 advances to seq2", () => {
     const hash = `sha256:${"a".repeat(64)}`;
-    const digest1 = `sha256:${"b".repeat(64)}`;
     const digest2 = `sha256:${"c".repeat(64)}`;
     const context1 = "d".repeat(64);
     const context2 = "e".repeat(64);
     const epoch = "123e4567-e89b-42d3-a456-426614174000";
-    const row = (cursor: number, stage: string, sequence: number, routeDigest: string) => cursorRow(
+    const row = (cursor: number, stage: string, sequence: number) => cursorRow(
       String(cursor), stage, stage === "probe" ? "started" : stage === "snapshot" ? "ready" :
         stage === "queue" ? "durably_queued" : "sent", sequence, hash,
     ).line;
     const lifecycle = (start: number, sequence: number, contextDigest: string) => ["probe", "snapshot", "queue", "send"].map((stage, offset) => ({
       cursor: String(start + offset), at: "2026-08-24T00:00:01.000Z", line: JSON.stringify({
-        ...JSON.parse(row(start + offset, stage, stage === "snapshot" ? null : sequence, digest1)),
+        ...JSON.parse(row(start + offset, stage, stage === "snapshot" ? null : sequence)),
         ...(["snapshot", "queue", "send"].includes(stage) ? {
           contextDigest, sourceRevision: 1, cacheIncarnationDigest: `sha256:${"c".repeat(64)}`,
         } : {}),
