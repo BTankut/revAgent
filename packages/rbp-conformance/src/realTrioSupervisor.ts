@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { request as httpsRequest } from "node:https";
+import { Agent, request as httpsRequest } from "node:https";
 import type { TLSSocket } from "node:tls";
 
 import {
@@ -1027,19 +1027,22 @@ export async function publicGatewayControl(
   }
   return await new Promise<JsonObject>((resolve, reject) => {
     let settled = false;
+    let pinVerified = false;
+    const agent = new Agent({ keepAlive: false, maxCachedSessions: 0, rejectUnauthorized: false });
     const fail = (error: Error): void => {
       if (settled) return;
       settled = true;
+      agent.destroy();
       reject(error);
     };
     const timer = setTimeout(() => {
       operation.destroy(new PublicGatewayControlError("timeout"));
       fail(new PublicGatewayControlError("timeout"));
     }, timeoutMs);
-    const operation = httpsRequest({ hostname: url.hostname, port: url.port, path: url.pathname, method: "POST", rejectUnauthorized: false, headers: { "content-type": "application/json", "content-length": payload.byteLength, "x-rbp-test-control": controlToken } }, (response) => {
+    const operation = httpsRequest({ hostname: url.hostname, port: url.port, path: url.pathname, method: "POST", agent, rejectUnauthorized: false, headers: { "content-type": "application/json", "content-length": payload.byteLength, "x-rbp-test-control": controlToken } }, (response) => {
       const peer = (response.socket as TLSSocket).getPeerCertificate(true).raw as Buffer | undefined;
       const observed = peer === undefined ? null : `sha256:${createHash("sha256").update(peer).digest("hex")}`;
-      if (observed !== expectedCertificateSha256) { response.resume(); clearTimeout(timer); fail(new PublicGatewayControlError("tls_pin")); return; }
+      if (!pinVerified || observed !== expectedCertificateSha256) { response.resume(); operation.destroy(); clearTimeout(timer); fail(new PublicGatewayControlError("tls_pin")); return; }
       const chunks: Buffer[] = [];
       let responseBytes = 0;
       response.on("data", (chunk: Buffer) => {
@@ -1071,9 +1074,22 @@ export async function publicGatewayControl(
           if (!settled) {
             settled = true;
             clearTimeout(timer);
+            agent.destroy();
             resolve(body);
           }
         } catch (error) { clearTimeout(timer); fail(error instanceof PublicGatewayControlError ? error : new PublicGatewayControlError("invalid_shape")); }
+      });
+    });
+    operation.once("socket", (socket: TLSSocket) => {
+      socket.once("secureConnect", () => {
+        const raw = socket.getPeerCertificate(true).raw as Buffer | undefined;
+        const observed = raw === undefined ? null : `sha256:${createHash("sha256").update(raw).digest("hex")}`;
+        if (observed !== expectedCertificateSha256) {
+          operation.destroy(new PublicGatewayControlError("tls_pin"));
+          fail(new PublicGatewayControlError("tls_pin"));
+          return;
+        }
+        pinVerified = true;
       });
     });
     operation.once("error", (error) => { clearTimeout(timer); fail(error); });
