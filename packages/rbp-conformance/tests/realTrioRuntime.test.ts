@@ -619,15 +619,18 @@ async function waitForC39Recovery(
 ): Promise<{ readonly content: Record<string, unknown> }> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
-    await runtime.verifyNorthDispatchFence();
     try {
+      // Keep the current authenticated MCP client/session.  Post-control D2
+      // evidence can be durable before its matching heartbeat acknowledgement
+      // reaches the strict fence; retry that same fence under this deadline.
+      await runtime.verifyNorthDispatchFence();
       const result = await client.recoverOmittedPayload({
         carrier,
         advertisedTool: { name: carrier.recovery_tool, version: carrier.recovery_tool_version },
         requestId: `wp12-c39-recovery-${binding}`,
       });
       if (result.content.state === "completed") return result;
-    } catch { /* C2 admission remains unavailable until the real D0 replay is durable. */ }
+    } catch { /* D2 fence or C2 admission is not coherent yet. */ }
     if (Date.now() >= deadline) throw new Error("real C39 public recovery did not complete");
     await new Promise<void>((resolve) => setTimeout(resolve, 200));
   }
