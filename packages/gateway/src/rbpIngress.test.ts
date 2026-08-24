@@ -1144,6 +1144,159 @@ describe("GW-12 production RBP ingress", () => {
     held.restore();
   });
 
+  it("records an exact no-send cancellation when a real WSS dispatch loses a capacity-one race", async () => {
+    const restartable = createRestartableTestStore();
+    const phaseOneCommitted = deferred();
+    const releasePhaseOne = deferred();
+    const originalTransact = restartable.store.transact.bind(restartable.store);
+    let heldPhaseOne = false;
+    vi.spyOn(restartable.store, "transact").mockImplementation((async (...args) => {
+      const outcome = await originalTransact(...args);
+      if (!heldPhaseOne && JSON.stringify(restartable.snapshot().records).includes("cancellation_pending")) {
+        heldPhaseOne = true;
+        phaseOneCommitted.resolve();
+        await releasePhaseOne.promise;
+      }
+      return outcome;
+    }) as typeof restartable.store.transact);
+    const activeIdentity = identity();
+    const authority = new GatewayBridgeSessionAuthority(restartable.store, activeIdentity);
+    let channel!: BridgeConnectionChannel;
+    const originalOpen = authority.openConnection.bind(authority);
+    vi.spyOn(authority, "openConnection").mockImplementation(async (input) => {
+      channel = input.channel;
+      return originalOpen(input);
+    });
+    const accepted = captureNextServerSocket();
+    const server = await startGatewayServer({
+      config,
+      ports: {
+        ...createFailClosedPorts(),
+        identity: activeIdentity,
+        protocolStore: restartable.store,
+        rbpIngress: createProductionRbpIngressHost({
+          authority,
+          wssEgress: { queuedFrames: 1, sendCompletionTimeoutMs: 500 },
+        }),
+      },
+    });
+    handles.push(server);
+    const client = await openRawWss(server.port);
+    const serverSocket = await accepted.promise;
+    client.socket.send(JSON.stringify(hello()));
+    await vi.waitFor(() => expect(client.messages[0]?.type).toBe("hello_ack"));
+    client.socket.send(JSON.stringify(registration()));
+    await vi.waitFor(() => expect(client.messages.some((frame) => frame.type === "session_registered")).toBe(true));
+    const registered = client.messages.find(
+      (frame): frame is SessionRegisteredEnvelope => frame.type === "session_registered",
+    );
+    if (registered === undefined) throw new Error("WSS registration evidence unavailable");
+
+    const held = holdWebSocketSendCallbacks(serverSocket);
+    try {
+      const occupying = channel.send(JSON.stringify({ occupying: true }));
+      // The real overload closes the carrier synchronously; observe this
+      // transport promise now so its expected teardown rejection is not an
+      // unhandled process event while durable cancellation is still settling.
+      void occupying.catch(() => undefined);
+      await vi.waitFor(() => expect(held.callbacks).toHaveLength(1));
+      const sendsBeforeDispatch = vi.mocked(serverSocket.send).mock.calls.length;
+      const invocation = request(registered.payload.rsid, { mutating: true });
+      const executor = authority.createExecutor();
+      const draft = executor.buildMutationDispatch!(invocation);
+      const envelope = draft.envelope as Extract<RbpEnvelope, { type: "invoke" }>;
+      const journal = createReceivedJournalRecord(draft.expected.bindings[0]!);
+      const prepared: GatewayRecoveryPendingDispatch = {
+        kind: "mutation",
+        envelope,
+        envelopeDigest: dataEnvelopeImmutableDigest(envelope as DataEnvelopeSnapshot),
+        gatewaySequence: envelope.seq,
+        sessionBindingId: draft.sessionBindingId,
+        preparedConnectionId: draft.connectionId,
+        authorizedSessionVersion: 1,
+        requiredSessionCapabilities: [],
+        mutationEntries: [{
+          invocationId: invocation.context.invocationId,
+          idempotencyKey: invocation.context.idempotencyKey,
+          mutationScope: { kind: "session" },
+          journalBindingDigest: journal.bindingDigest,
+        }],
+        journalRecords: [journal],
+        journalAttestation: null,
+        batchTerminal: null,
+        recoveryHoldIds: [],
+        recoveryClearances: [],
+        verificationHoldId: null,
+        originRedelivery: false,
+        bridgeAcceptance: null,
+        preparedAtMs: Date.now(),
+      };
+
+      const cancellation = executor.executePreparedMutation!(invocation, prepared);
+      await phaseOneCommitted.promise;
+      // Phase one is durably visible before the controlled adapter allows
+      // phase two to mint the exact no-send receipt and clear the lease.
+      const phaseOne = JSON.stringify(restartable.snapshot().records);
+      expect(phaseOne).toContain("cancellation_pending");
+      expect(phaseOne).toContain("reserved");
+      releasePhaseOne.resolve();
+      await expect(cancellation).resolves.toMatchObject({
+        state: "failed",
+        error: { code: "executor_unavailable" },
+      });
+      // The capacity-one carrier rejected before its transport invocation
+      // boundary; only the occupying real websocket.send is observable.
+      expect(vi.mocked(serverSocket.send).mock.calls).toHaveLength(sendsBeforeDispatch);
+      const durable = JSON.stringify(restartable.snapshot().records);
+      expect(durable).toContain("no_send");
+
+      held.callbacks.shift()!();
+      await occupying.catch(() => undefined);
+      await expect(client.closed).resolves.toMatchObject({ code: 1013 });
+      await vi.waitFor(() => {
+        const settled = JSON.stringify(restartable.snapshot().records);
+        expect(settled).not.toContain("cancellation_pending");
+        expect(settled).toContain("no_send");
+      });
+      await authority.close();
+      const restarted = new GatewayBridgeSessionAuthority(restartable.restart(), activeIdentity);
+      await restarted.open();
+      try {
+        const resumedFrames: RbpEnvelope[] = [];
+        const resumed = await restarted.openConnection({
+          deviceToken: "device-token",
+          binding: "wss",
+          hello: hello(),
+          channel: {
+            async send(serialized) {
+              resumedFrames.push(JSON.parse(serialized) as RbpEnvelope);
+            },
+            async close() {},
+          },
+        });
+        await restarted.receive(resumed.connectionId, {
+          v: 1,
+          type: "session_resume",
+          id: id(),
+          ts: new Date().toISOString(),
+          payload: {
+            rsid: registered.payload.rsid,
+            resume_token: registered.payload.resume_token,
+            last_rx_seq: 0,
+          },
+        });
+        expect(resumedFrames.map((frame) => frame.type)).toStrictEqual(["resume_ack"]);
+      } finally {
+        await restarted.close();
+      }
+    } finally {
+      releasePhaseOne.resolve();
+      while (held.callbacks.length > 0) held.callbacks.shift()!();
+      held.restore();
+      if (client.socket.readyState !== WebSocket.CLOSED) client.socket.terminate();
+    }
+  });
+
   it("bounds concurrent application egress bytes at exact F and rejects plus one", async () => {
     const restartable = createRestartableTestStore();
     const activeIdentity = identity();
