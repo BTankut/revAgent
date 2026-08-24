@@ -8,6 +8,7 @@ import { createEphemeralLoopbackTlsIdentity } from "../src/ephemeralTlsIdentity.
 import {
   RealTrioNorthMcpError,
   RealTrioNorthToolResultError,
+  RealTrioOmittedPayloadCoordinateError,
   parseRealTrioWireResponse,
   parseOmittedPayloadCoordinateCarrier,
   strictToolContent,
@@ -139,6 +140,70 @@ describe("strict real-trio Streamable HTTP MCP client", () => {
         expected_result_digest: carrier.expected_result_digest,
       },
     }]);
+  });
+
+  it("accepts an isError result only when the C2c coordinate is exact and canonical", async () => {
+    const carrier = Object.freeze({
+      carrier_version: "c39.omitted-recovery-coordinate/v1",
+      code: "payload_omitted",
+      expected_result_digest: `sha256:${"c".repeat(64)}`,
+      origin_invocation_id: "019f9ac3-ae89-7342-9f6d-b9269e167187",
+      recovery_tool: "core.dispatch.payload_recovery",
+      recovery_tool_version: "1.0.0",
+    });
+    const server = await testServer({ toolCallResult: {
+      isError: true,
+      structuredContent: carrier,
+      content: [{ type: "text", text: JSON.stringify(carrier) }],
+    } });
+    await expect(withRealTrioNorthMcpClient({ ...server, credential }, async (client) =>
+      await client.toolCall({ name: "conformance.fixture.c39_multifile", arguments: {}, requestId: "c39-coordinate" }),
+    )).rejects.toMatchObject({
+      name: "RealTrioOmittedPayloadCoordinateError",
+      carrier,
+    } satisfies Partial<RealTrioOmittedPayloadCoordinateError>);
+  });
+
+  it.each([
+    (carrier: Record<string, unknown>) => ({ ...carrier, extra: true }),
+    (carrier: Record<string, unknown>) => ({ ...carrier, recovery_tool_version: "1.0.1" }),
+  ])("keeps forged C2c coordinates as generic tool errors", async (forge) => {
+    const carrier = {
+      carrier_version: "c39.omitted-recovery-coordinate/v1",
+      code: "payload_omitted",
+      expected_result_digest: `sha256:${"d".repeat(64)}`,
+      origin_invocation_id: "019f9ac3-ae89-7342-9f6d-b9269e167187",
+      recovery_tool: "core.dispatch.payload_recovery",
+      recovery_tool_version: "1.0.0",
+    };
+    const forged = forge(carrier);
+    const server = await testServer({ toolCallResult: {
+      isError: true,
+      structuredContent: forged,
+      content: [{ type: "text", text: JSON.stringify(forged) }],
+    } });
+    await expect(withRealTrioNorthMcpClient({ ...server, credential }, async (client) =>
+      await client.toolCall({ name: "conformance.fixture.c39_multifile", arguments: {}, requestId: "c39-forged" }),
+    )).rejects.toBeInstanceOf(RealTrioNorthToolResultError);
+  });
+
+  it("rejects a coordinate whose structured and canonical text forms diverge", async () => {
+    const carrier = {
+      carrier_version: "c39.omitted-recovery-coordinate/v1",
+      code: "payload_omitted",
+      expected_result_digest: `sha256:${"e".repeat(64)}`,
+      origin_invocation_id: "019f9ac3-ae89-7342-9f6d-b9269e167187",
+      recovery_tool: "core.dispatch.payload_recovery",
+      recovery_tool_version: "1.0.0",
+    };
+    const server = await testServer({ toolCallResult: {
+      isError: true,
+      structuredContent: carrier,
+      content: [{ type: "text", text: JSON.stringify({ ...carrier, code: "forged" }) }],
+    } });
+    await expect(withRealTrioNorthMcpClient({ ...server, credential }, async (client) =>
+      await client.toolCall({ name: "conformance.fixture.c39_multifile", arguments: {}, requestId: "c39-mismatch" }),
+    )).rejects.toBeInstanceOf(RealTrioNorthToolResultError);
   });
 
   it("uses the actual stateless Streamable HTTP ordering with no MCP session header", async () => {

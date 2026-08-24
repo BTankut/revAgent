@@ -258,6 +258,13 @@ export class RealTrioNorthMcpClient {
     try {
       return Object.freeze({ content: strictToolContent(result.response), evidence: result.evidence });
     } catch {
+      const coordinate = strictOmittedPayloadCoordinateError(result.response);
+      if (coordinate !== null) {
+        throw new RealTrioOmittedPayloadCoordinateError(
+          coordinate,
+          boundedToolResultEvidence(result.response, result.evidence),
+        );
+      }
       throw new RealTrioNorthToolResultError(boundedToolResultEvidence(result.response, result.evidence));
     }
   }
@@ -377,6 +384,21 @@ export interface RealTrioOmittedPayloadCoordinateCarrier {
   readonly carrier_version: "c39.omitted-recovery-coordinate/v1";
 }
 
+/**
+ * The one public C2c exception to ordinary MCP tool-error handling.  It is
+ * emitted only after an exact structured/text carrier parity check; callers
+ * receive no generic error body or fixture provenance through this type.
+ */
+export class RealTrioOmittedPayloadCoordinateError extends Error {
+  public constructor(
+    readonly carrier: RealTrioOmittedPayloadCoordinateCarrier,
+    readonly evidence: RealTrioNorthToolResultEvidence,
+  ) {
+    super("real trio MCP returned a strict omitted-payload coordinate carrier");
+    this.name = "RealTrioOmittedPayloadCoordinateError";
+  }
+}
+
 /** Exact public C39 carrier parser; this never accepts a fixture identifier. */
 export function parseOmittedPayloadCoordinateCarrier(
   value: unknown,
@@ -396,6 +418,36 @@ export function parseOmittedPayloadCoordinateCarrier(
     candidate.carrier_version === "c39.omitted-recovery-coordinate/v1"
     ? Object.freeze(candidate as unknown as RealTrioOmittedPayloadCoordinateCarrier)
     : null;
+}
+
+function canonicalOmittedPayloadCoordinateCarrier(
+  carrier: RealTrioOmittedPayloadCoordinateCarrier,
+): string {
+  return JSON.stringify({
+    carrier_version: carrier.carrier_version,
+    code: carrier.code,
+    expected_result_digest: carrier.expected_result_digest,
+    origin_invocation_id: carrier.origin_invocation_id,
+    recovery_tool: carrier.recovery_tool,
+    recovery_tool_version: carrier.recovery_tool_version,
+  });
+}
+
+function strictOmittedPayloadCoordinateError(response: unknown): RealTrioOmittedPayloadCoordinateCarrier | null {
+  try {
+    const envelope = record(response, "real trio MCP response");
+    const result = record(envelope.result, "real trio MCP response result");
+    if (result.isError !== true || !Object.hasOwn(result, "structuredContent") || !Object.hasOwn(result, "content")) return null;
+    const structured = record(result.structuredContent, "real trio MCP omitted coordinate structured content");
+    const carrier = parseOmittedPayloadCoordinateCarrier(structured);
+    if (carrier === null || !Array.isArray(result.content) || result.content.length !== 1) return null;
+    const item = record(result.content[0], "real trio MCP omitted coordinate fallback content");
+    if (item.type !== "text" || typeof item.text !== "string" ||
+        Buffer.byteLength(item.text, "utf8") > MAX_FALLBACK_TEXT_BYTES) return null;
+    const fallback = record(JSON.parse(item.text) as unknown, "real trio MCP omitted coordinate fallback JSON");
+    return isDeepStrictEqual(structured, fallback) && item.text === canonicalOmittedPayloadCoordinateCarrier(carrier)
+      ? carrier : null;
+  } catch { return null; }
 }
 
 /** A parse failure carries only bounded structural metadata, never tool text or payloads. */

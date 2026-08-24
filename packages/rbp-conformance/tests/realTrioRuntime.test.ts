@@ -11,6 +11,7 @@ import {
 } from "../src/realTrioCaseDriver.js";
 import {
   parseOmittedPayloadCoordinateCarrier,
+  RealTrioOmittedPayloadCoordinateError,
   withRealTrioNorthMcpClient,
   type RealTrioNorthMcpClient,
 } from "../src/realTrioMcpClient.js";
@@ -434,10 +435,15 @@ async function c39OriginCarrier(
   client: RealTrioNorthMcpClient,
   input: Parameters<RealTrioNorthMcpClient["toolCall"]>[0],
 ): Promise<NonNullable<ReturnType<typeof parseOmittedPayloadCoordinateCarrier>>> {
-  const result = await client.toolCall(input);
-  const carrier = parseOmittedPayloadCoordinateCarrier(result.content);
-  if (carrier === null) throw new Error("C39 origin did not return the strict public omitted-payload coordinate carrier");
-  return carrier;
+  try {
+    const result = await client.toolCall(input);
+    const carrier = parseOmittedPayloadCoordinateCarrier(result.content);
+    if (carrier === null) throw new Error("C39 origin did not return the strict public omitted-payload coordinate carrier");
+    return carrier;
+  } catch (error) {
+    if (error instanceof RealTrioOmittedPayloadCoordinateError) return error.carrier;
+    throw error;
+  }
 }
 
 async function expectC39RecoveryDenied(
