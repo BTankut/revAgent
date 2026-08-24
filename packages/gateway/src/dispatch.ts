@@ -115,6 +115,12 @@ export interface GatewayExecutor {
 
 export type GatewayExecutorOutcome =
   | {
+      /** Internal Bridge-only result; North converts it to a fixed carrier. */
+      readonly state: "omitted_payload";
+      readonly originInvocationId: string;
+      readonly expectedResultDigest: `sha256:${string}`;
+    }
+  | {
       readonly state: "completed";
       readonly result: GatewayJsonValue;
     }
@@ -132,6 +138,23 @@ export type GatewayExecutorOutcome =
     };
 
 export type GatewayDispatchOutcome =
+  | {
+      readonly ok: true;
+      readonly state: "omitted_payload";
+      readonly toolName: string;
+      readonly toolVersion: string;
+      readonly executor: "bridge";
+      readonly requestId: string;
+      /** Internal sentinel only; North replaces this outcome with a carrier. */
+      readonly result: null;
+      readonly originInvocationId: string;
+      readonly expectedResultDigest: `sha256:${string}`;
+      readonly auditDelivery?: "recorded" | "unavailable";
+      readonly auditError?: {
+        readonly detailCode: string;
+        readonly message: string;
+      };
+    }
   | {
       readonly ok: true;
       readonly state: "completed";
@@ -492,6 +515,32 @@ function normalizeExecutorOutcome(input: {
         executorCode: failure.code.slice(0, 120),
         message: failure.message.replace(/[\r\n]+/gu, " ").slice(0, 600),
       },
+    };
+  }
+  if (executorOutcome.state === "omitted_payload") {
+    if (
+      input.tool.executor !== "bridge" ||
+      typeof executorOutcome.originInvocationId !== "string" ||
+      !isGatewayUuidV7(executorOutcome.originInvocationId) ||
+      typeof executorOutcome.expectedResultDigest !== "string" ||
+      !/^sha256:[0-9a-f]{64}$/u.test(executorOutcome.expectedResultDigest)
+    ) {
+      return invalidExecutorResult({
+        toolName: input.tool.name,
+        requestId: input.requestId,
+        message: "executor returned an invalid omitted-payload outcome",
+      });
+    }
+    return {
+      ok: true,
+      state: "omitted_payload",
+      toolName: input.tool.name,
+      toolVersion: input.tool.version,
+      executor: "bridge",
+      requestId: input.requestId,
+      result: null,
+      originInvocationId: executorOutcome.originInvocationId,
+      expectedResultDigest: executorOutcome.expectedResultDigest as `sha256:${string}`,
     };
   }
   if (

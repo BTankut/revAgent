@@ -73,6 +73,49 @@ export const NORTH_MODE_A_PINNED_TOOLS = Object.freeze([
 ] as const);
 const DEFAULT_MODE_A_SESSION_TTL_MS = 30 * 60 * 1_000;
 const TEST_EFFECTIVE_SCOPE_OBSERVER = "__revAgentTestObserveEffectiveMcpScope";
+export const OMITTED_PAYLOAD_COORDINATE_CARRIER_VERSION = 1 as const;
+export const OMITTED_PAYLOAD_COORDINATE_RECOVERY_TOOL =
+  "dispatch_payload_recovery" as const;
+const OMITTED_PAYLOAD_COORDINATE_CODE = "payload_omitted" as const;
+const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
+const SHA256 = /^sha256:[0-9a-f]{64}$/u;
+
+export interface OmittedPayloadCoordinateCarrierV1 {
+  readonly code: typeof OMITTED_PAYLOAD_COORDINATE_CODE;
+  readonly origin_invocation_id: string;
+  readonly expected_result_digest: `sha256:${string}`;
+  readonly recovery_tool: typeof OMITTED_PAYLOAD_COORDINATE_RECOVERY_TOOL;
+  readonly version: typeof OMITTED_PAYLOAD_COORDINATE_CARRIER_VERSION;
+}
+
+/** Strict public parser: near matches never become recovery coordinates. */
+export function parseOmittedPayloadCoordinateCarrier(
+  value: unknown,
+): OmittedPayloadCoordinateCarrierV1 | null {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const keys = Object.keys(record).sort();
+  const expected = ["code", "expected_result_digest", "origin_invocation_id", "recovery_tool", "version"];
+  if (keys.length !== expected.length || keys.some((key, index) => key !== expected[index])) return null;
+  return record.code === OMITTED_PAYLOAD_COORDINATE_CODE &&
+    typeof record.origin_invocation_id === "string" && UUID_V7.test(record.origin_invocation_id) &&
+    typeof record.expected_result_digest === "string" && SHA256.test(record.expected_result_digest) &&
+    record.recovery_tool === OMITTED_PAYLOAD_COORDINATE_RECOVERY_TOOL &&
+    record.version === OMITTED_PAYLOAD_COORDINATE_CARRIER_VERSION
+    ? Object.freeze(record as unknown as OmittedPayloadCoordinateCarrierV1)
+    : null;
+}
+
+function omittedPayloadCoordinateResult(
+  carrier: OmittedPayloadCoordinateCarrierV1,
+) {
+  const text = canonicalizeJson(carrier as unknown as JsonValue);
+  return {
+    content: [{ type: "text" as const, text }],
+    structuredContent: carrier as unknown as Record<string, unknown>,
+    isError: false as const,
+  };
+}
 
 type AuthenticatedIncomingMessage = IncomingMessage & {
   auth?: AuthInfo;
@@ -999,6 +1042,44 @@ function createSessionServer(input: {
             },
           }),
         );
+        if (outcome.state === "omitted_payload") {
+          if (input.payloadRecovery === undefined || !input.payloadRecovery.ready()) {
+            return toolResult(Object.freeze({
+              ok: false as const, state: "failed" as const, toolName: record.name,
+              requestId: "correlated-recovery-guarded", executorReached: true,
+              error: Object.freeze({ code: "recovery_unavailable" as const }),
+            }));
+          }
+          try {
+            const route = await input.invocationRouteFor(
+              input.authenticated,
+              mcpSessionId,
+              input.effectiveMcpRequestScope,
+            );
+            const claim = await input.payloadRecovery.admit({
+              tenantId: input.authenticated.authContext.actor.tenantId,
+              userId: input.authenticated.authContext.actor.userId,
+              effectiveMcpSessionId: mcpSessionId,
+              rsid: route.rsid,
+              originInvocationId: outcome.originInvocationId,
+              originResultDigest: outcome.expectedResultDigest,
+            });
+            if (claim.kind === "guarded") throw new Error("guarded");
+            return omittedPayloadCoordinateResult(Object.freeze({
+              code: OMITTED_PAYLOAD_COORDINATE_CODE,
+              origin_invocation_id: outcome.originInvocationId,
+              expected_result_digest: outcome.expectedResultDigest,
+              recovery_tool: OMITTED_PAYLOAD_COORDINATE_RECOVERY_TOOL,
+              version: OMITTED_PAYLOAD_COORDINATE_CARRIER_VERSION,
+            }));
+          } catch {
+            return toolResult(Object.freeze({
+              ok: false as const, state: "failed" as const, toolName: record.name,
+              requestId: "correlated-recovery-guarded", executorReached: true,
+              error: Object.freeze({ code: "recovery_unavailable" as const }),
+            }));
+          }
+        }
         if (input.resourceAuthority === undefined) {
           return toolResult(outcome);
         }

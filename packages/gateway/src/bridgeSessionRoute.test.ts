@@ -1341,7 +1341,11 @@ describe("Gateway omitted-payload recovery admission", () => {
           metrics: { execute_ms: 1, request_bytes: 1, response_bytes: 0, framing: "length-prefixed" },
         },
       });
-      await expect(outcome).resolves.toEqual({ state: "completed", result: null });
+      await expect(outcome).resolves.toEqual({
+        state: "omitted_payload",
+        originInvocationId: invocationId,
+        expectedResultDigest: originResultDigest,
+      });
       const root = fixture.snapshot().records.find((row) =>
         row.namespace === "gateway.rbp-session/v2" && row.key === session.payload.rsid,
       );

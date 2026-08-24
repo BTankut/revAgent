@@ -330,6 +330,33 @@ export function strictToolContent(response: unknown): Record<string, unknown> {
   catch { throw new Error("real trio MCP tool fallback text is not a JSON object"); }
 }
 
+export interface RealTrioOmittedPayloadCoordinateCarrier {
+  readonly code: "payload_omitted";
+  readonly origin_invocation_id: string;
+  readonly expected_result_digest: `sha256:${string}`;
+  readonly recovery_tool: "dispatch_payload_recovery";
+  readonly version: 1;
+}
+
+/** Exact public C39 carrier parser; this never accepts a fixture identifier. */
+export function parseOmittedPayloadCoordinateCarrier(
+  value: unknown,
+): RealTrioOmittedPayloadCoordinateCarrier | null {
+  const candidate = asStrictObject(value);
+  if (candidate === null) return null;
+  const keys = Object.keys(candidate).sort();
+  const expected = ["code", "expected_result_digest", "origin_invocation_id", "recovery_tool", "version"];
+  if (keys.length !== expected.length || keys.some((key, index) => key !== expected[index])) return null;
+  return candidate.code === "payload_omitted" &&
+    typeof candidate.origin_invocation_id === "string" &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(candidate.origin_invocation_id) &&
+    typeof candidate.expected_result_digest === "string" &&
+    /^sha256:[0-9a-f]{64}$/u.test(candidate.expected_result_digest) &&
+    candidate.recovery_tool === "dispatch_payload_recovery" && candidate.version === 1
+    ? Object.freeze(candidate as unknown as RealTrioOmittedPayloadCoordinateCarrier)
+    : null;
+}
+
 /** A parse failure carries only bounded structural metadata, never tool text or payloads. */
 export function boundedToolResultEvidence(
   response: unknown,

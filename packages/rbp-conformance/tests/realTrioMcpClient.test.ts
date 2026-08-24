@@ -8,6 +8,7 @@ import { createEphemeralLoopbackTlsIdentity } from "../src/ephemeralTlsIdentity.
 import {
   RealTrioNorthMcpError,
   RealTrioNorthToolResultError,
+  parseOmittedPayloadCoordinateCarrier,
   strictToolContent,
   withRealTrioNorthMcpClient,
 } from "../src/realTrioMcpClient.js";
@@ -69,6 +70,26 @@ async function testServer(input: {
 }
 
 describe("strict real-trio Streamable HTTP MCP client", () => {
+  it("accepts only the exact C39 omitted-payload coordinate carrier", () => {
+    const valid = {
+      code: "payload_omitted",
+      origin_invocation_id: "019f9ac3-ae89-7342-9f6d-b9269e167187",
+      expected_result_digest: `sha256:${"a".repeat(64)}`,
+      recovery_tool: "dispatch_payload_recovery",
+      version: 1,
+    };
+    expect(parseOmittedPayloadCoordinateCarrier(valid)).toEqual(valid);
+    for (const invalid of [
+      { ...valid, fixture_id: "forbidden" },
+      { ...valid, version: 2 },
+      { ...valid, recovery_tool: "other" },
+      { ...valid, origin_invocation_id: "not-a-uuid" },
+      { ...valid, expected_result_digest: "sha256:BAD" },
+    ]) {
+      expect(parseOmittedPayloadCoordinateCarrier(invalid)).toBeNull();
+    }
+  });
+
   it("uses the actual stateless Streamable HTTP ordering with no MCP session header", async () => {
     const server = await testServer();
     await withRealTrioNorthMcpClient({ ...server, credential }, async (client) => {

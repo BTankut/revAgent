@@ -2564,6 +2564,20 @@ function terminalOutcome(
       },
     };
   }
+  if (
+    envelope.type === "result" &&
+    envelope.payload.kind === "invocation" &&
+    envelope.payload.payload_omitted === true &&
+    envelope.payload.replayed === true &&
+    typeof envelope.payload.result_digest === "string" &&
+    DIGEST_PATTERN.test(envelope.payload.result_digest)
+  ) {
+    return {
+      state: "omitted_payload",
+      originInvocationId: envelope.payload.invocation_id,
+      expectedResultDigest: envelope.payload.result_digest as `sha256:${string}`,
+    };
+  }
   if (envelope.payload.status === "guarded") {
     return {
       state: "guarded",
