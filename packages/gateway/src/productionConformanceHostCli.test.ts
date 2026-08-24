@@ -22,9 +22,9 @@ const route = (overrides: Record<string, unknown> = {}) => Object.freeze({
   sessionBindingDigest: digest("e"), connectionDigest: digest("f"),
   sessionRecordVersion: 9, ...overrides,
 });
-const observation = Object.freeze({ stage: "accepted" as const, sequence: 7, contextDigest,
+const observation: DocumentContextObservationSnapshot["rows"][number] = Object.freeze({ stage: "accepted" as const, sequence: 7, contextDigest,
   ordinal: 2, observedAtUtc: "2026-08-24T00:00:00.000Z" });
-const snapshot = (rows = [observation], highWaterOrdinal = 2, processEpoch = epoch): DocumentContextObservationSnapshot =>
+const snapshot = (rows: DocumentContextObservationSnapshot["rows"] = [observation], highWaterOrdinal = 2, processEpoch = epoch): DocumentContextObservationSnapshot =>
   Object.freeze({ processEpoch, highWaterOrdinal, rows: Object.freeze(rows) });
 
 const packageRoot = fileURLToPath(new URL("../", import.meta.url));
@@ -46,9 +46,62 @@ describe("WP-12 coherent document-context host audit", () => {
     expect(reads).toBe(2);
     expect(result.currentRoute).toMatchObject({ contextDigest, routeDigest: digest("b"), recordDigest: digest("d"), sessionBindingDigest: digest("e"), connectionDigest: digest("f") });
     expect(result.updates).toHaveLength(1);
+    expect(result).toMatchObject({ status: "joined", attemptCount: 1, observationCount: 1 });
     expect(JSON.stringify(result)).not.toContain("document-live");
     expect(MAX_DOCUMENT_CONTEXT_OBSERVATIONS).toBe(32);
     expect(MAX_DOCUMENT_CONTEXT_OBSERVATION_BYTES).toBe(2048);
+  });
+
+  it("reports bounded value-free missing and mismatch statuses", () => {
+    const status = (result: ReturnType<typeof coherentDocumentContextAudit>, expected: string): void => {
+      expect(result).toMatchObject({ status: expected, attemptCount: 3 });
+    };
+    status(coherentDocumentContextAudit({ authority: { readCurrentDocumentRouteAuditSnapshot: () => null }, processEpoch: epoch,
+      snapshotObservations: () => snapshot() }), "route_absent");
+    status(coherentDocumentContextAudit({ authority: { readCurrentDocumentRouteAuditSnapshot: () => route() }, processEpoch: epoch,
+      snapshotObservations: () => snapshot([], 2) }), "observation_missing");
+    status(coherentDocumentContextAudit({ authority: { readCurrentDocumentRouteAuditSnapshot: () => route() }, processEpoch: epoch,
+      snapshotObservations: () => snapshot([{ ...observation, sequence: 8 }], 2) }), "sequence_mismatch");
+    status(coherentDocumentContextAudit({ authority: { readCurrentDocumentRouteAuditSnapshot: () => route() }, processEpoch: epoch,
+      snapshotObservations: () => snapshot([{ ...observation, contextDigest: "d".repeat(64) }], 2) }), "context_digest_mismatch");
+    const exhausted = coherentDocumentContextAudit({ authority: { readCurrentDocumentRouteAuditSnapshot: () => route({ contextDigest: "not-a-digest-super-secret" }) }, processEpoch: epoch,
+      snapshotObservations: () => snapshot() });
+    status(exhausted, "retry_exhausted");
+    expect(JSON.stringify(exhausted)).not.toContain("not-a-digest-super-secret");
+  });
+
+  it.each([
+    ["route_changed", "routeDigest"],
+    ["record_or_binding_changed", "recordDigest"],
+    ["record_or_binding_changed", "sessionBindingDigest"],
+    ["record_or_binding_changed", "connectionDigest"],
+    ["record_or_binding_changed", "sessionRecordVersion"],
+  ] as const)("reports %s for final-route %s churn", (expected, field) => {
+    let reads = 0;
+    const result = coherentDocumentContextAudit({
+      authority: { readCurrentDocumentRouteAuditSnapshot: () => {
+        reads += 1;
+        return reads % 2 === 1 ? route() : route({ [field]: field === "sessionRecordVersion" ? 10 : digest("9") });
+      } },
+      processEpoch: epoch, snapshotObservations: () => snapshot(),
+    });
+    expect(result).toMatchObject({ status: expected, attemptCount: 3 });
+  });
+
+  it("prioritizes epoch churn and identifies a bounded retained cursor eviction", () => {
+    const epochChurn = coherentDocumentContextAudit({
+      authority: { readCurrentDocumentRouteAuditSnapshot: () => null }, processEpoch: epoch,
+      snapshotObservations: () => snapshot([], 0, "223e4567-e89b-42d3-a456-426614174000"),
+    });
+    expect(epochChurn.status).toBe("epoch_churn");
+    const evictedRows = Array.from({ length: MAX_DOCUMENT_CONTEXT_OBSERVATIONS }, (_, index) => ({
+      ...observation, ordinal: index + 2, sequence: index + 100,
+    }));
+    const evicted = coherentDocumentContextAudit({
+      authority: { readCurrentDocumentRouteAuditSnapshot: () => route() }, processEpoch: epoch,
+      snapshotObservations: () => snapshot(evictedRows, MAX_DOCUMENT_CONTEXT_OBSERVATIONS + 1),
+    });
+    expect(evicted).toMatchObject({ status: "cursor_evicted", observationCount: MAX_DOCUMENT_CONTEXT_OBSERVATIONS });
   });
 
   it("fails closed for append A/route/B, post-B route churn, restart, and eviction", () => {

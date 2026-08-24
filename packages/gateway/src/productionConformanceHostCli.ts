@@ -156,6 +156,45 @@ export interface DocumentContextObservationSnapshot {
   readonly rows: readonly DocumentContextObservation[];
 }
 
+/**
+ * Value-free outcome of the bounded A/route/B/final-route audit attempt.
+ * This is diagnostic-only: it must never become an alternate join authority.
+ */
+export const COHERENT_DOCUMENT_CONTEXT_AUDIT_STATUSES = Object.freeze([
+  "joined",
+  "route_absent",
+  "observation_missing",
+  "sequence_mismatch",
+  "context_digest_mismatch",
+  "route_changed",
+  "record_or_binding_changed",
+  "epoch_churn",
+  "cursor_evicted",
+  "retry_exhausted",
+] as const);
+
+export type CoherentDocumentContextAuditStatus =
+  (typeof COHERENT_DOCUMENT_CONTEXT_AUDIT_STATUSES)[number];
+
+const MAX_COHERENT_DOCUMENT_CONTEXT_AUDIT_ATTEMPTS = 3;
+
+function coherentAuditPriority(status: CoherentDocumentContextAuditStatus): number {
+  switch (status) {
+    // Churn must win over a concurrently observable lower-level mismatch so
+    // an operator cannot mistake an unstable read for a stable bad row.
+    case "epoch_churn": return 90;
+    case "record_or_binding_changed": return 80;
+    case "route_changed": return 70;
+    case "cursor_evicted": return 60;
+    case "sequence_mismatch": return 50;
+    case "context_digest_mismatch": return 40;
+    case "observation_missing": return 30;
+    case "route_absent": return 20;
+    case "retry_exhausted": return 10;
+    case "joined": return 0;
+  }
+}
+
 function observationSnapshot(
   processEpoch: string,
   highWaterOrdinal: number,
@@ -183,6 +222,37 @@ function sameDocumentContextRoute(
     left.sessionRecordVersion === right.sessionRecordVersion;
 }
 
+function recordOrBindingChanged(
+  left: NonNullable<ReturnType<GatewayBridgeSessionAuthority["readCurrentDocumentRouteAuditSnapshot"]>>,
+  right: NonNullable<ReturnType<GatewayBridgeSessionAuthority["readCurrentDocumentRouteAuditSnapshot"]>>,
+): boolean {
+  return left.recordDigest !== right.recordDigest ||
+    left.sessionBindingDigest !== right.sessionBindingDigest ||
+    left.connectionDigest !== right.connectionDigest ||
+    left.sessionRecordVersion !== right.sessionRecordVersion;
+}
+
+function retainedDocumentContextCursorEvicted(snapshot: DocumentContextObservationSnapshot): boolean {
+  const first = snapshot.rows[0];
+  return snapshot.rows.length === MAX_DOCUMENT_CONTEXT_OBSERVATIONS &&
+    first !== undefined && first.ordinal > 1 && snapshot.highWaterOrdinal >= first.ordinal;
+}
+
+function observationStatus(
+  route: NonNullable<ReturnType<GatewayBridgeSessionAuthority["readCurrentDocumentRouteAuditSnapshot"]>>,
+  after: DocumentContextObservationSnapshot,
+): CoherentDocumentContextAuditStatus {
+  if (retainedDocumentContextCursorEvicted(after)) return "cursor_evicted";
+  const accepted = after.rows.filter((observation) => observation.stage === "accepted" &&
+    observation.ordinal >= 1 && observation.ordinal <= after.highWaterOrdinal &&
+    isCanonicalUtc(observation.observedAtUtc));
+  if (accepted.some((observation) => observation.contextDigest === route.contextDigest &&
+      observation.sequence !== route.observedSequence)) return "sequence_mismatch";
+  if (accepted.some((observation) => observation.sequence === route.observedSequence &&
+      observation.contextDigest !== route.contextDigest)) return "context_digest_mismatch";
+  return "observation_missing";
+}
+
 /**
  * Bounded optimistic join: it only reports one exact worker/Gateway pair.
  * Any journal churn, restart, eviction, route advancement, or ambiguity
@@ -200,52 +270,88 @@ export function coherentDocumentContextAudit(input: {
   readonly currentRoute: Record<string, unknown> | null;
   readonly updates: readonly Record<string, unknown>[];
   readonly highWaterOrdinal: number;
+  readonly status: CoherentDocumentContextAuditStatus;
+  readonly attemptCount: number;
+  readonly observationCount: number;
 }> {
-  for (let attempt = 0; attempt < 3; attempt += 1) {
+  let highestStatus: CoherentDocumentContextAuditStatus = "retry_exhausted";
+  let highestPriority = coherentAuditPriority(highestStatus);
+  let finalHighWaterOrdinal = 0;
+  let finalObservationCount = 0;
+  for (let attempt = 0; attempt < MAX_COHERENT_DOCUMENT_CONTEXT_AUDIT_ATTEMPTS; attempt += 1) {
     const before = input.snapshotObservations();
     const route = input.authority.readCurrentDocumentRouteAuditSnapshot({ tenantId: "conformance" });
     const after = input.snapshotObservations();
-    if (before.processEpoch !== input.processEpoch || after.processEpoch !== input.processEpoch ||
-        before.highWaterOrdinal !== after.highWaterOrdinal || route === null ||
-        !DOCUMENT_CONTEXT_DIGEST.test(route.contextDigest)) continue;
-    const matches = after.rows.filter((observation) => observation.stage === "accepted" &&
-      observation.sequence === route.observedSequence &&
-      observation.contextDigest === route.contextDigest &&
-      observation.ordinal >= 1 && observation.ordinal <= after.highWaterOrdinal &&
-      isCanonicalUtc(observation.observedAtUtc));
-    if (matches.length !== 1) continue;
-    const finalRoute = input.authority.readCurrentDocumentRouteAuditSnapshot({ tenantId: "conformance" });
-    if (!sameDocumentContextRoute(route, finalRoute)) continue;
-    const currentRoute = Object.freeze({
-      processEpoch: input.processEpoch,
-      rsidHash: route.rsidHash,
-      observedSequence: route.observedSequence,
-      contextDigest: route.contextDigest,
-      routeDigest: route.routeDigest,
-      recordDigest: route.recordDigest,
-      sessionBindingDigest: route.sessionBindingDigest,
-      connectionDigest: route.connectionDigest,
-      sessionRecordVersion: route.sessionRecordVersion,
-    });
-    const observation = matches[0]!;
-    return Object.freeze({
-      currentRoute,
-      updates: Object.freeze([Object.freeze({
-        contractVersion: "revagent.wp12-document-context-audit/v1",
-        event: "gateway.doc_context_update_observation",
-        stage: "accepted",
-        ...currentRoute,
-        observationOrdinal: observation.ordinal,
-        observedAtUtc: observation.observedAtUtc,
-      })]),
-      highWaterOrdinal: after.highWaterOrdinal,
-    });
+    finalHighWaterOrdinal = after.highWaterOrdinal;
+    finalObservationCount = Math.min(after.rows.length, MAX_DOCUMENT_CONTEXT_OBSERVATIONS);
+    let status: CoherentDocumentContextAuditStatus;
+    if (before.processEpoch !== input.processEpoch || after.processEpoch !== input.processEpoch) {
+      status = "epoch_churn";
+    } else if (before.highWaterOrdinal !== after.highWaterOrdinal) {
+      status = "cursor_evicted";
+    } else if (route === null) {
+      status = "route_absent";
+    } else if (!DOCUMENT_CONTEXT_DIGEST.test(route.contextDigest)) {
+      status = "retry_exhausted";
+    } else {
+      const matches = after.rows.filter((observation) => observation.stage === "accepted" &&
+        observation.sequence === route.observedSequence &&
+        observation.contextDigest === route.contextDigest &&
+        observation.ordinal >= 1 && observation.ordinal <= after.highWaterOrdinal &&
+        isCanonicalUtc(observation.observedAtUtc));
+      if (matches.length !== 1) {
+        status = observationStatus(route, after);
+      } else {
+        const finalRoute = input.authority.readCurrentDocumentRouteAuditSnapshot({ tenantId: "conformance" });
+        if (finalRoute === null) {
+          status = "route_changed";
+        } else if (!sameDocumentContextRoute(route, finalRoute)) {
+          status = recordOrBindingChanged(route, finalRoute) ? "record_or_binding_changed" : "route_changed";
+        } else {
+          const currentRoute = Object.freeze({
+            processEpoch: input.processEpoch,
+            rsidHash: route.rsidHash,
+            observedSequence: route.observedSequence,
+            contextDigest: route.contextDigest,
+            routeDigest: route.routeDigest,
+            recordDigest: route.recordDigest,
+            sessionBindingDigest: route.sessionBindingDigest,
+            connectionDigest: route.connectionDigest,
+            sessionRecordVersion: route.sessionRecordVersion,
+          });
+          const observation = matches[0]!;
+          return Object.freeze({
+            currentRoute,
+            updates: Object.freeze([Object.freeze({
+              contractVersion: "revagent.wp12-document-context-audit/v1",
+              event: "gateway.doc_context_update_observation",
+              stage: "accepted",
+              ...currentRoute,
+              observationOrdinal: observation.ordinal,
+              observedAtUtc: observation.observedAtUtc,
+            })]),
+            highWaterOrdinal: after.highWaterOrdinal,
+            status: "joined",
+            attemptCount: attempt + 1,
+            observationCount: finalObservationCount,
+          });
+        }
+      }
+    }
+    const priority = coherentAuditPriority(status);
+    if (priority > highestPriority) {
+      highestStatus = status;
+      highestPriority = priority;
+    }
   }
   const latest = input.snapshotObservations();
   return Object.freeze({
     currentRoute: null,
     updates: Object.freeze([]),
-    highWaterOrdinal: latest.highWaterOrdinal,
+    highWaterOrdinal: finalHighWaterOrdinal === 0 ? latest.highWaterOrdinal : finalHighWaterOrdinal,
+    status: highestStatus,
+    attemptCount: MAX_COHERENT_DOCUMENT_CONTEXT_AUDIT_ATTEMPTS,
+    observationCount: finalObservationCount === 0 ? Math.min(latest.rows.length, MAX_DOCUMENT_CONTEXT_OBSERVATIONS) : finalObservationCount,
   });
 }
 
@@ -593,6 +699,9 @@ export async function runProductionConformanceHostCli(args: readonly string[]): 
               // cursor generation, never hidden by a synthetic host reset.
               documentContextGeneration: 1,
               documentContextObservationHighWaterOrdinal: coherentDocumentContext.highWaterOrdinal,
+              documentContextAuditStatus: coherentDocumentContext.status,
+              documentContextAuditAttemptCount: coherentDocumentContext.attemptCount,
+              documentContextAuditObservationCount: coherentDocumentContext.observationCount,
               counts: Object.freeze({ records: records.length, auditAccesses: auditAccesses.length }),
               frontier: digest(rows),
               auditAccessDigest: digest(auditAccesses.map((entry) => entry.action)),

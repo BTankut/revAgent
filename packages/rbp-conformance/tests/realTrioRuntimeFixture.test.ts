@@ -480,6 +480,13 @@ describe("WP-12 real-trio fixture document route gate", () => {
         lifecycle: { liveDocumentRoute: { sessionDocumentId: "must-not-persist" }, sessionLifecycle: { dispatchAllowed: true } },
         bearer: "must-not-persist",
       } })) },
+      coherentAudit: {
+        documentContextAuditStatus: "sequence_mismatch",
+        documentContextAuditAttemptCount: 3,
+        documentContextAuditObservationCount: 1,
+        documentContextObservationHighWaterOrdinal: 2,
+        secret: "must-not-persist",
+      },
       childState: { childExited: false, processDiagnostics: [] },
     });
     const artifact = path.join(mkdtempSync(path.join(tmpdir(), "wp12-doc-evidence-")), "failure.json");
@@ -489,6 +496,7 @@ describe("WP-12 real-trio fixture document route gate", () => {
       schemaVersion: "rbp-real-trio-document-context-failure/v1",
       reason: "stage_timeout",
       fixtureSnapshot: { cacheReadCount: 3, pollRequestCount: 2, cachedContextHashPresent: true },
+      gatewayCoherentAudit: { status: "sequence_mismatch", attemptCount: 3, observationCount: 1, highWaterOrdinal: 2 },
     });
     expect(failure.documentStages).toHaveLength(64);
     expect(failure.gatewayRouteAudits).toHaveLength(32);
@@ -503,6 +511,7 @@ describe("WP-12 real-trio fixture document route gate", () => {
       transcript: [],
       fixtureEvidence: null,
       gatewayAudit: null,
+      coherentAudit: null,
       childState: { childExited: true, processDiagnostics: [{
         componentId: "bridge_worker", phase: "document_context_failure", exitCode: 1,
         stdout: [], stderr: ["token=[redacted]"],
