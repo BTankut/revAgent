@@ -30,6 +30,8 @@ const results = {
   schemaVersion: "wp12-native-compat-conformance/v1",
   nodeMajor: Number.parseInt(process.versions.node.split(".")[0], 10),
   expectedNodeMajor: null,
+  sourceBuild: false,
+  sourceBuiltOwners: 0,
   platform: process.platform,
   betterSqlite3: BETTER_SQLITE3.version,
   lock: false,
@@ -129,6 +131,7 @@ function assertNativeTrustSelfTests() {
   expectRejected(() => assertLockRecord({ packages: { [lockKey]: { ...validLock.packages[lockKey], version: LEGACY.version } } }, lockKey, BETTER_SQLITE3, "wrong lock version"), "wrong lock version");
   expectRejected(() => assertLockRecord({ packages: { [lockKey]: { ...validLock.packages[lockKey], integrity: LEGACY.integrity } } }, lockKey, BETTER_SQLITE3, "wrong lock integrity"), "wrong lock integrity");
   expectRejected(() => assertLockRecord({ packages: { [lockKey]: { ...validLock.packages[lockKey], resolved: "https://invalid.example/better-sqlite3.tgz" } } }, lockKey, BETTER_SQLITE3, "wrong lock path"), "wrong lock path");
+  expectRejected(() => assertForcedSourceBuildEvidence(false, false), "prebuild-only source mode");
 }
 
 function isContained(path, container) {
@@ -159,6 +162,10 @@ function assertModuleVersion(value, expected, label) {
 function parseExpectedNodeMajor(value) {
   if (value !== "22" && value !== "24") fail("REVAGENT_EXPECT_NODE_MAJOR must be exactly 22 or 24");
   return Number(value);
+}
+
+function assertForcedSourceBuildEvidence(bindingExists, rebuilt) {
+  if (!bindingExists || !rebuilt) fail("source-build mode rejected a missing or prebuild-only native output");
 }
 
 function normalizeLockKey(lockRoot, moduleRoot) {
@@ -206,7 +213,13 @@ async function resolveTrustedNpmContext() {
   if (npmPackage.name !== "npm" || typeof npmPackage.version !== "string" || npmPackage.version.length === 0) {
     fail("npm_execpath package identity is invalid");
   }
-  return Object.freeze({ executable: npmExecutable, packageJson: npmPackageJsonReal, distributionRoot });
+  const nodeGyp = await realpath(join(dirname(npmPackageJsonReal), "node_modules", "node-gyp", "bin", "node-gyp.js"));
+  assertContained(nodeGyp, distributionRoot, "trusted node-gyp");
+  const nodeGypPackage = await readJson(await realpath(join(dirname(dirname(nodeGyp)), "package.json")));
+  if (nodeGypPackage.name !== "node-gyp" || typeof nodeGypPackage.version !== "string" || nodeGypPackage.version.length === 0) {
+    fail("trusted node-gyp package identity is invalid");
+  }
+  return Object.freeze({ executable: npmExecutable, packageJson: npmPackageJsonReal, distributionRoot, nodeGyp });
 }
 
 function run(command, args, options = {}) {
@@ -271,6 +284,39 @@ async function resolveInstalledModule({ ownerPackageJson, ownerDir, lockFile, lo
 function verifyNativeLoad(native) {
   const code = `${childNativeLoaderSource()} const db = new Database(':memory:'); try { if (db.prepare('SELECT 1 AS value').get()?.value !== 1) process.exitCode = 24; } finally { db.close(); }`;
   run(process.execPath, ["-e", code], { env: childNativeEnvironment(native) });
+}
+
+function sourceBuildRequested(value) {
+  if (value === undefined || value === "" || value === "0") return false;
+  if (value === "1") return true;
+  fail("REVAGENT_REQUIRE_SOURCE_BUILD must be 1 when set");
+}
+
+async function forceSourceBuild(native) {
+  if (trustedNpm === null) fail("trusted node-gyp context was not established");
+  const binding = join(native.packageRoot, "build", "Release", "better_sqlite3.node");
+  const previousMtime = existsSync(binding) ? (await stat(binding)).mtimeMs : -1;
+  run(process.execPath, [trustedNpm.nodeGyp, "rebuild", "--force_build=1"], {
+    cwd: native.packageRoot,
+    env: {
+      npm_config_build_from_source: "true",
+      npm_config_ignore_scripts: "false",
+      NODE_PATH: "",
+    },
+  });
+  const bindingExists = existsSync(binding) && (await stat(binding)).isFile();
+  if (!bindingExists) fail("forced native source build produced no package-local binding");
+  const bindingStat = await stat(binding);
+  const rebuilt = bindingStat.size > 0 && bindingStat.mtimeMs > previousMtime;
+  assertForcedSourceBuildEvidence(bindingExists, rebuilt);
+  const Database = createRequire(native.ownerPackageJson)("better-sqlite3");
+  const db = new Database(":memory:", { nativeBinding: binding });
+  try {
+    if (db.prepare("SELECT 13 AS answer").get()?.answer !== 13) fail("forced native binding did not execute its explicit smoke query");
+  } finally {
+    db.close();
+  }
+  results.sourceBuiltOwners += 1;
 }
 
 function childNativeEnvironment(native, extra = {}) {
@@ -378,7 +424,7 @@ async function validateProvenance() {
     }
   }
   results.installed = true;
-  return Object.freeze({ ...gateway, repoRoot });
+  return Object.freeze({ gateway, bridge, repoRoot });
 }
 
 async function createLegacySandbox() {
@@ -593,21 +639,29 @@ async function main() {
   assertNativeTrustSelfTests();
   trustedNpm = await resolveTrustedNpmContext();
   const current = await validateProvenance();
-  verifyNativeLoad(current);
-  const packageRoot = dirname(dirname(current.entry));
-  const Database = createRequire(current.ownerPackageJson)("better-sqlite3");
+  verifyNativeLoad(current.gateway);
+  verifyNativeLoad(current.bridge);
+  const packageRoot = dirname(dirname(current.gateway.entry));
+  const Database = createRequire(current.gateway.ownerPackageJson)("better-sqlite3");
   const smoke = new Database(":memory:");
   try {
     if (smoke.prepare("SELECT 42 AS answer").get()?.answer !== 42) fail("native SQLite query did not return expected value");
   } finally { smoke.close(); }
-  if (process.platform === "linux") {
+  results.sourceBuild = sourceBuildRequested(process.env.REVAGENT_REQUIRE_SOURCE_BUILD);
+  if (process.platform === "linux" && !results.sourceBuild) {
     const binding = join(packageRoot, "build", "Release", "better_sqlite3.node");
     if (!existsSync(binding) || !(await stat(binding)).isFile()) fail("Linux native source rebuild binding is absent");
     results.linuxSourceRebuild = true;
   }
+  if (results.sourceBuild) {
+    await forceSourceBuild(current.gateway);
+    await forceSourceBuild(current.bridge);
+    if (results.sourceBuiltOwners !== 2) fail("source-build mode did not rebuild both exact lock-proven owners");
+    if (process.platform === "linux") results.linuxSourceRebuild = true;
+  }
   results.nativeSmoke = true;
-  await runDatabaseCompatibility(current);
-  await runLifecycleStress(current);
+  await runDatabaseCompatibility(current.gateway);
+  await runLifecycleStress(current.gateway);
 }
 
 let completed = false;

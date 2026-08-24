@@ -56,17 +56,10 @@ jobs:
       - name: Install locked workspace without lifecycle scripts
         run: npm ci --ignore-scripts
 
-      - name: Rebuild approved native dependency from source
-        env:
-          npm_config_build_from_source: "true"
-        run: |
-          npm rebuild better-sqlite3 --ignore-scripts=false --foreground-scripts
-          # The WP-12 script below validates both workspace package closures;
-          # the older root smoke is not importable from this workspace root.
-
       - name: Run Node ${{ matrix.node }} native compatibility conformance
         env:
           REVAGENT_EXPECT_NODE_MAJOR: ${{ matrix.node }}
+          REVAGENT_REQUIRE_SOURCE_BUILD: "1"
         run: npm exec -- node scripts/wp12-native-compat-conformance.mjs
 
       - name: Run Node 22 bridge-simulator determinism
