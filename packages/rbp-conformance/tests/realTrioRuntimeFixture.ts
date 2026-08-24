@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
-import { existsSync, mkdtempSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { closeSync, fsyncSync, linkSync, mkdtempSync, mkdirSync, openSync, renameSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -567,6 +567,7 @@ export function writeRealTrioRuntimeFailure(
  */
 export const REAL_TRIO_MCP_TOOL_RESULT_FAILURE_SCHEMA = "rbp-real-trio-mcp-tool-result-failure/v1" as const;
 export const REAL_TRIO_MCP_TOOL_RESULT_WRITE_FAILURE_SCHEMA = "rbp-real-trio-mcp-tool-result-write-failure/v1" as const;
+const MAX_MCP_TOOL_RESULT_COLLISION_ARTIFACTS = 8;
 
 export interface RealTrioMcpToolResultFailure {
   readonly schemaVersion: typeof REAL_TRIO_MCP_TOOL_RESULT_FAILURE_SCHEMA;
@@ -598,7 +599,7 @@ export interface RealTrioMcpToolResultWriteFailure {
   readonly stage: "north_tool_call";
   readonly originalError: "RealTrioNorthToolResultError";
   readonly primaryEvidenceSha256: `sha256:${string}`;
-  readonly primaryArtifactOutcome: "write_failed";
+  readonly primaryArtifactOutcome: "collision" | "write_failed";
 }
 
 export interface RealTrioMcpToolResultPersistence {
@@ -648,19 +649,48 @@ function copyMcpToolResultFailure(
   });
 }
 
+export type AtomicEvidencePublisher = (temporary: string, destination: string) => void;
+type AtomicEvidenceWriteResult = "published" | "exists";
+
+function isAlreadyExists(error: unknown): boolean {
+  return error !== null && typeof error === "object" &&
+    "code" in error && (error as { readonly code?: unknown }).code === "EEXIST";
+}
+
+/**
+ * Publish with a hard-link no-replace primitive.  `rename` is intentionally
+ * prohibited here because Windows rename can replace an existing destination.
+ */
 function writeAtomicEvidence(
   evidenceDirectory: string,
   filename: string,
   value: RealTrioMcpToolResultFailure | RealTrioMcpToolResultWriteFailure,
-): void {
+  publish: AtomicEvidencePublisher = linkSync,
+): AtomicEvidenceWriteResult {
   mkdirSync(evidenceDirectory, { recursive: true });
   const destination = path.join(evidenceDirectory, filename);
-  // A collision must not replace the first causal record. It is reported by a
-  // separate bounded artifact below and never changes the original MCP error.
-  if (existsSync(destination)) throw new Error("real trio MCP evidence collision");
-  const temporary = `${destination}.${process.pid}.tmp`;
-  writeFileSync(temporary, `${stableJson(value)}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
-  renameSync(temporary, destination);
+  const temporary = path.join(evidenceDirectory, `.${filename}.${process.pid}.${randomUUID()}.tmp`);
+  let handle: number | undefined;
+  try {
+    try {
+      handle = openSync(temporary, "wx", 0o600);
+      writeSync(handle, `${stableJson(value)}\n`, undefined, "utf8");
+      fsyncSync(handle);
+    } finally {
+      if (handle !== undefined) closeSync(handle);
+    }
+    try {
+      publish(temporary, destination);
+      return "published";
+    } catch (error) {
+      if (isAlreadyExists(error)) return "exists";
+      throw error;
+    }
+  } finally {
+    // The evidence is immutable once linked; every temporary is private and
+    // must be removed on success, EEXIST, or unsupported-publish failure.
+    try { unlinkSync(temporary); } catch { /* no secondary filesystem detail */ }
+  }
 }
 
 /**
@@ -672,13 +702,42 @@ export function persistRealTrioMcpToolResultFailure(input: {
   readonly evidenceDirectory: string;
   readonly binding: RealTrioBinding;
   readonly error: RealTrioNorthToolResultError;
+  /** Test seam only; production C38 always uses the hard-link publisher. */
+  readonly publishForTest?: AtomicEvidencePublisher;
 }): RealTrioMcpToolResultPersistence | null {
   const failure = copyMcpToolResultFailure(input.binding, input.error.evidence);
   if (failure === null) return null;
   const primaryEvidenceSha256 = digest(failure) as `sha256:${string}`;
   try {
-    writeAtomicEvidence(input.evidenceDirectory, "mcp-tool-result-failure.json", failure);
-    return Object.freeze({ primaryWritten: true, primaryEvidenceSha256, secondaryWritten: false });
+    const primary = writeAtomicEvidence(
+      input.evidenceDirectory,
+      "mcp-tool-result-failure.json",
+      failure,
+      input.publishForTest,
+    );
+    if (primary === "published") {
+      return Object.freeze({ primaryWritten: true, primaryEvidenceSha256, secondaryWritten: false });
+    }
+    for (let slot = 0; slot < MAX_MCP_TOOL_RESULT_COLLISION_ARTIFACTS; slot += 1) {
+      const secondary: RealTrioMcpToolResultWriteFailure = Object.freeze({
+        schemaVersion: REAL_TRIO_MCP_TOOL_RESULT_WRITE_FAILURE_SCHEMA,
+        binding: input.binding,
+        stage: "north_tool_call",
+        originalError: "RealTrioNorthToolResultError",
+        primaryEvidenceSha256,
+        primaryArtifactOutcome: "collision",
+      });
+      const result = writeAtomicEvidence(
+        input.evidenceDirectory,
+        `mcp-tool-result-failure-collision-${String(slot)}.json`,
+        secondary,
+        input.publishForTest,
+      );
+      if (result === "published") {
+        return Object.freeze({ primaryWritten: false, primaryEvidenceSha256, secondaryWritten: true });
+      }
+    }
+    return Object.freeze({ primaryWritten: false, primaryEvidenceSha256, secondaryWritten: false });
   } catch {
     const secondary: RealTrioMcpToolResultWriteFailure = Object.freeze({
       schemaVersion: REAL_TRIO_MCP_TOOL_RESULT_WRITE_FAILURE_SCHEMA,
@@ -689,8 +748,13 @@ export function persistRealTrioMcpToolResultFailure(input: {
       primaryArtifactOutcome: "write_failed",
     });
     try {
-      writeAtomicEvidence(input.evidenceDirectory, "mcp-tool-result-failure-write-failure.json", secondary);
-      return Object.freeze({ primaryWritten: false, primaryEvidenceSha256, secondaryWritten: true });
+      const result = writeAtomicEvidence(
+        input.evidenceDirectory,
+        "mcp-tool-result-failure-write-failure.json",
+        secondary,
+        input.publishForTest,
+      );
+      return Object.freeze({ primaryWritten: false, primaryEvidenceSha256, secondaryWritten: result === "published" });
     } catch {
       return Object.freeze({ primaryWritten: false, primaryEvidenceSha256, secondaryWritten: false });
     }

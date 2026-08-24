@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { linkSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -27,6 +27,7 @@ import {
   hasRealTrioLiveDocumentRoute,
   probeRealTrioFixtureDocumentContext,
   preControlWatcherSeedFromSnapshot,
+  persistRealTrioMcpToolResultFailure,
   realTrioWorkerBuildPlan,
   rethrowRealTrioC38Failure,
   realTrioFixtureDocumentContextEvent,
@@ -1249,7 +1250,7 @@ describe("WP-12 real-trio fixture document route gate", () => {
     expect(persisted).not.toContain("arbitraryKeyName");
   });
 
-  it("records bounded secondary evidence on an MCP artifact collision without masking the original error", () => {
+  it("records bounded collision evidence on an MCP artifact collision without masking the original error", () => {
     const evidenceDirectory = mkdtempSync(path.join(tmpdir(), "wp12-mcp-tool-result-secondary-"));
     writeFileSync(path.join(evidenceDirectory, "mcp-tool-result-failure.json"), "{\"preexisting\":true}\n", { encoding: "utf8" });
     const error = new RealTrioNorthToolResultError({
@@ -1287,16 +1288,91 @@ describe("WP-12 real-trio fixture document route gate", () => {
       caught = failure;
     }
     expect(caught).toBe(error);
-    const secondary = JSON.parse(readFileSync(path.join(evidenceDirectory, "mcp-tool-result-failure-write-failure.json"), "utf8"));
+    const secondary = JSON.parse(readFileSync(path.join(evidenceDirectory, "mcp-tool-result-failure-collision-0.json"), "utf8"));
     expect(secondary).toMatchObject({
       schemaVersion: REAL_TRIO_MCP_TOOL_RESULT_WRITE_FAILURE_SCHEMA,
       binding: "streamable_http_sse",
       stage: "north_tool_call",
       originalError: "RealTrioNorthToolResultError",
-      primaryArtifactOutcome: "write_failed",
+      primaryArtifactOutcome: "collision",
       primaryEvidenceSha256: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u),
     });
     expect(JSON.stringify(secondary)).not.toContain("preexisting");
+  });
+
+  it("keeps one immutable primary under Promise.all contention, caps collision records, and removes every temporary", async () => {
+    const evidenceDirectory = mkdtempSync(path.join(tmpdir(), "wp12-mcp-tool-result-race-"));
+    const error = new RealTrioNorthToolResultError({
+      httpStatus: 200,
+      responseBytes: 4,
+      responseSha256: `sha256:${"d".repeat(64)}`,
+      resultKeyPresence: { isError: true, structuredContent: false, content: false },
+      isError: true,
+      contentCount: 0,
+      contentItems: [],
+      diagnostic: {
+        source: "none", structuredContentPresent: false, structuredContentObject: false,
+        fallbackTextPresent: false, fallbackTextObject: false, statePresent: false,
+        reasonPresent: false, codePresent: false, errorCodePresent: false,
+        nestedErrorCodePresent: false, deliveryOutcomePresent: false, state: null,
+        reason: null, code: null, errorCode: null, nestedErrorCode: null, deliveryOutcome: null,
+      },
+    });
+    const outcomes = await Promise.all(Array.from({ length: 16 }, async () => {
+      await Promise.resolve();
+      return persistRealTrioMcpToolResultFailure({ evidenceDirectory, binding: "wss", error });
+    }));
+    expect(outcomes.filter((outcome) => outcome?.primaryWritten === true)).toHaveLength(1);
+    const primary = readFileSync(path.join(evidenceDirectory, "mcp-tool-result-failure.json"), "utf8");
+    expect(JSON.parse(primary)).toMatchObject({
+      schemaVersion: REAL_TRIO_MCP_TOOL_RESULT_FAILURE_SCHEMA,
+      binding: "wss",
+      isError: true,
+    });
+    const collisionFiles = readdirSync(evidenceDirectory)
+      .filter((filename) => /^mcp-tool-result-failure-collision-[0-7]\.json$/u.test(filename));
+    expect(collisionFiles.length).toBeLessThanOrEqual(8);
+    expect(collisionFiles.length).toBeGreaterThan(0);
+    expect(readdirSync(evidenceDirectory).filter((filename) => filename.endsWith(".tmp"))).toEqual([]);
+    expect(readFileSync(path.join(evidenceDirectory, "mcp-tool-result-failure.json"), "utf8")).toBe(primary);
+  });
+
+  it("emits bounded write-failure evidence when link publication fails and still cleans the temporary", () => {
+    const evidenceDirectory = mkdtempSync(path.join(tmpdir(), "wp12-mcp-tool-result-link-fail-"));
+    const error = new RealTrioNorthToolResultError({
+      httpStatus: 200,
+      responseBytes: 4,
+      responseSha256: `sha256:${"e".repeat(64)}`,
+      resultKeyPresence: { isError: true, structuredContent: false, content: false },
+      isError: true,
+      contentCount: 0,
+      contentItems: [],
+      diagnostic: {
+        source: "none", structuredContentPresent: false, structuredContentObject: false,
+        fallbackTextPresent: false, fallbackTextObject: false, statePresent: false,
+        reasonPresent: false, codePresent: false, errorCodePresent: false,
+        nestedErrorCodePresent: false, deliveryOutcomePresent: false, state: null,
+        reason: null, code: null, errorCode: null, nestedErrorCode: null, deliveryOutcome: null,
+      },
+    });
+    const result = persistRealTrioMcpToolResultFailure({
+      evidenceDirectory,
+      binding: "wss",
+      error,
+      publishForTest: (temporary, destination) => {
+        if (destination.endsWith("mcp-tool-result-failure.json")) {
+          throw Object.assign(new Error("injected publish failure"), { code: "EPERM" });
+        }
+        linkSync(temporary, destination);
+      },
+    });
+    expect(result).toMatchObject({ primaryWritten: false, secondaryWritten: true });
+    const secondary = JSON.parse(readFileSync(path.join(evidenceDirectory, "mcp-tool-result-failure-write-failure.json"), "utf8"));
+    expect(secondary).toMatchObject({
+      schemaVersion: REAL_TRIO_MCP_TOOL_RESULT_WRITE_FAILURE_SCHEMA,
+      primaryArtifactOutcome: "write_failed",
+    });
+    expect(readdirSync(evidenceDirectory).filter((filename) => filename.endsWith(".tmp"))).toEqual([]);
   });
 
   it("leaves non-MCP errors unchanged and writes no MCP failure artifact", () => {
