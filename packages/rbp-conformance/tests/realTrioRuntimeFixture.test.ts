@@ -14,6 +14,7 @@ import {
   RealTrioDocumentContextFailureError,
   correlatedDocumentContextSendSince,
   correlatedDocumentContextSendFromCursor,
+  capturePreControlDocumentContextBundle,
   createRealTrioDocumentContextFailure,
   gatewayAuditBaseline,
   hasGatewayAcceptedDocumentContextRoute,
@@ -21,6 +22,7 @@ import {
   hasDurableDocumentContextHeartbeatAckFromCursor,
   hasRealTrioLiveDocumentRoute,
   probeRealTrioFixtureDocumentContext,
+  preControlWatcherSeedFromSnapshot,
   realTrioWorkerBuildPlan,
   realTrioFixtureDocumentContextEvent,
   selectCurrentDocumentContextSendFromCursor,
@@ -481,6 +483,150 @@ describe("WP-12 real-trio fixture document route gate", () => {
     expect(unmatchedDocumentContextProbe({ generation: 1, lowWaterCursor: "1", highWaterCursor: "2", rows: [
       cursorRow("1", "probe", "started", null, hash), cursorRow("2", "probe", "started", null, hash),
     ] })).toBeNull();
+  });
+
+  it("seeds only a complete, ACK-settled latest pre-control watcher", () => {
+    const hash = `sha256:${"a".repeat(64)}`;
+    const other = `sha256:${"b".repeat(64)}`;
+    const row = (cursor: number, stage: string, outcome: string, sequence: number | null, rsidHash = hash) =>
+      cursorRow(String(cursor), stage, outcome, sequence, rsidHash);
+    const snapshot = (rows: readonly ReturnType<typeof row>[], lowWater = "1") => ({
+      generation: 3, lowWaterCursor: lowWater,
+      highWaterCursor: rows.length === 0 ? "0" : rows.at(-1)!.cursor, rows,
+    });
+    const settled = snapshot([
+      row(1, "probe", "started", null), row(2, "snapshot", "ready", null),
+      row(3, "queue", "durably_queued", 1), row(4, "send", "sent", 1),
+      row(5, "ack", "durably_acknowledged", 1),
+    ]);
+    expect(preControlWatcherSeedFromSnapshot(settled)).toEqual({
+      generation: 3, watcherOrdinal: 1, rsidHash: hash, lastSentSequence: 1, lastAckSequence: 1,
+    });
+    // The latest deterministic watcher is the only carried identity; its
+    // earlier watcher is complete and has no influence on a later control.
+    expect(preControlWatcherSeedFromSnapshot(snapshot([
+      ...settled.rows, row(6, "probe", "started", null, other),
+    ]))).toEqual({ generation: 3, watcherOrdinal: 2, rsidHash: other,
+      lastSentSequence: null, lastAckSequence: null });
+    // Missing opening probe/ring eviction, gaps, malformed retained facts,
+    // mixed watcher rsids, and an outstanding send all fail closed.
+    expect(preControlWatcherSeedFromSnapshot(snapshot(settled.rows, "2"))).toBeNull();
+    expect(preControlWatcherSeedFromSnapshot(snapshot([{ ...settled.rows[0]!, cursor: "2" }, ...settled.rows.slice(1)]))).toBeNull();
+    expect(preControlWatcherSeedFromSnapshot(snapshot([
+      row(1, "snapshot", "ready", null), row(2, "queue", "durably_queued", 1), row(3, "send", "sent", 1),
+    ]))).toBeNull();
+    expect(preControlWatcherSeedFromSnapshot(snapshot([
+      row(1, "probe", "started", null), row(2, "snapshot", "ready", null),
+      row(3, "queue", "durably_queued", 1, other), row(4, "send", "sent", 1, other),
+    ]))).toBeNull();
+    expect(preControlWatcherSeedFromSnapshot(snapshot(settled.rows.slice(0, -1)))).toBeNull();
+    expect(preControlWatcherSeedFromSnapshot(snapshot([
+      row(1, "probe", "started", null), { ...row(2, "snapshot", "ready", null), line: "{" },
+    ]))).toBeNull();
+  });
+
+  it("captures optimistic A/audit/B pre-control bundles only after settled ACK, with bounded churn retry", async () => {
+    const hash = `sha256:${"a".repeat(64)}`;
+    const epoch = "123e4567-e89b-42d3-a456-426614174000";
+    const rows = (ack: boolean) => [
+      cursorRow("1", "probe", "started", null, hash), cursorRow("2", "snapshot", "ready", null, hash),
+      cursorRow("3", "queue", "durably_queued", 1, hash), cursorRow("4", "send", "sent", 1, hash),
+      ...(ack ? [cursorRow("5", "ack", "durably_acknowledged", 1, hash)] : []),
+    ];
+    const snapshot = (values: readonly ReturnType<typeof cursorRow>[]) => ({ generation: 1, lowWaterCursor: "1",
+      highWaterCursor: values.at(-1)!.cursor, rows: values });
+    const route = { processEpoch: epoch, rsidHash: hash, observedSequence: 1, contextDigest: "d".repeat(64),
+      routeDigest: `sha256:${"e".repeat(64)}`, recordDigest: `sha256:${"f".repeat(64)}`,
+      sessionBindingDigest: `sha256:${"1".repeat(64)}`, connectionDigest: `sha256:${"2".repeat(64)}`,
+      sessionRecordVersion: 1 };
+    const audit = { documentContextEpochSchema: "revagent.wp12-document-context-epoch/v1",
+      documentContextProcessEpoch: epoch, documentContextObservationHighWaterOrdinal: 1,
+      documentContextCurrentRoute: route, documentContextUpdates: [{
+        contractVersion: "revagent.wp12-document-context-audit/v1", event: "gateway.doc_context_update_observation",
+        stage: "accepted", ...route, observationOrdinal: 1,
+      }] };
+    // First A/B differs (optimistic churn), second pair has an outstanding
+    // send, and only the final pair supplies the settled causal floor.
+    const snapshots = [snapshot(rows(false)), snapshot(rows(true)), snapshot(rows(false)), snapshot(rows(false)), snapshot(rows(true)), snapshot(rows(true))];
+    const bundle = await capturePreControlDocumentContextBundle({
+      supervisor: { readDocumentContextSnapshot: () => snapshots.shift()! } as never,
+      readGatewayAudit: async () => audit, attempts: 3, retryDelayMs: 0,
+    });
+    expect(bundle.seed).toMatchObject({ generation: 1, rsidHash: hash, lastSentSequence: 1, lastAckSequence: 1 });
+    await expect(capturePreControlDocumentContextBundle({
+      supervisor: { readDocumentContextSnapshot: () => snapshot(rows(false)) } as never,
+      readGatewayAudit: async () => audit, attempts: 1, retryDelayMs: 0,
+    })).rejects.toThrow(/not coherent/u);
+  });
+
+  it("uses a value-free seed for snapshot-first post-control selection and never carries the old pair", () => {
+    const oldHash = `sha256:${"a".repeat(64)}`;
+    const newHash = `sha256:${"b".repeat(64)}`;
+    const incarnation = `sha256:${"c".repeat(64)}`;
+    const oldPair = { sourceRevision: 1, cacheIncarnationDigest: incarnation };
+    const pair = { sourceRevision: 2, cacheIncarnationDigest: incarnation };
+    const epoch = "123e4567-e89b-42d3-a456-426614174000";
+    const context = "d".repeat(64);
+    const route = { processEpoch: epoch, rsidHash: oldHash, observedSequence: 2, contextDigest: context,
+      routeDigest: `sha256:${"e".repeat(64)}`, recordDigest: `sha256:${"f".repeat(64)}`,
+      sessionBindingDigest: `sha256:${"1".repeat(64)}`, connectionDigest: `sha256:${"2".repeat(64)}`,
+      sessionRecordVersion: 2 };
+    const audit = (overrides: Record<string, unknown> = {}) => ({
+      documentContextEpochSchema: "revagent.wp12-document-context-epoch/v1", documentContextProcessEpoch: epoch,
+      documentContextGeneration: 4, documentContextObservationHighWaterOrdinal: 2,
+      documentContextCurrentRoute: route, documentContextUpdates: [{
+        contractVersion: "revagent.wp12-document-context-audit/v1", event: "gateway.doc_context_update_observation",
+        stage: "accepted", ...route, observationOrdinal: 2,
+      }], ...overrides,
+    });
+    const event = (cursor: number, stage: string, sequence: number | null, source = pair, rsidHash = oldHash) => ({
+      cursor: String(cursor), at: "", line: JSON.stringify({ event: "bridge.document_context_observation", stage,
+        outcome: stage === "snapshot" ? "ready" : stage === "queue" ? "durably_queued" : stage === "send" ? "sent" : "started",
+        rsidHash, sequence, ...(["snapshot", "queue", "send"].includes(stage) ? { contextDigest: context, ...source } : {}), }),
+    });
+    const seed = { generation: 4, watcherOrdinal: 1, rsidHash: oldHash, lastSentSequence: 1, lastAckSequence: 1 } as const;
+    const input = (rows: readonly ReturnType<typeof event>[], overrides: Record<string, unknown> = {}) => ({ rows,
+      generation: 4, controlCursor: "5", precedingProbe: null, precedingSeed: seed, audit: audit(),
+      baseline: { processEpoch: epoch, observationOrdinal: 1 },
+      control: { revision: pair.sourceRevision, cacheIncarnationDigest: pair.cacheIncarnationDigest }, ...overrides,
+    });
+    const selected = selectCurrentDocumentContextSendFromCursor(input([
+      event(6, "snapshot", null), event(7, "queue", 2), event(8, "send", 2),
+    ]) as never);
+    expect(selectCurrentDocumentContextSendReason(input([
+      event(6, "snapshot", null), event(7, "queue", 2), event(8, "send", 2),
+    ]) as never).reason).toBe("selected");
+    expect(selected).toMatchObject({ sequence: 2, watcherOrdinal: 1, precedingSeed: seed });
+    // No inherited pair can qualify; the new acknowledged control pair is
+    // still exact, and equal/decreasing sequences cannot be replayed.
+    expect(selectCurrentDocumentContextSendFromCursor(input([
+      event(6, "snapshot", null, oldPair), event(7, "queue", 2, oldPair), event(8, "send", 2, oldPair),
+    ]) as never)).toBeNull();
+    expect(selectCurrentDocumentContextSendFromCursor(input([
+      event(6, "snapshot", null), event(7, "queue", 1), event(8, "send", 1),
+    ]) as never)).toBeNull();
+    expect(selectCurrentDocumentContextSendFromCursor(input([
+      event(6, "snapshot", null), event(7, "queue", 0), event(8, "send", 0),
+    ]) as never)).toBeNull();
+    // A new post-control probe resets the seed and starts a new watcher.
+    const resetRoute = { ...route, rsidHash: newHash, observedSequence: 1 };
+    const resetAudit = audit({ documentContextCurrentRoute: resetRoute, documentContextUpdates: [{
+      contractVersion: "revagent.wp12-document-context-audit/v1", event: "gateway.doc_context_update_observation",
+      stage: "accepted", ...resetRoute, observationOrdinal: 2,
+    }] });
+    expect(selectCurrentDocumentContextSendFromCursor(input([
+      event(6, "probe", null, pair, newHash), event(7, "snapshot", null, pair, newHash),
+      event(8, "queue", 1, pair, newHash), event(9, "send", 1, pair, newHash),
+    ], { audit: resetAudit }) as never)).toMatchObject({ watcherOrdinal: 2, rsidHash: newHash, sequence: 1 });
+    expect(selectCurrentDocumentContextSendFromCursor(input([
+      event(7, "snapshot", null), event(8, "queue", 2), event(9, "send", 2),
+    ]) as never)).toBeNull();
+    expect(selectCurrentDocumentContextSendFromCursor(input([
+      event(6, "snapshot", null, pair, newHash), event(7, "queue", 2, pair, newHash), event(8, "send", 2, pair, newHash),
+    ]) as never)).toBeNull();
+    expect(selectCurrentDocumentContextSendFromCursor(input([
+      event(6, "snapshot", null), event(7, "queue", 2), event(8, "send", 2),
+    ], { generation: 5 }) as never)).toBeNull();
   });
   it("restores the real C# carrier from its committed lock before isolated build and publish", () => {
     const plan = realTrioWorkerBuildPlan("C:/temp/wp12-real-trio");

@@ -181,6 +181,8 @@ export interface RealTrioCurrentRouteSelectorInput {
   readonly generation: number;
   readonly controlCursor: string;
   readonly precedingProbe: RealTrioDocumentContextCursorRow | null;
+  /** Snapshot-native, value-free pre-control watcher identity. */
+  readonly precedingSeed?: RealTrioPreControlWatcherSeed | null;
   readonly audit: unknown;
   readonly baseline: RealTrioGatewayAuditBaseline;
   /** Exact fixture control pair; lifecycle rows cannot borrow an older cache. */
@@ -194,6 +196,19 @@ export interface RealTrioGatewayAuditBaseline {
   readonly acceptedObservationOrdinal?: number;
   /** Value-free exact identity of the baseline's current durable route. */
   readonly currentIdentity?: `sha256:${string}`;
+}
+
+/**
+ * The pre-control watcher seed deliberately omits prior context and the
+ * source revision/incarnation pair. Post-control evidence must establish the
+ * newly acknowledged pair without borrowing a historical value.
+ */
+export interface RealTrioPreControlWatcherSeed {
+  readonly generation: number;
+  readonly watcherOrdinal: number;
+  readonly rsidHash: `sha256:${string}`;
+  readonly lastSentSequence: number | null;
+  readonly lastAckSequence: number | null;
 }
 
 /**
@@ -746,6 +761,7 @@ interface StrictDocumentContextCandidate extends LocalDocumentContextCandidate {
   readonly routeDigest: `sha256:${string}`;
   readonly controlCursor: string;
   readonly precedingProbe: RealTrioDocumentContextCursorRow | null;
+  readonly precedingSeed: RealTrioPreControlWatcherSeed | null;
   readonly watcherOrdinal: number;
 }
 
@@ -774,7 +790,10 @@ function strictDocumentObservation(row: RealTrioDocumentContextCursorRow): Stric
   try {
     value = JSON.parse(row.line) as unknown;
   } catch {
-    return undefined;
+    // A retained row is a journal fact, not an opaque log stream. Once its
+    // JSON grammar is broken, a complete pre-control history cannot prove
+    // that an omitted document observation was inert.
+    return null;
   }
   if (!isObject(value) || value.event !== "bridge.document_context_observation") return undefined;
   if (!isSha256(value.rsidHash) || !(value.sequence === null ||
@@ -818,6 +837,7 @@ interface ParsedDocumentContextGrammar {
   readonly candidates: readonly ParsedDocumentContextCandidate[];
   readonly acknowledgements: ReadonlyMap<string, number>;
   readonly currentWatcherOrdinal: number;
+  readonly currentWatcher: RealTrioPreControlWatcherSeed | null;
 }
 
 function candidateKey(watcherOrdinal: number, rsidHash: `sha256:${string}`, sequence: number): string {
@@ -834,6 +854,7 @@ function parseDocumentContextGrammar(input: {
   readonly generation: number;
   readonly controlCursor: string;
   readonly precedingProbe: RealTrioDocumentContextCursorRow | null;
+  readonly precedingSeed?: RealTrioPreControlWatcherSeed | null;
 }): ParsedDocumentContextGrammar | null {
   if (!Number.isSafeInteger(input.generation) || input.generation < 1 ||
       !/^(?:0|[1-9][0-9]*)$/u.test(input.controlCursor)) return null;
@@ -870,7 +891,25 @@ function parseDocumentContextGrammar(input: {
     return true;
   };
 
-  if (input.precedingProbe !== null) {
+  if (input.precedingProbe !== null && input.precedingSeed !== undefined && input.precedingSeed !== null) return null;
+  if (input.precedingSeed !== undefined && input.precedingSeed !== null) {
+    const seed = input.precedingSeed;
+    if (seed.generation !== input.generation || !Number.isSafeInteger(seed.watcherOrdinal) || seed.watcherOrdinal < 1 ||
+        !isSha256(seed.rsidHash) ||
+        !(seed.lastSentSequence === null || (Number.isSafeInteger(seed.lastSentSequence) && seed.lastSentSequence >= 1)) ||
+        !(seed.lastAckSequence === null || (Number.isSafeInteger(seed.lastAckSequence) && seed.lastAckSequence >= 1)) ||
+        ((seed.lastSentSequence === null) !== (seed.lastAckSequence === null)) ||
+        (seed.lastSentSequence !== null && seed.lastAckSequence! < seed.lastSentSequence)) return null;
+    watcher = {
+      ordinal: seed.watcherOrdinal,
+      rsidHash: seed.rsidHash,
+      lastSentSequence: seed.lastSentSequence,
+      lastAcknowledgedSequence: seed.lastAckSequence,
+      cycle: null,
+      sent: new Map(),
+    };
+    nextWatcherOrdinal = seed.watcherOrdinal;
+  } else if (input.precedingProbe !== null) {
     if (input.precedingProbe.cursor !== input.controlCursor) return null;
     const prefix = strictDocumentObservation(input.precedingProbe);
     if (prefix === null || prefix === undefined || !openProbe(prefix)) return null;
@@ -944,7 +983,56 @@ function parseDocumentContextGrammar(input: {
   }
   if (watcher !== null && watcher.cycle !== null) return null;
   return Object.freeze({ candidates: Object.freeze(candidates), acknowledgements,
-    currentWatcherOrdinal: watcher?.ordinal ?? 0 });
+    currentWatcherOrdinal: watcher?.ordinal ?? 0,
+    currentWatcher: watcher === null ? null : Object.freeze({
+      generation: input.generation,
+      watcherOrdinal: watcher.ordinal,
+      rsidHash: watcher.rsidHash,
+      lastSentSequence: watcher.lastSentSequence,
+      lastAckSequence: watcher.lastAcknowledgedSequence,
+    }) });
+}
+
+/**
+ * A seed may be made only from the complete retained generation.  The ring is
+ * not a historic lookup facility: a non-genesis low-water cursor means the
+ * opening probe could already have been evicted and is therefore unsafe.
+ */
+export function preControlWatcherSeedFromSnapshot(
+  snapshot: RealTrioDocumentContextSnapshot,
+): RealTrioPreControlWatcherSeed | null {
+  if (!Number.isSafeInteger(snapshot.generation) || snapshot.generation < 1 ||
+      !/^(?:0|[1-9][0-9]*)$/u.test(snapshot.lowWaterCursor) ||
+      !/^(?:0|[1-9][0-9]*)$/u.test(snapshot.highWaterCursor)) return null;
+  const lowWater = BigInt(snapshot.lowWaterCursor);
+  const highWater = BigInt(snapshot.highWaterCursor);
+  if (snapshot.rows.length === 0 || snapshot.rows.some((row) => !/^[1-9][0-9]*$/u.test(row.cursor)) ||
+      lowWater !== 1n || highWater < lowWater ||
+      BigInt(snapshot.rows[0]!.cursor) !== lowWater ||
+      BigInt(snapshot.rows.at(-1)!.cursor) !== highWater) return null;
+  const parsed = parseDocumentContextGrammar({ rows: snapshot.rows, generation: snapshot.generation,
+    controlCursor: "0", precedingProbe: null });
+  if (parsed === null || parsed.currentWatcher === null || parsed.currentWatcher.watcherOrdinal < 1) return null;
+  // The complete grammar has already rejected malformed/failure facts and an
+  // unfinished cycle. A last send without its durable ACK is intentionally
+  // surfaced to the bounded capture loop rather than silently seeded.
+  if (parsed.currentWatcher.lastSentSequence !== null &&
+      (parsed.currentWatcher.lastAckSequence === null ||
+       parsed.currentWatcher.lastAckSequence < parsed.currentWatcher.lastSentSequence)) return null;
+  return parsed.currentWatcher;
+}
+
+function snapshotsAreSameCompleteGeneration(
+  first: RealTrioDocumentContextSnapshot,
+  second: RealTrioDocumentContextSnapshot,
+): boolean {
+  const sameRows = first.rows.length === second.rows.length && first.rows.every((row, index) => {
+    const candidate = second.rows[index];
+    return candidate !== undefined && candidate.cursor === row.cursor && candidate.at === row.at && candidate.line === row.line;
+  });
+  return first.generation === second.generation && first.highWaterCursor === second.highWaterCursor &&
+    first.lowWaterCursor === second.lowWaterCursor && sameRows &&
+    preControlWatcherSeedFromSnapshot(first) !== null && preControlWatcherSeedFromSnapshot(second) !== null;
 }
 
 interface CurrentRouteAuditIdentity {
@@ -1098,7 +1186,8 @@ export function selectCurrentDocumentContextSendReason(
   if (selected.length === 0) return Object.freeze({ reason: "source_pair_mismatch" });
   if (selected.length !== 1) return Object.freeze({ reason: "multiple_candidates" });
   return Object.freeze({ reason: "selected", candidate: Object.freeze({ ...selected[0]!, routeDigest: current.routeDigest,
-    controlCursor: input.controlCursor, precedingProbe: input.precedingProbe }) });
+    controlCursor: input.controlCursor, precedingProbe: input.precedingProbe,
+    precedingSeed: input.precedingSeed ?? null }) });
 }
 
 function cursorSinceOrThrow(input: {
@@ -1126,6 +1215,7 @@ async function waitForDocumentContextSend(input: {
   readonly controlCursor: string;
   readonly generation: number;
   readonly precedingProbe: RealTrioDocumentContextCursorRow | null;
+  readonly precedingSeed: RealTrioPreControlWatcherSeed | null;
   readonly gatewayBaseline: RealTrioGatewayAuditBaseline;
   readonly control: Pick<RealTrioDocumentContextAudit, "revision" | "cacheIncarnationDigest">;
   readonly auditCapture: GatewayAuditCapture;
@@ -1145,6 +1235,7 @@ async function waitForDocumentContextSend(input: {
       generation: input.generation,
       controlCursor: input.controlCursor,
       precedingProbe: input.precedingProbe,
+      precedingSeed: input.precedingSeed,
       audit: await readCapturedRealCaseAudit(input.supervisor, input.auditCapture),
       baseline: input.gatewayBaseline,
       control: input.control,
@@ -1195,7 +1286,8 @@ export function hasDurableDocumentContextHeartbeatAckFromCursor(
   expected: StrictDocumentContextCandidate,
 ): boolean {
   const parsed = parseDocumentContextGrammar({ rows, generation: expected.generation,
-    controlCursor: expected.controlCursor, precedingProbe: expected.precedingProbe });
+    controlCursor: expected.controlCursor, precedingProbe: expected.precedingProbe,
+    precedingSeed: expected.precedingSeed });
   if (parsed === null || expected.watcherOrdinal !== parsed.currentWatcherOrdinal) return false;
   const selected = parsed.candidates.filter((candidate) => candidate.watcherOrdinal === expected.watcherOrdinal &&
     candidate.rsidHash === expected.rsidHash && candidate.sequence === expected.sequence &&
@@ -1258,6 +1350,47 @@ export function gatewayAuditBaseline(audit: unknown): RealTrioGatewayAuditBaseli
   if (accepted.length !== 1) return baseline;
   return Object.freeze({ ...baseline, acceptedObservationOrdinal: Number(accepted[0]!.observationOrdinal),
     currentIdentity: digest(current) as `sha256:${string}` });
+}
+
+export interface RealTrioPreControlBundle {
+  readonly snapshot: RealTrioDocumentContextSnapshot;
+  readonly baseline: RealTrioGatewayAuditBaseline;
+  readonly audit: unknown;
+  readonly seed: RealTrioPreControlWatcherSeed;
+}
+
+/**
+ * Capture an atomic causal floor before the fixture control. The two complete
+ * ring snapshots prevent a Gateway audit from being paired with a cursor
+ * history that advanced or was evicted while it was read. A send that has not
+ * yet been durably ACKed is retried as a whole bundle; it is never seeded.
+ */
+export async function capturePreControlDocumentContextBundle(input: {
+  readonly supervisor: Pick<RealTrioSupervisorResult, "readDocumentContextSnapshot">;
+  readonly readGatewayAudit: () => Promise<unknown>;
+  readonly attempts?: number;
+  readonly retryDelayMs?: number;
+}): Promise<RealTrioPreControlBundle> {
+  const attempts = input.attempts ?? 4;
+  if (!Number.isSafeInteger(attempts) || attempts < 1) throw new Error("invalid real trio pre-control capture bound");
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const first = input.supervisor.readDocumentContextSnapshot();
+    const audit = await input.readGatewayAudit();
+    const baseline = gatewayAuditBaseline(audit);
+    const second = input.supervisor.readDocumentContextSnapshot();
+    const seed = snapshotsAreSameCompleteGeneration(first, second)
+      ? preControlWatcherSeedFromSnapshot(second)
+      : null;
+    if (baseline !== null && baseline.acceptedObservationOrdinal !== undefined && baseline.currentIdentity !== undefined &&
+        seed !== null && (seed.lastSentSequence === null || seed.lastAckSequence !== null &&
+          seed.lastAckSequence >= seed.lastSentSequence)) {
+      return Object.freeze({ snapshot: second, baseline, audit, seed });
+    }
+    if (attempt + 1 < attempts) {
+      await new Promise<void>((resolve) => setTimeout(resolve, input.retryDelayMs ?? 50));
+    }
+  }
+  throw new Error("real trio pre-control cursor/audit bundle was not coherent and durably acknowledged");
 }
 
 async function waitForPostRouteDocumentContextHeartbeatAck(input: {
@@ -1468,30 +1601,30 @@ export async function startRealTrioRuntimeFixture(
     // This is the normal attested loopback fixture document-context event;
     // route authority is still earned only when the C# watcher forwards it
     // and the Gateway's public audit observes the live route.
-    // Pre-control cursor/generation and successful Gateway audit are one
-    // causal floor.  A post-control audit is never allowed to become a new
-    // baseline: that would permit the control's own historical route to win.
-    const preControlSnapshot = supervisor.readDocumentContextSnapshot();
-    const preControlAudit = await readCapturedRealCaseAudit(supervisor, auditCapture);
-    const gatewayBaseline = gatewayAuditBaseline(preControlAudit);
+    // Snapshot A / successful Gateway audit / snapshot B is one immutable
+    // causal floor. The retained generation must be complete and settled
+    // through its latest watcher ACK before the control may be applied.
+    const preControl = await capturePreControlDocumentContextBundle({
+      supervisor,
+      readGatewayAudit: () => readCapturedRealCaseAudit(supervisor, auditCapture),
+    });
+    const preControlSnapshot = preControl.snapshot;
+    const preControlAudit = preControl.audit;
+    const gatewayBaseline = preControl.baseline;
+    const precedingSeed = preControl.seed;
     auditCapture.preControlAudit = preControlAudit;
     auditCapture.preControlBaseline = gatewayBaseline;
-    if (gatewayBaseline === null || gatewayBaseline.acceptedObservationOrdinal === undefined ||
-        gatewayBaseline.currentIdentity === undefined) {
-      throw new Error("real trio Gateway pre-control audit baseline lacks one current accepted identity");
-    }
     const controlAudit = documentContextControlAudit(await supervisor.fixtureControl("apply_document_context", {
       event: realTrioFixtureDocumentContextEvent(),
     }));
-    // Capture exactly at the acknowledged control boundary. Its final,
-    // unmatched probe (if any) is carried separately; all later lifecycle and
-    // ACK checks use opaque cursor `since` queries, never array lengths.
+    // Capture exactly at the acknowledged control boundary. Post-control
+    // parsing starts snapshot-first from the value-free settled watcher seed;
+    // all later lifecycle and ACK checks use opaque cursor `since` queries.
     const controlAckSnapshot = supervisor.readDocumentContextSnapshot();
     if (controlAckSnapshot.generation !== preControlSnapshot.generation ||
         BigInt(controlAckSnapshot.highWaterCursor) < BigInt(preControlSnapshot.highWaterCursor)) {
       throw new Error("real trio document-context generation changed across control");
     }
-    const precedingProbe = unmatchedDocumentContextProbe(preControlSnapshot);
     timeline.push("control_ack");
     // This probe is value-free and must succeed before any public Gateway
     // route can qualify. The regular 15 s C# watcher is the only forwarder.
@@ -1500,7 +1633,8 @@ export async function startRealTrioRuntimeFixture(
       supervisor,
       controlCursor: preControlSnapshot.highWaterCursor,
       generation: preControlSnapshot.generation,
-      precedingProbe,
+      precedingProbe: null,
+      precedingSeed,
       gatewayBaseline,
       control: controlAudit,
       auditCapture,
