@@ -162,6 +162,19 @@ interface TestChannel extends BridgeConnectionChannel {
   readonly frames: RbpEnvelope[];
 }
 
+interface Deferred<T = void> {
+  readonly promise: Promise<T>;
+  resolve(value: T): void;
+}
+
+function deferred<T = void>(): Deferred<T> {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
 function channel(): TestChannel {
   const frames: RbpEnvelope[] = [];
   return {
@@ -1100,6 +1113,96 @@ describe("GatewayBridgeSessionAuthority live document routing", () => {
     );
 
     expectUnavailable(created);
+  });
+
+  it("fences a blocked resume send at phase one without holding another rsid", async () => {
+    const fixture = createRestartableTestStore();
+    let nowMs = 1_775_000_100_000;
+    const drainEntered = deferred();
+    const releaseDrain = deferred();
+    const created = new GatewayBridgeSessionAuthority(fixture.store, identity(), {
+      clock: () => nowMs,
+      wait: async () => {
+        drainEntered.resolve();
+        await releaseDrain.promise;
+        nowMs += 5_000;
+      },
+    });
+    authorities.push(created);
+    await created.open();
+    const original = await register(created, "lock-scope-original");
+    await created.detach(original.connectionId);
+
+    const resumeStarted = deferred();
+    const releaseResume = deferred();
+    const blocked = channel();
+    const send = blocked.send.bind(blocked);
+    blocked.send = async (serialized): Promise<void> => {
+      const frame = JSON.parse(serialized) as RbpEnvelope;
+      if (frame.type === "resume_ack") {
+        resumeStarted.resolve();
+        await releaseResume.promise;
+      }
+      await send(serialized);
+    };
+    const replacement = await created.openConnection({
+      deviceToken: DEVICE_TOKEN,
+      binding: "wss",
+      hello: hello(),
+      channel: blocked,
+    });
+    const resuming = created.receive(replacement.connectionId, {
+      v: 1,
+      type: "session_resume",
+      id: id(),
+      ts: new Date().toISOString(),
+      payload: {
+        rsid: original.rsid,
+        resume_token: original.resumeToken,
+        last_rx_seq: 0,
+      },
+    });
+    await resumeStarted.promise;
+
+    const revoker = await created.openConnection({
+      deviceToken: DEVICE_TOKEN,
+      binding: "wss",
+      hello: hello(),
+      channel: channel(),
+    });
+    const unregistering = created.receive(revoker.connectionId, {
+      v: 1,
+      type: "session_unregister",
+      id: id(),
+      ts: new Date().toISOString(),
+      payload: { rsid: original.rsid, reason: "revit_exited" },
+    });
+    await drainEntered.promise;
+
+    const egress = fixture.snapshot().records.find((row) =>
+      row.namespace === "gateway.rbp-session-egress/v2" &&
+      typeof row.value === "object" && row.value !== null &&
+      "rsid" in row.value && row.value.rsid === original.rsid,
+    );
+    expect(egress?.value).toMatchObject({
+      fence: {
+        state: "revocation_pending",
+        lease: { operation: "resume_ack", phase: "started" },
+      },
+    });
+
+    // A distinct rsid is never queued behind the blocked carrier's tail.
+    const other = await register(created, "lock-scope-other");
+    expect(other.rsid).not.toBe(original.rsid);
+
+    releaseResume.resolve();
+    await expect(resuming).rejects.toMatchObject({
+      code: "unavailable",
+      message: "dispatch completed after durable revocation",
+    });
+    releaseDrain.resolve();
+    await expect(unregistering).resolves.toBeUndefined();
+    expect(blocked.frames.filter((frame) => frame.type === "resume_ack")).toHaveLength(1);
   });
 });
 

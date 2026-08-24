@@ -7840,8 +7840,21 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       if (started === null) {
         throw new GatewayRbpFault("unavailable", "dispatch carrier resolved without a started lease", 503, 1011);
       }
-      await this.#assertDispatchReservationCurrent(connection, started, authorityTicket);
+      const completionAuthority = await this.#assertDispatchReservationCurrent(
+        connection,
+        started,
+        authorityTicket,
+        { allowRevocationAfterStart: true },
+      );
       completedAndVerified = true;
+      if (completionAuthority === "revoked_after_start") {
+        throw new GatewayRbpFault(
+          "unavailable",
+          "dispatch completed after durable revocation",
+          503,
+          1011,
+        );
+      }
     } catch (error) {
       sendFailure = error;
     } finally {
@@ -7875,7 +7888,8 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     connection: LiveConnection,
     reservation: DurableEgressReservation,
     authorityTicket: TenantAuthorityTicket,
-  ): Promise<void> {
+    options: { readonly allowRevocationAfterStart?: boolean } = {},
+  ): Promise<"current" | "revoked_after_start"> {
     const active = this.#active.get(reservation.rsid);
     const stored = await this.#readStoredSession(reservation.tenantId, reservation.rsid);
     if (active === undefined || active.tenantId !== reservation.tenantId ||
@@ -7896,6 +7910,22 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         throw new GatewayRbpFault("unavailable", "dispatch proof no longer matches durable route authority", 503, 1011);
       }
     }
+    const fence = sessionEgressFence(record);
+    const revokedAfterStart =
+      options.allowRevocationAfterStart === true &&
+      fence.state === "revocation_pending" &&
+      fence.revocation !== null &&
+      lease !== null &&
+      lease.phase === "started" &&
+      sameJson(lease, reservation.lease) &&
+      record.connectionId === connection.connectionId &&
+      record.sessionBindingId === reservation.record.sessionBindingId;
+    if (revokedAfterStart) {
+      // Bytes already crossed the adapter's invocation boundary. Preserve the
+      // exact durable lease long enough to release it by CAS, then let the
+      // pending unregister finalize as indeterminate rather than replaying.
+      return "revoked_after_start";
+    }
     if (record.connectionId !== connection.connectionId ||
         record.sessionBindingId !== reservation.record.sessionBindingId ||
         !record.sessionLifecycle.dispatchAllowed ||
@@ -7913,6 +7943,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       throw new GatewayRbpFault("unavailable", "dispatch reservation no longer authorizes its route", 503, 1011);
     }
     this.#assertAuthorityTicket(authorityTicket, connection, { session: record });
+    return "current";
   }
 
   async #revokeStaleAuthorizedSession(
@@ -8689,35 +8720,13 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     payload: { readonly rsid: string; readonly resume_token: string; readonly last_rx_seq: number },
     authorityTicket: TenantAuthorityTicket,
   ): Promise<void> {
-    await this.#withSessionAuthorization(payload.rsid, async () =>
-      this.#resumeNow(connection, payload, authorityTicket),
+    // Keep the rsid tail only through the authoritative resume transition and
+    // durable reservation.  The returned continuation is immutable and the
+    // exact durable lease remains the race linearizer while transport waits.
+    const reservedAck = await this.#withSessionAuthorization(
+      payload.rsid,
+      async () => await this.#resumeNow(connection, payload, authorityTicket),
     );
-  }
-
-  async #resumeNow(
-    connection: LiveConnection,
-    payload: { readonly rsid: string; readonly resume_token: string; readonly last_rx_seq: number },
-    authorityTicket: TenantAuthorityTicket,
-  ): Promise<void> {
-    this.#assertAuthorityTicket(authorityTicket, connection);
-    let reservedAck: ReservedResumeAck;
-    try {
-      reservedAck = await this.#reserveResumeAck(
-        connection,
-        payload,
-        authorityTicket,
-      );
-    } catch (error: unknown) {
-      try {
-        this.#assertAuthorityTicket(authorityTicket, connection);
-      } catch {
-        if (this.#ticketScopeIsRevokedOrBlocked(authorityTicket)) {
-          await this.#revokeStaleAuthorizedSession(connection, payload.rsid);
-        }
-      }
-      throw error;
-    }
-    await this.#activate(reservedAck.record);
     try {
       await this.#sendWithDurableReservation(
         connection,
@@ -8741,13 +8750,19 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       ts: nowIso(this.#clock()),
     })) {
       const serialized = JSON.stringify(retained);
-      const reservation = await this.#reserveResumeRetransmit(
-        reservedAck.tenantId,
-        reservedAck.rsid,
-        connection.connectionId,
-        serialized,
-        connection,
-        authorityTicket,
+      // Each retransmit obtains a new durable lease under the tail, then
+      // releases it before transport. A phase-one unregister therefore either
+      // rejects this reservation or drains this exact started lease.
+      const reservation = await this.#withSessionAuthorization(
+        payload.rsid,
+        async () => await this.#reserveResumeRetransmit(
+          reservedAck.tenantId,
+          reservedAck.rsid,
+          connection.connectionId,
+          serialized,
+          connection,
+          authorityTicket,
+        ),
       );
       await this.#sendWithDurableReservation(
         connection,
@@ -8758,17 +8773,42 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     }
   }
 
+  async #resumeNow(
+    connection: LiveConnection,
+    payload: { readonly rsid: string; readonly resume_token: string; readonly last_rx_seq: number },
+    authorityTicket: TenantAuthorityTicket,
+  ): Promise<ReservedResumeAck> {
+    this.#assertAuthorityTicket(authorityTicket, connection);
+    let reservedAck: ReservedResumeAck;
+    try {
+      reservedAck = await this.#reserveResumeAck(
+        connection,
+        payload,
+        authorityTicket,
+      );
+    } catch (error: unknown) {
+      try {
+        this.#assertAuthorityTicket(authorityTicket, connection);
+      } catch {
+        if (this.#ticketScopeIsRevokedOrBlocked(authorityTicket)) {
+          await this.#revokeStaleAuthorizedSession(connection, payload.rsid);
+        }
+      }
+      throw error;
+    }
+    await this.#activate(reservedAck.record);
+    return reservedAck;
+  }
+
   async #unregister(
     connection: LiveConnection,
     payload: SessionUnregister,
     authorityTicket: TenantAuthorityTicket,
   ): Promise<void> {
-    await this.#withSessionAuthorization(payload.rsid, async () =>
-      {
-        this.#assertAuthorityTicket(authorityTicket, connection);
-        return this.#unregisterNow(connection, payload);
-      },
-    );
+    this.#assertAuthorityTicket(authorityTicket, connection);
+    // The exact repository CAS, not a tail held across transport, linearizes
+    // phase-one revocation against a concurrently reserved/started carrier.
+    await this.#unregisterNow(connection, payload);
   }
 
   async #unregisterNow(
