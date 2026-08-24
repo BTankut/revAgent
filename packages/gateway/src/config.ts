@@ -24,6 +24,7 @@ export const GATEWAY_CONFIG_ENV_ALLOWLIST = Object.freeze([
   "GATEWAY_PUBLIC_URL",
   "OBJECT_STORE_DRIVER",
   "OBJECT_STORE_ROOT",
+  "C39_PROTECTED_OBJECT_KEY_FILE",
   "DATABASE_URL",
 ] as const);
 
@@ -96,7 +97,12 @@ export interface GatewayConfig {
   readonly http: { readonly bindHost: string; readonly port: number };
   /** Serialized rather than a `URL`, so the startup log line stays plain JSON. */
   readonly publicUrl: string;
-  readonly objectStore: { readonly driver: "fs"; readonly root: string | null };
+  readonly objectStore: {
+    readonly driver: "fs";
+    readonly root: string | null;
+    /** Path only; key material is never accepted from the environment. */
+    readonly protectedObjectKeyFile?: string | null;
+  };
   /** Presence only. The connection string itself is validated and discarded. */
   readonly credentialsPresent: { readonly databaseUrl: boolean };
   readonly ingress: {
@@ -240,6 +246,7 @@ export function loadGatewayConfig(
     problems.push(problem("OBJECT_STORE_DRIVER", "unsupported_value"));
   }
   const objectStoreRoot = readValue(env, "OBJECT_STORE_ROOT") ?? null;
+  const protectedObjectKeyFile = readValue(env, "C39_PROTECTED_OBJECT_KEY_FILE") ?? null;
 
   // Validated, then reduced to a boolean. Phase 1 opens no connection; what the
   // shell needs to know is whether WP4 has been given one, and retaining the
@@ -281,7 +288,11 @@ export function loadGatewayConfig(
       logLevel,
       http: Object.freeze({ bindHost, port }),
       publicUrl,
-      objectStore: Object.freeze({ driver: "fs" as const, root: objectStoreRoot }),
+      objectStore: Object.freeze({
+        driver: "fs" as const,
+        root: objectStoreRoot,
+        protectedObjectKeyFile,
+      }),
       credentialsPresent: Object.freeze({ databaseUrl: databaseUrlPresent }),
       ingress: Object.freeze({
         northMcpMountPath: "/mcp" as const,
@@ -305,6 +316,7 @@ export const GATEWAY_STARTUP_LOG_FIELD_ALLOWLIST = Object.freeze([
   "publicUrl",
   "objectStoreDriver",
   "objectStoreRoot",
+  "protectedObjectKeyFileConfigured",
   "databaseUrlPresent",
   "northMcpMountPath",
   "rbpMountPrefix",
@@ -321,6 +333,7 @@ export function startupLogFields(
     publicUrl: config.publicUrl,
     objectStoreDriver: config.objectStore.driver,
     objectStoreRoot: config.objectStore.root,
+    protectedObjectKeyFileConfigured: config.objectStore.protectedObjectKeyFile != null,
     databaseUrlPresent: config.credentialsPresent.databaseUrl,
     northMcpMountPath: config.ingress.northMcpMountPath,
     rbpMountPrefix: config.ingress.rbpMountPrefix,

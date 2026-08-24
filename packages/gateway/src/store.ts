@@ -128,6 +128,49 @@ export interface ObjectStorePort {
   }): Promise<GatewayPortResult<void>>;
 }
 
+/**
+ * C39's protected result-object seam is intentionally separate from the
+ * ordinary object port.  It cannot accidentally be selected by a legacy
+ * caller which only knows `ObjectStorePort`: every read and write has to
+ * present the complete authority-bound context used as AES-GCM AAD.
+ */
+export interface ProtectedObjectBinding {
+  readonly tenantId: string;
+  readonly userId: string;
+  readonly principalKey: string;
+  readonly effectiveMcpSessionId: string;
+  readonly sessionBindingId: string;
+  readonly rsid: string;
+  readonly recoveryInvocationId: string;
+  readonly originInvocationId: string;
+  readonly originResultDigest: string;
+  readonly bridgeSequence: number;
+  readonly chunkIndex: number;
+  readonly plainDigest: string;
+  readonly plainLength: number;
+  readonly purpose: "dispatch_payload_recovery";
+  readonly expiresAtMs: number;
+}
+
+export interface ProtectedObjectStorePort {
+  readonly kind: "fs" | "conformance" | "unavailable";
+  readonly readiness: {
+    readonly ready: boolean;
+    readonly reason: "ready" | "unsupported_platform" | "not_configured" | "key_unavailable";
+  };
+  putProtected(input: {
+    readonly storageKey: string;
+    readonly contentType: string;
+    readonly bytes: Uint8Array;
+    readonly binding: ProtectedObjectBinding;
+  }): Promise<GatewayPortResult<{ readonly storageKey: string }>>;
+  getProtected(input: {
+    readonly storageKey: string;
+    readonly contentType: string;
+    readonly binding: ProtectedObjectBinding;
+  }): Promise<GatewayPortResult<{ readonly bytes: Uint8Array; readonly contentType: string }>>;
+}
+
 export function createUnavailableProtocolStore(): GatewayProtocolStore {
   const refusal = <T>(): StoreOutcome<T> =>
     Object.freeze({

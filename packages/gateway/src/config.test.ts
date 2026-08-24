@@ -15,11 +15,11 @@ const VALID = {
 } as const;
 
 describe("gateway config allowlist", () => {
-  it("reads exactly eight names and none of them is a model or provider setting", () => {
+  it("reads only the explicit names and none of them is a model/provider/raw-key setting", () => {
     // This is the acceptance criterion made mechanical. If someone adds a
     // provider key to the allowlist, this fails rather than a reviewer having
     // to notice it in a diff.
-    expect(GATEWAY_CONFIG_ENV_ALLOWLIST).toHaveLength(8);
+    expect(GATEWAY_CONFIG_ENV_ALLOWLIST).toHaveLength(9);
     for (const name of GATEWAY_CONFIG_ENV_ALLOWLIST) {
       expect(name).not.toMatch(PROVIDER_PATTERN);
     }
@@ -36,6 +36,19 @@ describe("gateway config allowlist", () => {
     });
     expect(result.ok).toBe(true);
     expect(JSON.stringify(result)).not.toContain("should-never-be-read");
+  });
+
+  it("permits only a protected key-file path, never a raw C39 key", () => {
+    const result = loadGatewayConfig({
+      ...VALID,
+      C39_PROTECTED_OBJECT_KEY_FILE: "/run/revagent/c39-key.json",
+      C39_PROTECTED_OBJECT_KEY: "must-not-be-read",
+    });
+    expect(result).toMatchObject({
+      ok: true,
+      value: { objectStore: { protectedObjectKeyFile: "/run/revagent/c39-key.json" } },
+    });
+    expect(JSON.stringify(result)).not.toContain("must-not-be-read");
   });
 
   it("ignores the OIDC variables the deployment still injects", () => {

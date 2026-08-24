@@ -1,0 +1,121 @@
+import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
+
+import type { GatewayPortResult } from "./gatewayPorts.js";
+import type { ObjectStorePort, ProtectedObjectBinding, ProtectedObjectStorePort } from "./store.js";
+import type { ProtectedObjectKeyProvider, ProtectedObjectKeyReadiness } from "./protectedObjectKeyProvider.js";
+
+const MAGIC = Buffer.from("RAPO", "ascii");
+const VERSION = 1;
+const NONCE_BYTES = 12;
+const TAG_BYTES = 16;
+const MAX_ENVELOPE_BYTES = 32 * 1024 * 1024;
+const DIGEST = /^sha256:[0-9a-f]{64}$/u;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
+const TOKEN = /^[A-Za-z0-9._:-]{1,256}$/u;
+
+export const C39_PROTECTED_OBJECT_CONTENT_TYPE = "application/vnd.revagent.c39.protected-object";
+
+function refuse<T>(): GatewayPortResult<T> {
+  return Object.freeze({ ok: false as const, port: "object_store" as const, code: "unavailable" as const, message: "protected object unavailable" });
+}
+
+function zero(value: Uint8Array | null | undefined): void { value?.fill(0); }
+
+function validBinding(binding: ProtectedObjectBinding): boolean {
+  return TOKEN.test(binding.tenantId) && TOKEN.test(binding.userId) && TOKEN.test(binding.principalKey) && TOKEN.test(binding.effectiveMcpSessionId) && TOKEN.test(binding.sessionBindingId) && TOKEN.test(binding.rsid) && UUID.test(binding.recoveryInvocationId) && UUID.test(binding.originInvocationId) && DIGEST.test(binding.originResultDigest) && DIGEST.test(binding.plainDigest) && binding.purpose === "dispatch_payload_recovery" && Number.isSafeInteger(binding.bridgeSequence) && binding.bridgeSequence >= 0 && Number.isSafeInteger(binding.chunkIndex) && binding.chunkIndex >= 0 && Number.isSafeInteger(binding.plainLength) && binding.plainLength >= 0 && Number.isSafeInteger(binding.expiresAtMs) && binding.expiresAtMs > 0;
+}
+
+function aad(storageKey: string, binding: ProtectedObjectBinding): Buffer | null {
+  if (!DIGEST.test(storageKey) || !validBinding(binding)) return null;
+  // Fixed field order is the canonical domain.  Length prefixes make the
+  // encoding injective even if a future legal token gains a separator.
+  const values = ["revagent.c39.protected-object/aad/v1", storageKey, binding.tenantId, binding.userId, binding.principalKey, binding.effectiveMcpSessionId, binding.sessionBindingId, binding.rsid, binding.recoveryInvocationId, binding.originInvocationId, binding.originResultDigest, String(binding.bridgeSequence), String(binding.chunkIndex), binding.plainDigest, String(binding.plainLength), binding.purpose, String(binding.expiresAtMs)];
+  if (values.some((value) => value.length > 512)) return null;
+  return Buffer.from(values.map((value) => `${Buffer.byteLength(value, "utf8")}:${value}`).join("|"), "utf8");
+}
+
+function digest(bytes: Uint8Array): string { return `sha256:${createHash("sha256").update(bytes).digest("hex")}`; }
+
+function encode(kid: string, nonce: Buffer, tag: Buffer, ciphertext: Buffer): Buffer | null {
+  const kidBytes = Buffer.from(kid, "ascii");
+  if (kidBytes.byteLength === 0 || kidBytes.byteLength > 64 || nonce.byteLength !== NONCE_BYTES || tag.byteLength !== TAG_BYTES || ciphertext.byteLength > MAX_ENVELOPE_BYTES) return null;
+  return Buffer.concat([MAGIC, Buffer.from([VERSION, kidBytes.byteLength]), kidBytes, nonce, tag, ciphertext]);
+}
+
+function decode(value: Uint8Array): { readonly kid: string; readonly nonce: Buffer; readonly tag: Buffer; readonly ciphertext: Buffer } | null {
+  const bytes = Buffer.from(value);
+  if (bytes.byteLength < MAGIC.byteLength + 2 + 1 + NONCE_BYTES + TAG_BYTES || bytes.byteLength > MAX_ENVELOPE_BYTES + 96 || !bytes.subarray(0, MAGIC.byteLength).equals(MAGIC) || bytes[MAGIC.byteLength] !== VERSION) { zero(bytes); return null; }
+  const kidLength = bytes[MAGIC.byteLength + 1]!;
+  const start = MAGIC.byteLength + 2;
+  const cipherStart = start + kidLength + NONCE_BYTES + TAG_BYTES;
+  if (kidLength === 0 || kidLength > 64 || cipherStart > bytes.byteLength) { zero(bytes); return null; }
+  const kid = bytes.subarray(start, start + kidLength).toString("ascii");
+  if (!/^[A-Za-z0-9._-]{1,64}$/u.test(kid)) { zero(bytes); return null; }
+  const result = { kid, nonce: Buffer.from(bytes.subarray(start + kidLength, start + kidLength + NONCE_BYTES)), tag: Buffer.from(bytes.subarray(start + kidLength + NONCE_BYTES, cipherStart)), ciphertext: Buffer.from(bytes.subarray(cipherStart)) };
+  zero(bytes);
+  return result;
+}
+
+export class EncryptedProtectedObjectStore implements ProtectedObjectStorePort {
+  readonly kind: "fs" | "conformance" | "unavailable";
+  readonly #inner: ObjectStorePort;
+  readonly #keys: ProtectedObjectKeyProvider;
+  public constructor(inner: ObjectStorePort, keys: ProtectedObjectKeyProvider) {
+    this.#inner = inner;
+    this.#keys = keys;
+    this.kind = this.#keys.kind;
+  }
+  get readiness(): { readonly ready: boolean; readonly reason: ProtectedObjectKeyReadiness } {
+    // The synchronous projection cannot claim readiness until a key snapshot is
+    // verified.  Call `checkReadiness` during composition/startup.
+    return Object.freeze({ ready: false, reason: "key_unavailable" as const });
+  }
+  async checkReadiness(liveKids: ReadonlySet<string> = new Set()): Promise<{ readonly ready: boolean; readonly reason: ProtectedObjectKeyReadiness }> {
+    const reason = await this.#keys.readiness();
+    return Object.freeze({ ready: reason === "ready" && await this.#keys.selfTest(liveKids), reason: reason === "ready" ? "ready" : reason });
+  }
+  async putProtected(input: { readonly storageKey: string; readonly contentType: string; readonly bytes: Uint8Array; readonly binding: ProtectedObjectBinding }): Promise<GatewayPortResult<{ readonly storageKey: string }>> {
+    let plain: Buffer | null = null; let key: Uint8Array | null = null; let aadBytes: Buffer | null = null; let nonce: Buffer | null = null; let ciphertext: Buffer | null = null; let tag: Buffer | null = null; let envelope: Buffer | null = null;
+    try {
+      if (input.contentType.length === 0 || input.contentType.length > 256 || input.bytes.byteLength !== input.binding.plainLength || digest(input.bytes) !== input.binding.plainDigest) return refuse();
+      aadBytes = aad(input.storageKey, input.binding);
+      if (aadBytes === null) return refuse();
+      const snapshot = await this.#keys.snapshot();
+      if (snapshot === null) return refuse();
+      key = snapshot.keyFor(snapshot.activeKid);
+      if (key === null) return refuse();
+      plain = Buffer.from(input.bytes);
+      nonce = randomBytes(NONCE_BYTES);
+      const cipher = createCipheriv("aes-256-gcm", key, nonce, { authTagLength: TAG_BYTES });
+      cipher.setAAD(aadBytes, { plaintextLength: plain.byteLength });
+      ciphertext = Buffer.concat([cipher.update(plain), cipher.final()]);
+      tag = cipher.getAuthTag();
+      envelope = encode(snapshot.activeKid, nonce, tag, ciphertext);
+      if (envelope === null) return refuse();
+      const stored = await this.#inner.put({ tenantId: input.binding.tenantId, storageKey: input.storageKey, bytes: envelope, contentType: C39_PROTECTED_OBJECT_CONTENT_TYPE });
+      return stored.ok ? Object.freeze({ ok: true as const, value: { storageKey: input.storageKey } }) : refuse();
+    } catch { return refuse(); } finally { zero(plain); zero(key); zero(aadBytes); zero(nonce); zero(ciphertext); zero(tag); zero(envelope); }
+  }
+  async getProtected(input: { readonly storageKey: string; readonly contentType: string; readonly binding: ProtectedObjectBinding }): Promise<GatewayPortResult<{ readonly bytes: Uint8Array; readonly contentType: string }>> {
+    let aadBytes: Buffer | null = null; let key: Uint8Array | null = null; let decoded: ReturnType<typeof decode> = null; let plain: Buffer | null = null;
+    try {
+      if (input.contentType.length === 0 || input.contentType.length > 256 || !validBinding(input.binding)) return refuse();
+      aadBytes = aad(input.storageKey, input.binding);
+      if (aadBytes === null) return refuse();
+      const stored = await this.#inner.get({ tenantId: input.binding.tenantId, storageKey: input.storageKey });
+      if (!stored.ok || stored.value.contentType !== C39_PROTECTED_OBJECT_CONTENT_TYPE) return refuse();
+      decoded = decode(stored.value.bytes);
+      if (decoded === null) return refuse();
+      const snapshot = await this.#keys.snapshot(new Set([decoded.kid]));
+      key = snapshot?.keyFor(decoded.kid) ?? null;
+      if (key === null) return refuse();
+      const decipher = createDecipheriv("aes-256-gcm", key, decoded.nonce, { authTagLength: TAG_BYTES });
+      decipher.setAAD(aadBytes, { plaintextLength: input.binding.plainLength });
+      decipher.setAuthTag(decoded.tag);
+      plain = Buffer.concat([decipher.update(decoded.ciphertext), decipher.final()]);
+      if (plain.byteLength !== input.binding.plainLength || digest(plain) !== input.binding.plainDigest) return refuse();
+      const result = Buffer.from(plain);
+      return Object.freeze({ ok: true as const, value: { bytes: result, contentType: input.contentType } });
+    } catch { return refuse(); } finally { zero(aadBytes); zero(key); zero(decoded?.nonce); zero(decoded?.tag); zero(decoded?.ciphertext); zero(plain); }
+  }
+}
