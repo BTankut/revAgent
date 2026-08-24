@@ -10,6 +10,7 @@ import {
 import { runRealTrioCli } from "../src/realTrioCli.js";
 import {
   buildRealTrioRuntimeFixture,
+  rethrowRealTrioC38Failure,
   startRealTrioRuntimeFixture,
 } from "./realTrioRuntimeFixture.js";
 
@@ -46,6 +47,8 @@ describe.sequential("WP-12 direct real trio runtime fixture", () => {
             routeDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u),
           }),
         ]);
+      } catch (error) {
+        rethrowRealTrioC38Failure({ evidenceDirectory, binding, error });
       } finally {
         await runtime.stop();
       }

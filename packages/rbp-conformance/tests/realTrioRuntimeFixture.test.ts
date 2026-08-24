@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -11,6 +11,8 @@ import {
 
 import {
   REAL_TRIO_FIXTURE_DOCUMENT_ID,
+  REAL_TRIO_MCP_TOOL_RESULT_FAILURE_SCHEMA,
+  REAL_TRIO_MCP_TOOL_RESULT_WRITE_FAILURE_SCHEMA,
   REAL_TRIO_RUNTIME_FAILURE_SCHEMA,
   RealTrioDocumentContextFailureError,
   RealTrioPreControlCaptureError,
@@ -26,6 +28,7 @@ import {
   probeRealTrioFixtureDocumentContext,
   preControlWatcherSeedFromSnapshot,
   realTrioWorkerBuildPlan,
+  rethrowRealTrioC38Failure,
   realTrioFixtureDocumentContextEvent,
   selectCurrentDocumentContextSendFromCursor,
   selectCurrentDocumentContextSendReason,
@@ -35,6 +38,7 @@ import {
   unmatchedDocumentContextProbe,
   verifiedRealTrioDocumentContextState,
 } from "./realTrioRuntimeFixture.js";
+import { RealTrioNorthToolResultError } from "../src/realTrioMcpClient.js";
 
 describe("WP-12 real-trio fixture document route gate", () => {
   const cursorRow = (cursor: string, stage: string, outcome: string, sequence: number | null,
@@ -1176,5 +1180,135 @@ describe("WP-12 real-trio fixture document route gate", () => {
     const http = JSON.parse(readFileSync(path.join(evidenceDirectory, "streamable_http_sse.runtime-failure.json"), "utf8"));
     expect(wss).toMatchObject({ schemaVersion: REAL_TRIO_RUNTIME_FAILURE_SCHEMA, binding: "wss" });
     expect(http).toMatchObject({ schemaVersion: REAL_TRIO_RUNTIME_FAILURE_SCHEMA, binding: "streamable_http_sse" });
+  });
+
+  it("writes C38 MCP isError evidence atomically through the actual catch helper without serializing raw result data", () => {
+    const evidenceDirectory = mkdtempSync(path.join(tmpdir(), "wp12-mcp-tool-result-"));
+    const error = new RealTrioNorthToolResultError({
+      httpStatus: 200,
+      responseBytes: 911,
+      responseSha256: `sha256:${"a".repeat(64)}`,
+      resultKeyPresence: { isError: true, structuredContent: true, content: true },
+      isError: true,
+      contentCount: 1,
+      contentItems: [{ type: "text", textUtf8Bytes: 73, textSha256: `sha256:${"b".repeat(64)}` }],
+      diagnostic: {
+        source: "structured_content",
+        structuredContentPresent: true,
+        structuredContentObject: true,
+        fallbackTextPresent: true,
+        fallbackTextObject: true,
+        statePresent: true,
+        reasonPresent: true,
+        codePresent: true,
+        errorCodePresent: true,
+        nestedErrorCodePresent: true,
+        deliveryOutcomePresent: true,
+        state: "failed",
+        reason: "result_delivery_unavailable",
+        code: "unclassified",
+        errorCode: "unclassified",
+        nestedErrorCode: "unclassified",
+        deliveryOutcome: "not_delivered",
+      },
+      // Deliberately malicious additions must never cross the copy boundary.
+      rawPayload: "token=must-not-persist",
+      arbitraryKeyName: "must-not-persist",
+    } as never);
+
+    let caught: unknown;
+    try {
+      rethrowRealTrioC38Failure({ evidenceDirectory, binding: "wss", error });
+    } catch (failure) {
+      caught = failure;
+    }
+    expect(caught).toBe(error);
+    const persisted = readFileSync(path.join(evidenceDirectory, "mcp-tool-result-failure.json"), "utf8");
+    expect(JSON.parse(persisted)).toEqual({
+      schemaVersion: REAL_TRIO_MCP_TOOL_RESULT_FAILURE_SCHEMA,
+      binding: "wss",
+      stage: "north_tool_call",
+      resultKeyPresence: { isError: true, structuredContent: true, content: true },
+      isError: true,
+      content: { count: 1, items: [{ type: "text", textUtf8Bytes: 73, textSha256: `sha256:${"b".repeat(64)}` }] },
+      diagnostic: {
+        statePresent: true,
+        reasonPresent: true,
+        codePresent: true,
+        errorCodePresent: true,
+        deliveryOutcomePresent: true,
+        state: "failed",
+        reason: "result_delivery_unavailable",
+        code: "unclassified",
+        errorCode: "unclassified",
+        deliveryOutcome: "not_delivered",
+      },
+    });
+    expect(persisted).not.toContain("must-not-persist");
+    expect(persisted).not.toContain("rawPayload");
+    expect(persisted).not.toContain("arbitraryKeyName");
+  });
+
+  it("records bounded secondary evidence on an MCP artifact collision without masking the original error", () => {
+    const evidenceDirectory = mkdtempSync(path.join(tmpdir(), "wp12-mcp-tool-result-secondary-"));
+    writeFileSync(path.join(evidenceDirectory, "mcp-tool-result-failure.json"), "{\"preexisting\":true}\n", { encoding: "utf8" });
+    const error = new RealTrioNorthToolResultError({
+      httpStatus: 200,
+      responseBytes: 1,
+      responseSha256: `sha256:${"c".repeat(64)}`,
+      resultKeyPresence: { isError: true, structuredContent: false, content: false },
+      isError: true,
+      contentCount: 0,
+      contentItems: [],
+      diagnostic: {
+        source: "none",
+        structuredContentPresent: false,
+        structuredContentObject: false,
+        fallbackTextPresent: false,
+        fallbackTextObject: false,
+        statePresent: false,
+        reasonPresent: false,
+        codePresent: false,
+        errorCodePresent: false,
+        nestedErrorCodePresent: false,
+        deliveryOutcomePresent: false,
+        state: null,
+        reason: null,
+        code: null,
+        errorCode: null,
+        nestedErrorCode: null,
+        deliveryOutcome: null,
+      },
+    });
+    let caught: unknown;
+    try {
+      rethrowRealTrioC38Failure({ evidenceDirectory, binding: "streamable_http_sse", error });
+    } catch (failure) {
+      caught = failure;
+    }
+    expect(caught).toBe(error);
+    const secondary = JSON.parse(readFileSync(path.join(evidenceDirectory, "mcp-tool-result-failure-write-failure.json"), "utf8"));
+    expect(secondary).toMatchObject({
+      schemaVersion: REAL_TRIO_MCP_TOOL_RESULT_WRITE_FAILURE_SCHEMA,
+      binding: "streamable_http_sse",
+      stage: "north_tool_call",
+      originalError: "RealTrioNorthToolResultError",
+      primaryArtifactOutcome: "write_failed",
+      primaryEvidenceSha256: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u),
+    });
+    expect(JSON.stringify(secondary)).not.toContain("preexisting");
+  });
+
+  it("leaves non-MCP errors unchanged and writes no MCP failure artifact", () => {
+    const evidenceDirectory = mkdtempSync(path.join(tmpdir(), "wp12-mcp-tool-result-non-mcp-"));
+    const error = new Error("ordinary runtime failure");
+    let caught: unknown;
+    try {
+      rethrowRealTrioC38Failure({ evidenceDirectory, binding: "wss", error });
+    } catch (failure) {
+      caught = failure;
+    }
+    expect(caught).toBe(error);
+    expect(() => readFileSync(path.join(evidenceDirectory, "mcp-tool-result-failure.json"), "utf8")).toThrow();
   });
 });

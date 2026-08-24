@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtempSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,6 +9,10 @@ import {
   issueNorthCredentialControlPayload,
   type RealTrioNorthCredential,
 } from "../src/realTrioCaseDriver.js";
+import {
+  RealTrioNorthToolResultError,
+  type RealTrioNorthToolResultEvidence,
+} from "../src/realTrioMcpClient.js";
 import {
   publicGatewayControl,
   startRealTrioSupervisor,
@@ -553,6 +557,160 @@ export function writeRealTrioRuntimeFailure(
   const temporary = `${destination}.${process.pid}.tmp`;
   writeFileSync(temporary, `${stableJson(failure)}\n`, { encoding: "utf8", mode: 0o600 });
   renameSync(temporary, destination);
+}
+
+/**
+ * C38 must retain a redacted, deterministic record when the production MCP
+ * boundary returns an explicit isError result.  This deliberately copies only
+ * the fixed evidence shape emitted by RealTrioNorthToolResultError; it never
+ * serializes the Error object, response, payload, key names, tokens, or paths.
+ */
+export const REAL_TRIO_MCP_TOOL_RESULT_FAILURE_SCHEMA = "rbp-real-trio-mcp-tool-result-failure/v1" as const;
+export const REAL_TRIO_MCP_TOOL_RESULT_WRITE_FAILURE_SCHEMA = "rbp-real-trio-mcp-tool-result-write-failure/v1" as const;
+
+export interface RealTrioMcpToolResultFailure {
+  readonly schemaVersion: typeof REAL_TRIO_MCP_TOOL_RESULT_FAILURE_SCHEMA;
+  readonly binding: RealTrioBinding;
+  readonly stage: "north_tool_call";
+  readonly resultKeyPresence: RealTrioNorthToolResultEvidence["resultKeyPresence"];
+  readonly isError: true;
+  readonly content: Readonly<{
+    readonly count: number | null;
+    readonly items: RealTrioNorthToolResultEvidence["contentItems"];
+  }>;
+  readonly diagnostic: Readonly<{
+    readonly statePresent: boolean;
+    readonly reasonPresent: boolean;
+    readonly codePresent: boolean;
+    readonly errorCodePresent: boolean;
+    readonly deliveryOutcomePresent: boolean;
+    readonly state: string | null;
+    readonly reason: string | null;
+    readonly code: string | null;
+    readonly errorCode: string | null;
+    readonly deliveryOutcome: string | null;
+  }>;
+}
+
+export interface RealTrioMcpToolResultWriteFailure {
+  readonly schemaVersion: typeof REAL_TRIO_MCP_TOOL_RESULT_WRITE_FAILURE_SCHEMA;
+  readonly binding: RealTrioBinding;
+  readonly stage: "north_tool_call";
+  readonly originalError: "RealTrioNorthToolResultError";
+  readonly primaryEvidenceSha256: `sha256:${string}`;
+  readonly primaryArtifactOutcome: "write_failed";
+}
+
+export interface RealTrioMcpToolResultPersistence {
+  readonly primaryWritten: boolean;
+  readonly primaryEvidenceSha256: `sha256:${string}`;
+  readonly secondaryWritten: boolean;
+}
+
+function copyMcpToolResultFailure(
+  binding: RealTrioBinding,
+  evidence: RealTrioNorthToolResultEvidence,
+): RealTrioMcpToolResultFailure | null {
+  // This artifact has one strict meaning: the server marked this tool result
+  // isError. Other parser failures retain their original error only.
+  if (evidence.isError !== true) return null;
+  const diagnostic = evidence.diagnostic;
+  return Object.freeze({
+    schemaVersion: REAL_TRIO_MCP_TOOL_RESULT_FAILURE_SCHEMA,
+    binding,
+    stage: "north_tool_call",
+    resultKeyPresence: evidence.resultKeyPresence === null ? null : Object.freeze({
+      isError: evidence.resultKeyPresence.isError,
+      structuredContent: evidence.resultKeyPresence.structuredContent,
+      content: evidence.resultKeyPresence.content,
+    }),
+    isError: true,
+    content: Object.freeze({
+      count: evidence.contentCount,
+      items: Object.freeze(evidence.contentItems.map((item) => Object.freeze({
+        type: item.type,
+        textUtf8Bytes: item.textUtf8Bytes,
+        textSha256: item.textSha256,
+      }))),
+    }),
+    diagnostic: Object.freeze({
+      statePresent: diagnostic.statePresent,
+      reasonPresent: diagnostic.reasonPresent,
+      codePresent: diagnostic.codePresent,
+      errorCodePresent: diagnostic.errorCodePresent,
+      deliveryOutcomePresent: diagnostic.deliveryOutcomePresent,
+      state: diagnostic.state,
+      reason: diagnostic.reason,
+      code: diagnostic.code,
+      errorCode: diagnostic.errorCode,
+      deliveryOutcome: diagnostic.deliveryOutcome,
+    }),
+  });
+}
+
+function writeAtomicEvidence(
+  evidenceDirectory: string,
+  filename: string,
+  value: RealTrioMcpToolResultFailure | RealTrioMcpToolResultWriteFailure,
+): void {
+  mkdirSync(evidenceDirectory, { recursive: true });
+  const destination = path.join(evidenceDirectory, filename);
+  // A collision must not replace the first causal record. It is reported by a
+  // separate bounded artifact below and never changes the original MCP error.
+  if (existsSync(destination)) throw new Error("real trio MCP evidence collision");
+  const temporary = `${destination}.${process.pid}.tmp`;
+  writeFileSync(temporary, `${stableJson(value)}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
+  renameSync(temporary, destination);
+}
+
+/**
+ * Best-effort persistence intentionally never throws: C38 retains the
+ * original MCP exception, while a successful secondary artifact makes a
+ * primary write failure observable without disclosing its filesystem detail.
+ */
+export function persistRealTrioMcpToolResultFailure(input: {
+  readonly evidenceDirectory: string;
+  readonly binding: RealTrioBinding;
+  readonly error: RealTrioNorthToolResultError;
+}): RealTrioMcpToolResultPersistence | null {
+  const failure = copyMcpToolResultFailure(input.binding, input.error.evidence);
+  if (failure === null) return null;
+  const primaryEvidenceSha256 = digest(failure) as `sha256:${string}`;
+  try {
+    writeAtomicEvidence(input.evidenceDirectory, "mcp-tool-result-failure.json", failure);
+    return Object.freeze({ primaryWritten: true, primaryEvidenceSha256, secondaryWritten: false });
+  } catch {
+    const secondary: RealTrioMcpToolResultWriteFailure = Object.freeze({
+      schemaVersion: REAL_TRIO_MCP_TOOL_RESULT_WRITE_FAILURE_SCHEMA,
+      binding: input.binding,
+      stage: "north_tool_call",
+      originalError: "RealTrioNorthToolResultError",
+      primaryEvidenceSha256,
+      primaryArtifactOutcome: "write_failed",
+    });
+    try {
+      writeAtomicEvidence(input.evidenceDirectory, "mcp-tool-result-failure-write-failure.json", secondary);
+      return Object.freeze({ primaryWritten: false, primaryEvidenceSha256, secondaryWritten: true });
+    } catch {
+      return Object.freeze({ primaryWritten: false, primaryEvidenceSha256, secondaryWritten: false });
+    }
+  }
+}
+
+/** The C38 catch path keeps the original error identity and failure outcome. */
+export function rethrowRealTrioC38Failure(input: {
+  readonly evidenceDirectory: string;
+  readonly binding: RealTrioBinding;
+  readonly error: unknown;
+}): never {
+  if (input.error instanceof RealTrioNorthToolResultError) {
+    persistRealTrioMcpToolResultFailure({
+      evidenceDirectory: input.evidenceDirectory,
+      binding: input.binding,
+      error: input.error,
+    });
+  }
+  throw input.error;
 }
 
 async function persistRuntimeFailure(input: {
