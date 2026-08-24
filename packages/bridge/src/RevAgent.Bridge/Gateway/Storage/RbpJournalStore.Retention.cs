@@ -131,7 +131,7 @@ internal sealed partial class RbpJournalStore
             cancellationToken);
     }
 
-    private static void PruneFinalRecoveryCarrierAudit(
+    private void PruneFinalRecoveryCarrierAudit(
         RbpJournalWriteContext context,
         long cutoff)
     {
@@ -145,6 +145,7 @@ internal sealed partial class RbpJournalStore
             """);
         delete.Parameters.AddWithValue("$cutoff", cutoff);
         _ = delete.ExecuteNonQuery();
+        _faultInjector?.Hit(RbpJournalFaultPoint.RecoveryDetailedAuditPruned);
     }
 
     private static void PruneRecoveryPayloadsWithParents(

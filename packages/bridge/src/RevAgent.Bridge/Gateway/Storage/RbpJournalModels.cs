@@ -107,6 +107,14 @@ internal enum RbpJournalFaultPoint
 {
     BeforeCommit,
     AfterCommitBeforeReturn,
+    RecoveryValidatedRaw,
+    RecoveryPlanInserted,
+    RecoverySequenceReserved,
+    RecoverySendStarted,
+    RecoveryEqualAcknowledgement,
+    RecoveryTombstoneRawDeleted,
+    RecoveryMinimalTombstonePersisted,
+    RecoveryDetailedAuditPruned,
 }
 
 internal interface IRbpJournalFaultInjector

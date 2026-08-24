@@ -70,6 +70,7 @@ internal sealed partial class RbpJournalStore
 
                 (string rawIdempotencyKey, int plaintextLength) = ReadExactRecoveryPayloadKey(
                     context, request);
+                _faultInjector?.Hit(RbpJournalFaultPoint.RecoveryValidatedRaw);
                 int chunkCount = checked((plaintextLength + request.ChunkSize - 1) / request.ChunkSize);
                 string headerJcs = CanonicalRecoveryCarrierHeader(request.Header);
                 LoadedSequence loaded = LoadSequence(context, request.Rsid);
@@ -114,7 +115,9 @@ internal sealed partial class RbpJournalStore
                         throw RbpJournalSerialization.Corrupt("The recovery carrier reservation was not persisted.");
                     }
                 }
+                _faultInjector?.Hit(RbpJournalFaultPoint.RecoveryPlanInserted);
                 PersistSequenceState(context, reserved, now);
+                _faultInjector?.Hit(RbpJournalFaultPoint.RecoverySequenceReserved);
                 return ReadRecoveryCarrierReservation(context, request.RecoveryInvocationId) ??
                     throw RbpJournalSerialization.Corrupt("The recovery carrier reservation disappeared after persistence.");
             }, cancellationToken);
@@ -171,6 +174,7 @@ internal sealed partial class RbpJournalStore
             {
                 throw new RbpJournalException(RbpJournalErrorCode.ProtocolConflict, "The recovery carrier reservation changed during send-start.");
             }
+            _faultInjector?.Hit(RbpJournalFaultPoint.RecoverySendStarted);
             return ReadRecoveryCarrierReservation(context, recoveryInvocationId) ??
                 throw RbpJournalSerialization.Corrupt("The recovery carrier reservation disappeared during send-start.");
         }, cancellationToken);
@@ -221,6 +225,7 @@ internal sealed partial class RbpJournalStore
             {
                 RbpSequenceState completed = loaded.State with { LastPeerAcknowledgement = acknowledgement };
                 PersistSequenceState(context, completed, now);
+                _faultInjector?.Hit(RbpJournalFaultPoint.RecoveryEqualAcknowledgement);
                 using SqliteCommand complete = context.CreateCommand("""
                     UPDATE rbp_recovery_carrier_reservations
                     SET phase='completed',acknowledgement_cursor=$ack,completed_at_ms=$now,updated_at_ms=MAX(updated_at_ms,$now)
@@ -262,7 +267,7 @@ internal sealed partial class RbpJournalStore
         }, cancellationToken);
     }
 
-    private static void TombstoneRecoveryCarrierReservation(
+    private void TombstoneRecoveryCarrierReservation(
         RbpJournalWriteContext context, string recoveryInvocationId, long now, string reason)
     {
         string? rawKey;
@@ -298,11 +303,13 @@ internal sealed partial class RbpJournalStore
             minimal.Parameters.AddWithValue("$high", highWater);
             if (minimal.ExecuteNonQuery() > 1) throw RbpJournalSerialization.Corrupt("The minimal recovery tombstone is not unique.");
         }
+        _faultInjector?.Hit(RbpJournalFaultPoint.RecoveryMinimalTombstonePersisted);
         if (rawKey is not null)
         {
             using SqliteCommand delete = context.CreateCommand("DELETE FROM rbp_recovery_payloads WHERE idempotency_key=$key;");
             delete.Parameters.AddWithValue("$key", rawKey);
             _ = delete.ExecuteNonQuery();
+            _faultInjector?.Hit(RbpJournalFaultPoint.RecoveryTombstoneRawDeleted);
         }
     }
 
