@@ -16,6 +16,7 @@ import { WebSocket, WebSocketServer, type RawData } from "ws";
 import {
   GatewayRbpFault,
   type BridgeConnectionChannel,
+  type DispatchTransportHandoff,
   type GatewayBridgeSessionAuthority,
 } from "./bridgeSession.js";
 import type { DeviceAuthContext } from "./authContext.js";
@@ -43,6 +44,7 @@ const RBP_WSS_MAX_QUEUED_FRAMES = 256;
 const RBP_WSS_DEFAULT_SEND_COMPLETION_TIMEOUT_MS = 5_000;
 const RBP_WSS_MIN_SEND_COMPLETION_TIMEOUT_MS = 1;
 const RBP_WSS_MAX_SEND_COMPLETION_TIMEOUT_MS = 60_000;
+const RBP_DISPATCH_REVALIDATION_TIMEOUT_MS = 5_000;
 const HTTP_SSE_GLOBAL_CONNECTION_LIMIT = 1_024;
 const HTTP_SSE_TENANT_CONNECTION_LIMIT = 128;
 const HTTP_SSE_DEVICE_CONNECTION_LIMIT = 8;
@@ -51,6 +53,38 @@ const HTTP_SSE_REGISTER_TTL_MS = 60_000;
 const HTTP_SSE_SWEEP_INTERVAL_MS = 5_000;
 const HTTP_SSE_DISPOSED_TOMBSTONE_TTL_MS = 60_000;
 const HTTP_SSE_DELIVERY_OBSERVATION_LIMIT = 256;
+
+async function boundedDispatchRevalidate(
+  handoff: DispatchTransportHandoff,
+  controller: AbortController,
+  timeoutMs = RBP_DISPATCH_REVALIDATION_TIMEOUT_MS,
+): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const revalidation = handoff.revalidate(controller.signal);
+  // An aborted producer may resolve/reject much later; observe it now so the
+  // next queue entry never inherits an unhandled rejection.
+  void revalidation.catch(() => undefined);
+  try {
+    await Promise.race([
+      revalidation,
+      new Promise<void>((_, reject) => {
+        timer = setTimeout(() => {
+          controller.abort();
+          reject(new Error("dispatch revalidation timed out before invocation"));
+        }, timeoutMs);
+      }),
+    ]);
+    if (controller.signal.aborted) {
+      throw new Error("dispatch revalidation cancelled before invocation");
+    }
+  } catch (error) {
+    controller.abort();
+    await handoff.cancelBeforeStart();
+    throw error;
+  } finally {
+    if (timer !== null) clearTimeout(timer);
+  }
+}
 
 type WssConnectionState = "opening" | "open" | "closing" | "closed" | "faulted";
 type HttpConnectionState =
@@ -381,20 +415,26 @@ export function createConformanceRbpIngressHost(
   return Object.freeze(host);
 }
 
-class HttpSseChannel implements BridgeConnectionChannel {
-  readonly #pending: Array<{
+interface SsePendingDispatchEntry {
     readonly serialized: string;
-    readonly revalidate: (() => Promise<void>) | null;
+    readonly handoff: DispatchTransportHandoff | null;
+    readonly controller: AbortController | null;
+    readonly generation: number;
     readonly resolveStarted: (() => void) | null;
     readonly rejectStarted: ((error: Error) => void) | null;
     readonly resolveCompletion: (() => void) | null;
     readonly rejectCompletion: ((error: Error) => void) | null;
     readonly cancelled: () => boolean;
-  }> = [];
+}
+
+class HttpSseChannel implements BridgeConnectionChannel {
+  readonly #pending: SsePendingDispatchEntry[] = [];
+  readonly #inFlight = new Set<SsePendingDispatchEntry>();
   #response: ServerResponse | null = null;
   #pendingBytes = 0;
   #closed = false;
   #connectionId: string | null = null;
+  #dispatchGeneration = 0;
 
   public constructor(
     private readonly onClose: () => void,
@@ -448,10 +488,13 @@ class HttpSseChannel implements BridgeConnectionChannel {
       for (let index = 0; index < attachedPending.length; index += 1) {
         const pending = attachedPending[index]!;
         this.#pendingBytes -= Buffer.byteLength(pending.serialized);
+        this.#inFlight.add(pending);
         try {
           if (pending.cancelled()) throw new Error("SSE dispatch queue cancelled before invocation");
           // Queue entries retain only an opaque closure, never proof bytes.
-          if (pending.revalidate !== null) await pending.revalidate();
+          if (pending.handoff !== null && pending.controller !== null) {
+            await boundedDispatchRevalidate(pending.handoff, pending.controller);
+          }
           if (pending.cancelled()) throw new Error("SSE dispatch queue cancelled before invocation");
           // #writeFrame crosses response.write synchronously before returning
           // its completion promise, so resolve started only after the actual
@@ -469,6 +512,8 @@ class HttpSseChannel implements BridgeConnectionChannel {
             remainder.rejectCompletion?.(failure);
           }
           throw failure;
+        } finally {
+          this.#inFlight.delete(pending);
         }
       }
     } catch (error) {
@@ -487,7 +532,7 @@ class HttpSseChannel implements BridgeConnectionChannel {
         this.#fail(new Error("SSE attach backlog exceeds the bounded transport window"));
       }
       this.#pendingBytes = nextBytes;
-      this.#pending.push({ serialized, revalidate: null, resolveStarted: null, rejectStarted: null, resolveCompletion: null, rejectCompletion: null, cancelled: () => false });
+      this.#pending.push({ serialized, handoff: null, controller: null, generation: 0, resolveStarted: null, rejectStarted: null, resolveCompletion: null, rejectCompletion: null, cancelled: () => false });
       this.#observe("queued");
       return;
     }
@@ -499,8 +544,8 @@ class HttpSseChannel implements BridgeConnectionChannel {
 
   public sendDispatchStarted(
     serialized: string,
-    revalidate: () => Promise<void>,
-  ): { readonly started: Promise<void>; readonly completion: Promise<void>; cancel(): boolean } {
+    handoff: DispatchTransportHandoff,
+  ): { readonly started: Promise<void>; readonly completion: Promise<void>; cancel(): Promise<boolean> } {
     let resolveStarted!: () => void;
     let rejectStarted!: (error: Error) => void;
     let resolveCompletion!: () => void;
@@ -514,15 +559,8 @@ class HttpSseChannel implements BridgeConnectionChannel {
     void completion.catch(() => undefined);
     let startedAtInvocation = false;
     let cancelled = false;
-    let queued: {
-      readonly serialized: string;
-      readonly revalidate: (() => Promise<void>) | null;
-      readonly resolveStarted: (() => void) | null;
-      readonly rejectStarted: ((error: Error) => void) | null;
-      readonly resolveCompletion: (() => void) | null;
-      readonly rejectCompletion: ((error: Error) => void) | null;
-      readonly cancelled: () => boolean;
-    } | null = null;
+    let queued: SsePendingDispatchEntry | null = null;
+    let controller: AbortController | null = null;
     try {
       if (this.#closed) throw new Error("SSE stream is closed");
       const response = this.#response;
@@ -530,14 +568,16 @@ class HttpSseChannel implements BridgeConnectionChannel {
         const nextBytes = this.#pendingBytes + Buffer.byteLength(serialized);
         if (nextBytes > MAX_PENDING_TRANSPORT_BYTES) throw new Error("SSE attach backlog exceeds the bounded transport window");
         this.#pendingBytes = nextBytes;
-        queued = { serialized, revalidate, resolveStarted, rejectStarted, resolveCompletion, rejectCompletion, cancelled: () => cancelled };
+        controller = new AbortController();
+        queued = { serialized, handoff, controller, generation: ++this.#dispatchGeneration, resolveStarted, rejectStarted, resolveCompletion, rejectCompletion, cancelled: () => cancelled };
         this.#pending.push(queued);
         this.#observe("queued");
       } else {
         if (response.destroyed || response.writableEnded) throw new Error("SSE stream is closed");
         void (async () => {
           try {
-            await revalidate();
+            controller = new AbortController();
+            await boundedDispatchRevalidate(handoff, controller);
             if (cancelled) throw new Error("SSE dispatch queue cancelled before invocation");
             // #writeFrame invokes response.write synchronously before it
             // returns.  Keep this directly after the authoritative async
@@ -560,9 +600,10 @@ class HttpSseChannel implements BridgeConnectionChannel {
       rejectStarted(failure);
       rejectCompletion(failure);
     }
-    const cancel = (): boolean => {
+    const cancel = async (): Promise<boolean> => {
       if (startedAtInvocation) return false;
       cancelled = true;
+      controller?.abort();
       if (queued !== null) {
         const index = this.#pending.indexOf(queued);
         if (index >= 0) {
@@ -574,7 +615,7 @@ class HttpSseChannel implements BridgeConnectionChannel {
       const failure = new Error("SSE dispatch queue cancelled before invocation");
       rejectStarted(failure);
       rejectCompletion(failure);
-      return true;
+      return await handoff.cancelBeforeStart();
     };
     return { started, completion, cancel };
   }
@@ -663,9 +704,18 @@ class HttpSseChannel implements BridgeConnectionChannel {
     this.#response = null;
     const cancelled = new Error("SSE dispatch queue cancelled before invocation");
     for (const pending of this.#pending.splice(0)) {
+      pending.controller?.abort();
+      if (pending.handoff !== null) void pending.handoff.cancelBeforeStart().catch(() => undefined);
       pending.rejectStarted?.(cancelled);
       pending.rejectCompletion?.(cancelled);
     }
+    for (const pending of this.#inFlight) {
+      pending.controller?.abort();
+      if (pending.handoff !== null) void pending.handoff.cancelBeforeStart().catch(() => undefined);
+      pending.rejectStarted?.(cancelled);
+      pending.rejectCompletion?.(cancelled);
+    }
+    this.#inFlight.clear();
     this.#pendingBytes = 0;
     this.onClose();
     if (closeError !== null) throw closeError;
@@ -1423,8 +1473,8 @@ export function createProductionRbpIngressHost(
 
           const sendDispatchStarted = (
             serialized: string,
-            revalidate: () => Promise<void>,
-          ): { readonly started: Promise<void>; readonly completion: Promise<void>; cancel(): boolean } => {
+            handoff: DispatchTransportHandoff,
+          ): { readonly started: Promise<void>; readonly completion: Promise<void>; cancel(): Promise<boolean> } => {
             let resolveStarted!: () => void;
             let rejectStarted!: (error: Error) => void;
             let startedSettled = false;
@@ -1437,6 +1487,7 @@ export function createProductionRbpIngressHost(
             // become a process-level unhandled rejection.
             void started.catch(() => undefined);
             let cancelled = false;
+            const controller = new AbortController();
             const rejectStart = (error: unknown): void => {
               if (startedSettled) return;
               startedSettled = true;
@@ -1454,7 +1505,7 @@ export function createProductionRbpIngressHost(
               rejectStart(overloadError);
               const completion = Promise.reject<void>(overloadError);
               void completion.catch(() => undefined);
-              return { started, completion, cancel: () => true };
+              return { started, completion, cancel: async () => true };
             }
             applicationEgressFrames = nextFrames;
             applicationEgressBytes = nextBytes;
@@ -1463,9 +1514,10 @@ export function createProductionRbpIngressHost(
               if (terminalEgressClaimed || state === "closing" || state === "faulted" || state === "closed") {
                 throw new Error("WSS dispatch egress is closed");
               }
-              // The authoritative durable proof/lease/route check is async.
-              // No await follows it before websocket.send below.
-              await revalidate();
+              // The adapter bounds a stalled producer and observes its late
+              // rejection. No await follows successful validation before
+              // websocket.send below.
+              await boundedDispatchRevalidate(handoff, controller, sendCompletionTimeoutMs);
               if (cancelled) throw new Error("WSS dispatch queue cancelled before invocation");
               if (websocket.readyState !== WebSocket.OPEN) throw new Error("WSS transport is not open");
               await new Promise<void>((resolve, reject) => {
@@ -1498,11 +1550,12 @@ export function createProductionRbpIngressHost(
             return {
               started,
               completion,
-              cancel(): boolean {
+              async cancel(): Promise<boolean> {
                 if (startedSettled) return false;
                 cancelled = true;
+                controller.abort();
                 rejectStart(new Error("WSS dispatch queue cancelled before invocation"));
-                return true;
+                return await handoff.cancelBeforeStart();
               },
             };
           };

@@ -605,11 +605,11 @@ interface LiveConnection {
   readonly grantedCapabilities: readonly string[];
   readonly lifecycle: ConnectionLifecycleState;
   send(serialized: string): Promise<void>;
-  sendDispatchStarted?(serialized: string, revalidate: () => Promise<void>): {
+  sendDispatchStarted?(serialized: string, handoff: DispatchTransportHandoff): {
     readonly started: Promise<void>;
     readonly completion: Promise<void>;
     /** true only if the carrier has definitely not invoked transport. */
-    cancel(): boolean;
+    cancel(): Promise<boolean>;
   };
   close(code: number, reason: string): Promise<void>;
 }
@@ -637,6 +637,13 @@ interface DurableEgressReservation {
   readonly dispatchProof?: object;
 }
 
+/** In-memory-only dispatch handoff; no proof or lease data crosses the carrier. */
+export interface DispatchTransportHandoff {
+  readonly revalidate: (signal: AbortSignal) => Promise<void>;
+  /** True only after the exact reserved fence was durably released. */
+  readonly cancelBeforeStart: () => Promise<boolean>;
+}
+
 interface ReservedResumeAck extends DurableEgressReservation {
   readonly serialized: string;
 }
@@ -657,10 +664,10 @@ interface TrustedRecoveryAdmission {
 export interface BridgeConnectionChannel {
   send(serialized: string): Promise<void>;
   /** Dispatch-only two-promise handoff; lifecycle traffic remains on send(). */
-  sendDispatchStarted?(serialized: string, revalidate: () => Promise<void>): {
+  sendDispatchStarted?(serialized: string, handoff: DispatchTransportHandoff): {
     readonly started: Promise<void>;
     readonly completion: Promise<void>;
-    cancel(): boolean;
+    cancel(): Promise<boolean>;
   };
   close(code: number, reason: string): Promise<void>;
 }
@@ -5735,8 +5742,8 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         await input.channel.send(serialized);
       },
       ...(input.channel.sendDispatchStarted === undefined ? {} : {
-        sendDispatchStarted(serialized: string, revalidate: () => Promise<void>) {
-          return input.channel.sendDispatchStarted!(serialized, revalidate);
+        sendDispatchStarted(serialized: string, handoff: DispatchTransportHandoff) {
+          return input.channel.sendDispatchStarted!(serialized, handoff);
         },
       }),
       async close(code, reason): Promise<void> {
@@ -6923,7 +6930,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
    */
   async #releaseReservedEgressLease(
     reservation: DurableEgressReservation,
-  ): Promise<void> {
+  ): Promise<boolean> {
     for (let attempt = 0; attempt < MAX_AUTHORIZATION_CAS_ATTEMPTS; attempt += 1) {
       const attempted: { current: {
         readonly prior: StoredRecord<GatewayJsonValue>;
@@ -6936,7 +6943,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
             GATEWAY_RBP_SESSION_NAMESPACE,
             reservation.rsid,
           );
-          if (stored === null) throw new Error("egress reservation session is missing");
+          if (stored === null) return { kind: "not_reserved" as const };
           const record = parseStoredSession(stored, reservation.tenantId, reservation.rsid);
           const fence = sessionEgressFence(record);
           if (
@@ -6944,9 +6951,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
             fence.lease.phase !== "reserved" ||
             !sameJson(fence.lease, reservation.lease) ||
             fence.lease.holderInstanceId !== this.#instanceId
-          ) {
-            throw new Error("reserved egress lease ownership mismatch");
-          }
+          ) return { kind: "not_reserved" as const };
           const next = nextSessionRecord(
             stored,
             record,
@@ -6963,12 +6968,13 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
             value: asJson(next),
             expect: { kind: "version", version: stored.version },
           });
-          return next;
+          return { kind: "released" as const, next };
         },
       );
       if (released.ok) {
-        this.#syncActiveRecord(released.value);
-        return;
+        if (released.value.kind !== "released") return false;
+        this.#syncActiveRecord(released.value.next);
+        return true;
       }
       if (released.code === "conflict") continue;
       if (released.code === "durability_uncertain" && attempted.current !== null) {
@@ -6976,14 +6982,14 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         const readBack = await this.#readStoredSession(reservation.tenantId, reservation.rsid);
         if (readBack !== null && sameJson(readBack.value, evidence.next)) {
           this.#syncActiveRecord(parseStoredSession(readBack, reservation.tenantId, reservation.rsid));
-          return;
+          return true;
         }
         // A reservation whose release cannot be proven is an unavailable
         // dispatch path, never a license to retry or replay it in memory.
       }
       throw new GatewayRbpFault("unavailable", released.message, 503, 1011);
     }
-    throw new GatewayRbpFault("unavailable", "egress reserved-release CAS retry bound was exhausted", 503, 1011);
+    return false;
   }
 
   async #sendWithDurableReservation(
@@ -7006,16 +7012,24 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     let sendFailure: unknown = null;
     let releaseFailure: unknown = null;
     let sendBegan = false;
+    let completedAndVerified = false;
+    let provenPreStartCancellation = false;
     let started: DurableEgressReservation | null = null;
     try {
-      const startedDispatch = connection.sendDispatchStarted?.(serialized, async () => {
+      const startedDispatch = connection.sendDispatchStarted?.(serialized, {
+        revalidate: async (signal: AbortSignal) => {
+        if (signal.aborted) throw new GatewayRbpFault("unavailable", "dispatch carrier cancelled before promotion", 503, 1011);
         // This closure remains nominal/in-memory only.  It is run by the
         // adapter immediately before websocket.send()/response.write(), not
         // when the dispatch was merely queued.  The next source statement in
         // the adapter invokes the transport after this promise resolves.
         started = await this.#promoteEgressReservation(reservation);
+        if (signal.aborted) throw new GatewayRbpFault("unavailable", "dispatch carrier cancelled after promotion", 503, 1011);
         await this.#assertDispatchReservationCurrent(connection, started, authorityTicket);
+        if (signal.aborted) throw new GatewayRbpFault("unavailable", "dispatch carrier cancelled before invocation", 503, 1011);
         this.#assertAuthorityTicket(authorityTicket, connection, { session: started.record });
+        },
+        cancelBeforeStart: async () => await this.#releaseReservedEgressLease(reservation),
       });
       if (startedDispatch === undefined) {
         started = await this.#promoteEgressReservation(reservation);
@@ -7044,7 +7058,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
           // cancel() is linearized with the adapter invocation boundary.  A
           // true result proves no bytes were handed to transport; a false
           // result means the outcome is already started/indeterminate.
-          startedDispatch.cancel();
+          provenPreStartCancellation = await startedDispatch.cancel();
           throw error;
         } finally {
           if (startTimer !== null) clearTimeout(startTimer);
@@ -7057,12 +7071,26 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         throw new GatewayRbpFault("unavailable", "dispatch carrier resolved without a started lease", 503, 1011);
       }
       await this.#assertDispatchReservationCurrent(connection, started, authorityTicket);
+      completedAndVerified = true;
     } catch (error) {
       sendFailure = error;
+      if (started === null && !provenPreStartCancellation) {
+        // A direct/no-handoff carrier that failed before promotion is still
+        // provably pre-start.  Release only if the exact reservation remains;
+        // a concurrent revoke/replace simply wins this CAS and stays fenced.
+        provenPreStartCancellation = await this.#releaseReservedEgressLease(reservation);
+      }
     } finally {
       try {
-        if (started === null) await this.#releaseReservedEgressLease(reservation);
-        else await this.#releaseStartedEgressLease(started);
+        // Only a successfully completed and post-send verified transport can
+        // release a started lease.  Completion failure, timeout, uncertain
+        // cancellation, or a changed route retains the fence/pending record
+        // for terminal/recovery handling; mutating work remains held.
+        if (started !== null && completedAndVerified) {
+          await this.#releaseStartedEgressLease(started);
+        } else if (started === null && provenPreStartCancellation) {
+          // cancelBeforeStart already performed the exact durable release.
+        }
       } catch (error) {
         releaseFailure = error;
       }

@@ -855,7 +855,7 @@ describe("GatewayBridgeSessionAuthority live document routing", () => {
         hello: offered,
         channel: openedChannel,
       });
-      await created.receive(opened.connectionId, registration(`route-before-ack-${binding}`, binding));
+      await created.receive(opened.connectionId, registration(`route-before-ack-${binding}`));
       const registered = registeredFrame(openedChannel);
       const session = {
         connectionId: opened.connectionId,
