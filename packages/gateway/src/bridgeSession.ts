@@ -6961,6 +6961,13 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
             record,
             {
               ...record,
+              // A proved pre-start cancellation has no transport ambiguity:
+              // clear only the pending record bound to this exact lease
+              // envelope. A different/newer pending dispatch remains fenced.
+              pending:
+                record.pending?.envelopeDigest === reservation.lease.envelopeDigest
+                  ? null
+                  : record.pending,
               egressFence: { ...fence, epoch: fence.epoch + 1, lease: null },
             },
             this.#clock(),
