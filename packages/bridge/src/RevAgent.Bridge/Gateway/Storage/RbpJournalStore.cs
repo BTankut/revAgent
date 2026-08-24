@@ -109,7 +109,7 @@ internal sealed partial class RbpJournalStore : IAsyncDisposable
             IReadOnlyList<RbpJournalMigration> migrations =
                 RbpJournalSchema.BuildMigrationChain(
                     options.AdditionalMigrations);
-            EnsurePreV7RollbackBackup(connection, fullPath, migrations, rollbackBackupSeam);
+            EnsurePreV8RollbackBackup(connection, fullPath, migrations, rollbackBackupSeam);
             int schemaVersion = EnsureSchema(
                 connection,
                 migrations,
@@ -140,13 +140,14 @@ internal sealed partial class RbpJournalStore : IAsyncDisposable
         }
     }
 
-    private static void EnsurePreV7RollbackBackup(
+    private static void EnsurePreV8RollbackBackup(
         SqliteConnection connection,
         string databasePath,
         IReadOnlyList<RbpJournalMigration> migrations,
         IRbpJournalRollbackBackupSeam seam)
     {
-        // Version seven adds opaque protected material whose v6 executable
+        // Versions seven and eight add opaque protected material and recovery
+        // reservation state whose v6 executable
         // must not attempt to interpret. Before crossing that one-way local
         // format boundary, make an SQLite-consistent offline rollback image.
         // Existing images are retained rather than overwritten.
@@ -156,7 +157,7 @@ internal sealed partial class RbpJournalStore : IAsyncDisposable
             return;
         }
         (_, int current) = ReadJournalMeta(connection);
-        if (current != RbpJournalSchema.CurrentVersion - 1)
+        if (current != 6)
         {
             return;
         }

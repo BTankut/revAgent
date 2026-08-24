@@ -163,6 +163,22 @@ internal sealed partial class RbpJournalStore
                     context =>
                     {
                         RequireSessionExists(context, rsid);
+                        // A close/revoke must never silently discard the one
+                        // unacknowledged recovery fence.  Tombstone it before
+                        // recording unregister intent, retaining its audit
+                        // metadata and keeping ordinary outbound dispatch
+                        // fail-closed across restart.
+                        RbpRecoveryCarrierReservation? recovery =
+                            ReadActiveRecoveryCarrierReservation(context, rsid);
+                        if (recovery is not null &&
+                            recovery.Phase != RbpRecoveryCarrierPhase.Tombstoned)
+                        {
+                            TombstoneRecoveryCarrierReservation(
+                                context,
+                                recovery.RecoveryInvocationId,
+                                now,
+                                "session_unregistered");
+                        }
                         RbpUnregisterTombstone? existing =
                             ReadTombstone(context, rsid);
                         if (existing is not null)

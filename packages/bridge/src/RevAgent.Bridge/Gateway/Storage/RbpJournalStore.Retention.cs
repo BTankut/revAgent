@@ -88,6 +88,7 @@ internal sealed partial class RbpJournalStore
         return ExecuteImmediateAsync(
             context =>
             {
+                PruneFinalRecoveryCarrierAudit(context, cutoff);
                 PruneRecoveryPayloadsWithParents(context, cutoff, now);
                 (IReadOnlyList<RbpReleasedCarrier> releasedCarriers,
                  int carrierInvocations) =
@@ -130,6 +131,22 @@ internal sealed partial class RbpJournalStore
             cancellationToken);
     }
 
+    private static void PruneFinalRecoveryCarrierAudit(
+        RbpJournalWriteContext context,
+        long cutoff)
+    {
+        // Only final, nonsecret audit metadata expires with its parent policy;
+        // active/send/tombstoned fences remain authoritative and never reopen
+        // sequence space through retention.
+        using SqliteCommand delete = context.CreateCommand("""
+            DELETE FROM rbp_recovery_carrier_reservations
+            WHERE (phase='completed' AND completed_at_ms<=$cutoff)
+               OR (phase='tombstoned' AND tombstoned_at_ms<=$cutoff);
+            """);
+        delete.Parameters.AddWithValue("$cutoff", cutoff);
+        _ = delete.ExecuteNonQuery();
+    }
+
     private static void PruneRecoveryPayloadsWithParents(
         RbpJournalWriteContext context,
         long cutoff,
@@ -141,7 +158,12 @@ internal sealed partial class RbpJournalStore
         // never an early byte-cap eviction.
         using SqliteCommand delete = context.CreateCommand("""
             DELETE FROM rbp_recovery_payloads
-            WHERE retention_expires_at_ms<=$now
+            WHERE NOT EXISTS(
+                SELECT 1 FROM rbp_recovery_carrier_reservations AS reservation
+                WHERE reservation.raw_idempotency_key=rbp_recovery_payloads.idempotency_key
+                  AND reservation.phase IN ('reserved','send_started','awaiting_ack','tombstoned')
+            )
+              AND (retention_expires_at_ms<=$now
                OR idempotency_key IN (
               SELECT invocation.idempotency_key
               FROM rbp_invocations AS invocation
@@ -162,7 +184,7 @@ internal sealed partial class RbpJournalStore
                   WHERE batches.rsid=invocation.rsid AND batches.batch_id=invocation.batch_id
                     AND batches.state<>'terminal'
                 ))
-            );
+            ));
             """);
         delete.Parameters.AddWithValue("$cutoff", cutoff);
         delete.Parameters.AddWithValue("$now", now);

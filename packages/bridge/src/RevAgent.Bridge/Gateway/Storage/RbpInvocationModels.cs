@@ -234,6 +234,62 @@ internal sealed class RbpRecoveredPayload : IDisposable
     public override string ToString() => "[recovered payload]";
 }
 
+// C39 recovery-carrier metadata is deliberately kept separate from the
+// frozen wire schema and contains no payload/frame material.
+internal enum RbpRecoveryCarrierPhase
+{
+    Reserved,
+    SendStarted,
+    AwaitingAcknowledgement,
+    Completed,
+    Tombstoned,
+}
+
+internal sealed record RbpRecoveryCarrierReservationRequest(
+    string Rsid,
+    string RecoveryInvocationId,
+    string OriginInvocationId,
+    string ResultDigest,
+    int ChunkSize,
+    RbpRecoveryCarrierHeader Header,
+    string CanonicalEnvelopeDigest,
+    DateTimeOffset ExpiresAt);
+
+/// <summary>Fixed non-secret C39 carrier header. No extension fields exist.</summary>
+internal sealed record RbpRecoveryCarrierHeader(
+    string ContentType,
+    string ContentEncoding)
+{
+    internal const string RequiredContentType = "application/json";
+    internal const string RequiredContentEncoding = "base64";
+}
+
+internal sealed record RbpRecoveryCarrierReservation(
+    string Rsid,
+    string RecoveryInvocationId,
+    string OriginInvocationId,
+    string ResultDigest,
+    string RawIdempotencyKey,
+    string HeaderJcs,
+    int PlaintextLength,
+    int ChunkSize,
+    int ChunkCount,
+    RbpRecoveryCarrierPhase Phase,
+    int ChunkIndex,
+    long CurrentReservedSequence,
+    int RawPayloadVersion,
+    string CanonicalEnvelopeDigest,
+    long? SendStartedAtMilliseconds,
+    long HighestReservedSequence,
+    long AcknowledgementCursor,
+    int PlanVersion,
+    long CreatedAtMilliseconds,
+    long ExpiresAtMilliseconds,
+    long UpdatedAtMilliseconds,
+    long? CompletedAtMilliseconds,
+    long? TombstonedAtMilliseconds,
+    string? TombstoneReason);
+
 /// <summary>
 /// Immutable delivery material for a chunk/artifact carrier.  The journal owns
 /// this plan, not the socket: a reconnect must replay these exact prefix

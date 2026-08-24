@@ -198,7 +198,7 @@ public sealed class RbpJournalUnregisterTests
 
         clock -= (long)TimeSpan.FromHours(1).TotalMilliseconds;
         var migration = new RbpJournalMigration(
-            7,
+            9,
             "test",
             "test_backward_clock_v3",
             """
@@ -212,7 +212,7 @@ public sealed class RbpJournalUnregisterTests
             RbpJournalTestData.Options(
                 migrations: new[] { migration },
                 nowMilliseconds: now));
-        Assert.Equal(7, reopened.SchemaVersion);
+        Assert.Equal(9, reopened.SchemaVersion);
 
         DateTimeOffset renewed =
             RbpJournalTestData.Now.AddHours(48);
