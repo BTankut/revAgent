@@ -130,7 +130,11 @@ describe.sequential("WP-12 direct real trio runtime fixture", () => {
           });
           expect(normalOriginSuppressed).toBe(true);
 
-          const origin = await waitForC39Origin(runtime, 45_000);
+          // One fully drained fixture snapshot proves D0 provenance/count;
+          // continuation pages release the fixture slot before D1 polling.
+          await new Promise<void>((resolve) => setTimeout(resolve, 1_000));
+          const originEvidence = await readCompleteFixtureEvidence(runtime);
+          const origin = c39OriginFromEvidence(originEvidence);
           expect(origin.requestId).toMatch(UUID_V7);
           const recovery = await waitForC39Recovery(client, runtime, origin, binding, 45_000);
           const result = recovery.content.result as Record<string, unknown>;
@@ -186,7 +190,7 @@ describe.sequential("WP-12 direct real trio runtime fixture", () => {
             requestId: `wp12-c39-retry-${binding}`,
           });
           expect(retry.content).toMatchObject({ state: "completed" });
-          expect(await c39ExecutionCount(runtime, origin.requestId)).toBe(1);
+          expect(executionCount(originEvidence, origin.requestId)).toBe(1);
 
           const observed = await waitForObservedC39Recovery(
             runtime, origin, result.digest as `sha256:${string}`, 45_000,
@@ -200,11 +204,12 @@ describe.sequential("WP-12 direct real trio runtime fixture", () => {
           const restartRecoveryDenied = await expectC39RecoveryDenied(client, origin, binding, "restart");
           const bindingDriftDenied = restartResourceDenied && restartRecoveryDenied;
           expect(bindingDriftDenied).toBe(true);
-          expect(await c39ExecutionCount(runtime, origin.requestId)).toBe(1);
+          const finalEvidence = await readCompleteFixtureEvidence(runtime);
+          expect(executionCount(finalEvidence, origin.requestId)).toBe(1);
 
-          const originExecutionCount = await c39ExecutionCount(runtime, origin.requestId);
+          const originExecutionCount = executionCount(finalEvidence, origin.requestId);
           expect(originExecutionCount).toBe(1);
-          const cleanup = await runtime.supervisor.fixtureControl("snapshot_evidence");
+          const cleanup = finalEvidence;
           expect(cleanup).toMatchObject({ openSocketCount: 0, pendingStalls: [] });
           await runtime.stop();
           writeC39SuccessSummary({
@@ -472,38 +477,51 @@ function object(value: unknown): Record<string, unknown> | null {
     ? value as Record<string, unknown> : null;
 }
 
-async function c39ExecutionCount(
-  runtime: Awaited<ReturnType<typeof startRealTrioRuntimeFixture>>,
-  requestId: string,
-): Promise<number> {
-  const snapshot = object(await runtime.supervisor.fixtureControl("snapshot_evidence"));
-  const counts = Array.isArray(snapshot?.executionCounts) ? snapshot.executionCounts : [];
+function executionCount(snapshot: Record<string, unknown>, requestId: string): number {
+  const counts = Array.isArray(snapshot.executionCounts) ? snapshot.executionCounts : [];
   const row = counts.map(object).find((entry) => entry?.requestId === requestId);
   return typeof row?.count === "number" ? row.count : 0;
 }
 
-async function waitForC39Origin(
-  runtime: Awaited<ReturnType<typeof startRealTrioRuntimeFixture>>,
-  timeoutMs: number,
-): Promise<C39OriginProvenance> {
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    const snapshot = object(await runtime.supervisor.fixtureControl("snapshot_evidence"));
-    const rows = Array.isArray(snapshot?.c39OriginResponses) ? snapshot.c39OriginResponses : [];
+function c39OriginFromEvidence(snapshot: Record<string, unknown>): C39OriginProvenance {
+    const rows = Array.isArray(snapshot.c39OriginResponses) ? snapshot.c39OriginResponses : [];
     const candidates = rows.map(object).filter((row): row is Record<string, unknown> =>
       typeof row?.requestId === "string" && typeof row.responseDigest === "string" &&
       /^sha256:[0-9a-f]{64}$/u.test(row.responseDigest),
     );
-    if (candidates.length === 1) {
-      const candidate = candidates[0]!;
-      const requestId = candidate.requestId as string;
-      if (await c39ExecutionCount(runtime, requestId) === 1) {
-        return Object.freeze({ requestId, responseDigest: candidate.responseDigest as `sha256:${string}` });
+    if (candidates.length !== 1) throw new Error("real C39 fixture origin provenance is not singular");
+    const candidate = candidates[0]!;
+    const requestId = candidate.requestId as string;
+    if (executionCount(snapshot, requestId) !== 1) throw new Error("real C39 fixture origin count is not one");
+    return Object.freeze({ requestId, responseDigest: candidate.responseDigest as `sha256:${string}` });
+}
+
+async function readCompleteFixtureEvidence(
+  runtime: Awaited<ReturnType<typeof startRealTrioRuntimeFixture>>,
+): Promise<Record<string, unknown>> {
+  const pages: Record<string, unknown>[] = [];
+  let page = object(await runtime.supervisor.fixtureControl("snapshot_evidence"));
+  if (page === null) throw new Error("fixture evidence page is invalid");
+  for (let index = 0; index < 16; index += 1) {
+    pages.push(page);
+    if (page.complete === true) {
+      const first = pages[0]!;
+      const aggregate: Record<string, unknown> = { ...first };
+      for (const field of ["observations", "executionCounts", "methodExecutionCounts", "pendingStalls", "c39OriginResponses"] as const) {
+        aggregate[field] = pages.flatMap((entry) => Array.isArray(entry[field]) ? entry[field] : []);
       }
+      if (JSON.stringify(aggregate).length > 65_536) throw new Error("fixture evidence aggregate exceeds bound");
+      return aggregate;
     }
-    if (Date.now() >= deadline) throw new Error("real C39 fixture origin provenance did not become available");
-    await new Promise<void>((resolve) => setTimeout(resolve, 100));
+    if (typeof page.snapshotId !== "string" || object(page.nextCursor) === null) {
+      throw new Error("fixture evidence cursor is invalid or incomplete");
+    }
+    page = object(await runtime.supervisor.fixtureControl("snapshot_evidence", {
+      snapshotId: page.snapshotId, cursor: page.nextCursor as Record<string, unknown>,
+    }));
+    if (page === null) throw new Error("fixture evidence continuation is invalid");
   }
+  throw new Error("fixture evidence did not complete within page bound");
 }
 
 async function waitForC39Recovery(
@@ -515,15 +533,16 @@ async function waitForC39Recovery(
 ): Promise<{ readonly content: Record<string, unknown> }> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
-    await runtime.verifyNorthDispatchFence();
-    try {
+    const audit = object(await runtime.supervisor.readRealCaseAudit());
+    if (object(audit?.c39Recovery)?.status === "joined") {
+      await runtime.verifyNorthDispatchFence();
       const result = await client.toolCall({
         name: realTrioNorthToolForCase("O1-C39").toolName,
         arguments: { origin_invocation_id: origin.requestId, expected_result_digest: origin.responseDigest },
         requestId: `wp12-c39-recovery-${binding}`,
       });
       if (result.content.state === "completed") return result;
-    } catch { /* The public tool returns a uniform unavailable result until the replay is durable. */ }
+    }
     if (Date.now() >= deadline) throw new Error("real C39 public recovery did not complete");
     await new Promise<void>((resolve) => setTimeout(resolve, 200));
   }
