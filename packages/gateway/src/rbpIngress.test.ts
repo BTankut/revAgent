@@ -1248,12 +1248,16 @@ describe("GW-12 production RBP ingress", () => {
       // boundary; only the occupying real websocket.send is observable.
       expect(vi.mocked(serverSocket.send).mock.calls).toHaveLength(sendsBeforeDispatch);
       // The caller's bounded cancellation observation is not semantic
-      // settlement. Poll the real durable row for the background phase-two
-      // CAS rather than interpreting the immediate unavailable result.
+      // settlement. Phase two owns the durable receipt, while the public
+      // executor keeps its frozen unavailable/failed journal mapping.
       await vi.waitFor(() => {
         const durable = JSON.stringify(restartable.snapshot().records);
-        expect(durable).toContain("no_send");
+        expect(durable).toContain("gateway.dispatch-no-send/v1");
+        expect(durable).toContain('"transportStarted":false');
+        expect(durable).toContain('"state":"failed"');
+        expect(durable).toContain("addin_unreachable");
         expect(durable).not.toContain("cancellation_pending");
+        expect(durable).not.toContain('"phase":"reserved"');
       });
 
       held.callbacks.shift()!();
@@ -1262,7 +1266,10 @@ describe("GW-12 production RBP ingress", () => {
       await vi.waitFor(() => {
         const settled = JSON.stringify(restartable.snapshot().records);
         expect(settled).not.toContain("cancellation_pending");
-        expect(settled).toContain("no_send");
+        expect(settled).toContain("gateway.dispatch-no-send/v1");
+        expect(settled).toContain('"transportStarted":false');
+        expect(settled).toContain('"state":"failed"');
+        expect(settled).toContain("addin_unreachable");
       });
       await authority.close();
       const restarted = new GatewayBridgeSessionAuthority(restartable.restart(), activeIdentity);
@@ -1291,7 +1298,10 @@ describe("GW-12 production RBP ingress", () => {
             last_rx_seq: 0,
           },
         });
-        expect(resumedFrames.map((frame) => frame.type)).toStrictEqual(["resume_ack"]);
+        // The no-send receipt proves the original transport was never invoked,
+        // but the frozen failed/addin_unreachable journal remains recoverable;
+        // restart therefore retransmits the still-unacknowledged invoke.
+        expect(resumedFrames.map((frame) => frame.type)).toStrictEqual(["resume_ack", "invoke"]);
       } finally {
         await restarted.close();
       }
