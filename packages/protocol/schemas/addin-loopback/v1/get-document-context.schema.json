@@ -148,6 +148,9 @@
           "minimum": 0,
           "maximum": 9007199254740991
         },
+        "cache_incarnation_digest": {
+          "$ref": "https://schemas.revagent.local/addin-loopback/v1/common.schema.json#/$defs/sha256"
+        },
         "cacheState": {
           "enum": [
             "ready",
@@ -252,6 +255,24 @@
             "properties": {
               "activeView": {
                 "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "cache_incarnation_digest": {}
+            },
+            "required": [
+              "cache_incarnation_digest"
+            ]
+          },
+          "then": {
+            "properties": {
+              "revision": {
+                "type": "integer",
+                "minimum": 1
               }
             }
           }
