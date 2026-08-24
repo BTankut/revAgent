@@ -45,6 +45,17 @@ import {
   createRestartableTestStore,
   type RestartableTestStore,
 } from "./testAdapters.js";
+import {
+  GatewayBridgeSessionAuthority,
+  type BridgeConnectionChannel,
+  type DispatchTransportHandoff,
+} from "./bridgeSession.js";
+import {
+  GATEWAY_AUTH_CONTRACT_VERSION,
+  type DeviceAuthContext,
+  type IdentityPort,
+} from "./authContext.js";
+import type { GatewayExecutorRequest } from "./dispatch.js";
 
 const NOW = "2026-08-09T12:00:00.000Z";
 const TENANT_A = "tenant-a";
@@ -2960,4 +2971,279 @@ describe("GatewayRecoveryAuthority durable safety", () => {
     }).toThrow();
     expect(carried).toEqual(scope);
   });
+
+  it.each(["wss", "http_sse"] as const)(
+    "PUBLIC-PORT BLOCKER: exposes its own real reserved-cancellation receipt: %s",
+    async (binding) => {
+      const context = await createRealNoSendContext({
+        binding,
+        principal: `public-${binding}`,
+      });
+      try {
+        const observed = await inspectRealNoSendRaw(context);
+        // Expected: a Gateway-authored reserved cancellation is public
+        // recovery evidence with no ACK and an exact no-send receipt.
+        // Actual on cb48: inspectDispatch returns protocol_fault because it
+        // compares null acceptance.gatewaySequence to the expected sequence.
+        expect(observed).toMatchObject({
+          kind: "found",
+          observation: {
+            acceptance: null,
+            noSend: expect.objectContaining({
+              envelopeDigest: context.pending.envelopeDigest,
+              transportStarted: false,
+              cumulativeAck: null,
+            }),
+          },
+        });
+      } finally {
+        await context.bridge.close();
+      }
+    },
+  );
 });
+
+type RealBinding = "wss" | "http_sse";
+
+interface RealNoSendContext {
+  readonly tenantId: string;
+  readonly rsid: string;
+  readonly store: RestartableTestStore;
+  readonly bridge: GatewayBridgeSessionAuthority;
+  readonly recovery: GatewayRecoveryAuthority;
+  readonly pending: GatewayRecoveryPendingDispatch;
+}
+
+function realIdentity(input: {
+  readonly tenantId: string;
+  readonly principal: string;
+}): IdentityPort {
+  return {
+    kind: "fake" as const,
+    async authenticateNorthRequest() {
+      return {
+        ok: false as const,
+        port: "identity" as const,
+        code: "not_configured" as const,
+        message: "north identity is outside the foreign-receipt fixture",
+      };
+    },
+    async authenticateDevice(request) {
+      const context: DeviceAuthContext = {
+        contractVersion: GATEWAY_AUTH_CONTRACT_VERSION,
+        actor: {
+          type: "device",
+          tenantId: input.tenantId,
+          userId: `user-${input.principal}`,
+          deviceId: `device-${input.principal}`,
+          seatId: `seat-${input.principal}`,
+        },
+        connectionId: request.connectionId,
+        deviceStatus: "active",
+        grantedConnectionCapabilities: ["transport_streamable_http"],
+        grantedSessionCapabilities: [],
+        deviceTokenDigest: `sha256:${(input.principal.endsWith("a") ? "a" : "b").repeat(64)}`,
+      };
+      return { ok: true as const, value: context };
+    },
+  };
+}
+
+function realHello(principal: string): import("@revagent/protocol").HelloEnvelope {
+  return {
+    type: "hello",
+    id: uuid7(810_000 + principal.length),
+    ts: NOW,
+    payload: {
+      min_protocol: 1,
+      max_protocol: 1,
+      capabilities: ["transport_streamable_http"],
+      bridge_version: "foreign-receipt-fixture",
+      device_id: `device-${principal}`,
+      machine: { hostname: `host-${principal}`, os: "windows" },
+      addin_versions: ["foreign-receipt-fixture"],
+    },
+  };
+}
+
+function realRegistration(principal: string): import("@revagent/protocol").SessionRegister {
+  return {
+    v: 1,
+    type: "session_register",
+    id: uuid7(820_000 + principal.length),
+    ts: NOW,
+    payload: {
+      local_session_key: `local-${principal}`,
+      user_hint: { name: principal },
+      machine: {
+        hostname: `host-${principal}`,
+        fingerprint: `sha256:${"1".repeat(64)}`,
+      },
+      revit: { version: "2026", build: "fixture", pid: 4100 },
+      addin_version: "foreign-receipt-fixture",
+      result_contract_version: 1,
+      session_capabilities: [],
+      bridge_version: "foreign-receipt-fixture",
+      documents: [],
+      port: 48884,
+    },
+  };
+}
+
+function cancellationChannel(): BridgeConnectionChannel {
+  return {
+    async send(): Promise<void> {},
+    sendDispatchStarted(
+      _serialized: string,
+      handoff: DispatchTransportHandoff,
+    ) {
+      const failure = Promise.reject(new Error("fixture cancels before carrier invocation"));
+      void failure.catch(() => undefined);
+      return {
+        started: failure,
+        completion: failure,
+        cancel: handoff.cancelBeforeStart,
+      };
+    },
+    async close(): Promise<void> {},
+  };
+}
+
+function realRequest(input: {
+  readonly tenantId: string;
+  readonly principal: string;
+  readonly rsid: string;
+  readonly ordinal: number;
+}): GatewayExecutorRequest {
+  const args: JsonValue = { fixture: "foreign-receipt" };
+  return {
+    toolName: "core.set_parameter",
+    toolVersion: "1.0.0",
+    executorMethod: "set_element_parameter",
+    policyClass: "auto",
+    mutationScopePolicy: "session",
+    args,
+    context: {
+      invocationId: uuid7(830_000 + input.principal.length + input.ordinal),
+      idempotencyKey: `${input.rsid}/${uuid7(830_000 + input.principal.length + input.ordinal)}`,
+      principalKey: `${input.tenantId}:${input.principal}`,
+      actor: { tenantId: input.tenantId, userId: `user-${input.principal}`, role: "user" },
+      gatewaySessionId: `gateway-${input.principal}`,
+      oauthClientId: `oauth-${input.principal}`,
+      mcpSessionId: `mcp-${input.principal}`,
+      effectiveMcpRequestScope: createEffectiveMcpRequestScopeV1({
+        principalKey: `${input.tenantId}:${input.principal}`,
+        transportMcpSessionId: `mcp-${input.principal}`,
+        identityMcpSessionId: null,
+        nowMs: 1_775_000_100_000,
+      }),
+      rsid: input.rsid,
+      toolName: "core.set_parameter",
+      toolVersion: "1.0.0",
+      policyClass: "auto",
+      policyDecision: "auto",
+      confirmationId: null,
+      originatingPreviewInvocationId: null,
+      mutationScopePolicy: "session",
+      mutating: true,
+      executor: "bridge",
+      documentIdentity: { kind: "live", session_document_id: `doc-${input.principal}` },
+      paramsDigest: makeParamsDigest(args),
+      mutationScope: SESSION_SCOPE,
+      startedAtMs: 1_775_000_100_000,
+    },
+  };
+}
+
+function expectedFromPending(pending: GatewayRecoveryPendingDispatch): GatewayExpectedDispatchBinding {
+  return {
+    rsid: pending.envelope.rsid,
+    sessionBindingId: pending.sessionBindingId,
+    gatewaySequence: pending.gatewaySequence,
+    envelopeDigest: pending.envelopeDigest,
+    invocationBindings: pending.journalRecords.map((journal) => ({
+      idempotencyKey: `${journal.binding.rsid}/${journal.binding.invocationId}`,
+      bindingDigest: journal.bindingDigest,
+    })),
+  };
+}
+
+async function createRealNoSendContext(input: {
+  readonly binding: RealBinding;
+  readonly principal: string;
+}): Promise<RealNoSendContext> {
+  const tenantId = "tenant-foreign-receipt";
+  const store = createRestartableTestStore();
+  const bridge = new GatewayBridgeSessionAuthority(
+    store.store,
+    realIdentity({ tenantId, principal: input.principal }),
+  );
+  await bridge.open();
+  const opened = await bridge.openConnection({
+    deviceToken: `token-${input.principal}`,
+    binding: input.binding,
+    hello: realHello(input.principal),
+    channel: cancellationChannel(),
+  });
+  await bridge.receive(opened.connectionId, realRegistration(input.principal));
+  // The public registration ACK is retained by the connection channel, but
+  // this test deliberately avoids a fixture-authored receipt. Read the rsid
+  // through the public build surface after discovering the sole real session.
+  const snapshot = store.snapshot();
+  const root = snapshot.records.find(
+    (record) => record.tenantId === tenantId && record.namespace === "gateway.rbp-session/v2",
+  );
+  if (root === undefined || typeof root.value !== "object" || root.value === null || !("rsid" in root.value)) {
+    throw new Error("real bridge registration did not create a v2 session root");
+  }
+  const rsid = root.value.rsid;
+  if (typeof rsid !== "string") throw new Error("registered rsid is invalid");
+  const request = realRequest({
+    tenantId,
+    principal: input.principal,
+    rsid,
+    ordinal: 100,
+  });
+  const draft = bridge.buildEnvelope(request);
+  const recovery = new GatewayRecoveryAuthority(store.store, {
+    bridgeEvidence: bridge,
+    evidenceDecision: {
+      async decideEvidence() {
+        return {
+          kind: "decided" as const,
+          conclusion: "inconclusive" as const,
+          authorityReference: "foreign-receipt-fixture",
+          decisionVersion: 1,
+          decidedAtMs: 1_775_000_100_001,
+        };
+      },
+    },
+    clock: () => 1_775_000_100_002,
+    newId: () => uuid7(840_000 + input.principal.length),
+  });
+  const attemptId = uuid7(850_000 + input.principal.length);
+  await recovery.acquireInvocationWindow({ tenantId, rsid, attemptId });
+  const prepareInput = {
+    tenantId,
+    attemptId,
+    sessionBindingId: draft.sessionBindingId,
+    connectionId: draft.connectionId,
+    envelope: draft.envelope,
+    expected: draft.expected,
+  };
+  const pending = requirePending(await recovery.prepareMutationDispatch(prepareInput));
+  await expect(bridge.execute(request, pending)).resolves.toMatchObject({
+    state: "failed",
+    error: { code: "executor_unavailable" },
+  });
+  return { tenantId, rsid, store, bridge, recovery, pending };
+}
+
+async function inspectRealNoSendRaw(input: RealNoSendContext): Promise<GatewayBridgeEvidenceLookup> {
+  const result = await input.store.store.transact(
+    { tenantId: input.tenantId },
+    async (tx) => await input.bridge.inspectDispatch(tx, expectedFromPending(input.pending)),
+  );
+  if (!result.ok) throw new Error(result.message);
+  return result.value;
+}
