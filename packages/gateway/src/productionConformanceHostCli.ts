@@ -31,6 +31,55 @@ interface CliOptions {
 
 type ConformanceBinding = "wss" | "streamable_http_sse";
 
+export interface OrderedConformanceHostShutdown {
+  readonly beginShutdown: () => void;
+  readonly close: () => Promise<void>;
+}
+
+/**
+ * Serializes the terminal order for the real conformance child.  In
+ * particular, better-sqlite3 must be finalized while Node still owns its IPC
+ * environment: releasing IPC first can run Node environment cleanup against
+ * native SQLite state that is still live.
+ */
+export function createOrderedConformanceHostShutdown(input: {
+  readonly host: OrderedConformanceHostShutdown;
+  readonly closeStore: () => Promise<void>;
+  readonly releaseIpc: () => void;
+}): () => Promise<void> {
+  let shutdown: Promise<void> | null = null;
+  return (): Promise<void> => {
+    if (shutdown !== null) return shutdown;
+    // This is deliberately synchronous. Every caller (signal, STOP, or the
+    // enclosing finally) observes the host as non-accepting before it can
+    // schedule any more control/session work.
+    input.host.beginShutdown();
+    shutdown = (async () => {
+      let failure: unknown = null;
+      try {
+        // The host owns accepted HTTP/control work and child session tasks.
+        // Its existing close contract settles those tasks before resolving.
+        await input.host.close();
+      } catch (error) {
+        failure = error;
+      }
+      try {
+        // Closing the SQLite database disposes its statements with the native
+        // handle. This attempt must finish before Node releases IPC/env state.
+        await input.closeStore();
+      } catch (error) {
+        if (failure === null) failure = error;
+      } finally {
+        // This must run even after a close failure, but only after the store
+        // close attempt has settled. It is safe for repeated STOP/signal paths.
+        input.releaseIpc();
+      }
+      if (failure !== null) throw failure;
+    })();
+    return shutdown;
+  };
+}
+
 const REQUIRED_SESSION_CAPABILITIES = Object.freeze([
   "batch_atomic",
   "doc_context_cached_v1",
@@ -273,6 +322,20 @@ export async function runProductionConformanceHostCli(args: readonly string[]): 
   const protocolStore = new SqliteConformanceProtocolStore(options.root);
   const opened = await protocolStore.open();
   if (!opened.ok) throw new Error("conformance protocol store did not open");
+  let storeClose: Promise<void> | null = null;
+  const closeProtocolStore = (): Promise<void> => {
+    if (storeClose !== null) return storeClose;
+    storeClose = protocolStore.close().then((outcome) => {
+      if (!outcome.ok) throw new Error("conformance protocol store did not close");
+    });
+    return storeClose;
+  };
+  const releaseIpc = (): void => {
+    // An IPC channel is supplied only by the Windows supervision harness. It
+    // keeps Node's event loop alive after an otherwise clean app close unless
+    // it is explicitly released. Do not release it before SQLite has settled.
+    if (process.connected) process.disconnect();
+  };
   // The carrier and the host ports must use one exact durable pair.  This is
   // deliberately composed before ingress so carrier capability grants cannot
   // pass a readiness check against an unrelated object store.
@@ -388,7 +451,6 @@ export async function runProductionConformanceHostCli(args: readonly string[]): 
     },
   });
   let conformanceEndpoint: string | null = null;
-  let stopping = false;
   try {
     const handle = await startProductionGatewayHost({
       hostProfile: "production_conformance",
@@ -540,17 +602,23 @@ export async function runProductionConformanceHostCli(args: readonly string[]): 
       },
     });
     conformanceEndpoint = `https://127.0.0.1:${String(handle.port)}`;
-    const close = async (): Promise<void> => {
-      if (stopping) return;
-      stopping = true;
-      handle.beginShutdown();
-      await handle.close();
-    };
+    const close = createOrderedConformanceHostShutdown({
+      host: {
+        beginShutdown() {
+          handle.beginShutdown();
+        },
+        close: async () => await handle.close(),
+      },
+      closeStore: closeProtocolStore,
+      releaseIpc,
+    });
     const stopped = new Promise<void>((resolve, reject) => {
-      process.once("SIGTERM", () => { void close().then(resolve, reject); });
-      process.once("SIGINT", () => { void close().then(resolve, reject); });
+      const stop = (): void => { void close().then(resolve, reject); };
+      process.once("SIGTERM", stop);
+      process.once("SIGINT", stop);
       if (process.send !== undefined) process.on("message", (message: unknown) => {
-        if ((message as { action?: unknown })?.action === "emit_test_signal") void close().then(resolve, reject);
+        const action = (message as { action?: unknown })?.action;
+        if (action === "STOP" || action === "emit_test_signal") stop();
       });
     });
     // Register STOP before publishing READY: a parent which stops immediately
@@ -560,12 +628,14 @@ export async function runProductionConformanceHostCli(args: readonly string[]): 
     const certificateSha256 = `sha256:${createHash("sha256").update(new X509Certificate(cert).raw).digest("hex")}`;
     process.stdout.write(`${JSON.stringify({ ready: true, component: "gateway_production_conformance", contract: "wp12-production-conformance-host/v1", endpoint: conformanceEndpoint, tlsCertificateSha256: certificateSha256, controlPath: "/__conformance/v1/control", pid: process.pid })}\n`);
     await stopped;
-    // An IPC channel is supplied only by the Windows supervision harness. It
-    // keeps Node's event loop alive after an otherwise clean app close unless
-    // it is explicitly released.
-    if (process.connected) process.disconnect();
   } finally {
-    await protocolStore.close();
+    // Startup failures and repeated terminal paths use the same once-only
+    // store close. IPC is released even when that close reports an error.
+    try {
+      await closeProtocolStore();
+    } finally {
+      releaseIpc();
+    }
   }
 }
 
