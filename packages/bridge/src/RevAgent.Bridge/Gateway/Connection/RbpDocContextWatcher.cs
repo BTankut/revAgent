@@ -19,6 +19,8 @@ internal delegate Task<bool> RbpDocContextEmit(
     RbpDocumentContextDiagnosticPair? diagnosticPair,
     CancellationToken cancellationToken);
 
+internal enum RbpImmediatePollOutcome { Emitted, NoSend, Cancelled, Fault }
+
 /// <summary>
 /// Local-only, value-free correlation carried from one validated add-in
 /// snapshot through its queue/send lifecycle. It is never an RBP payload,
@@ -347,13 +349,13 @@ internal sealed class RbpDocContextWatcher
     }
 
     /// <summary>Signals at most one extra cached-context poll for this watch.</summary>
-    internal bool RequestImmediatePoll(string rsid)
+    internal Task<RbpImmediatePollOutcome>? RequestImmediatePollAsync(string rsid)
     {
         ArgumentException.ThrowIfNullOrEmpty(rsid);
         lock (_sync)
         {
-            if (!_loops.TryGetValue(rsid, out WatchLoop? loop)) return false;
-            return loop.Signal();
+            if (!_loops.TryGetValue(rsid, out WatchLoop? loop)) return null;
+            return loop.Request();
         }
     }
 
@@ -391,7 +393,13 @@ internal sealed class RbpDocContextWatcher
                     .ConfigureAwait(false);
                 Task cadence = _clock.DelayAsync(PollInterval, token);
                 Task signalled = loop.WaitForSignalAsync(token);
-                await Task.WhenAny(cadence, signalled).ConfigureAwait(false);
+                if (await Task.WhenAny(cadence, signalled).ConfigureAwait(false) == signalled)
+                {
+                    TaskCompletionSource<RbpImmediatePollOutcome>? waiter = loop.TakeRequest();
+                    try { waiter?.TrySetResult(await PollOnceAsync(rsid, emitAsync, token).ConfigureAwait(false) ? RbpImmediatePollOutcome.Emitted : RbpImmediatePollOutcome.NoSend); }
+                    catch (OperationCanceledException) { waiter?.TrySetResult(RbpImmediatePollOutcome.Cancelled); throw; }
+                    catch { waiter?.TrySetResult(RbpImmediatePollOutcome.Fault); }
+                }
             }
         }
         catch (OperationCanceledException)
@@ -401,7 +409,7 @@ internal sealed class RbpDocContextWatcher
         }
     }
 
-    private async Task PollOnceAsync(
+    private async Task<bool> PollOnceAsync(
         string rsid,
         RbpDocContextEmit emitAsync,
         CancellationToken token)
@@ -422,7 +430,7 @@ internal sealed class RbpDocContextWatcher
             // retry is the next 15-second tick rather than a hot loop.
             Observe(RbpDocumentContextObservation.Create(
                 "failure", "snapshot_failed", rsid));
-            return;
+            return false;
         }
 
         if (snapshotRead.RouteFailure)
@@ -432,7 +440,7 @@ internal sealed class RbpDocContextWatcher
             // local key, handle generation, route detail or add-in error.
             Observe(RbpDocumentContextObservation.Create(
                 "failure", "route_failure", rsid));
-            return;
+            return false;
         }
 
         AddinDocumentContextSnapshot? snapshot = snapshotRead.Snapshot;
@@ -444,7 +452,7 @@ internal sealed class RbpDocContextWatcher
             // the last ready context is not clobbered.
             Observe(RbpDocumentContextObservation.Create(
                 "snapshot", "not_ready", rsid));
-            return;
+            return false;
         }
 
         string normalized =
@@ -469,7 +477,7 @@ internal sealed class RbpDocContextWatcher
                     snapshot.Revision,
                     normalized,
                     snapshot.CacheIncarnationDigest);
-                return;
+                return false;
             }
         }
 
@@ -501,7 +509,7 @@ internal sealed class RbpDocContextWatcher
             // The update was not durably queued; keep the previous emitted
             // state so the change is retried at the next tick.
             ObservePayload("failure", "queue_failed", rsid, payload, snapshot);
-            return;
+            return false;
         }
 
         if (emitted)
@@ -518,6 +526,7 @@ internal sealed class RbpDocContextWatcher
         {
             ObservePayload("queue", "not_queued", rsid, payload, snapshot);
         }
+        return emitted;
     }
 
     private void ObservePayload(
@@ -621,6 +630,7 @@ internal sealed class RbpDocContextWatcher
     {
         private readonly CancellationTokenSource _cancellation;
         private readonly SemaphoreSlim _signal = new(0, 1);
+        private TaskCompletionSource<RbpImmediatePollOutcome>? _waiter;
         private Task _loop = Task.CompletedTask;
 
         internal WatchLoop(CancellationTokenSource cancellation)
@@ -636,6 +646,20 @@ internal sealed class RbpDocContextWatcher
                 return false;
             try { _signal.Release(); return true; }
             catch (SemaphoreFullException) { return false; }
+        }
+
+        internal Task<RbpImmediatePollOutcome> Request()
+        {
+            _waiter ??= new(TaskCreationOptions.RunContinuationsAsynchronously);
+            _ = Signal();
+            return _waiter.Task;
+        }
+
+        internal TaskCompletionSource<RbpImmediatePollOutcome>? TakeRequest()
+        {
+            TaskCompletionSource<RbpImmediatePollOutcome>? result = _waiter;
+            _waiter = null;
+            return result;
         }
 
         internal Task WaitForSignalAsync(CancellationToken token) =>
@@ -657,6 +681,7 @@ internal sealed class RbpDocContextWatcher
             try
             {
                 _cancellation.Cancel();
+                _waiter?.TrySetResult(RbpImmediatePollOutcome.Cancelled);
             }
             catch (ObjectDisposedException)
             {
