@@ -135,6 +135,7 @@ describe.sequential("WP-12 direct real trio runtime fixture", () => {
             requestId: `wp12-c39-origin-${binding}`,
           });
           const initialProvenance = await waitForC39OriginProvenance(runtime, 45_000);
+          await waitForC39ReconnectWatch(runtime, 45_000);
           let originSettledBeforeRouteEdge = false;
           void originPromise.then(
             () => { originSettledBeforeRouteEdge = true; },
@@ -553,6 +554,30 @@ async function waitForC39OriginProvenance(
     if (provenance.count === 1 && provenance.ready && provenance.latestDigest !== null) return provenance;
     if (provenance.count > 1) throw new Error("C39 fixture origin provenance exceeded one execution before route edge");
     if (Date.now() >= deadline) throw new Error("C39 fixture origin provenance did not reach one execution before route edge");
+    await new Promise<void>((resolve) => setTimeout(resolve, 100));
+  }
+}
+
+async function waitForC39ReconnectWatch(
+  runtime: Awaited<ReturnType<typeof startRealTrioRuntimeFixture>>,
+  timeoutMs: number,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const rows = await runtime.supervisor.readReconnectWatchObservations();
+    if (new Set(rows.map((row) => row.ordinal)).size !== rows.length ||
+        rows.some((row, index) => index > 0 && row.ordinal <= rows[index - 1]!.ordinal)) {
+      throw new Error("C39 reconnect watch has duplicate or unordered ordinals");
+    }
+    for (const acknowledged of rows.filter((row) => row.phase === "resume_ack_applied")) {
+      const watcher = rows.find((row) => row.phase === "watcher_started" &&
+        row.generation === acknowledged.generation && row.ordinal > acknowledged.ordinal &&
+        row.rsidHash === acknowledged.rsidHash &&
+        row.sessionBindingDigest === acknowledged.sessionBindingDigest &&
+        row.connectionDigest === acknowledged.connectionDigest);
+      if (watcher !== undefined) return;
+    }
+    if (Date.now() >= deadline) throw new Error("C39 reconnect watch did not reach resume acknowledgement and watcher start");
     await new Promise<void>((resolve) => setTimeout(resolve, 100));
   }
 }

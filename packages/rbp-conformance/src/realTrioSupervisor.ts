@@ -92,6 +92,8 @@ export interface RealTrioSupervisorResult {
   readonly readRealCaseAuditOutcome: () => Promise<RealTrioAuditControlOutcome>;
   /** Fixed C39 worker IPC projection; no raw transcript or generic control. */
   readonly readRecoveryCarrierObservations: () => Promise<readonly RealTrioRecoveryCarrierObservation[]>;
+  /** Fixed C39 reconnect readiness projection; no raw worker control/transcript. */
+  readonly readReconnectWatchObservations: () => Promise<readonly RealTrioReconnectWatchObservation[]>;
   /** Value-free C# document-context lifecycle observations only. */
   readonly readDocumentContextDiagnostics: () => readonly ProcessTranscriptRecord[];
   /** Fixed document-context stage sequence for failure artifacts only. */
@@ -119,6 +121,15 @@ export interface RealTrioRecoveryCarrierObservation {
   readonly sequence: number;
   readonly outerDigest: `sha256:${string}`;
   readonly ordinal: number;
+}
+
+export interface RealTrioReconnectWatchObservation {
+  readonly phase: "resume_ack_applied" | "watcher_started";
+  readonly generation: number;
+  readonly ordinal: number;
+  readonly rsidHash: `sha256:${string}`;
+  readonly sessionBindingDigest: `sha256:${string}`;
+  readonly connectionDigest: `sha256:${string}`;
 }
 
 export type RealTrioAuditControlErrorKind =
@@ -839,7 +850,9 @@ function isObject(value: unknown): value is JsonObject {
 }
 
 function recoveryCarrierObservations(value: JsonValue): readonly RealTrioRecoveryCarrierObservation[] {
-  if (!isObject(value) || !Array.isArray(value.observations) ||
+  if (!isObject(value) || Object.keys(value).length !== 2 ||
+      !Object.hasOwn(value, "observations") || !Object.hasOwn(value, "reconnectWatchObservations") ||
+      !Array.isArray(value.observations) || !Array.isArray(value.reconnectWatchObservations) ||
       value.observations.length > MAX_REAL_TRIO_RECOVERY_CARRIER_OBSERVATIONS) {
     throw new Error("real worker recovery observation IPC is malformed");
   }
@@ -861,6 +874,32 @@ function recoveryCarrierObservations(value: JsonValue): readonly RealTrioRecover
       sequence: row.sequence,
       outerDigest: row.outerDigest as `sha256:${string}`,
       ordinal: row.ordinal,
+    }));
+  }
+  return Object.freeze(rows);
+}
+
+function reconnectWatchObservations(value: JsonValue): readonly RealTrioReconnectWatchObservation[] {
+  if (!isObject(value) || Object.keys(value).length !== 2 ||
+      !Object.hasOwn(value, "observations") || !Object.hasOwn(value, "reconnectWatchObservations") ||
+      !Array.isArray(value.observations) || !Array.isArray(value.reconnectWatchObservations) ||
+      value.reconnectWatchObservations.length > MAX_REAL_TRIO_RECOVERY_CARRIER_OBSERVATIONS) {
+    throw new Error("real worker reconnect observation IPC is malformed");
+  }
+  const rows: RealTrioReconnectWatchObservation[] = [];
+  for (const row of value.reconnectWatchObservations) {
+    if (!isObject(row) || (row.phase !== "resume_ack_applied" && row.phase !== "watcher_started") ||
+        typeof row.generation !== "number" || !Number.isSafeInteger(row.generation) || row.generation < 1 ||
+        typeof row.ordinal !== "number" || !Number.isSafeInteger(row.ordinal) || row.ordinal < 1 ||
+        typeof row.rsidHash !== "string" || !SHA256.test(row.rsidHash) ||
+        typeof row.sessionBindingDigest !== "string" || !SHA256.test(row.sessionBindingDigest) ||
+        typeof row.connectionDigest !== "string" || !SHA256.test(row.connectionDigest) ||
+        Object.keys(row).length !== 6) throw new Error("real worker reconnect observation IPC is invalid");
+    rows.push(Object.freeze({
+      phase: row.phase, generation: row.generation, ordinal: row.ordinal,
+      rsidHash: row.rsidHash as `sha256:${string}`,
+      sessionBindingDigest: row.sessionBindingDigest as `sha256:${string}`,
+      connectionDigest: row.connectionDigest as `sha256:${string}`,
     }));
   }
   return Object.freeze(rows);
@@ -1236,6 +1275,8 @@ export async function startRealTrioSupervisor(input: RealTrioSupervisorLaunch): 
         };
         const readRecoveryCarrierObservations = async (): Promise<readonly RealTrioRecoveryCarrierObservation[]> =>
           recoveryCarrierObservations(await bridge.request("read_recovery_observations"));
+        const readReconnectWatchObservations = async (): Promise<readonly RealTrioReconnectWatchObservation[]> =>
+          reconnectWatchObservations(await bridge.request("read_recovery_observations"));
         let stopped = false;
         const stop = async (): Promise<void> => {
           if (stopped) return;
@@ -1265,6 +1306,7 @@ export async function startRealTrioSupervisor(input: RealTrioSupervisorLaunch): 
         readRealCaseAudit,
         readRealCaseAuditOutcome,
         readRecoveryCarrierObservations,
+        readReconnectWatchObservations,
         readDocumentContextSnapshot: () => documentContextJournal.snapshot(bridge.transcript),
         readDocumentContextSince: (cursor: string, generation: number) =>
           documentContextJournal.since(cursor, generation, bridge.transcript),
