@@ -946,11 +946,22 @@ describe("WP-12 real-trio fixture document route gate", () => {
     // never be accepted as a substitute by the current-route join.
     const acceptedHash = audit(expected.rsidHash, expected.sequence);
     expect(hasGatewayAcceptedDocumentContextRoute(acceptedHash, expected, baseline)).toBe(true);
+    expect(acceptedHash.documentContextUpdates[0]).not.toHaveProperty("rsid");
+    expect(acceptedHash.documentContextUpdates[0]).not.toHaveProperty("rsidDigest");
     const [{ rsidHash: _removedRsidHash, ...legacyOnly }] = acceptedHash.documentContextUpdates;
     expect(hasGatewayAcceptedDocumentContextRoute({
       ...acceptedHash,
       documentContextUpdates: [{ ...legacyOnly, rsidDigest: expected.rsidHash }],
     }, expected, baseline)).toBe(false);
+    expect(hasGatewayAcceptedDocumentContextRoute(
+      audit("a".repeat(64), expected.sequence), expected, baseline,
+    )).toBe(false);
+    const routeMismatch = audit(expected.rsidHash, expected.sequence);
+    routeMismatch.documentContextUpdates[0] = {
+      ...routeMismatch.documentContextUpdates[0],
+      routeDigest: `sha256:${"9".repeat(64)}`,
+    };
+    expect(hasGatewayAcceptedDocumentContextRoute(routeMismatch, expected, baseline)).toBe(false);
     expect(hasGatewayAcceptedDocumentContextRoute(audit(expected.rsidHash, 6), expected, baseline)).toBe(false);
     expect(hasGatewayAcceptedDocumentContextRoute(audit(`sha256:${"b".repeat(64)}`, 7), expected, baseline)).toBe(false);
     expect(hasGatewayAcceptedDocumentContextRoute(audit(`sha256:${"A".repeat(64)}`, 7), expected, baseline)).toBe(false);

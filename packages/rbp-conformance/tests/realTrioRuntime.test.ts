@@ -14,8 +14,19 @@ import {
   startRealTrioRuntimeFixture,
 } from "./realTrioRuntimeFixture.js";
 
-const AUDIT_RSID_HASH = /^(?:sha256:)?[0-9a-f]{64}$/u;
+const AUDIT_RSID_HASH = /^sha256:[0-9a-f]{64}$/u;
 const AUDIT_ROUTE_DIGEST = /^sha256:[0-9a-f]{64}$/u;
+const CURRENT_ROUTE_IDENTITY_FIELDS = [
+  "processEpoch",
+  "rsidHash",
+  "observedSequence",
+  "contextDigest",
+  "routeDigest",
+  "recordDigest",
+  "sessionBindingDigest",
+  "connectionDigest",
+  "sessionRecordVersion",
+] as const;
 
 function assertAcceptedDocumentContextUpdate(audit: unknown): void {
   expect(audit).toMatchObject({ ok: true, action: "read_real_case_audit" });
@@ -23,6 +34,8 @@ function assertAcceptedDocumentContextUpdate(audit: unknown): void {
   const updates = (audit as { readonly documentContextUpdates?: unknown }).documentContextUpdates;
   expect(updates).toHaveLength(1);
   const update = (updates as readonly unknown[])[0];
+  const currentRoute = (audit as { readonly documentContextCurrentRoute?: unknown })
+    .documentContextCurrentRoute;
   expect(update).toMatchObject({
     contractVersion: "revagent.wp12-document-context-audit/v1",
     event: "gateway.doc_context_update_observation",
@@ -30,8 +43,17 @@ function assertAcceptedDocumentContextUpdate(audit: unknown): void {
     rsidHash: expect.stringMatching(AUDIT_RSID_HASH),
     routeDigest: expect.stringMatching(AUDIT_ROUTE_DIGEST),
   });
+  expect(currentRoute).toMatchObject({
+    rsidHash: expect.stringMatching(AUDIT_RSID_HASH),
+    routeDigest: expect.stringMatching(AUDIT_ROUTE_DIGEST),
+  });
   expect(update).not.toHaveProperty("rsid");
   expect(update).not.toHaveProperty("rsidDigest");
+  const updateRecord = update as Record<string, unknown>;
+  const currentRouteRecord = currentRoute as Record<string, unknown>;
+  for (const field of CURRENT_ROUTE_IDENTITY_FIELDS) {
+    expect(updateRecord[field]).toBe(currentRouteRecord[field]);
+  }
 }
 
 describe.sequential("WP-12 direct real trio runtime fixture", () => {
