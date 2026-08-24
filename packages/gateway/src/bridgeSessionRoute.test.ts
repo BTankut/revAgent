@@ -19,6 +19,7 @@ import {
   GatewayRbpFault,
   TEST_RSID_CARRIER_RECEIVE_TAIL_OBSERVER,
   type BridgeConnectionChannel,
+  type ConformanceOriginResendPolicy,
 } from "./bridgeSession.js";
 import type { GatewayExecutorRequest, GatewayJsonObject } from "./dispatch.js";
 import { gatewayUuidV7 } from "./identifiers.js";
@@ -327,7 +328,7 @@ describe("GatewayBridgeSessionAuthority live document routing", () => {
     await Promise.all(authorities.splice(0).map(async (created) => created.close()));
   });
 
-  it("D2a captures only a sent fixture invoke and emits byte-identical inner payload under a fresh outer sequence", async () => {
+  it("D2a Never policy leaves a matching C39 fixture invoke as an ordinary one-shot dispatch", async () => {
     const fixture = createRestartableTestStore();
     const created = new GatewayBridgeSessionAuthority(fixture.store, identity());
     await created.open(); authorities.push(created);
@@ -354,27 +355,30 @@ describe("GatewayBridgeSessionAuthority live document routing", () => {
       payload: { bridge_version: "m4-route-test", acks: [{ rsid: session.rsid, seq: origin.seq }], sessions: [] },
     });
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
-    const stored = fixture.snapshot().records.find((row) => row.key === session.rsid && (row.namespace === "gateway.rbp-session/v1" || row.namespace === "gateway.rbp-session/v2"));
-    const binding = ((stored?.value as { sessionBindingId?: string; binding?: { sessionBindingId?: string } } | undefined)?.binding?.sessionBindingId ??
-      (stored?.value as { sessionBindingId?: string } | undefined)?.sessionBindingId);
-    expect(binding).toBeTypeOf("string");
-    await expect(created.resumeCapturedConformanceOrigin({
-      tenantId: TENANT_ID, userId: USER_ID, principalKey: `${TENANT_ID}:${USER_ID}`,
-      effectiveMcpSessionId: MCP_SESSION_ID, rsid: session.rsid, sessionBindingId: binding!,
-      originInvocationId: invocationId, originIdempotencyKey: `${session.rsid}/${invocationId}`,
-      method: "fixture_multi_file_output",
-    })).resolves.toBe(true);
     const invokes = session.channel.frames.filter((frame): frame is Extract<RbpEnvelope, { type: "invoke" }> => frame.type === "invoke");
-    expect(invokes).toHaveLength(2);
-    expect(invokes[1]!.seq).not.toBe(origin.seq);
-    expect(invokes[1]!.id).not.toBe(origin.id);
-    expect(JSON.stringify(invokes[1]!.payload)).toBe(JSON.stringify(origin.payload));
-    await expect(created.resumeCapturedConformanceOrigin({
-      tenantId: TENANT_ID, userId: USER_ID, principalKey: `${TENANT_ID}:${USER_ID}`,
-      effectiveMcpSessionId: MCP_SESSION_ID, rsid: session.rsid, sessionBindingId: binding!,
-      originInvocationId: invocationId, originIdempotencyKey: `${session.rsid}/${invocationId}`,
-      method: "fixture_multi_file_output",
-    })).resolves.toBe(false);
+    expect(invokes).toEqual([origin]);
+  });
+
+  it("D2a accepts capture only through explicit internal fixture policy injection", async () => {
+    const calls: string[] = [];
+    const policy: ConformanceOriginResendPolicy = {
+      kind: "internal_d2b_conformance",
+      allowCapture(input) { calls.push(input.originInvocationId); return true; },
+      takeResumeRequest() { return null; },
+      clear() {},
+    };
+    const fixture = createRestartableTestStore();
+    const created = new GatewayBridgeSessionAuthority(fixture.store, identity(), { internalConformanceOriginResendPolicy: policy });
+    await created.open(); authorities.push(created);
+    const session = await register(created, "d2a-policy");
+    await created.receive(session.connectionId, contextUpdate({ rsid: session.rsid, seq: 1, activeDocument: "document-carrier", documents: [document("document-carrier", true)] }));
+    const invocationId = id();
+    const baseRequest = bridgeRequest(session.rsid, invocationId, "fixture_multi_file_output");
+    const c39Args: GatewayJsonObject = { scenario: "valid_multifile", fileCount: 2, bytesPerFile: 32, contentType: "application/octet-stream" };
+    void created.createExecutor().execute({ ...baseRequest, toolName: "conformance.fixture.c39_multifile", args: c39Args, context: { ...baseRequest.context, toolName: "conformance.fixture.c39_multifile", paramsDigest: makeParamsDigest(c39Args as unknown as Parameters<typeof makeParamsDigest>[0]) } });
+    await emittedInvoke(session.channel);
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(calls).toEqual([invocationId]);
   });
 
   it("separates connection and session grants and quarantines unavailable result capabilities", async () => {
