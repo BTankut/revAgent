@@ -621,15 +621,14 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
             request.Rsid, recovery.OriginInvocationId, recovery.ExpectedResultDigest,
             DurableDecisionToken).ConfigureAwait(false);
         if (lease is null)
-            return RbpInvocationAnswer.Error(RbpInvocationPayloads.KnownError(
-                request.InvocationId, "environment", false,
-                "The correlated recovery payload is unavailable."));
+            return await TerminalizeRecoveryUnavailableAsync(request, identity).ConfigureAwait(false);
         using (lease)
         {
             if (lease.RawResponseBytes.Length is <= 0 or > RbpArtifactCarrierProducer.MaximumCombinedBytes ||
                 !(_connectionCapabilities.Value ?? Array.Empty<string>()).Contains("chunked_results", StringComparer.Ordinal))
-                return RbpInvocationAnswer.Error(RbpInvocationPayloads.KnownError(request.InvocationId,
-                    "environment", false, "The correlated recovery payload is unavailable."));
+                return await TerminalizeRecoveryUnavailableAsync(request, identity).ConfigureAwait(false);
+            try
+            {
             RbpRecoveryCarrierReservation reservation = await _journal
                 .PersistProtectedRecoveryTerminalAndReserveAsync(
                     new RbpRecoveryCarrierReservationRequest(request.Rsid, request.InvocationId,
@@ -640,7 +639,36 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
                         DateTimeOffset.UtcNow.Add(RbpJournalStore.DefaultRetentionPeriod)),
                     DurableDecisionToken).ConfigureAwait(false);
             return RbpInvocationAnswer.Recovery(reservation);
+            }
+            catch (Exception)
+            {
+                RbpRecoveryCarrierReservation? readback = await _journal
+                    .GetRecoveryCarrierReservationAsync(request.InvocationId, DurableDecisionToken)
+                    .ConfigureAwait(false);
+                if (readback is not null && readback.Phase != RbpRecoveryCarrierPhase.Tombstoned)
+                    return RbpInvocationAnswer.Recovery(readback);
+                return await TerminalizeRecoveryUnavailableAsync(request, identity).ConfigureAwait(false);
+            }
         }
+    }
+
+    private async Task<RbpInvocationAnswer> TerminalizeRecoveryUnavailableAsync(
+        RbpInvokeRequest request, RbpInvocationIdentity identity)
+    {
+        JsonElement body = RbpInvocationPayloads.KnownError(request.InvocationId,
+            "environment", false, "The correlated recovery payload is unavailable.");
+        try
+        {
+            await _journal.PersistInvocationTerminalAsync(identity.IdempotencyKey,
+                new RbpInvocationTerminal(RbpInvocationState.Failed, body,
+                    JournalEvidenceDigest(body)), DurableDecisionToken).ConfigureAwait(false);
+        }
+        catch (RbpJournalException)
+        {
+            // An already durable success/failure is resolved by normal replay;
+            // no raw cause is allowed onto the wire.
+        }
+        return RbpInvocationAnswer.Error(body);
     }
 
     private async Task<RbpInvocationAnswer> TerminalizeSuccessAsync(

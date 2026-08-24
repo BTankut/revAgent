@@ -18,14 +18,23 @@ internal sealed class RbpProtectedRecoveryCarrierMaterializer
         _journal = journal ?? throw new ArgumentNullException(nameof(journal));
 
     internal async Task<RbpInvocationAnswer?> MaterializeCurrentAsync(
-        RbpRecoveryCarrierReservation reservation,
+        string recoveryInvocationId,
+        string rsid,
         CancellationToken cancellationToken)
     {
-        ArgumentNullException.ThrowIfNull(reservation);
-        if (reservation.Phase is RbpRecoveryCarrierPhase.Completed or
-            RbpRecoveryCarrierPhase.Tombstoned ||
+        RbpRecoveryCarrierReservation? durable = await _journal
+            .GetRecoveryCarrierReservationAsync(recoveryInvocationId, cancellationToken)
+            .ConfigureAwait(false);
+        if (durable is null || !string.Equals(durable.Rsid, rsid, StringComparison.Ordinal))
+            return null;
+        RbpRecoveryCarrierReservation reservation = durable;
+        if (reservation.Phase != RbpRecoveryCarrierPhase.SendStarted ||
             reservation.ChunkSize is <= 0 or > RbpArtifactCarrierProducer.MaximumChunkBytes ||
             reservation.ChunkIndex < 0 || reservation.ChunkIndex >= reservation.ChunkCount ||
+            reservation.RawPayloadVersion != RbpRecoveryPayloadEnvelope.Version ||
+            reservation.PlanVersion != 1 || reservation.CurrentReservedSequence < 1 ||
+            reservation.AcknowledgementCursor != reservation.CurrentReservedSequence - 1 ||
+            reservation.ExpiresAtMilliseconds <= DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() ||
             reservation.PlaintextLength is <= 0 or > RbpArtifactCarrierProducer.MaximumCombinedBytes ||
             !string.Equals(reservation.HeaderJcs,
                 "{\"content_encoding\":\"base64\",\"content_type\":\"application/json\",\"v\":1}",

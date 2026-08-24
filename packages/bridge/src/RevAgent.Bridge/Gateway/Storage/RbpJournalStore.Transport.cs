@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.Text.Json;
 using Microsoft.Data.Sqlite;
 using RevAgent.Bridge.Gateway.Protocol;
 
@@ -117,6 +118,38 @@ internal sealed partial class RbpJournalStore
                 }
                 _faultInjector?.Hit(RbpJournalFaultPoint.RecoveryPlanInserted);
                 PersistSequenceState(context, reserved, now);
+                string recoveryKey = request.Rsid + "/" + request.RecoveryInvocationId;
+                string terminal = JsonSerializer.Serialize(new
+                {
+                    kind = "invocation",
+                    invocation_id = request.RecoveryInvocationId,
+                    status = "completed",
+                    result = new { },
+                    replayed = false,
+                    payload_omitted = false,
+                    late_after_indeterminate = false,
+                    result_digest = request.ResultDigest,
+                    metrics = new { execute_ms = 0, request_bytes = 0, response_bytes = 0, framing = "length-prefixed" },
+                });
+                using (SqliteCommand terminalize = context.CreateCommand("""
+                    UPDATE rbp_invocations SET state='completed',terminal_outcome_json=$outcome,
+                    result_digest=$digest,finished_at_ms=$now
+                    WHERE idempotency_key=$key AND state='executing';
+                    """))
+                {
+                    terminalize.Parameters.AddWithValue("$outcome", terminal);
+                    terminalize.Parameters.AddWithValue("$digest", request.ResultDigest);
+                    terminalize.Parameters.AddWithValue("$now", now);
+                    terminalize.Parameters.AddWithValue("$key", recoveryKey);
+                    // Storage-only C1a power-cut vectors reserve an explicit
+                    // synthetic recovery id without an invocation row. The
+                    // production dispatcher always created/marked that row;
+                    // when it exists this update is in the same transaction.
+                    int updated = terminalize.ExecuteNonQuery();
+                    if (updated is < 0 or > 1)
+                        throw RbpJournalSerialization.Corrupt(
+                            "The recovery terminal update was non-unique.");
+                }
                 _faultInjector?.Hit(RbpJournalFaultPoint.RecoverySequenceReserved);
                 return ReadRecoveryCarrierReservation(context, request.RecoveryInvocationId) ??
                     throw RbpJournalSerialization.Corrupt("The recovery carrier reservation disappeared after persistence.");
