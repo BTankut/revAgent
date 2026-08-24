@@ -258,7 +258,7 @@ try {
 
     $nativeFixture = Join-Path $tempRoot "native-fixture"
     New-Item -ItemType Directory -Path $nativeFixture -Force | Out-Null
-    '{"name":"native-fixture","version":"1.0.0","dependencies":{"better-sqlite3":"12.9.0"}}' | Set-Content -LiteralPath (Join-Path $nativeFixture "package.json") -Encoding UTF8
+    '{"name":"native-fixture","version":"1.0.0","dependencies":{"better-sqlite3":"13.0.3"}}' | Set-Content -LiteralPath (Join-Path $nativeFixture "package.json") -Encoding UTF8
     '{"name":"native-fixture","lockfileVersion":3}' | Set-Content -LiteralPath (Join-Path $nativeFixture "package-lock.json") -Encoding UTF8
     $nativeFingerprint = Get-NpmDependencyFingerprint -WorkingDirectory $nativeFixture -RuntimeIdentity $identity
     $nativeCachePath = Get-NpmDependencyCacheNodeModulesPath -CacheRoot $cacheRoot -WorkingDirectory $nativeFixture -Fingerprint $nativeFingerprint
