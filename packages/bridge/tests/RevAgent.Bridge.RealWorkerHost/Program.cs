@@ -206,11 +206,17 @@ internal static class Program
         // manufacture a correlate when that proof is absent.
         bool hasPayloadHash = observation.PayloadHash is not null;
         bool hasContextDigest = observation.ContextDigest is not null;
+        bool hasSourceRevision = observation.SourceRevision is not null;
+        bool hasCacheIncarnationDigest = observation.CacheIncarnationDigest is not null;
         if (!IsDiagnosticSha256(observation.RsidHash) ||
             hasPayloadHash != hasContextDigest ||
+            hasSourceRevision != hasCacheIncarnationDigest ||
             (hasPayloadHash &&
              (!IsDiagnosticSha256(observation.PayloadHash) ||
-              !IsBareLowercaseSha256(observation.ContextDigest))))
+              !IsBareLowercaseSha256(observation.ContextDigest))) ||
+            (hasSourceRevision &&
+             (observation.SourceRevision <= 0 ||
+              !IsDiagnosticSha256(observation.CacheIncarnationDigest))))
         {
             return ValueTask.CompletedTask;
         }
@@ -226,6 +232,8 @@ internal static class Program
             payloadHash = observation.PayloadHash,
             contextDigest = observation.ContextDigest,
             sequence = observation.Sequence,
+            sourceRevision = observation.SourceRevision,
+            cacheIncarnationDigest = observation.CacheIncarnationDigest,
         });
         return ValueTask.CompletedTask;
     }

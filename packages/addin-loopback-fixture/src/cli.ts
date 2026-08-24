@@ -69,6 +69,7 @@ async function main(): Promise<void> {
       ],
       host: address.host,
       port: address.port,
+      cacheIncarnationDigest: fixture.snapshotEvidence().documentContextEvidence.cacheIncarnationDigest,
     })}\n`,
   );
 }

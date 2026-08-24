@@ -31,7 +31,9 @@ internal sealed record RbpDocumentContextObservation(
     string RsidHash,
     string? PayloadHash,
     string? ContextDigest,
-    long? Sequence)
+    long? Sequence,
+    long? SourceRevision,
+    string? CacheIncarnationDigest)
 {
     internal const string CurrentContractVersion =
         "revagent.rbp-document-context-observation/v1";
@@ -46,8 +48,10 @@ internal sealed record RbpDocumentContextObservation(
         string outcome,
         string rsid,
         JsonElement? payload = null,
-        long? sequence = null) =>
-        new(
+        long? sequence = null,
+        long? sourceRevision = null,
+        string? cacheIncarnationDigest = null)
+        => new(
             CurrentContractVersion,
             "bridge.document_context_observation",
             stage,
@@ -55,7 +59,13 @@ internal sealed record RbpDocumentContextObservation(
             Hash(rsid),
             payload is { } value ? Hash(value.GetRawText()) : null,
             payload is { } context ? TryMakeContextDigest(context) : null,
-            sequence);
+            sequence,
+            HasValidFixtureIncarnation(sourceRevision, cacheIncarnationDigest)
+                ? sourceRevision
+                : null,
+            HasValidFixtureIncarnation(sourceRevision, cacheIncarnationDigest)
+                ? cacheIncarnationDigest
+                : null);
 
     /// <summary>
     /// Creates an observation only when the document-context payload can be
@@ -68,7 +78,9 @@ internal sealed record RbpDocumentContextObservation(
         string rsid,
         JsonElement? payload,
         long? sequence,
-        out RbpDocumentContextObservation? observation)
+        out RbpDocumentContextObservation? observation,
+        long? sourceRevision = null,
+        string? cacheIncarnationDigest = null)
     {
         if (payload is not { } value)
         {
@@ -86,7 +98,13 @@ internal sealed record RbpDocumentContextObservation(
                 Hash(rsid),
                 Hash(value.GetRawText()),
                 MakeContextDigest(value),
-                sequence);
+                sequence,
+                HasValidFixtureIncarnation(sourceRevision, cacheIncarnationDigest)
+                    ? sourceRevision
+                    : null,
+                HasValidFixtureIncarnation(sourceRevision, cacheIncarnationDigest)
+                    ? cacheIncarnationDigest
+                    : null);
             return true;
         }
         catch
@@ -130,6 +148,30 @@ internal sealed record RbpDocumentContextObservation(
         "sha256:" + Convert.ToHexString(
             SHA256.HashData(Encoding.UTF8.GetBytes(value)))
             .ToLowerInvariant();
+
+    private static bool HasValidFixtureIncarnation(
+        long? sourceRevision,
+        string? cacheIncarnationDigest)
+    {
+        if (sourceRevision is null || sourceRevision <= 0 ||
+            cacheIncarnationDigest is null ||
+            cacheIncarnationDigest.Length != "sha256:".Length + 64 ||
+            !cacheIncarnationDigest.StartsWith("sha256:", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        foreach (char character in cacheIncarnationDigest.AsSpan("sha256:".Length))
+        {
+            if ((character < '0' || character > '9') &&
+                (character < 'a' || character > 'f'))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
 }
 
 /// <summary>
@@ -393,7 +435,7 @@ internal sealed class RbpDocContextWatcher
         {
             payload = document.RootElement.Clone();
         }
-        ObservePayload("snapshot", "ready", rsid, payload);
+        ObservePayload("snapshot", "ready", rsid, payload, snapshot);
 
         bool emitted;
         try
@@ -408,7 +450,7 @@ internal sealed class RbpDocContextWatcher
         {
             // The update was not durably queued; keep the previous emitted
             // state so the change is retried at the next tick.
-            ObservePayload("failure", "queue_failed", rsid, payload);
+            ObservePayload("failure", "queue_failed", rsid, payload, snapshot);
             return;
         }
 
@@ -423,7 +465,7 @@ internal sealed class RbpDocContextWatcher
         }
         else
         {
-            ObservePayload("queue", "not_queued", rsid, payload);
+            ObservePayload("queue", "not_queued", rsid, payload, snapshot);
         }
     }
 
@@ -431,7 +473,8 @@ internal sealed class RbpDocContextWatcher
         string stage,
         string outcome,
         string rsid,
-        JsonElement payload)
+        JsonElement payload,
+        AddinDocumentContextSnapshot? snapshot = null)
     {
         if (RbpDocumentContextObservation.TryCreate(
                 stage,
@@ -439,7 +482,9 @@ internal sealed class RbpDocContextWatcher
                 rsid,
                 payload,
                 sequence: null,
-                out RbpDocumentContextObservation? observation) &&
+                out RbpDocumentContextObservation? observation,
+                sourceRevision: snapshot?.Revision,
+                cacheIncarnationDigest: snapshot?.CacheIncarnationDigest) &&
             observation is not null)
         {
             Observe(observation);

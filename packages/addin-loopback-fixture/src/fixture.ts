@@ -1,5 +1,5 @@
 import { Buffer } from "node:buffer";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import {
   createServer,
   isIP,
@@ -158,6 +158,8 @@ const DEFAULT_DOCUMENT_CONTEXT: DocumentContextSnapshot = {
   },
   disciplineHint: "mechanical",
 };
+
+const FIXTURE_CACHE_INCARNATION_DOMAIN = "revagent:fixture-cache-incarnation:v1\n";
 
 function isObject(value: unknown): value is JsonObject {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -606,6 +608,7 @@ export class AddinLoopbackFixture {
   #documentContextPollRequestCount = 0;
   #lastDocumentContextMonotonicMs = -1;
   #lastDocumentContextControlAcknowledgementHash: string | null = null;
+  readonly #cacheIncarnationDigest: string;
   readonly #documentContextEvidenceTimeline: DocumentContextEvidenceEvent[] = [];
   #crashed = false;
 
@@ -623,6 +626,12 @@ export class AddinLoopbackFixture {
     };
     this.#validator = new LoopbackContractValidator(this.#options.maxRequestPayloadBytes);
     this.#documentContext = structuredClone(options.documentContext ?? DEFAULT_DOCUMENT_CONTEXT);
+    // Retain only the one-way correlate. The raw 32-byte nonce is never
+    // stored, serialized, logged, or returned by the fixture.
+    this.#cacheIncarnationDigest = "sha256:" + createHash("sha256")
+      .update(FIXTURE_CACHE_INCARNATION_DOMAIN, "utf8")
+      .update(randomBytes(32))
+      .digest("hex");
     this.#validateDocumentContext(this.#documentContext);
     this.#recordDocumentContextEvidence("cache_initialized");
     this.#registerDefaultHandlers();
@@ -685,6 +694,7 @@ export class AddinLoopbackFixture {
           this.#documentContextEvidenceSequence - this.#documentContextEvidenceTimeline.length,
         ),
         currentRevision: this.#documentContext.revision,
+        cacheIncarnationDigest: this.#cacheIncarnationDigest,
         cachedContextHash: this.#documentContextHash(),
         activeDocumentIdentityHash: this.#activeDocumentIdentityHash(),
         lastControlAcknowledgementHash: this.#lastDocumentContextControlAcknowledgementHash,
@@ -771,6 +781,7 @@ export class AddinLoopbackFixture {
     const acknowledgementHash = sha256(Buffer.from(JSON.stringify(stableJsonValue({
       action: "apply_document_context",
       revision: snapshot.revision,
+      cacheIncarnationDigest: this.#cacheIncarnationDigest,
       cachedContextHash,
       activeDocumentIdentityHash,
     })), "utf8"));
@@ -778,6 +789,7 @@ export class AddinLoopbackFixture {
     return Object.freeze({
       action: "apply_document_context",
       revision: snapshot.revision,
+      cacheIncarnationDigest: this.#cacheIncarnationDigest,
       cachedContextHash,
       activeDocumentIdentityHash,
       acknowledgementHash,
@@ -1015,6 +1027,13 @@ export class AddinLoopbackFixture {
       : sha256(Buffer.from(this.#documentContext.activeDocumentId, "utf8"));
   }
 
+  #fixtureDocumentContextSnapshot(): DocumentContextSnapshot {
+    return {
+      ...structuredClone(this.#documentContext),
+      cache_incarnation_digest: this.#cacheIncarnationDigest,
+    };
+  }
+
   #recordDocumentContextRead(): void {
     this.#documentContextCacheReadCount += 1;
     this.#documentContextPollRequestCount += 1;
@@ -1227,7 +1246,7 @@ export class AddinLoopbackFixture {
         response: {
           jsonrpc: "2.0",
           id: requestId,
-          result: structuredClone(this.#documentContext) as unknown as JsonObject,
+          result: this.#fixtureDocumentContextSnapshot() as unknown as JsonObject,
         },
       };
     }
@@ -1696,7 +1715,20 @@ export class AddinLoopbackFixture {
       response.id === null && responseError?.code === -32700;
     if (requestId !== null && method !== null && !isUncorrelatedParseError) {
       try {
-        this.#validator.validateResponse(method, requestId, response);
+        if (method === "get_document_context" && isObject(response.result)) {
+          // Validate the frozen production envelope after removing the
+          // fixture-only correlate; it is not an RBP/public wire extension.
+          const result = structuredClone(response.result);
+          const digest = result.cache_incarnation_digest;
+          delete result.cache_incarnation_digest;
+          this.#validator.validateResponse(method, requestId, { ...response, result });
+          if (digest !== undefined &&
+              (typeof digest !== "string" || !/^sha256:[0-9a-f]{64}$/u.test(digest))) {
+            throw new ContractValidationError("invalid_response", "invalid fixture cache incarnation digest");
+          }
+        } else {
+          this.#validator.validateResponse(method, requestId, response);
+        }
       } catch (error) {
         response = jsonRpcError(requestId, -32603, "Fixture generated an invalid response", {
           validationError: boundedMessage(error),

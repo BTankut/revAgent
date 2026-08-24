@@ -13,6 +13,8 @@ public sealed class DocumentContextObservationProjectionTests
         "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     private const string RsidHash =
         "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    private const string CacheIncarnationDigest =
+        "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
 
     [Theory]
     [InlineData("snapshot", "captured")]
@@ -104,12 +106,43 @@ public sealed class DocumentContextObservationProjectionTests
         Assert.Equal(string.Empty, rawIdentityTranscript);
     }
 
+    [Fact]
+    public void ValidFixtureIncarnationProjectsOnlyDigestAndRevision()
+    {
+        string line = InvokeProjection(CreateObservation(
+            "snapshot", "ready", ContextDigest,
+            sourceRevision: 7L,
+            cacheIncarnationDigest: CacheIncarnationDigest));
+
+        using JsonDocument json = JsonDocument.Parse(line);
+        Assert.Equal(7L, json.RootElement.GetProperty("sourceRevision").GetInt64());
+        Assert.Equal(
+            CacheIncarnationDigest,
+            json.RootElement.GetProperty("cacheIncarnationDigest").GetString());
+        Assert.DoesNotContain("nonce", line, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void PartialOrInvalidFixtureIncarnationIsNotProjected()
+    {
+        Assert.Equal(string.Empty, InvokeProjection(CreateObservation(
+            "snapshot", "ready", ContextDigest, sourceRevision: 7L)));
+        Assert.Equal(string.Empty, InvokeProjection(CreateObservation(
+            "snapshot", "ready", ContextDigest,
+            cacheIncarnationDigest: CacheIncarnationDigest)));
+        Assert.Equal(string.Empty, InvokeProjection(CreateObservation(
+            "snapshot", "ready", ContextDigest, sourceRevision: 0L,
+            cacheIncarnationDigest: CacheIncarnationDigest)));
+    }
+
     private static object CreateObservation(
         string stage,
         string outcome,
         string? contextDigest,
         string? payloadHash = PayloadHash,
-        string rsidHash = RsidHash)
+        string rsidHash = RsidHash,
+        long? sourceRevision = null,
+        string? cacheIncarnationDigest = null)
     {
         Type observation = HostAssembly.GetReferencedAssemblies()
             .Where(reference => reference.Name == "revagent-bridge")
@@ -118,7 +151,7 @@ public sealed class DocumentContextObservationProjectionTests
             .GetType("RevAgent.Bridge.Gateway.Connection.RbpDocumentContextObservation", throwOnError: true)!;
         ConstructorInfo constructor = observation.GetConstructors(
                 BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
-            .Single(candidate => candidate.GetParameters().Length == 8);
+            .Single(candidate => candidate.GetParameters().Length == 10);
         return constructor.Invoke(new object?[]
         {
             "revagent.rbp-document-context-observation/v1",
@@ -129,6 +162,8 @@ public sealed class DocumentContextObservationProjectionTests
             payloadHash,
             contextDigest,
             7L,
+            sourceRevision,
+            cacheIncarnationDigest,
         });
     }
 

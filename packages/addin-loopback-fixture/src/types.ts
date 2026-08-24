@@ -126,6 +126,7 @@ export interface FixtureEvidenceSnapshot {
     readonly totalEventCount: number;
     readonly droppedEventCount: number;
     readonly currentRevision: number;
+    readonly cacheIncarnationDigest: string;
     /** SHA-256 of the canonical cached context; raw context is never in evidence. */
     readonly cachedContextHash: string;
     /** SHA-256 of the active document identity, or null when there is no active document. */
@@ -151,6 +152,7 @@ export interface FixtureEvidenceSnapshot {
 export interface DocumentContextControlAcknowledgement {
   readonly action: "apply_document_context";
   readonly revision: number;
+  readonly cacheIncarnationDigest: string;
   readonly cachedContextHash: string;
   readonly activeDocumentIdentityHash: string | null;
   readonly acknowledgementHash: string;
@@ -179,11 +181,13 @@ export interface DocumentContextSnapshot {
     readonly level: string | null;
   } | null;
   readonly disciplineHint: string | null;
+  /** Fixture-only diagnostic metadata; never part of the production RBP payload. */
+  readonly cache_incarnation_digest?: string;
 }
 
 export type DocumentContextEvent = Omit<
   DocumentContextSnapshot,
-  "resultContractVersion" | "documentContextContractVersion" | "revision"
+  "resultContractVersion" | "documentContextContractVersion" | "revision" | "cache_incarnation_digest"
 >;
 
 export interface FixtureOptions {

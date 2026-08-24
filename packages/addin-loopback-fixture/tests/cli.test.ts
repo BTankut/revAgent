@@ -25,6 +25,7 @@ interface CliReady extends JsonObject {
   actions: string[];
   host: string;
   port: number;
+  cacheIncarnationDigest: string;
 }
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -181,8 +182,9 @@ describe("fixture CLI JSONL control and cleanup", () => {
       expect(ready).toMatchObject({
         ready: true,
         contract: "addin-loopback/v1",
-        controlVersion: 1,
-        maxControlLineBytes: MAX_CONTROL_LINE_BYTES,
+      controlVersion: 1,
+      maxControlLineBytes: MAX_CONTROL_LINE_BYTES,
+      cacheIncarnationDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u),
       });
       expect(child.kill(signal)).toBe(true);
       const [code, exitSignal] = (await once(child, "exit")) as [
@@ -264,6 +266,7 @@ describe("fixture CLI JSONL control and cleanup", () => {
     expect(acknowledgement).toMatchObject({
       action: "apply_document_context",
       revision: 2,
+      cacheIncarnationDigest: ready.cacheIncarnationDigest,
       cachedContextHash: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u),
       activeDocumentIdentityHash: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u),
       acknowledgementHash: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u),
@@ -454,6 +457,7 @@ describe("fixture CLI JSONL control and cleanup", () => {
         cachedContextHash: acknowledgement.cachedContextHash,
         activeDocumentIdentityHash: acknowledgement.activeDocumentIdentityHash,
         lastControlAcknowledgementHash: acknowledgement.acknowledgementHash,
+        cacheIncarnationDigest: ready.cacheIncarnationDigest,
         timeline: expect.any(Array),
       },
       pendingStalls: [],
