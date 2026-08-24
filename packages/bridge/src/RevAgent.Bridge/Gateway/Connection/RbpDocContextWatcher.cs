@@ -393,7 +393,10 @@ internal sealed class RbpDocContextWatcher
                     .ConfigureAwait(false);
                 Task cadence = _clock.DelayAsync(PollInterval, token);
                 Task signalled = loop.WaitForSignalAsync(token);
-                if (await Task.WhenAny(cadence, signalled).ConfigureAwait(false) == signalled)
+                _ = await Task.WhenAny(cadence, signalled).ConfigureAwait(false);
+                // A simultaneous cadence/signal must consume the signal now;
+                // otherwise its waiter could remain pending until next cadence.
+                if (signalled.IsCompleted)
                 {
                     TaskCompletionSource<RbpImmediatePollOutcome>? waiter = loop.TakeRequest();
                     try { waiter?.TrySetResult(await PollOnceAsync(rsid, emitAsync, token).ConfigureAwait(false) ? RbpImmediatePollOutcome.Emitted : RbpImmediatePollOutcome.NoSend); }
@@ -406,6 +409,10 @@ internal sealed class RbpDocContextWatcher
         {
             // The session or connection cycle ended; a watcher stop is
             // never a connection fault.
+        }
+        finally
+        {
+            loop.CancelPending();
         }
     }
 
@@ -628,6 +635,7 @@ internal sealed class RbpDocContextWatcher
 
     private sealed class WatchLoop
     {
+        private readonly object _sync = new();
         private readonly CancellationTokenSource _cancellation;
         private readonly SemaphoreSlim _signal = new(0, 1);
         private TaskCompletionSource<RbpImmediatePollOutcome>? _waiter;
@@ -650,16 +658,33 @@ internal sealed class RbpDocContextWatcher
 
         internal Task<RbpImmediatePollOutcome> Request()
         {
-            _waiter ??= new(TaskCreationOptions.RunContinuationsAsynchronously);
-            _ = Signal();
-            return _waiter.Task;
+            lock (_sync)
+            {
+                if (_cancellation.IsCancellationRequested)
+                    return Task.FromResult(RbpImmediatePollOutcome.Cancelled);
+                _waiter ??= new(TaskCreationOptions.RunContinuationsAsynchronously);
+                _ = Signal();
+                return _waiter.Task;
+            }
         }
 
         internal TaskCompletionSource<RbpImmediatePollOutcome>? TakeRequest()
         {
-            TaskCompletionSource<RbpImmediatePollOutcome>? result = _waiter;
-            _waiter = null;
-            return result;
+            lock (_sync)
+            {
+                TaskCompletionSource<RbpImmediatePollOutcome>? result = _waiter;
+                _waiter = null;
+                return result;
+            }
+        }
+
+        internal void CancelPending()
+        {
+            lock (_sync)
+            {
+                _waiter?.TrySetResult(RbpImmediatePollOutcome.Cancelled);
+                _waiter = null;
+            }
         }
 
         internal Task WaitForSignalAsync(CancellationToken token) =>
@@ -681,7 +706,7 @@ internal sealed class RbpDocContextWatcher
             try
             {
                 _cancellation.Cancel();
-                _waiter?.TrySetResult(RbpImmediatePollOutcome.Cancelled);
+                CancelPending();
             }
             catch (ObjectDisposedException)
             {
