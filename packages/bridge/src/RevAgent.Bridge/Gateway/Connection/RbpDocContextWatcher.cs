@@ -386,22 +386,30 @@ internal sealed class RbpDocContextWatcher
     {
         try
         {
+            Task signalled = loop.WaitForSignalAsync(token);
+            await PollOnceAsync(rsid, emitAsync, token).ConfigureAwait(false);
             while (true)
             {
                 token.ThrowIfCancellationRequested();
-                await PollOnceAsync(rsid, emitAsync, token)
-                    .ConfigureAwait(false);
                 Task cadence = _clock.DelayAsync(PollInterval, token);
-                Task signalled = loop.WaitForSignalAsync(token);
                 _ = await Task.WhenAny(cadence, signalled).ConfigureAwait(false);
                 // A simultaneous cadence/signal must consume the signal now;
                 // otherwise its waiter could remain pending until next cadence.
                 if (signalled.IsCompleted)
                 {
-                    TaskCompletionSource<RbpImmediatePollOutcome>? waiter = loop.TakeRequest();
-                    try { waiter?.TrySetResult(await PollOnceAsync(rsid, emitAsync, token).ConfigureAwait(false) ? RbpImmediatePollOutcome.Emitted : RbpImmediatePollOutcome.NoSend); }
-                    catch (OperationCanceledException) { waiter?.TrySetResult(RbpImmediatePollOutcome.Cancelled); throw; }
-                    catch { waiter?.TrySetResult(RbpImmediatePollOutcome.Fault); }
+                    await SettleSignalPollAsync(rsid, emitAsync, loop, token)
+                        .ConfigureAwait(false);
+                    signalled = loop.WaitForSignalAsync(token);
+                    continue;
+                }
+                await PollOnceAsync(rsid, emitAsync, token).ConfigureAwait(false);
+                // Keep the original signal task across cadence iterations. A
+                // request racing the cadence poll wins here, not 15 seconds later.
+                if (signalled.IsCompleted)
+                {
+                    await SettleSignalPollAsync(rsid, emitAsync, loop, token)
+                        .ConfigureAwait(false);
+                    signalled = loop.WaitForSignalAsync(token);
                 }
             }
         }
@@ -414,6 +422,15 @@ internal sealed class RbpDocContextWatcher
         {
             loop.CancelPending();
         }
+    }
+
+    private async Task SettleSignalPollAsync(string rsid,
+        RbpDocContextEmit emitAsync, WatchLoop loop, CancellationToken token)
+    {
+        TaskCompletionSource<RbpImmediatePollOutcome>? waiter = loop.TakeRequest();
+        try { waiter?.TrySetResult(await PollOnceAsync(rsid, emitAsync, token).ConfigureAwait(false) ? RbpImmediatePollOutcome.Emitted : RbpImmediatePollOutcome.NoSend); }
+        catch (OperationCanceledException) { waiter?.TrySetResult(RbpImmediatePollOutcome.Cancelled); throw; }
+        catch { waiter?.TrySetResult(RbpImmediatePollOutcome.Fault); }
     }
 
     private async Task<bool> PollOnceAsync(
