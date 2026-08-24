@@ -16,6 +16,8 @@ import {
   type RealTrioDocumentContextCursorRow,
   type RealTrioDocumentContextSnapshot,
   type RealTrioDocumentContextFailureState,
+  type RealTrioAuditControlFailure,
+  type RealTrioAuditControlOutcome,
   type RealTrioSupervisorResult,
 } from "../src/realTrioSupervisor.js";
 import { stableJson } from "../src/stableJson.js";
@@ -246,6 +248,15 @@ export interface RealTrioDocumentContextFailure {
     readonly observationCount: number | null;
     readonly highWaterOrdinal: number | null;
   }>;
+  /** Success-empty audit is distinct from a failed control call. */
+  readonly gatewayAuditControl: Readonly<{
+    readonly outcome: "success" | "failure" | "not_attempted";
+    readonly error: "timeout" | "tls_pin" | "http_status_4xx" | "http_status_5xx" |
+      "invalid_shape" | "process_exited" | "ipc_error" | "unknown" | null;
+    readonly statusCode: number | null;
+    readonly okKeyPresent: boolean;
+    readonly actionKeyPresent: boolean;
+  }>;
   readonly childState: RealTrioDocumentContextFailureState;
 }
 
@@ -361,6 +372,31 @@ function gatewayCoherentAudit(value: unknown): RealTrioDocumentContextFailure["g
   });
 }
 
+function gatewayAuditControl(outcome: RealTrioAuditControlOutcome | null): RealTrioDocumentContextFailure["gatewayAuditControl"] {
+  if (outcome === null) return Object.freeze({ outcome: "not_attempted", error: null, statusCode: null, okKeyPresent: false, actionKeyPresent: false });
+  if (outcome.outcome === "success") return Object.freeze({ outcome: "success", error: null, statusCode: null, okKeyPresent: false, actionKeyPresent: false });
+  return Object.freeze({ outcome: "failure", error: outcome.error, statusCode: outcome.statusCode,
+    okKeyPresent: outcome.okKeyPresent, actionKeyPresent: outcome.actionKeyPresent });
+}
+
+interface GatewayAuditCapture {
+  lastSuccessfulAudit: unknown | null;
+  lastControlOutcome: RealTrioAuditControlOutcome | null;
+}
+
+async function readCapturedRealCaseAudit(
+  supervisor: Pick<RealTrioSupervisorResult, "readRealCaseAuditOutcome">,
+  capture: GatewayAuditCapture,
+): Promise<unknown> {
+  const outcome = await supervisor.readRealCaseAuditOutcome();
+  capture.lastControlOutcome = outcome;
+  if (outcome.outcome === "success") {
+    capture.lastSuccessfulAudit = outcome.audit;
+    return outcome.audit;
+  }
+  throw new Error("real trio public audit control unavailable");
+}
+
 /**
  * Creates a bounded, value-free diagnostic object before process cleanup.
  * Input objects are never retained; only fixed fields, counts, booleans, and
@@ -374,6 +410,7 @@ export function createRealTrioDocumentContextFailure(input: {
   readonly fixtureEvidence: unknown;
   readonly gatewayAudit: unknown;
   readonly coherentAudit: unknown;
+  readonly coherentAuditControl: RealTrioAuditControlOutcome | null;
   readonly childState: RealTrioDocumentContextFailureState;
 }): RealTrioDocumentContextFailure {
   return Object.freeze({
@@ -385,6 +422,7 @@ export function createRealTrioDocumentContextFailure(input: {
     fixtureSnapshot: fixtureSnapshot(input.fixtureEvidence),
     gatewayRouteAudits: gatewayRouteAudits(input.gatewayAudit),
     gatewayCoherentAudit: gatewayCoherentAudit(input.coherentAudit),
+    gatewayAuditControl: gatewayAuditControl(input.coherentAuditControl),
     childState: input.childState,
   });
 }
@@ -917,6 +955,7 @@ async function waitForDocumentContextSend(input: {
   readonly generation: number;
   readonly precedingProbe: RealTrioDocumentContextCursorRow | null;
   readonly gatewayBaseline: RealTrioGatewayAuditBaseline;
+  readonly auditCapture: GatewayAuditCapture;
   readonly timeoutMs?: number;
 }): Promise<StrictDocumentContextCandidate> {
   const deadline = Date.now() + (input.timeoutMs ?? DOCUMENT_CONTEXT_WATCHER_TIMEOUT_MS);
@@ -933,7 +972,7 @@ async function waitForDocumentContextSend(input: {
       generation: input.generation,
       controlCursor: input.controlCursor,
       precedingProbe: input.precedingProbe,
-      audit: await input.supervisor.readRealCaseAudit(),
+      audit: await readCapturedRealCaseAudit(input.supervisor, input.auditCapture),
       baseline: input.gatewayBaseline,
     });
     if (expected !== null) return expected;
@@ -1137,8 +1176,9 @@ async function documentContextFailureError(input: {
   readonly controlToken: string;
   readonly certificateSha256: string;
   readonly evidenceFile: string;
+  readonly auditCapture: GatewayAuditCapture;
 }): Promise<RealTrioDocumentContextFailureError> {
-  const [fixtureEvidence, gatewayAudit, coherentAudit] = await Promise.all([
+  const [fixtureEvidence, gatewayAudit, finalAuditOutcome] = await Promise.all([
     input.supervisor.fixtureControl("snapshot_evidence").catch(() => null),
     publicGatewayControl(
       input.endpoint,
@@ -1146,8 +1186,10 @@ async function documentContextFailureError(input: {
       input.certificateSha256,
       { action: "snapshot_audit" },
     ).catch(() => null),
-    input.supervisor.readRealCaseAudit().catch(() => null),
+    input.supervisor.readRealCaseAuditOutcome(),
   ]);
+  input.auditCapture.lastControlOutcome = finalAuditOutcome;
+  if (finalAuditOutcome.outcome === "success") input.auditCapture.lastSuccessfulAudit = finalAuditOutcome.audit;
   const childState = input.supervisor.readDocumentContextFailureState();
   const failure = createRealTrioDocumentContextFailure({
     reason: childState.childExited ? "child_exit" : input.reason,
@@ -1156,7 +1198,8 @@ async function documentContextFailureError(input: {
     transcript: input.supervisor.readDocumentContextFailureStages(),
     fixtureEvidence,
     gatewayAudit,
-    coherentAudit,
+    coherentAudit: input.auditCapture.lastSuccessfulAudit,
+    coherentAuditControl: input.auditCapture.lastControlOutcome,
     childState,
   });
   try {
@@ -1226,6 +1269,7 @@ export async function startRealTrioRuntimeFixture(
   }
   const evidenceFile = path.join(options.evidenceDirectory, `${binding}.document-context-failure.json`);
   const timeline: Array<RealTrioDocumentContextFailure["timeline"][number]> = [];
+  const auditCapture: GatewayAuditCapture = { lastSuccessfulAudit: null, lastControlOutcome: null };
   let failureReason: RealTrioDocumentContextFailure["reason"] = "ack_failure";
   let documentContextAudit: RealTrioDocumentContextAudit;
   try {
@@ -1241,7 +1285,7 @@ export async function startRealTrioRuntimeFixture(
     const controlAckSnapshot = supervisor.readDocumentContextSnapshot();
     const precedingProbe = unmatchedDocumentContextProbe(controlAckSnapshot);
     timeline.push("control_ack");
-    const gatewayBaseline = gatewayAuditBaseline(await supervisor.readRealCaseAudit());
+    const gatewayBaseline = gatewayAuditBaseline(await readCapturedRealCaseAudit(supervisor, auditCapture));
     if (gatewayBaseline === null) throw new Error("real trio Gateway audit baseline is unavailable");
     // This probe is value-free and must succeed before any public Gateway
     // route can qualify. The regular 15 s C# watcher is the only forwarder.
@@ -1252,6 +1296,7 @@ export async function startRealTrioRuntimeFixture(
       generation: controlAckSnapshot.generation,
       precedingProbe,
       gatewayBaseline,
+      auditCapture,
       timeoutMs: options.documentContextTimeoutMs,
     });
     timeline.push("document_sent");
@@ -1273,7 +1318,7 @@ export async function startRealTrioRuntimeFixture(
       timeoutMs: options.documentContextTimeoutMs,
     });
     timeline.push("heartbeat_ack");
-    const finalAudit = await supervisor.readRealCaseAudit();
+    const finalAudit = await readCapturedRealCaseAudit(supervisor, auditCapture);
     if (!hasDurableDocumentContextHeartbeatAckFromCursor(
       cursorSinceOrThrow({ supervisor, cursor: expected.controlCursor, generation: expected.generation }), expected,
     ) || !hasGatewayAcceptedDocumentContextRoute(finalAudit, expected, gatewayBaseline)) {
@@ -1290,6 +1335,7 @@ export async function startRealTrioRuntimeFixture(
       controlToken,
       certificateSha256,
       evidenceFile,
+      auditCapture,
     });
     await persistRuntimeFailure({
       evidenceDirectory: options.evidenceDirectory,

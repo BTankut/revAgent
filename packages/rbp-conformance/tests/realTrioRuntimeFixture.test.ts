@@ -481,13 +481,14 @@ describe("WP-12 real-trio fixture document route gate", () => {
         bearer: "must-not-persist",
       } })) },
       coherentAudit: {
-        documentContextAuditStatus: "sequence_mismatch",
+        documentContextAuditStatus: "retry_exhausted",
         documentContextAuditLastStatus: "observation_churn",
         documentContextAuditAttemptCount: 3,
         documentContextAuditObservationCount: 1,
         documentContextObservationHighWaterOrdinal: 2,
         secret: "must-not-persist",
       },
+      coherentAuditControl: { outcome: "success", audit: {} },
       childState: { childExited: false, processDiagnostics: [] },
     });
     const artifact = path.join(mkdtempSync(path.join(tmpdir(), "wp12-doc-evidence-")), "failure.json");
@@ -497,7 +498,8 @@ describe("WP-12 real-trio fixture document route gate", () => {
       schemaVersion: "rbp-real-trio-document-context-failure/v1",
       reason: "stage_timeout",
       fixtureSnapshot: { cacheReadCount: 3, pollRequestCount: 2, cachedContextHashPresent: true },
-      gatewayCoherentAudit: { status: "sequence_mismatch", lastAttemptStatus: "observation_churn", attemptCount: 3, observationCount: 1, highWaterOrdinal: 2 },
+      gatewayCoherentAudit: { status: "retry_exhausted", lastAttemptStatus: "observation_churn", attemptCount: 3, observationCount: 1, highWaterOrdinal: 2 },
+      gatewayAuditControl: { outcome: "success", error: null },
     });
     expect(failure.documentStages).toHaveLength(64);
     expect(failure.gatewayRouteAudits).toHaveLength(32);
@@ -513,6 +515,7 @@ describe("WP-12 real-trio fixture document route gate", () => {
       fixtureEvidence: null,
       gatewayAudit: null,
       coherentAudit: null,
+      coherentAuditControl: { outcome: "failure", error: "process_exited", statusCode: null, okKeyPresent: false, actionKeyPresent: false },
       childState: { childExited: true, processDiagnostics: [{
         componentId: "bridge_worker", phase: "document_context_failure", exitCode: 1,
         stdout: [], stderr: ["token=[redacted]"],
@@ -521,9 +524,27 @@ describe("WP-12 real-trio fixture document route gate", () => {
     const error = new RealTrioDocumentContextFailureError("child exited", failure, new Error("raw cause"));
     expect(error.failureEvidence).toMatchObject({
       reason: "child_exit",
+      gatewayAuditControl: { outcome: "failure", error: "process_exited" },
       childState: { childExited: true },
     });
     expect(JSON.stringify(error.failureEvidence)).not.toContain("raw cause");
+  });
+
+  it("keeps an invalid audit shape distinct from an empty successful audit", () => {
+    const failure = createRealTrioDocumentContextFailure({
+      reason: "route_timeout", binding: "wss", timeline: ["control_ack"], transcript: [],
+      fixtureEvidence: null, gatewayAudit: null,
+      coherentAudit: { documentContextAuditStatus: "retry_exhausted", documentContextAuditLastStatus: "observation_churn",
+        documentContextAuditAttemptCount: 3, documentContextAuditObservationCount: 0, documentContextObservationHighWaterOrdinal: 0,
+        raw: "must-not-persist" },
+      coherentAuditControl: { outcome: "failure", error: "invalid_shape", statusCode: 200, okKeyPresent: true, actionKeyPresent: false },
+      childState: { childExited: false, processDiagnostics: [] },
+    });
+    expect(failure).toMatchObject({
+      gatewayCoherentAudit: { status: "retry_exhausted", lastAttemptStatus: "observation_churn" },
+      gatewayAuditControl: { outcome: "failure", error: "invalid_shape", statusCode: 200, okKeyPresent: true, actionKeyPresent: false },
+    });
+    expect(JSON.stringify(failure)).not.toContain("must-not-persist");
   });
 
   it("keeps WSS and HTTP-SSE runtime failure artifacts isolated after caller re-wrap", () => {

@@ -4,6 +4,7 @@ import {
   assertProductionCredential,
   assertDedicatedRealTrioProcessComponents,
   bridgeEndpointForBinding,
+  classifyRealTrioAuditControlFailure,
   fixtureAttestationTokens,
   fixtureAttestedWorkerCommand,
   hasOrderedDocumentContextStages,
@@ -18,10 +19,25 @@ import {
   realTrioCredentialRequest,
   redactBridgeTranscript,
   REAL_TRIO_TEST_HEARTBEAT_INTERVAL_MS,
+  PublicGatewayControlError,
   testHeartbeatWorkerCommand,
 } from "../src/realTrioSupervisor.js";
 
 const worker = (binding: "wss" | "streamable_http_sse"): readonly string[] => ["--binding", binding];
+
+describe("WP-12 bounded real-case-audit control outcomes", () => {
+  it("classifies timeout, 503, and process exit without retaining raw error values", () => {
+    expect(classifyRealTrioAuditControlFailure(new PublicGatewayControlError("timeout"), false)).toEqual({
+      outcome: "failure", error: "timeout", statusCode: null, okKeyPresent: false, actionKeyPresent: false,
+    });
+    expect(classifyRealTrioAuditControlFailure(new PublicGatewayControlError("http_status_5xx", 503, true, true), false)).toEqual({
+      outcome: "failure", error: "http_status_5xx", statusCode: 503, okKeyPresent: true, actionKeyPresent: true,
+    });
+    const exited = classifyRealTrioAuditControlFailure(new Error("secret-path-must-not-persist"), true);
+    expect(exited).toMatchObject({ outcome: "failure", error: "process_exited" });
+    expect(JSON.stringify(exited)).not.toContain("secret-path-must-not-persist");
+  });
+});
 
 function cursorObservation(stage: string, outcome: string, sequence: number, sourceOffset: number, hash = `sha256:${"a".repeat(64)}`) {
   return {

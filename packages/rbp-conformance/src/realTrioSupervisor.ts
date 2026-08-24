@@ -87,6 +87,8 @@ export interface RealTrioSupervisorResult {
   ) => Promise<JsonValue>;
   /** Tenant-scoped, public and redacted audit correlation for real case assertions. */
   readonly readRealCaseAudit: () => Promise<JsonObject>;
+  /** Same audit call with a bounded value-free result for failure evidence. */
+  readonly readRealCaseAuditOutcome: () => Promise<RealTrioAuditControlOutcome>;
   /** Value-free C# document-context lifecycle observations only. */
   readonly readDocumentContextDiagnostics: () => readonly ProcessTranscriptRecord[];
   /** Fixed document-context stage sequence for failure artifacts only. */
@@ -106,6 +108,51 @@ export interface RealTrioSupervisorResult {
   /** Terminates the actual worker process, then relaunches its exact command/journal configuration. */
   readonly restartBridge: () => Promise<RealTrioSessionReadiness>;
   readonly stop: () => Promise<void>;
+}
+
+export type RealTrioAuditControlErrorKind =
+  "timeout" | "tls_pin" | "http_status_4xx" | "http_status_5xx" |
+  "invalid_shape" | "process_exited" | "ipc_error" | "unknown";
+
+export interface RealTrioAuditControlFailure {
+  readonly outcome: "failure";
+  readonly error: RealTrioAuditControlErrorKind;
+  readonly statusCode: number | null;
+  readonly okKeyPresent: boolean;
+  readonly actionKeyPresent: boolean;
+}
+
+export type RealTrioAuditControlOutcome =
+  | Readonly<{ readonly outcome: "success"; readonly audit: JsonObject }>
+  | RealTrioAuditControlFailure;
+
+export class PublicGatewayControlError extends Error {
+  public constructor(
+    readonly kind: Exclude<RealTrioAuditControlErrorKind, "process_exited">,
+    readonly statusCode: number | null = null,
+    readonly okKeyPresent = false,
+    readonly actionKeyPresent = false,
+  ) {
+    super("Gateway public control failed");
+    this.name = "PublicGatewayControlError";
+  }
+}
+
+export function classifyRealTrioAuditControlFailure(
+  error: unknown,
+  gatewayExited: boolean,
+): RealTrioAuditControlFailure {
+  if (gatewayExited) {
+    return Object.freeze({ outcome: "failure", error: "process_exited", statusCode: null, okKeyPresent: false, actionKeyPresent: false });
+  }
+  if (error instanceof PublicGatewayControlError) {
+    return Object.freeze({ outcome: "failure", error: error.kind, statusCode: error.statusCode,
+      okKeyPresent: error.okKeyPresent, actionKeyPresent: error.actionKeyPresent });
+  }
+  const code = error !== null && typeof error === "object" && "code" in error
+    ? (error as { readonly code?: unknown }).code : null;
+  return Object.freeze({ outcome: "failure", error: typeof code === "string" ? "ipc_error" : "unknown",
+    statusCode: null, okKeyPresent: false, actionKeyPresent: false });
 }
 
 export interface RealTrioDocumentContextCursorRow {
@@ -828,14 +875,14 @@ export async function publicGatewayControl(
   const url = new URL("/__conformance/v1/control", endpoint);
   const action = payloadObject.action;
   if (action !== "issue_device_credential" && action !== "issue_north_credential" && action !== "snapshot_audit" && action !== "read_real_case_audit") {
-    throw new Error("Gateway public control action is invalid");
+    throw new PublicGatewayControlError("invalid_shape");
   }
   const payload = Buffer.from(JSON.stringify(payloadObject), "utf8");
   if (payload.byteLength > MAX_REAL_TRIO_CONTROL_BYTES) {
-    throw new Error("Gateway public control request exceeds 64 KiB");
+    throw new PublicGatewayControlError("invalid_shape");
   }
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > MAX_REAL_TRIO_CONTROL_TIMEOUT_MS) {
-    throw new Error("Gateway public control timeout is outside its fixed bound");
+    throw new PublicGatewayControlError("invalid_shape");
   }
   return await new Promise<JsonObject>((resolve, reject) => {
     let settled = false;
@@ -845,13 +892,13 @@ export async function publicGatewayControl(
       reject(error);
     };
     const timer = setTimeout(() => {
-      operation.destroy(new Error("Gateway public control timed out"));
-      fail(new Error("Gateway public control timed out"));
+      operation.destroy(new PublicGatewayControlError("timeout"));
+      fail(new PublicGatewayControlError("timeout"));
     }, timeoutMs);
     const operation = httpsRequest({ hostname: url.hostname, port: url.port, path: url.pathname, method: "POST", rejectUnauthorized: false, headers: { "content-type": "application/json", "content-length": payload.byteLength, "x-rbp-test-control": controlToken } }, (response) => {
       const peer = (response.socket as TLSSocket).getPeerCertificate(true).raw as Buffer | undefined;
       const observed = peer === undefined ? null : `sha256:${createHash("sha256").update(peer).digest("hex")}`;
-      if (observed !== expectedCertificateSha256) { response.resume(); clearTimeout(timer); fail(new Error("Gateway control TLS pin mismatch")); return; }
+      if (observed !== expectedCertificateSha256) { response.resume(); clearTimeout(timer); fail(new PublicGatewayControlError("tls_pin")); return; }
       const chunks: Buffer[] = [];
       let responseBytes = 0;
       response.on("data", (chunk: Buffer) => {
@@ -859,21 +906,33 @@ export async function publicGatewayControl(
         if (responseBytes > MAX_REAL_TRIO_CONTROL_BYTES) {
           response.destroy();
           clearTimeout(timer);
-          fail(new Error("Gateway public control response exceeds 64 KiB"));
+          fail(new PublicGatewayControlError("invalid_shape"));
           return;
         }
         chunks.push(chunk);
       });
       response.on("end", () => {
         try {
-          const body = JSON.parse(Buffer.concat(chunks).toString("utf8")) as JsonObject;
-          if (response.statusCode !== 200 || body.ok !== true || body.action !== action) throw new Error("Gateway public control refused request");
+          const parsed = JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown;
+          const body = parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
+            ? parsed as JsonObject : null;
+          const statusCode = Number.isSafeInteger(response.statusCode) ? Number(response.statusCode) : null;
+          const okKeyPresent = body !== null && Object.hasOwn(body, "ok");
+          const actionKeyPresent = body !== null && Object.hasOwn(body, "action");
+          if (statusCode !== 200) {
+            const kind = statusCode !== null && statusCode >= 400 && statusCode < 500 ? "http_status_4xx" :
+              statusCode !== null && statusCode >= 500 && statusCode < 600 ? "http_status_5xx" : "invalid_shape";
+            throw new PublicGatewayControlError(kind, statusCode, okKeyPresent, actionKeyPresent);
+          }
+          if (body === null || body.ok !== true || body.action !== action) {
+            throw new PublicGatewayControlError("invalid_shape", statusCode, okKeyPresent, actionKeyPresent);
+          }
           if (!settled) {
             settled = true;
             clearTimeout(timer);
             resolve(body);
           }
-        } catch (error) { clearTimeout(timer); fail(error instanceof Error ? error : new Error(String(error))); }
+        } catch (error) { clearTimeout(timer); fail(error instanceof PublicGatewayControlError ? error : new PublicGatewayControlError("invalid_shape")); }
       });
     });
     operation.once("error", (error) => { clearTimeout(timer); fail(error); });
@@ -1056,12 +1115,24 @@ export async function startRealTrioSupervisor(input: RealTrioSupervisorLaunch): 
           action: "plan_fault" | "release_stall" | "apply_document_context" | "snapshot_evidence",
           fields: Readonly<Record<string, JsonValue>> = {},
         ): Promise<JsonValue> => await fixture.request(action, fields);
-        const readRealCaseAudit = async (): Promise<JsonObject> => await publicGatewayControl(
-          endpoint,
-          input.gatewayControlToken,
-          certificateSha256,
-          { action: "read_real_case_audit", tenantId: "conformance" },
-        );
+        const readRealCaseAuditOutcome = async (): Promise<RealTrioAuditControlOutcome> => {
+          try {
+            const audit = await publicGatewayControl(
+              endpoint,
+              input.gatewayControlToken,
+              certificateSha256,
+              { action: "read_real_case_audit", tenantId: "conformance" },
+            );
+            return Object.freeze({ outcome: "success", audit });
+          } catch (error) {
+            return classifyRealTrioAuditControlFailure(error, gateway.process.exitCode !== null);
+          }
+        };
+        const readRealCaseAudit = async (): Promise<JsonObject> => {
+          const outcome = await readRealCaseAuditOutcome();
+          if (outcome.outcome === "success") return outcome.audit;
+          throw new Error("real trio public audit control unavailable");
+        };
         let stopped = false;
         const stop = async (): Promise<void> => {
           if (stopped) return;
@@ -1089,6 +1160,7 @@ export async function startRealTrioSupervisor(input: RealTrioSupervisorLaunch): 
         sessionReadiness,
         fixtureControl,
         readRealCaseAudit,
+        readRealCaseAuditOutcome,
         readDocumentContextSnapshot: () => documentContextJournal.snapshot(bridge.transcript),
         readDocumentContextSince: (cursor: string, generation: number) =>
           documentContextJournal.since(cursor, generation, bridge.transcript),
