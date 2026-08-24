@@ -779,6 +779,68 @@ describe("M2 north MCP first slice", () => {
     }
   });
 
+  it("preserves the fixed read dispatch failure identically in text and structured content", async () => {
+    const registry = buildNorthFirstSliceCallableRegistry(VERIFIED_CATALOG);
+    const record = registry.require("core.ui.state");
+    const catalogEntry = FULL_CATALOG_VIEW.get(record.name);
+    if (catalogEntry === undefined) throw new Error("read dispatch catalog entry is unavailable");
+    const dispatcher = new GatewayDispatcher(registry, [{
+      binding: "bridge",
+      async execute(): Promise<GatewayExecutorOutcome> {
+        return { state: "completed", result: {} };
+      },
+    }], dispatcherOptions());
+    vi.spyOn(dispatcher, "dispatch").mockResolvedValue(Object.freeze({
+      ok: false as const,
+      state: "failed" as const,
+      toolName: record.name,
+      requestId: "read-dispatch-request",
+      executorReached: true,
+      error: Object.freeze({ code: "dispatch_unavailable" as const }),
+    }));
+    let endpoint: NorthMcpEndpointHandle | undefined;
+    let client: Client | undefined;
+    let transport: StreamableHTTPClientTransport | undefined;
+    try {
+      endpoint = await startNorthMcpEndpoint({
+        dispatcher,
+        registry,
+        catalogViewFor: () => new EntitledCatalogView([catalogEntry], entitleAll),
+        invocationRouteFor,
+        requestState: { key: REQUEST_STATE_KEY },
+        resourceMetadataUrl: new URL("https://gateway.example.test/.well-known/oauth-protected-resource/mcp"),
+        authenticator: {
+          async authenticate(request) {
+            return request.headers.authorization === `Bearer ${TOKEN}`
+              ? authenticatedRequest(PRINCIPAL_KEY, { token: TOKEN, clientId: "read-dispatch", scopes: ["mcp:tools"] })
+              : null;
+          },
+        },
+      });
+      client = new Client({ name: "read dispatch failure test", version: "0.0.0-test" });
+      transport = new StreamableHTTPClientTransport(endpoint.endpoint, {
+        requestInit: { headers: { authorization: `Bearer ${TOKEN}` } },
+      });
+      await client.connect(transport);
+      const result = await client.callTool({ name: record.name, arguments: {} });
+      const expected = {
+        ok: false,
+        state: "failed",
+        toolName: record.name,
+        requestId: "read-dispatch-request",
+        executorReached: true,
+        error: { code: "dispatch_unavailable" },
+      };
+      expect(result.isError).toBe(true);
+      expect(result.structuredContent).toEqual(expected);
+      expect(result.content).toEqual([{ type: "text", text: JSON.stringify(expected) }]);
+    } finally {
+      await client?.close().catch(() => undefined);
+      await transport?.close().catch(() => undefined);
+      await endpoint?.close().catch(() => undefined);
+    }
+  });
+
   it("threads an ordinary MCP confirmation re-invocation without exposing controls to functional args", async () => {
     const catalogEntry = FULL_CATALOG_VIEW.get("core.parameter.set");
     if (catalogEntry === undefined) {

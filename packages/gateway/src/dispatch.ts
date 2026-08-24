@@ -202,8 +202,15 @@ export type GatewayDispatchOutcome =
           | "recovery_blocked"
           | "recovery_protocol_fault"
           | "recovery_unavailable"
-          | "audit_unavailable";
-        readonly message: string;
+          | "audit_unavailable"
+          /**
+           * Read-only execution failed after immutable route authority was
+           * established. The underlying exception is intentionally never
+           * surfaced through the north result carrier.
+           */
+          | "dispatch_unavailable";
+        /** Omitted only for the fixed read-only dispatch_unavailable shape. */
+        readonly message?: string;
         readonly executorCode?: string;
         readonly detailCode?: string;
       };
@@ -345,6 +352,21 @@ function invalidExecutorResult(input: {
       message: input.message,
     },
   };
+}
+
+function dispatchUnavailableOutcome(input: {
+  readonly toolName: string;
+  readonly requestId: string;
+  readonly executorReached: boolean;
+}): GatewayDispatchOutcome {
+  return Object.freeze({
+    ok: false as const,
+    state: "failed" as const,
+    toolName: input.toolName,
+    requestId: input.requestId,
+    executorReached: input.executorReached,
+    error: Object.freeze({ code: "dispatch_unavailable" as const }),
+  });
 }
 
 function normalizeExecutorOutcome(input: {
@@ -2267,20 +2289,14 @@ export class GatewayDispatcher {
       });
     }
 
-    let context: GatewayInvocationContext;
+    let authority: GatewayInvocationAuthority;
     try {
-      context = createGatewayInvocationContext({
+      authority = deriveGatewayInvocationAuthority({
         auth,
         route,
         mcpSessionId: input.mcpSessionId,
         effectiveMcpRequestScope: input.effectiveMcpRequestScope,
-        invocationId,
-        toolName: tool.name,
-        toolVersion: tool.version,
-        policyClass: tool.policyClass,
         mutationScopePolicy: tool.mutationScopePolicy,
-        executor: tool.executor,
-        args: parsedJsonArgs,
         startedAtMs,
       });
     } catch (error) {
@@ -2302,11 +2318,65 @@ export class GatewayDispatcher {
         route,
         tool,
         context: undefined,
+        authority: undefined,
         paramsDigest,
         executorReached: false,
       });
     }
 
+    // This is deliberately the only broad normalization boundary for the
+    // non-mutating dispatcher. Route/authentication/authority failures above,
+    // durable mutation paths, and north resource delivery remain outside it.
+    let phase:
+      | "context"
+      | "policy"
+      | "executor_resolution"
+      | "serialized_execution"
+      | "executor_execution" = "context";
+    let executorReached = false;
+    try {
+      let context: GatewayInvocationContext;
+      try {
+      context = createGatewayInvocationContext({
+        auth,
+        route,
+        mcpSessionId: input.mcpSessionId,
+        effectiveMcpRequestScope: input.effectiveMcpRequestScope,
+        invocationId,
+        toolName: tool.name,
+        toolVersion: tool.version,
+        policyClass: tool.policyClass,
+        mutationScopePolicy: tool.mutationScopePolicy,
+        executor: tool.executor,
+        args: parsedJsonArgs,
+        startedAtMs,
+      });
+      } catch (error) {
+        const outcome: GatewayDispatchOutcome = {
+          ok: false,
+          state: "failed",
+          toolName: input.toolName,
+          requestId: invocationId,
+          error: {
+            code: "invalid_invocation_context",
+            ...(error instanceof GatewayInvocationContextError
+              ? { detailCode: error.code }
+              : {}),
+            message: errorMessage(error),
+          },
+        };
+        return this.#finish(outcome, {
+          ...auditBase,
+          route,
+          tool,
+          context: undefined,
+          authority,
+          paramsDigest,
+          executorReached: false,
+        });
+      }
+
+      phase = "policy";
     if (tool.policyClass !== "auto") {
       const outcome: GatewayDispatchOutcome = {
         ok: false,
@@ -2323,10 +2393,12 @@ export class GatewayDispatcher {
         route,
         tool,
         context,
+        authority,
         executorReached: false,
       });
     }
 
+      phase = "executor_resolution";
     const executor = this.#executors.get(tool.executor);
     if (executor === undefined) {
       const outcome: GatewayDispatchOutcome = {
@@ -2344,10 +2416,12 @@ export class GatewayDispatcher {
         route,
         tool,
         context,
+        authority,
         executorReached: false,
       });
     }
 
+      phase = "serialized_execution";
     return this.#serialize(context.rsid, async () => {
       const recovery = this.#recoveryAuthority;
       const window = await recovery.acquireInvocationWindow({
@@ -2389,45 +2463,41 @@ export class GatewayDispatcher {
           route,
           tool,
           context,
+          authority,
           executorReached: false,
         });
       }
 
       try {
         let outcome: GatewayDispatchOutcome;
-        try {
-          const executorOutcome: unknown =
-            await runWithGatewayInvocationContext(context, () =>
-              executor.execute({
-                toolName: tool.name,
-                toolVersion: tool.version,
-                executorMethod: tool.executorMethod,
-                policyClass: tool.policyClass,
-                mutationScopePolicy: tool.mutationScopePolicy,
-                args: parsedJsonArgs,
-                context,
-              }),
-            );
-          outcome = normalizeExecutorOutcome({
-            tool,
-            requestId: invocationId,
-            executorOutcome,
-            threw: false,
-          });
-        } catch (error) {
-          outcome = normalizeExecutorOutcome({
-            tool,
-            requestId: invocationId,
-            executorError: error,
-            threw: true,
-          });
-        }
+        phase = "executor_execution";
+        executorReached = true;
+        const executorOutcome: unknown = await runWithGatewayInvocationContext(
+          context,
+          () =>
+            executor.execute({
+              toolName: tool.name,
+              toolVersion: tool.version,
+              executorMethod: tool.executorMethod,
+              policyClass: tool.policyClass,
+              mutationScopePolicy: tool.mutationScopePolicy,
+              args: parsedJsonArgs,
+              context,
+            }),
+        );
+        outcome = normalizeExecutorOutcome({
+          tool,
+          requestId: invocationId,
+          executorOutcome,
+          threw: false,
+        });
 
         return this.#finish(outcome, {
           ...auditBase,
           route,
           tool,
           context,
+          authority,
           executorReached: true,
         });
       } finally {
@@ -2438,6 +2508,20 @@ export class GatewayDispatcher {
         });
       }
     });
+    } catch (error) {
+      // Keep phase strictly internal: executorReached says only that the
+      // execution boundary was entered, never that a terminal result exists.
+      void error;
+      void phase;
+      if (authority.mutating) {
+        throw error;
+      }
+      return dispatchUnavailableOutcome({
+        toolName: input.toolName,
+        requestId: invocationId,
+        executorReached,
+      });
+    }
   }
 
   async #serialize<T>(rsid: string, operation: () => Promise<T>): Promise<T> {

@@ -997,6 +997,89 @@ describe("GatewayDispatcher fail-closed boundaries", () => {
     expect(harness.executionCount()).toBe(1);
   });
 
+  it.each([
+    ["Error", () => new Error("read-executor-secret")],
+    ["cancellation", () => new DOMException("cancelled", "AbortError")],
+    ["unknown", () => Object.freeze({ private: "read-executor-secret" })],
+  ] as const)(
+    "normalizes a read executor %s without leaking it",
+    async (_kind, createThrown) => {
+      const harness = createDispatcher({
+        execute: async () => {
+          throw createThrown();
+        },
+      });
+
+      const outcome = await harness.dispatcher.dispatch(
+        dispatchInput({ value: "ready" }),
+      );
+      expect(outcome).toEqual({
+        ok: false,
+        state: "failed",
+        toolName: autoRecord.name,
+        requestId: "invocation-1",
+        executorReached: true,
+        error: { code: "dispatch_unavailable" },
+      });
+      expect(JSON.stringify(outcome)).not.toContain("read-executor-secret");
+      expect(harness.executionCount()).toBe(1);
+    },
+  );
+
+  it("normalizes a read execution failure before Bridge contact", async () => {
+    const base = createReadOnlyRecoveryAuthorityFixture();
+    const harness = createDispatcher({
+      recoveryAuthority: {
+        ...base,
+        async acquireInvocationWindow() {
+          throw new Error("read-window-secret");
+        },
+      },
+      execute: async () => ({ state: "completed", result: { ok: true } }),
+    });
+
+    const outcome = await harness.dispatcher.dispatch(
+      dispatchInput({ value: "ready" }),
+    );
+    expect(outcome).toEqual({
+      ok: false,
+      state: "failed",
+      toolName: autoRecord.name,
+      requestId: "invocation-1",
+      executorReached: false,
+      error: { code: "dispatch_unavailable" },
+    });
+    expect(JSON.stringify(outcome)).not.toContain("read-window-secret");
+    expect(harness.executionCount()).toBe(0);
+  });
+
+  it("normalizes a read failure after Bridge contact without treating contact as terminal", async () => {
+    const base = createReadOnlyRecoveryAuthorityFixture();
+    const harness = createDispatcher({
+      recoveryAuthority: {
+        ...base,
+        async releaseInvocationWindow() {
+          throw new Error("read-release-secret");
+        },
+      },
+      execute: async () => ({ state: "completed", result: { ok: true } }),
+    });
+
+    const outcome = await harness.dispatcher.dispatch(
+      dispatchInput({ value: "ready" }),
+    );
+    expect(outcome).toEqual({
+      ok: false,
+      state: "failed",
+      toolName: autoRecord.name,
+      requestId: "invocation-1",
+      executorReached: true,
+      error: { code: "dispatch_unavailable" },
+    });
+    expect(JSON.stringify(outcome)).not.toContain("read-release-secret");
+    expect(harness.executionCount()).toBe(1);
+  });
+
   it("returns structured executor_unavailable for an APS-bound invocation", async () => {
     const apsRecord: GatewayToolRecord = {
       ...autoRecord,
