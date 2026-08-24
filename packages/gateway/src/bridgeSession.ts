@@ -319,6 +319,8 @@ interface DurablePendingDispatch {
     readonly leaseTicket: number;
     readonly intent: "dispatch";
   } | null;
+  /** Reservation-time Gateway authority; never supplied by carrier/receipt. */
+  readonly expectedNoSendAuthorityDigest?: `sha256:${string}` | null;
   /** Exact immutable north ingress scope; absent only on pre-WP-11 rows. */
   readonly effectiveMcpRequestScope?: EffectiveMcpRequestScopeV1;
 }
@@ -342,6 +344,7 @@ interface DurableDispatchEvidence {
    * dispatch proof object is retained.
    */
   readonly noSendReceipt?: DurableNoSendReceipt | null;
+  readonly noSendAuthorityDigest?: `sha256:${string}` | null;
 }
 
 type DurableNoSendReceipt = GatewayBridgeNoSendReceipt;
@@ -2517,6 +2520,15 @@ function terminalJournalRecords(
   return records;
 }
 
+function noSendAuthorityDigest(input: Omit<DurableNoSendReceipt, "authorityDigest" | "recordedAtMs"> & {
+  readonly binding: BindingKind;
+}): `sha256:${string}` {
+  return digest(canonicalizeJson({
+    domain: "revagent.gateway.no-send-authority/v1",
+    ...input,
+  } as unknown as JsonValue));
+}
+
 function noSendReceipt(input: {
   readonly record: DurableRbpSession;
   readonly fence: DurableEgressFence;
@@ -2546,7 +2558,9 @@ function noSendReceipt(input: {
     receipt.egressEpoch !== input.fence.epoch ||
     receipt.leaseTicket !== input.lease.ticket ||
     receipt.intent !== "dispatch" ||
-    pending.effectiveMcpRequestScope === undefined
+    pending.effectiveMcpRequestScope === undefined ||
+    pending.expectedNoSendAuthorityDigest === undefined ||
+    pending.expectedNoSendAuthorityDigest === null
   ) {
     throw new Error("no-send receipt lacks exact dispatch lease authority");
   }
@@ -2559,7 +2573,7 @@ function noSendReceipt(input: {
     invocationId: pending.invocationId,
     scopeDigest: effectiveScopeDigest,
   }));
-  return Object.freeze({
+  const coordinates = {
     schema: "gateway.dispatch-no-send/v1",
     tenantId: input.record.tenantId,
     rsid: input.record.rsid,
@@ -2583,8 +2597,15 @@ function noSendReceipt(input: {
     intentDigest,
     transportStarted: false,
     cumulativeAck: null,
-    recordedAtMs: input.recordedAtMs,
+  } as const;
+  const authorityDigest = noSendAuthorityDigest({
+    ...coordinates,
+    binding: input.record.binding,
   });
+  if (authorityDigest !== pending.expectedNoSendAuthorityDigest) {
+    throw new Error("no-send receipt authority digest does not match reservation");
+  }
+  return Object.freeze({ ...coordinates, authorityDigest, recordedAtMs: input.recordedAtMs });
 }
 
 /**
@@ -2630,6 +2651,7 @@ function orphanReservedNoSendEvidence(input: {
       recordedAtMs: input.nowMs,
     },
     terminalTruth: existing?.terminalTruth ?? null,
+    noSendAuthorityDigest: pending.expectedNoSendAuthorityDigest ?? null,
     noSendReceipt: noSendReceipt({
       record: input.record,
       fence: sessionEgressFence(input.record),
@@ -6660,6 +6682,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         message: "dispatch lacks an authoritative effective scope",
       } }) };
     }
+    const effectiveMcpRequestScope = input.effectiveMcpRequestScope;
     const proofPolicy: JsonValue = {
       class: input.dispatchContext.policyClass,
       decision: input.dispatchContext.policyDecision,
@@ -6812,6 +6835,38 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
                 leaseTicket: lease.ticket,
                 intent: "dispatch",
               },
+              expectedNoSendAuthorityDigest: noSendAuthorityDigest({
+                schema: "gateway.dispatch-no-send/v1",
+                tenantId: input.tenantId,
+                rsid: input.rsid,
+                effectiveMcpSessionId: effectiveMcpRequestScope.effectiveMcpSessionId,
+                principalKey: effectiveMcpRequestScope.principalKey,
+                effectiveScopeDigest: digest(canonicalizeJson(effectiveMcpRequestScope as unknown as JsonValue)),
+                sessionBindingId: record.sessionBindingId,
+                acceptedConnectionId: record.connectionId,
+                durableSessionVersion: record.sessionVersion,
+                invocationId: input.correlationId,
+                correlationId: input.correlationId,
+                envelopeDigest: expectedDigest,
+                gatewaySequence: envelope.seq,
+                durableSequenceVersion: record.sessionVersion,
+                egressEpoch: fence.epoch + 1,
+                leaseVersion: 1,
+                leaseTicket: lease.ticket,
+                leaseHolderInstanceId: lease.holderInstanceId,
+                proofDigest,
+                routeSnapshotDigest,
+                intentDigest: digest(canonicalizeJson({
+                  correlationId: input.correlationId,
+                  envelopeDigest: expectedDigest,
+                  intent: "dispatch",
+                  invocationId: input.correlationId,
+                  scopeDigest: digest(canonicalizeJson(effectiveMcpRequestScope as unknown as JsonValue)),
+                })),
+                transportStarted: false,
+                cumulativeAck: null,
+                binding: record.binding,
+              }),
             },
             egressFence: {
               version: 1,
@@ -7223,6 +7278,8 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
                             recordedAtMs: nowMs,
                           },
                     terminalTruth: existing?.terminalTruth ?? null,
+                    noSendAuthorityDigest:
+                      cancelledPending.expectedNoSendAuthorityDigest ?? null,
                     noSendReceipt: noSendReceipt({
                       record,
                       fence,
@@ -7963,6 +8020,15 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     );
     if (evidence === undefined) return { kind: "not_durable_yet" };
     if (
+      evidence.noSendReceipt !== undefined &&
+      evidence.noSendReceipt !== null &&
+      (evidence.noSendAuthorityDigest === undefined ||
+        evidence.noSendAuthorityDigest === null ||
+        evidence.noSendAuthorityDigest !== evidence.noSendReceipt.authorityDigest)
+    ) {
+      return { kind: "protocol_fault", reason: "no_send_authority_mismatch" };
+    }
+    if (
       evidence.acceptance?.gatewaySequence !== expected.gatewaySequence ||
       (evidence.journal !== null &&
         expected.invocationBindings.some((binding) =>
@@ -8382,6 +8448,8 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
                   durableJournalVersion: record.sessionVersion,
                   recordedAtMs: nowMs,
                 },
+                noSendAuthorityDigest:
+                  pendingBeforeRevocation.expectedNoSendAuthorityDigest ?? null,
                 noSendReceipt: noSendReceipt({
                   record,
                   fence,

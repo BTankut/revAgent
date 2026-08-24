@@ -595,6 +595,7 @@ function noSendFor(
     proofDigest: `sha256:${"a".repeat(64)}`,
     routeSnapshotDigest: `sha256:${"b".repeat(64)}`,
     intentDigest: `sha256:${"d".repeat(64)}`,
+    authorityDigest: `sha256:${"e".repeat(64)}`,
     transportStarted: false,
     cumulativeAck: null,
     recordedAtMs: 1_775_000_000_700,

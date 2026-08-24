@@ -333,6 +333,8 @@ export interface GatewayBridgeNoSendReceipt {
   readonly proofDigest: `sha256:${string}`;
   readonly routeSnapshotDigest: `sha256:${string}`;
   readonly intentDigest: `sha256:${string}`;
+  /** Must equal the Gateway-retained reservation authority digest. */
+  readonly authorityDigest: `sha256:${string}`;
   readonly transportStarted: false;
   readonly cumulativeAck: null;
   readonly recordedAtMs: number;
@@ -1439,6 +1441,7 @@ function assertObservationIntegrity(
       !digestPattern.test(noSend.proofDigest) ||
       !digestPattern.test(noSend.routeSnapshotDigest) ||
       !digestPattern.test(noSend.intentDigest) ||
+      !digestPattern.test(noSend.authorityDigest) ||
       noSend.transportStarted !== false ||
       noSend.cumulativeAck !== null ||
       !Number.isSafeInteger(noSend.recordedAtMs) ||
