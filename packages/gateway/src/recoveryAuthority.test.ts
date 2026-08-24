@@ -538,12 +538,24 @@ function receiptFor(
   pending: GatewayRecoveryPendingDispatch,
   overrides: Partial<GatewayBridgeCumulativeAckReceipt> = {},
 ): GatewayBridgeCumulativeAckReceipt {
+  const correlationId = pending.envelope.type === "invoke"
+    ? pending.envelope.payload.invocation_id
+    : pending.envelope.payload.batch_id;
   return {
     source: "durable_rbp_sequence",
+    receiptVersion: 1,
+    tenantId: TENANT_A,
     rsid: pending.envelope.rsid,
     sessionBindingId: pending.sessionBindingId,
     acceptedConnectionId: pending.preparedConnectionId,
     authorizedSessionVersion: pending.authorizedSessionVersion,
+    invocationId: correlationId,
+    correlationId,
+    proofDigest: `sha256:${"a".repeat(64)}`,
+    routeSnapshotDigest: `sha256:${"b".repeat(64)}`,
+    egressEpoch: 1,
+    leaseTicket: 1,
+    intent: "dispatch",
     gatewaySequence: pending.gatewaySequence,
     cumulativeAck: pending.gatewaySequence,
     envelopeDigest: pending.envelopeDigest,
@@ -2071,6 +2083,15 @@ describe("GatewayRecoveryAuthority durable safety", () => {
       }),
       receiptFor(pending, {
         authorizedSessionVersion: pending.authorizedSessionVersion + 1,
+      }),
+      receiptFor(pending, {
+        tenantId: "tenant-foreign",
+      }),
+      receiptFor(pending, {
+        correlationId: uuid7(750_001),
+      }),
+      receiptFor(pending, {
+        proofDigest: `sha256:${"z".repeat(64)}` as `sha256:${string}`,
       }),
     ];
     for (const receipt of wrongAcks) {

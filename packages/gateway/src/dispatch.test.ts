@@ -227,12 +227,24 @@ function completedJournal(
 function acceptanceFor(
   pending: GatewayRecoveryPendingDispatch,
 ): GatewayBridgeCumulativeAckReceipt {
+  const correlationId = pending.envelope.type === "invoke"
+    ? pending.envelope.payload.invocation_id
+    : pending.envelope.payload.batch_id;
   return {
     source: "durable_rbp_sequence",
+    receiptVersion: 1,
+    tenantId: "tenant-a",
     rsid: pending.envelope.rsid,
     sessionBindingId: pending.sessionBindingId,
     acceptedConnectionId: pending.preparedConnectionId,
     authorizedSessionVersion: pending.authorizedSessionVersion,
+    invocationId: correlationId,
+    correlationId,
+    proofDigest: `sha256:${"a".repeat(64)}`,
+    routeSnapshotDigest: `sha256:${"b".repeat(64)}`,
+    egressEpoch: 1,
+    leaseTicket: 1,
+    intent: "dispatch",
     gatewaySequence: pending.gatewaySequence,
     cumulativeAck: pending.gatewaySequence,
     envelopeDigest: pending.envelopeDigest,

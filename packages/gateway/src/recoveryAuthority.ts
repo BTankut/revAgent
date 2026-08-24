@@ -237,10 +237,20 @@ export interface GatewayRecoveryEvidenceDecisionAudit {
 export interface GatewayBridgeCumulativeAckReceipt {
   /** Persisted output of the trusted RBP sequence authority, never caller input. */
   readonly source: "durable_rbp_sequence";
+  readonly receiptVersion?: 1;
+  readonly tenantId?: string;
   readonly rsid: string;
   readonly sessionBindingId: string;
   readonly acceptedConnectionId: string;
   readonly authorizedSessionVersion: number;
+  readonly invocationId?: string;
+  readonly correlationId?: string;
+  /** Digest-only nominal proof and route coordinates; never wire material. */
+  readonly proofDigest?: `sha256:${string}`;
+  readonly routeSnapshotDigest?: `sha256:${string}`;
+  readonly egressEpoch?: number;
+  readonly leaseTicket?: number;
+  readonly intent?: "dispatch";
   readonly gatewaySequence: number;
   readonly cumulativeAck: number;
   readonly envelopeDigest: `sha256:${string}`;
@@ -1066,13 +1076,20 @@ function assertPlanIntegrity(
 function assertReceiptIntegrity(
   receipt: GatewayBridgeCumulativeAckReceipt,
   pending: GatewayRecoveryPendingDispatch,
+  tenantId?: string,
 ): void {
+  const derived = deriveEnvelope(pending.envelope, pending.envelope.rsid);
   if (
     receipt.source !== "durable_rbp_sequence" ||
+    receipt.receiptVersion !== 1 ||
+    (tenantId !== undefined && receipt.tenantId !== tenantId) ||
     receipt.rsid !== pending.envelope.rsid ||
     receipt.sessionBindingId !== pending.sessionBindingId ||
     receipt.acceptedConnectionId !== pending.preparedConnectionId ||
     receipt.authorizedSessionVersion !== pending.authorizedSessionVersion ||
+    receipt.invocationId !== derived.correlationId ||
+    receipt.correlationId !== derived.correlationId ||
+    receipt.intent !== "dispatch" ||
     receipt.gatewaySequence !== pending.gatewaySequence ||
     receipt.envelopeDigest !== pending.envelopeDigest ||
     receipt.cumulativeAck < pending.gatewaySequence
@@ -1081,7 +1098,29 @@ function assertReceiptIntegrity(
       "Bridge cumulative ACK is not bound to the pending dispatch",
     );
   }
+  if (typeof receipt.tenantId !== "string") {
+    throw new TypeError("accepted tenantId is missing");
+  }
+  assertBoundedString(receipt.tenantId, "accepted tenantId", 512);
   assertBoundedString(receipt.acceptedConnectionId, "acceptedConnectionId");
+  assertBoundedString(receipt.invocationId, "accepted invocationId");
+  assertBoundedString(receipt.correlationId, "accepted correlationId");
+  if (
+    typeof receipt.proofDigest !== "string" ||
+    typeof receipt.routeSnapshotDigest !== "string" ||
+    !digestPattern.test(receipt.proofDigest) ||
+    !digestPattern.test(receipt.routeSnapshotDigest)
+  ) {
+    throw new TypeError("accepted dispatch receipt proof is invalid");
+  }
+  if (
+    typeof receipt.egressEpoch !== "number" ||
+    typeof receipt.leaseTicket !== "number"
+  ) {
+    throw new TypeError("accepted dispatch receipt fence is missing");
+  }
+  assertSafeNonNegativeInteger(receipt.egressEpoch, "accepted egressEpoch");
+  assertSafePositiveInteger(receipt.leaseTicket, "accepted leaseTicket");
   assertSafePositiveInteger(
     receipt.authorizedSessionVersion,
     "accepted authorizedSessionVersion",
@@ -1352,7 +1391,7 @@ function assertObservationIntegrity(
   tenantId: string,
 ): void {
   if (observation.acceptance !== null) {
-    assertReceiptIntegrity(observation.acceptance, pending);
+    assertReceiptIntegrity(observation.acceptance, pending, tenantId);
   }
   if (observation.journal !== null) {
     assertJournalEvidenceIntegrity(observation.journal, pending);
@@ -1620,6 +1659,7 @@ function assertPendingIntegrity(
 function assertHistoryIntegrity(
   history: GatewayRecoveryDispatchHistory,
   rsid: string,
+  tenantId?: string,
 ): void {
   const derived = deriveEnvelope(history.envelope, rsid);
   if (
@@ -1720,13 +1760,14 @@ function assertHistoryIntegrity(
       bridgeAcceptance: null,
       preparedAtMs: history.recordedAtMs,
     };
-    assertReceiptIntegrity(history.bridgeAcceptance, pendingShape);
+    assertReceiptIntegrity(history.bridgeAcceptance, pendingShape, tenantId);
   }
 }
 
 function decodeRecord(
   value: GatewayJsonValue,
   rsid: string,
+  tenantId?: string,
 ): GatewayRecoveryRecord {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
     throw new TypeError("persisted recovery record must be an object");
@@ -1815,7 +1856,7 @@ function decodeRecord(
   }
   const historyDigests = new Set<string>();
   for (const history of candidate.dispatchHistory) {
-    assertHistoryIntegrity(history, rsid);
+    assertHistoryIntegrity(history, rsid, tenantId);
     if (historyDigests.has(history.envelopeDigest)) {
       throw new TypeError(
         "persisted recovery history repeats an envelope digest",
@@ -1846,7 +1887,9 @@ async function loadRecord(
   const stored = await tx.read(GATEWAY_RECOVERY_NAMESPACE, rsid);
   return {
     value:
-      stored === null ? emptyRecord(rsid) : decodeRecord(stored.value, rsid),
+      stored === null
+        ? emptyRecord(rsid)
+        : decodeRecord(stored.value, rsid, stored.tenantId),
     stored,
   };
 }

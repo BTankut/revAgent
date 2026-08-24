@@ -303,6 +303,22 @@ interface DurablePendingDispatch {
   /** Optional only for true pre-WP-02 rows; journal bindings are the fallback. */
   readonly mutationEntries?: readonly DurablePendingMutation[];
   readonly journalRecords: readonly InvocationJournalRecord[];
+  /**
+   * Gateway-authored coordinates retained before the adapter invocation
+   * boundary. They are audit material only: absence on an older row is never
+   * authority to replay that row after a restart.
+   */
+  readonly dispatchReceipt?: {
+    readonly version: 1;
+    readonly tenantId: string;
+    readonly invocationId: string;
+    readonly correlationId: string;
+    readonly proofDigest: `sha256:${string}`;
+    readonly routeSnapshotDigest: `sha256:${string}`;
+    readonly egressEpoch: number;
+    readonly leaseTicket: number;
+    readonly intent: "dispatch";
+  } | null;
   /** Exact immutable north ingress scope; absent only on pre-WP-11 rows. */
   readonly effectiveMcpRequestScope?: EffectiveMcpRequestScopeV1;
 }
@@ -2531,6 +2547,59 @@ function noSendReceipt(
     routeSnapshotDigest: lease.routeSnapshotDigest,
     recordedAtMs,
   });
+}
+
+/**
+ * A process that is resuming a session did not own a pre-existing dispatch
+ * lease. A reserved lease is consequently a proved pre-invocation orphan: no
+ * adapter call can have occurred before the durable promotion to `started`.
+ * A started lease is the opposite. It remains fenced and is classified
+ * fail-closed below; it is never handed to the generic retransmit outbox.
+ */
+function orphanReservedNoSendEvidence(input: {
+  readonly tenantId: string;
+  readonly record: DurableRbpSession;
+  readonly lease: DurableEgressLease;
+  readonly nowMs: number;
+}): DurableDispatchEvidence | null {
+  const pending = input.record.pending;
+  if (
+    pending === null ||
+    input.lease.operation !== "dispatch" ||
+    input.lease.phase !== "reserved" ||
+    pending.envelopeDigest !== input.lease.envelopeDigest
+  ) {
+    return null;
+  }
+  const journals = pending.journalRecords.map((journal) =>
+    handleJournalSessionUnregister(journal, true, null).record,
+  );
+  if (journals.length === 0) return null;
+  const existing = input.record.evidence.find(
+    (candidate) => candidate.envelopeDigest === pending.envelopeDigest,
+  );
+  return {
+    envelopeDigest: pending.envelopeDigest,
+    acceptance: null,
+    journal: {
+      kind: "known_terminal",
+      rsid: input.record.rsid,
+      sessionBindingId: input.record.sessionBindingId,
+      envelopeDigest: pending.envelopeDigest,
+      journalRecords: journals,
+      batchTerminal: null,
+      durableJournalVersion: input.record.sessionVersion,
+      recordedAtMs: input.nowMs,
+    },
+    terminalTruth: existing?.terminalTruth ?? null,
+    noSendReceipt: noSendReceipt(
+      input.tenantId,
+      input.record.rsid,
+      pending,
+      input.lease,
+      input.nowMs,
+    ),
+  };
 }
 
 function sessionV2EvidenceChildren(record: DurableRbpSession): readonly {
@@ -6695,6 +6764,17 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
                 : { effectiveMcpRequestScope: input.effectiveMcpRequestScope }),
               mutationEntries,
               journalRecords: journals,
+              dispatchReceipt: {
+                version: 1,
+                tenantId: input.tenantId,
+                invocationId: input.correlationId,
+                correlationId: input.correlationId,
+                proofDigest,
+                routeSnapshotDigest,
+                egressEpoch: fence.epoch + 1,
+                leaseTicket: lease.ticket,
+                intent: "dispatch",
+              },
             },
             egressFence: {
               version: 1,
@@ -7392,28 +7472,165 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         if (stored === null) return { kind: "blocked" as const };
         const record = parseStoredSession(stored, tenantId, payload.rsid);
         this.#assertAuthorityTicket(authorityTicket, connection);
-        const fence = sessionEgressFence(record);
+        const initialFence = sessionEgressFence(record);
         const nowMs = this.#clock();
+        let recovered = record;
+        let fence = initialFence;
+
+        if (
+          initialFence.lease?.operation === "dispatch" &&
+          initialFence.lease.phase === "reserved"
+        ) {
+          let noSend: DurableDispatchEvidence | null;
+          try {
+            noSend = orphanReservedNoSendEvidence({
+              tenantId,
+              record,
+              lease: initialFence.lease,
+              nowMs,
+            });
+          } catch {
+            // A legacy/malformed proof receipt is not a substitute for the
+            // exact Gateway-authored receipt. Keep it fenced and fail closed.
+            return { kind: "recovery_blocked" as const };
+          }
+          if (noSend === null) {
+            return { kind: "recovery_blocked" as const };
+          }
+          recovered = {
+            ...record,
+            pending: null,
+            evidence: [
+              ...record.evidence.filter(
+                (candidate) =>
+                  candidate.envelopeDigest !== noSend.envelopeDigest,
+              ),
+              noSend,
+            ],
+            egressFence: {
+              ...initialFence,
+              epoch: initialFence.epoch + 1,
+              lease: null,
+            },
+          };
+          fence = sessionEgressFence(recovered);
+        }
+
+        if (
+          initialFence.lease?.operation === "dispatch" &&
+          initialFence.lease.phase === "started"
+        ) {
+          const pending = record.pending;
+          if (
+            pending === null ||
+            pending.envelopeDigest !== initialFence.lease.envelopeDigest
+          ) {
+            return { kind: "recovery_blocked" as const };
+          }
+          let candidates: readonly NormalizedHoldCandidate[];
+          try {
+            candidates = pending.mutating
+              ? normalizedHoldCandidates(
+                  record.rsid,
+                  durablePendingMutationEntries(record),
+                )
+              : [];
+            if (
+              (pending.mutating && candidates.length === 0) ||
+              candidates.length > MAX_RECOVERABLE_MUTATION_SCOPES ||
+              !hasRecoverableMutationCapacity(record, candidates)
+            ) {
+              return { kind: "recovery_blocked" as const };
+            }
+            for (const candidate of candidates) {
+              await this.#ensureNormalizedConflictPair(
+                tx,
+                tenantId,
+                record.rsid,
+                candidate,
+                nowMs,
+              );
+            }
+            const journals = pending.journalRecords.map((journal) => {
+              const holdId = journal.binding.mutating
+                ? candidates.find(
+                    (candidate) =>
+                      candidate.mutationScopeJcs ===
+                      mutationScopeKey(journal.binding.mutationScope!),
+                  )?.holdId ?? null
+                : null;
+              return handleJournalSessionUnregister(journal, false, holdId)
+                .record;
+            });
+            const evidence: DurableDispatchEvidence = {
+              envelopeDigest: pending.envelopeDigest,
+              acceptance:
+                record.evidence.find(
+                  (candidate) =>
+                    candidate.envelopeDigest === pending.envelopeDigest,
+                )?.acceptance ?? null,
+              journal: {
+                kind: candidates.length > 0 ? "indeterminate" : "known_terminal",
+                rsid: record.rsid,
+                sessionBindingId: record.sessionBindingId,
+                envelopeDigest: pending.envelopeDigest,
+                journalRecords: journals,
+                batchTerminal: null,
+                durableJournalVersion: record.sessionVersion,
+                recordedAtMs: nowMs,
+              },
+            };
+            recovered = {
+              ...record,
+              // Keep the exact started lease and pending dispatch fenced. The
+              // retained journal/hold evidence is enough for recovery, but no
+              // resumed transport may replay this ambiguous invocation.
+              evidence: [
+                ...record.evidence.filter(
+                  (candidate) =>
+                    candidate.envelopeDigest !== pending.envelopeDigest,
+                ),
+                evidence,
+              ],
+              normalizedConflictIndex: extendConflictIndex(
+                sessionConflictIndex(record),
+                candidates.map((candidate) =>
+                  conflictScopeDigest(candidate.mutationScopeJcs),
+                ),
+              ),
+            };
+          } catch {
+            return { kind: "recovery_blocked" as const };
+          }
+          const next = nextSessionRecord(stored, record, recovered, nowMs);
+          tx.stage({
+            namespace: GATEWAY_RBP_SESSION_NAMESPACE,
+            key: payload.rsid,
+            value: asJson(next),
+            expect: { kind: "version", version: stored.version },
+          });
+          return { kind: "recovery_blocked" as const };
+        }
         if (
           fence.state !== "open" ||
           fence.revocation !== null ||
           fence.lease?.phase === "started" ||
           (fence.lease?.phase === "reserved" &&
             fence.lease.reserveExpiresAtMs > nowMs) ||
-          record.deviceId !== connection.auth.actor.deviceId ||
-          record.userId !== connection.auth.actor.userId ||
-          record.seatId !== connection.auth.actor.seatId ||
+          recovered.deviceId !== connection.auth.actor.deviceId ||
+          recovered.userId !== connection.auth.actor.userId ||
+          recovered.seatId !== connection.auth.actor.seatId ||
           !sameDurableIdentityAuthority(
             connection.auth,
-            record.identityAuthority,
+            recovered.identityAuthority,
           ) ||
-          record.resumeTokenDigest !== digest(payload.resume_token) ||
-          record.resumeExpiresAtMs <= nowMs ||
-          !record.sessionLifecycle.resumeAllowed
+          recovered.resumeTokenDigest !== digest(payload.resume_token) ||
+          recovered.resumeExpiresAtMs <= nowMs ||
+          !recovered.sessionLifecycle.resumeAllowed
         ) {
           return { kind: "blocked" as const };
         }
-        const acknowledged = applyCumulativeAck(record.sequence, payload.last_rx_seq);
+        const acknowledged = applyCumulativeAck(recovered.sequence, payload.last_rx_seq);
         if (acknowledged.kind === "protocol_fault") {
           throw new Error(`resume cumulative ack rejected: ${acknowledged.reason}`);
         }
@@ -7424,18 +7641,18 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
           type: "resume_complete",
         });
         const disconnectedLifecycle =
-          record.sessionLifecycle.phase === "disconnected"
-            ? record.sessionLifecycle
-            : sessionTransition(record.sessionLifecycle, { type: "connection_lost" });
+          recovered.sessionLifecycle.phase === "disconnected"
+            ? recovered.sessionLifecycle
+            : sessionTransition(recovered.sessionLifecycle, { type: "connection_lost" });
         let sessionLifecycle = sessionTransition(disconnectedLifecycle, {
           type: "resume_requested",
         });
         sessionLifecycle = sessionTransition(sessionLifecycle, { type: "resumed" });
         const resumed: DurableRbpSession = {
-          ...record,
+          ...recovered,
           connectionId: connection.connectionId,
           binding: connection.binding,
-          sessionVersion: record.sessionVersion + 1,
+          sessionVersion: recovered.sessionVersion + 1,
           sequence: acknowledged.state,
           liveDocumentRoute: null,
           connectionLifecycle,
@@ -7492,6 +7709,14 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         return { kind: "reserved" as const, record: next, lease, serialized };
       });
       if (reserved.ok) {
+        if (reserved.value.kind === "recovery_blocked") {
+          throw new GatewayRbpFault(
+            "unavailable",
+            "orphaned dispatch remains durably fenced for recovery",
+            503,
+            1011,
+          );
+        }
         if (reserved.value.kind === "blocked") {
           throw new GatewayRbpFault(
             "auth",
@@ -8669,6 +8894,42 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
           throw new Error("carrier terminal does not match the active invocation");
         }
         const existing = record.evidence.find((candidate) => candidate.envelopeDigest === pending.envelopeDigest);
+        const dispatchReceipt = pending.dispatchReceipt ?? null;
+        const acceptance = envelope.ack !== undefined && envelope.ack >= pending.gatewaySequence
+          ? (() => {
+              if (
+                dispatchReceipt === null ||
+                dispatchReceipt.version !== 1 ||
+                dispatchReceipt.tenantId !== record.tenantId ||
+                dispatchReceipt.invocationId !== pending.invocationId ||
+                dispatchReceipt.correlationId !== pending.invocationId ||
+                dispatchReceipt.intent !== "dispatch"
+              ) {
+                throw new Error("legacy or malformed dispatch receipt cannot authorize terminal acknowledgement");
+              }
+              return {
+                source: "durable_rbp_sequence" as const,
+                receiptVersion: 1 as const,
+                tenantId: dispatchReceipt.tenantId,
+                rsid: record.rsid,
+                sessionBindingId: record.sessionBindingId,
+                acceptedConnectionId: record.connectionId,
+                authorizedSessionVersion: record.sessionVersion,
+                invocationId: dispatchReceipt.invocationId,
+                correlationId: dispatchReceipt.correlationId,
+                proofDigest: dispatchReceipt.proofDigest,
+                routeSnapshotDigest: dispatchReceipt.routeSnapshotDigest,
+                egressEpoch: dispatchReceipt.egressEpoch,
+                leaseTicket: dispatchReceipt.leaseTicket,
+                intent: "dispatch" as const,
+                gatewaySequence: pending.gatewaySequence,
+                cumulativeAck: envelope.ack,
+                envelopeDigest: pending.envelopeDigest,
+                durableSequenceVersion: record.sessionVersion,
+                acceptedAtMs: this.#clock(),
+              };
+            })()
+          : existing?.acceptance ?? null;
         const journals = terminalJournalRecords(pending.journalRecords, envelope);
         const journal: GatewayVerifiedBridgeJournalEvidence | null = journals.length === 0
           ? null
@@ -8679,7 +8940,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
             };
         const evidence: DurableDispatchEvidence = {
           envelopeDigest: pending.envelopeDigest,
-          acceptance: existing?.acceptance ?? null,
+          acceptance,
           journal,
           terminalTruth: durableTerminalTruth(envelope),
         };
@@ -8835,15 +9096,41 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       let pending = record.pending;
       let evidence = [...record.evidence];
       if (pending !== null && envelope.ack !== undefined && envelope.ack >= pending.gatewaySequence) {
+        const receipt = pending.dispatchReceipt ?? null;
+        if (
+          receipt === null ||
+          receipt.version !== 1 ||
+          receipt.tenantId !== record.tenantId ||
+          receipt.invocationId !== pending.invocationId ||
+          receipt.correlationId !== pending.invocationId ||
+          receipt.intent !== "dispatch" ||
+          receipt.proofDigest.length !== 71 ||
+          receipt.routeSnapshotDigest.length !== 71 ||
+          receipt.egressEpoch < 0 ||
+          !Number.isSafeInteger(receipt.egressEpoch) ||
+          receipt.leaseTicket < 1 ||
+          !Number.isSafeInteger(receipt.leaseTicket)
+        ) {
+          throw new Error("legacy or malformed dispatch receipt cannot authorize acknowledgement");
+        }
         const existing = evidence.find(
           (candidate) => candidate.envelopeDigest === pending!.envelopeDigest,
         );
         const acceptance = {
           source: "durable_rbp_sequence" as const,
+          receiptVersion: 1 as const,
+          tenantId: receipt.tenantId,
           rsid: record.rsid,
           sessionBindingId: record.sessionBindingId,
           acceptedConnectionId: record.connectionId,
           authorizedSessionVersion: record.sessionVersion,
+          invocationId: receipt.invocationId,
+          correlationId: receipt.correlationId,
+          proofDigest: receipt.proofDigest,
+          routeSnapshotDigest: receipt.routeSnapshotDigest,
+          egressEpoch: receipt.egressEpoch,
+          leaseTicket: receipt.leaseTicket,
+          intent: "dispatch" as const,
           gatewaySequence: pending.gatewaySequence,
           cumulativeAck: envelope.ack,
           envelopeDigest: pending.envelopeDigest,
