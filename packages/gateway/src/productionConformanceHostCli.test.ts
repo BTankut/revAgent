@@ -6,6 +6,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import {
+  coherentC39RecoveryAudit,
   coherentDocumentContextAudit,
   createProductionConformanceRecoveryAuthority,
   createOrderedConformanceHostShutdown,
@@ -13,6 +14,7 @@ import {
   MAX_DOCUMENT_CONTEXT_OBSERVATION_BYTES,
   type DocumentContextObservationSnapshot,
 } from "./productionConformanceHostCli.js";
+import { GATEWAY_OMITTED_PAYLOAD_RECOVERY_NAMESPACE } from "./omittedPayloadRecovery.js";
 import { GatewayBridgeSessionAuthority } from "./bridgeSession.js";
 import { GatewayResourceAuthority } from "./resourceAuthority.js";
 import { GATEWAY_RECOVERY_NAMESPACE } from "./recoveryAuthority.js";
@@ -42,6 +44,67 @@ const snapshot = (rows: DocumentContextObservationSnapshot["rows"] = [observatio
   Object.freeze({ processEpoch, highWaterOrdinal, rows: Object.freeze(rows) });
 
 const packageRoot = fileURLToPath(new URL("../", import.meta.url));
+
+describe("WP-12 C39 observed recovery audit", () => {
+  const origin = "0197a3c2-0000-7000-8000-000000000901";
+  const recovery = "0197a3c2-0000-7000-8000-000000000902";
+  const binding = "0197a3c2-0000-7000-8000-000000000903";
+  const owner = Object.freeze({ tenantId: "conformance", userId: "user", principalKey: "principal",
+    effectiveMcpSessionId: "mcp", sessionBindingId: binding, sessionBindingVersion: 1,
+    rsid: "rsid", recoveryInvocationId: recovery, originInvocationId: origin,
+    originResultDigest: digest("a") });
+  const observed = (overrides: Record<string, unknown> = {}) => [
+    { namespace: GATEWAY_OMITTED_PAYLOAD_RECOVERY_NAMESPACE, key: origin, value: {
+      schema: GATEWAY_OMITTED_PAYLOAD_RECOVERY_NAMESPACE, recordVersion: 1, tenantId: "conformance",
+      owner: { userId: "user", effectiveMcpSessionId: "mcp", rsid: "rsid", sessionBindingId: binding, sessionVersion: 1 },
+      originInvocationId: origin, originResultDigest: digest("a"), carrierRecoveryInvocationId: recovery,
+      terminalEvidenceDigest: digest("b"), state: "completed", expiresAtMs: 1000,
+      resultReferenceDigest: digest("c"), createdAtMs: 1, updatedAtMs: 2,
+    } },
+    { namespace: "gateway.recovery-chunk/v1", key: "chunk", value: { schemaVersion: "revagent-gateway-recovery/v1", state: "active", owner,
+      bridgeSequence: 4, chunkIndex: 0, kid: "kid", storageKey: digest("d"), plainDigest: digest("e"), resultRefDigest: digest("c"), plainLength: 3, expiresAtMs: 1000 } },
+    { namespace: "gateway.recovery-completion/v1", key: "completion", value: { schemaVersion: "revagent-gateway-recovery/v1", state: "active", owner,
+      refId: "ref", expiresAtMs: 1000, activatedSessionBindingId: binding, activatedSessionBindingVersion: 1 } },
+    { namespace: "gateway_resource_v1", key: "resource", value: { kind: "result_ref", refId: "ref", digest: digest("c"), expiresAtMs: 1000, lifecycle: "active", byteSize: 3,
+      protectedRecovery: { schemaVersion: "revagent-gateway-recovery/v1", owner, kid: "kid", storageKey: digest("d"), plainDigest: digest("a"), resultRefDigest: digest("c"), plainLength: 3, bridgeSequence: 4, chunkIndex: 1, activatedSessionBindingId: binding, activatedSessionBindingVersion: 1 } } },
+    { namespace: "gateway.rbp-session/v2", key: "rsid", value: { rsid: "rsid", tenantId: "conformance", userId: "user", sessionBindingId: binding, sessionVersion: 1,
+      sequence: { lastRxSeq: 5 }, evidence: [{ terminalInvocationId: origin, terminalSessionBindingId: binding, terminalSessionVersion: 1, effectiveMcpSessionId: "mcp", payloadOmittedRecoveryEligible: true, terminalTruth: { state: "completed", resultDigest: digest("a") } }] } },
+    { namespace: "gateway.carrier-ack/v1", key: "ack", value: { schemaVersion: "revagent-gateway-carrier/v1", rsid: "rsid", invocationId: recovery, tenantId: "conformance", effectiveMcpSessionId: "mcp", seq: 4, state: "chunk_durable" } },
+    ...Object.entries(overrides).map(([namespace, value]) => ({ namespace, key: `extra-${namespace}`, value })),
+  ];
+
+  it("emits one redacted row only for one fully correlated active recovery", () => {
+    const result = coherentC39RecoveryAudit({ records: observed(), nowMs: 10 });
+    expect(result.status).toBe("joined");
+    expect(result.rows).toHaveLength(1);
+    expect(result.rows[0]).toMatchObject({ state: "active", originDigest: digest("a"), resultRefDigest: digest("c"), partials: [{ seq: 4, chunkIndex: 0, plainDigest: digest("e"), byteLength: 3, state: "active" }], terminal: { seq: 5, originDigest: digest("a"), state: "completed" } });
+    expect(JSON.stringify(result.rows)).not.toContain('"rsid"');
+    expect(JSON.stringify(result.rows)).not.toContain("principal");
+    expect(JSON.stringify(result.rows)).not.toContain("kid");
+  });
+
+  it("fails closed for partial, ambiguous, expired, or cross-owner joins", () => {
+    const partial = observed().filter((row) => row.namespace !== "gateway.recovery-chunk/v1");
+    expect(coherentC39RecoveryAudit({ records: partial, nowMs: 10 }).rows).toHaveLength(0);
+    const ambiguous = [...observed(), observed().find((row) => row.namespace === "gateway.recovery-completion/v1")!];
+    expect(coherentC39RecoveryAudit({ records: ambiguous, nowMs: 10 }).rows).toHaveLength(0);
+    const expired = observed().map((row) => row.namespace === "gateway.recovery-completion/v1"
+      ? { ...row, value: { ...(row.value as Record<string, unknown>), expiresAtMs: 10 } } : row);
+    expect(coherentC39RecoveryAudit({ records: expired, nowMs: 10 }).rows).toHaveLength(0);
+    const foreign = observed().map((row) => row.namespace === "gateway.recovery-chunk/v1"
+      ? { ...row, value: { ...(row.value as Record<string, unknown>), owner: { ...owner, userId: "other" } } } : row);
+    expect(coherentC39RecoveryAudit({ records: foreign, nowMs: 10 }).rows).toHaveLength(0);
+    const wrongSeq = observed().map((row) => row.namespace === "gateway.carrier-ack/v1"
+      ? { ...row, value: { ...(row.value as Record<string, unknown>), seq: 9 } } : row);
+    expect(coherentC39RecoveryAudit({ records: wrongSeq, nowMs: 10 }).rows).toHaveLength(0);
+    const wrongDigest = observed().map((row) => row.namespace === "gateway_resource_v1"
+      ? { ...row, value: { ...(row.value as Record<string, unknown>), protectedRecovery: { ...((row.value as Record<string, unknown>).protectedRecovery as Record<string, unknown>), plainDigest: digest("f") } } } : row);
+    expect(coherentC39RecoveryAudit({ records: wrongDigest, nowMs: 10 }).rows).toHaveLength(0);
+    const wrongRef = observed().map((row) => row.namespace === "gateway.recovery-completion/v1"
+      ? { ...row, value: { ...(row.value as Record<string, unknown>), refId: "other" } } : row);
+    expect(coherentC39RecoveryAudit({ records: wrongRef, nowMs: 10 }).rows).toHaveLength(0);
+  });
+});
 
 function childExit(child: ReturnType<typeof fork>): Promise<{ readonly code: number | null; readonly signal: NodeJS.Signals | null }> {
   return new Promise((resolve, reject) => {

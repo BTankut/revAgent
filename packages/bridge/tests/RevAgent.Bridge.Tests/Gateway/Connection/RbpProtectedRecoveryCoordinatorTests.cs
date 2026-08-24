@@ -162,13 +162,20 @@ public sealed partial class RbpConnectionCoordinatorTests
         var second = new FakeConnectionCycle(responder.Respond);
         RbpRecoveryCarrierReservation reservation =
             await PrepareRecoveryReservationAsync(store);
-        var coordinator = Coordinator(
+        var observations = new RecordingRecoveryCarrierObservationSink();
+        var coordinator = new RbpConnectionCoordinator(
             new FakeConnectionCycleFactory(first, second),
             store,
             new MutableSessionCatalog(LocalSession(8080, 1000)),
-            clock,
+            new RbpConnectionCoordinatorOptions(
+                new Uri("wss://gateway.revagent.app/bridge/v1"),
+                new RbpHelloProfile("0.1.0", "WS01", "Windows 11",
+                    new[] { "2026.07.26.0" })),
+            new RecoveryDispatcher(reservation),
             new RecordingInboundJournal(),
-            invocationDispatcher: new RecoveryDispatcher(reservation));
+            clock,
+            new FixedRandomSource(0),
+            recoveryCarrierObservationSink: observations);
         using var stop = new CancellationTokenSource();
 
         Task run = coordinator.RunAsync(stop.Token);
@@ -193,6 +200,17 @@ public sealed partial class RbpConnectionCoordinatorTests
         _ = Assert.Single(first.Sent, item => item.Scope == RbpEnvelopeScope.Data);
         _ = Assert.Single(second.Sent, item => item.Scope == RbpEnvelopeScope.Data);
         Assert.Empty((await store.LoadSequenceAsync(reservation.Rsid)).Outbox);
+        Assert.Equal(new[] { RbpRecoveryCarrierObservationPhase.Materialized,
+            RbpRecoveryCarrierObservationPhase.Write,
+            RbpRecoveryCarrierObservationPhase.Materialized,
+            RbpRecoveryCarrierObservationPhase.RestartResend },
+            observations.Rows.Select(row => row.Phase));
+        Assert.All(observations.Rows, row =>
+        {
+            Assert.Equal(reservation.CurrentReservedSequence, row.Sequence);
+            Assert.Matches("^sha256:[0-9a-f]{64}$", row.HashedRecoveryId);
+            Assert.Matches("^sha256:[0-9a-f]{64}$", row.OuterDigest);
+        });
 
         stop.Cancel();
         await run.WaitAsync(TimeSpan.FromSeconds(5));
@@ -264,11 +282,17 @@ public sealed partial class RbpConnectionCoordinatorTests
             envelope.Type == "heartbeat" ? null : responder.Respond(envelope));
         RbpRecoveryCarrierReservation reservation =
             await PrepareRecoveryReservationAsync(store);
-        var coordinator = Coordinator(
+        var observations = new RecordingRecoveryCarrierObservationSink();
+        var coordinator = new RbpConnectionCoordinator(
             new FakeConnectionCycleFactory(cycle), store,
-            new MutableSessionCatalog(LocalSession(8080, 1000)), clock,
-            new RecordingInboundJournal(),
-            invocationDispatcher: new RecoveryDispatcher(reservation));
+            new MutableSessionCatalog(LocalSession(8080, 1000)),
+            new RbpConnectionCoordinatorOptions(
+                new Uri("wss://gateway.revagent.app/bridge/v1"),
+                new RbpHelloProfile("0.1.0", "WS01", "Windows 11",
+                    new[] { "2026.07.26.0" })),
+            new RecoveryDispatcher(reservation), new RecordingInboundJournal(),
+            clock, new FixedRandomSource(0),
+            recoveryCarrierObservationSink: observations);
         using var stop = new CancellationTokenSource();
 
         Task run = coordinator.RunAsync(stop.Token);
@@ -302,6 +326,13 @@ public sealed partial class RbpConnectionCoordinatorTests
             reservation.ResultDigest));
         _ = Assert.Single(cycle.Sent, item => item.Type == "result" &&
             item.Id == reservation.RecoveryInvocationId);
+        RbpRecoveryCarrierObservation acknowledged = observations.Rows.Last();
+        Assert.Equal(RbpRecoveryCarrierObservationPhase.Acknowledged,
+            acknowledged.Phase);
+        Assert.Equal(terminal.Sequence, acknowledged.Sequence);
+        Assert.True(acknowledged.Ordinal > observations.Rows
+            .Where(row => row.Phase == RbpRecoveryCarrierObservationPhase.Write)
+            .Max(row => row.Ordinal));
 
         stop.Cancel();
         await run.WaitAsync(TimeSpan.FromSeconds(5));
@@ -581,5 +612,14 @@ public sealed partial class RbpConnectionCoordinatorTests
             throw new InvalidOperationException(
                 "C39 correlated recovery must not reach the add-in or origin.");
         }
+    }
+
+    private sealed class RecordingRecoveryCarrierObservationSink :
+        IRbpRecoveryCarrierObservationSink
+    {
+        internal List<RbpRecoveryCarrierObservation> Rows { get; } = [];
+
+        public void Observe(RbpRecoveryCarrierObservation observation) =>
+            Rows.Add(observation);
     }
 }

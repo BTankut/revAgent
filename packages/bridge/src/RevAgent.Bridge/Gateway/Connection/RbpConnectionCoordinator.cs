@@ -51,6 +51,8 @@ internal sealed partial class RbpConnectionCoordinator
         _recoveryCarrierMaterializer;
     private readonly Func<CancellationToken, Task>? _beforeRecoveryCarrierWrite;
     private readonly RbpConformanceOmittedOriginObservation _omittedOriginObservation;
+    private readonly IRbpRecoveryCarrierObservationSink
+        _recoveryCarrierObservationSink;
 
     /// <summary>
     /// Bounded, non-secret dispatch trace. The batch path has several silent
@@ -80,6 +82,9 @@ internal sealed partial class RbpConnectionCoordinator
     private readonly object _recoveryCarrierClaimSync = new();
     private readonly HashSet<RecoveryCarrierCycleKey> _recoveryCarrierClaims = new();
     private readonly HashSet<RecoveryTerminalCycleKey> _recoveryTerminalClaims = new();
+    private readonly Dictionary<RecoveryCarrierDigestCycleKey, string>
+        _recoveryCarrierOuterDigests = new();
+    private long _recoveryCarrierObservationOrdinal;
 
     internal RbpConnectionCoordinator(
         IRbpConnectionCycleFactory cycleFactory,
@@ -103,7 +108,8 @@ internal sealed partial class RbpConnectionCoordinator
         RbpProtectedRecoveryCarrierMaterializer?
             recoveryCarrierMaterializer = null,
         Func<CancellationToken, Task>? beforeRecoveryCarrierWrite = null,
-        RbpConformanceOmittedOriginObservation? omittedOriginObservation = null)
+        RbpConformanceOmittedOriginObservation? omittedOriginObservation = null,
+        IRbpRecoveryCarrierObservationSink? recoveryCarrierObservationSink = null)
     {
         _batchCoordinator = batchCoordinator;
         _carrierProducer = carrierProducer;
@@ -121,6 +127,8 @@ internal sealed partial class RbpConnectionCoordinator
         _beforeRecoveryCarrierWrite = beforeRecoveryCarrierWrite;
         _omittedOriginObservation = omittedOriginObservation ??
             RbpConformanceOmittedOriginObservation.Never;
+        _recoveryCarrierObservationSink = recoveryCarrierObservationSink ??
+            RbpRecoveryCarrierObservationSink.None;
         _catalog = catalog ?? throw new ArgumentNullException(nameof(catalog));
         _options = options ??
             throw new ArgumentNullException(nameof(options));

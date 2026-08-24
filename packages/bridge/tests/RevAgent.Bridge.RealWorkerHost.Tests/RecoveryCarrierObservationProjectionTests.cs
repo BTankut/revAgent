@@ -1,0 +1,97 @@
+using System.Reflection;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
+using Xunit;
+
+namespace RevAgent.Bridge.RealWorkerHost.Tests;
+
+public sealed class RecoveryCarrierObservationProjectionTests
+{
+    private const string Digest =
+        "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+    [Fact]
+    public void TestHostRingRetainsOnlyBoundedOrderedHashOnlyRows()
+    {
+        Type ringType = HostAssembly.GetType(
+            "RevAgent.Bridge.RealWorkerHost.Program+RecoveryCarrierObservationRing",
+            throwOnError: true)!;
+        object ring = Activator.CreateInstance(ringType,
+            BindingFlags.Instance | BindingFlags.NonPublic,
+            binder: null, args: new object[] { 2, 4096 }, culture: null)!;
+        MethodInfo observe = ringType.GetMethod("Observe",
+            BindingFlags.Instance | BindingFlags.Public)!;
+        MethodInfo snapshot = ringType.GetMethod("Snapshot",
+            BindingFlags.Instance | BindingFlags.NonPublic)!;
+        for (long ordinal = 1; ordinal <= 3; ordinal++)
+        {
+            observe.Invoke(ring, new[] { Observation("Write", ordinal) });
+        }
+
+        object[] rows = Assert.IsType<object[]>(snapshot.Invoke(ring, null));
+        Assert.Equal(2, rows.Length);
+        string json = JsonSerializer.Serialize(rows);
+        using JsonDocument document = JsonDocument.Parse(json);
+        Assert.Equal(2L, document.RootElement[0].GetProperty("ordinal").GetInt64());
+        Assert.Equal(3L, document.RootElement[1].GetProperty("ordinal").GetInt64());
+        Assert.Equal(Digest, document.RootElement[0].GetProperty("outerDigest").GetString());
+        Assert.DoesNotContain("payload", json, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("rsid", json, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void ProductionSinkIsClosedNoOp()
+    {
+        Type sinkType = BridgeAssembly.GetType(
+            "RevAgent.Bridge.Gateway.Connection.RbpRecoveryCarrierObservationSink",
+            throwOnError: true)!;
+        object sink = sinkType.GetProperty("None",
+            BindingFlags.Static | BindingFlags.NonPublic)!.GetValue(null)!;
+        MethodInfo observe = sinkType.GetMethod("Observe",
+            BindingFlags.Instance | BindingFlags.Public)!;
+
+        Exception? exception = Record.Exception(() =>
+            observe.Invoke(sink, new[] { Observation("Acknowledged", 1) }));
+        Assert.Null(exception);
+    }
+
+    [Fact]
+    public void RecoveryIdentityUsesTheTypedC39ObservationDomain()
+    {
+        Type type = BridgeAssembly.GetType(
+            "RevAgent.Bridge.Gateway.Connection.RbpRecoveryCarrierObservation",
+            throwOnError: true)!;
+        MethodInfo hash = type.GetMethod("HashRecoveryId",
+            BindingFlags.Static | BindingFlags.NonPublic)!;
+        const string recoveryId = "0197a3c2-0000-7000-8000-000000000901";
+        string actual = Assert.IsType<string>(hash.Invoke(null,
+            new object[] { recoveryId }));
+        string expected = "sha256:" + Convert.ToHexString(SHA256.HashData(
+            Encoding.UTF8.GetBytes(
+                "revagent/c39-carrier-observation/v1\0" + recoveryId)))
+            .ToLowerInvariant();
+        string wrongDomain = "sha256:" + Convert.ToHexString(SHA256.HashData(
+            Encoding.UTF8.GetBytes(recoveryId))).ToLowerInvariant();
+        Assert.Equal(expected, actual);
+        Assert.NotEqual(wrongDomain, actual);
+    }
+
+    private static object Observation(string phase, long ordinal)
+    {
+        Type type = BridgeAssembly.GetType(
+            "RevAgent.Bridge.Gateway.Connection.RbpRecoveryCarrierObservation",
+            throwOnError: true)!;
+        Type phaseType = BridgeAssembly.GetType(
+            "RevAgent.Bridge.Gateway.Connection.RbpRecoveryCarrierObservationPhase",
+            throwOnError: true)!;
+        return Activator.CreateInstance(type, new object[]
+        {
+            Enum.Parse(phaseType, phase), Digest, ordinal, Digest, ordinal,
+        })!;
+    }
+
+    private static Assembly HostAssembly => Assembly.Load("RevAgent.Bridge.RealWorkerHost");
+
+    private static Assembly BridgeAssembly => Assembly.Load("revagent-bridge");
+}

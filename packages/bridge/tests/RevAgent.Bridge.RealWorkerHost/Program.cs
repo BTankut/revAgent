@@ -30,13 +30,19 @@ internal static class Program
 {
     private const string TestProtectionScheme = "wp12-test-only/v1";
     private const int MaxControlLineBytes = 65_536;
+    private const int MaxRecoveryCarrierObservations = 64;
+    private const int MaxRecoveryCarrierObservationBytes = 16 * 1024;
 
     public static async Task<int> Main(string[] args)
     {
         try
         {
             Options options = Options.Parse(args);
-            await using WorkerGatewayRuntime runtime = Compose(options);
+            var recoveryObservations = new RecoveryCarrierObservationRing(
+                MaxRecoveryCarrierObservations,
+                MaxRecoveryCarrierObservationBytes);
+            await using WorkerGatewayRuntime runtime = Compose(options,
+                recoveryObservations);
             using var cancellation = new CancellationTokenSource();
             Task run = runtime.RunAsync(cancellation.Token);
             await Console.Out.WriteLineAsync(JsonSerializer.Serialize(new
@@ -46,7 +52,7 @@ internal static class Program
                 contract = "wp12-real-worker-host/v1",
                 controlVersion = 1,
                 maxControlLineBytes = MaxControlLineBytes,
-                actions = new[] { "shutdown" },
+                actions = new[] { "read_recovery_observations", "shutdown" },
                 pid = Environment.ProcessId,
                 bindings = new[] { options.Binding },
                 state_root_redacted = true,
@@ -55,16 +61,47 @@ internal static class Program
                 external_endpoint = false,
             })).ConfigureAwait(false);
 
-            string? command = await Console.In.ReadLineAsync().ConfigureAwait(false);
-            if (command is null || Encoding.UTF8.GetByteCount(command) > MaxControlLineBytes)
-                throw new InvalidOperationException("test host control is missing or exceeds its fixed bound");
-            using JsonDocument control = JsonDocument.Parse(command);
-            JsonElement root = control.RootElement;
-            if (root.ValueKind != JsonValueKind.Object || !root.TryGetProperty("controlVersion", out JsonElement version) || version.GetInt32() != 1 ||
-                !root.TryGetProperty("id", out JsonElement id) || id.ValueKind != JsonValueKind.String || string.IsNullOrWhiteSpace(id.GetString()) ||
-                !root.TryGetProperty("action", out JsonElement action) || action.GetString() != "shutdown")
-                throw new InvalidOperationException("test host accepts only schema-valid shutdown control");
-            await Console.Out.WriteLineAsync(JsonSerializer.Serialize(new { controlVersion = 1, id = id.GetString(), ok = true, result = new { stopping = true } })).ConfigureAwait(false);
+            while (true)
+            {
+                string? command = await Console.In.ReadLineAsync()
+                    .ConfigureAwait(false);
+                if (command is null || Encoding.UTF8.GetByteCount(command) >
+                    MaxControlLineBytes)
+                    throw new InvalidOperationException(
+                        "test host control is missing or exceeds its fixed bound");
+                using JsonDocument control = JsonDocument.Parse(command);
+                JsonElement root = control.RootElement;
+                if (root.ValueKind != JsonValueKind.Object ||
+                    !root.TryGetProperty("controlVersion", out JsonElement version) ||
+                    version.GetInt32() != 1 ||
+                    !root.TryGetProperty("id", out JsonElement id) ||
+                    id.ValueKind != JsonValueKind.String ||
+                    string.IsNullOrWhiteSpace(id.GetString()) ||
+                    !root.TryGetProperty("action", out JsonElement action) ||
+                    action.ValueKind != JsonValueKind.String)
+                    throw new InvalidOperationException(
+                        "test host control is invalid");
+                if (action.GetString() == "read_recovery_observations" &&
+                    root.EnumerateObject().Count() == 3)
+                {
+                    await Console.Out.WriteLineAsync(JsonSerializer.Serialize(new
+                    {
+                        controlVersion = 1, id = id.GetString(), ok = true,
+                        result = new { observations = recoveryObservations.Snapshot() },
+                    })).ConfigureAwait(false);
+                    continue;
+                }
+                if (action.GetString() != "shutdown" ||
+                    root.EnumerateObject().Count() != 3)
+                    throw new InvalidOperationException(
+                        "test host control action is not allowed");
+                await Console.Out.WriteLineAsync(JsonSerializer.Serialize(new
+                {
+                    controlVersion = 1, id = id.GetString(), ok = true,
+                    result = new { stopping = true },
+                })).ConfigureAwait(false);
+                break;
+            }
             cancellation.Cancel();
             try { await run.ConfigureAwait(false); }
             catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { }
@@ -77,7 +114,9 @@ internal static class Program
         }
     }
 
-    private static WorkerGatewayRuntime Compose(Options options)
+    private static WorkerGatewayRuntime Compose(
+        Options options,
+        IRbpRecoveryCarrierObservationSink recoveryCarrierObservationSink)
     {
         var layout = new BridgeInstallLayout(options.InstallRoot, options.StateRoot);
         Directory.CreateDirectory(layout.StateRoot);
@@ -138,7 +177,9 @@ internal static class Program
                     OnLifecycleTimeoutObservation: ObserveLifecycleTimeout,
                     OnDocumentContextObservation: ObserveDocumentContext,
                     CarrierProducer: carrier,
-                    OmittedOriginObservation: omittedOriginObservation));
+                    OmittedOriginObservation: omittedOriginObservation,
+                    RecoveryCarrierObservationSink:
+                        recoveryCarrierObservationSink));
             return new WorkerGatewayRuntime(coordinator, catalog, journal, carrierProducer: carrier);
         }
         catch
@@ -283,6 +324,82 @@ internal static class Program
         {
             // Test-harness stderr is non-authoritative.
         }
+    }
+
+    /// <summary>
+    /// Test-host-only bounded diagnostic retention.  It is intentionally not
+    /// reachable from production composition, configuration, or MCP.
+    /// </summary>
+    private sealed class RecoveryCarrierObservationRing :
+        IRbpRecoveryCarrierObservationSink
+    {
+        private readonly object _gate = new();
+        private readonly Queue<RbpRecoveryCarrierObservation> _rows = new();
+        private readonly int _maxRows;
+        private readonly int _maxBytes;
+        private int _bytes;
+
+        internal RecoveryCarrierObservationRing(int maxRows, int maxBytes)
+        {
+            _maxRows = maxRows;
+            _maxBytes = maxBytes;
+        }
+
+        public void Observe(RbpRecoveryCarrierObservation observation)
+        {
+            try
+            {
+                string phase = RbpRecoveryCarrierObservation.PhaseLabel(
+                    observation.Phase);
+                if (!IsDiagnosticSha256(observation.HashedRecoveryId) ||
+                    !IsDiagnosticSha256(observation.OuterDigest) ||
+                    observation.Sequence < 1 || observation.Ordinal < 1 ||
+                    phase is not ("materialized" or "write" or
+                        "restart_resend" or "ack")) return;
+                int size = Encoding.UTF8.GetByteCount(phase) +
+                    Encoding.UTF8.GetByteCount(observation.HashedRecoveryId) +
+                    Encoding.UTF8.GetByteCount(observation.OuterDigest) + 32;
+                if (size > _maxBytes) return;
+                lock (_gate)
+                {
+                    while (_rows.Count > 0 &&
+                        (_rows.Count >= _maxRows || _bytes + size > _maxBytes))
+                    {
+                        RbpRecoveryCarrierObservation removed = _rows.Dequeue();
+                        _bytes -= RowBytes(removed);
+                    }
+                    if (_rows.Count >= _maxRows || _bytes + size > _maxBytes)
+                        return;
+                    _rows.Enqueue(observation);
+                    _bytes += size;
+                }
+            }
+            catch
+            {
+                // An observer cannot affect carrier send/ack behavior.
+            }
+        }
+
+        internal object[] Snapshot()
+        {
+            lock (_gate)
+            {
+                return _rows.Select(row => new
+                {
+                    phase = RbpRecoveryCarrierObservation.PhaseLabel(row.Phase),
+                    hashedRecoveryId = row.HashedRecoveryId,
+                    sequence = row.Sequence,
+                    outerDigest = row.OuterDigest,
+                    ordinal = row.Ordinal,
+                }).Cast<object>().ToArray();
+            }
+        }
+
+        private static int RowBytes(RbpRecoveryCarrierObservation row) =>
+            Encoding.UTF8.GetByteCount(
+                RbpRecoveryCarrierObservation.PhaseLabel(row.Phase)) +
+            Encoding.UTF8.GetByteCount(row.HashedRecoveryId) +
+            Encoding.UTF8.GetByteCount(row.OuterDigest) + 32;
     }
 
     private static ResolvedBridgeConfiguration Configuration(Options options) => new(

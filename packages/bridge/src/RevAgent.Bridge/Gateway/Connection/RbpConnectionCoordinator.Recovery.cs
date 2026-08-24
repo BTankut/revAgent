@@ -18,6 +18,10 @@ internal sealed partial class RbpConnectionCoordinator
         RbpRecoveryCarrierReservation reservation)
     {
         if (!context.IsDispatchAllowed(reservation.Rsid)) return;
+        // The durable send-start timestamp is retained across reconnect.  The
+        // phase may already be send_started after transport loss, so phase
+        // alone is not a truthful resend discriminator.
+        bool restartResend = reservation.SendStartedAtMilliseconds is not null;
 
         RbpRecoveryCarrierReservation started = await _journal
             .MarkRecoveryCarrierSendStartedAsync(
@@ -67,6 +71,9 @@ internal sealed partial class RbpConnectionCoordinator
             {
                 string outerDigest = "sha256:" + Convert.ToHexString(
                     SHA256.HashData(outerBytes)).ToLowerInvariant();
+                ObserveRecoveryCarrier(context,
+                    RbpRecoveryCarrierObservationPhase.Materialized, started,
+                    outerDigest);
                 bool confirmed = await _journal
                     .ConfirmRecoveryCarrierMaterializationAsync(
                         started.RecoveryInvocationId,
@@ -83,6 +90,11 @@ internal sealed partial class RbpConnectionCoordinator
                 // until this cycle closes even if the seam aborts before any
                 // socket byte can be emitted.
                 retainClaim = true;
+                ObserveRecoveryCarrier(context,
+                    restartResend
+                        ? RbpRecoveryCarrierObservationPhase.RestartResend
+                        : RbpRecoveryCarrierObservationPhase.Write, started,
+                    outerDigest);
                 if (_beforeRecoveryCarrierWrite is { } beforeWrite)
                 {
                     await beforeWrite(context.Token).ConfigureAwait(false);
@@ -138,6 +150,8 @@ internal sealed partial class RbpConnectionCoordinator
             if (applied is { Phase: RbpRecoveryCarrierPhase.Completed or
                 RbpRecoveryCarrierPhase.Reserved })
             {
+                ObserveRecoveryCarrierAcknowledgement(context, applied,
+                    acknowledgement.Sequence);
                 ReleaseRecoveryCarrierClaims(context, acknowledgement.Rsid,
                     applied.RecoveryInvocationId, acknowledgement.Sequence);
             }
@@ -180,6 +194,8 @@ internal sealed partial class RbpConnectionCoordinator
             }
             if (applied?.State == "confirmed")
             {
+                ObserveRecoveryCarrierAcknowledgement(context,
+                    applied.RecoveryInvocationId, applied.FinalSequence);
                 ReleaseRecoveryTerminalClaims(context, acknowledgement.Rsid,
                     applied.RecoveryInvocationId, acknowledgement.Sequence);
             }
@@ -276,6 +292,9 @@ internal sealed partial class RbpConnectionCoordinator
                 // second replay authority beside the v9 terminal commitment.
                 string outerDigest = "sha256:" + Convert.ToHexString(
                     SHA256.HashData(outerBytes)).ToLowerInvariant();
+                ObserveRecoveryCarrier(context,
+                    RbpRecoveryCarrierObservationPhase.Materialized,
+                    plan.RecoveryInvocationId, plan.FinalSequence, outerDigest);
                 if (!string.Equals(Rfc8785Json.Sha256Digest(
                         materialized.Answer.Payload), plan.TerminalDigest,
                         StringComparison.Ordinal) ||
@@ -289,6 +308,9 @@ internal sealed partial class RbpConnectionCoordinator
                     !context.IsDispatchAllowed(plan.Rsid)) return;
 
                 retainClaim = true;
+                ObserveRecoveryCarrier(context,
+                    RbpRecoveryCarrierObservationPhase.Write,
+                    plan.RecoveryInvocationId, plan.FinalSequence, outerDigest);
                 await context.Cycle.SendAsync(envelope, context.Token)
                     .ConfigureAwait(false);
             }
@@ -346,6 +368,85 @@ internal sealed partial class RbpConnectionCoordinator
                 ReferenceEquals(claim.Context, context));
             _recoveryTerminalClaims.RemoveWhere(claim =>
                 ReferenceEquals(claim.Context, context));
+            _recoveryCarrierOuterDigests.Keys
+                .Where(key => ReferenceEquals(key.Context, context))
+                .ToList()
+                .ForEach(key => _recoveryCarrierOuterDigests.Remove(key));
+        }
+    }
+
+    private void ObserveRecoveryCarrier(
+        ConnectionCycleContext context,
+        RbpRecoveryCarrierObservationPhase phase,
+        RbpRecoveryCarrierReservation reservation,
+        string outerDigest)
+        => ObserveRecoveryCarrier(context, phase,
+            reservation.RecoveryInvocationId,
+            reservation.CurrentReservedSequence, outerDigest);
+
+    private void ObserveRecoveryCarrier(
+        ConnectionCycleContext context,
+        RbpRecoveryCarrierObservationPhase phase,
+        string recoveryInvocationId,
+        long sequence,
+        string outerDigest)
+    {
+        try
+        {
+            var key = new RecoveryCarrierDigestCycleKey(context,
+                recoveryInvocationId, sequence);
+            lock (_recoveryCarrierClaimSync)
+            {
+                _recoveryCarrierOuterDigests[key] = outerDigest;
+            }
+            long ordinal = Interlocked.Increment(
+                ref _recoveryCarrierObservationOrdinal);
+            _recoveryCarrierObservationSink.Observe(
+                new RbpRecoveryCarrierObservation(phase,
+                    RbpRecoveryCarrierObservation.HashRecoveryId(
+                        recoveryInvocationId), sequence, outerDigest, ordinal));
+        }
+        catch
+        {
+            // Observation is not a transport or durability authority.
+        }
+    }
+
+    private void ObserveRecoveryCarrierAcknowledgement(
+        ConnectionCycleContext context,
+        RbpRecoveryCarrierReservation reservation,
+        long acknowledgedSequence)
+        => ObserveRecoveryCarrierAcknowledgement(context,
+            reservation.RecoveryInvocationId, acknowledgedSequence);
+
+    private void ObserveRecoveryCarrierAcknowledgement(
+        ConnectionCycleContext context,
+        string recoveryInvocationId,
+        long acknowledgedSequence)
+    {
+        try
+        {
+            string? outerDigest;
+            lock (_recoveryCarrierClaimSync)
+            {
+                var key = new RecoveryCarrierDigestCycleKey(context,
+                    recoveryInvocationId, acknowledgedSequence);
+                _recoveryCarrierOuterDigests.TryGetValue(key, out outerDigest);
+                _recoveryCarrierOuterDigests.Remove(key);
+            }
+            if (outerDigest is null) return;
+            long ordinal = Interlocked.Increment(
+                ref _recoveryCarrierObservationOrdinal);
+            _recoveryCarrierObservationSink.Observe(
+                new RbpRecoveryCarrierObservation(
+                    RbpRecoveryCarrierObservationPhase.Acknowledged,
+                    RbpRecoveryCarrierObservation.HashRecoveryId(
+                        recoveryInvocationId),
+                    acknowledgedSequence, outerDigest, ordinal));
+        }
+        catch
+        {
+            // An observer cannot affect acknowledgement application.
         }
     }
 
@@ -392,4 +493,9 @@ internal sealed partial class RbpConnectionCoordinator
         string RecoveryInvocationId,
         long ReservedSequence,
         int PlanVersion);
+
+    private sealed record RecoveryCarrierDigestCycleKey(
+        ConnectionCycleContext Context,
+        string RecoveryInvocationId,
+        long Sequence);
 }
