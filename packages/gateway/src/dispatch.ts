@@ -2422,7 +2422,7 @@ export class GatewayDispatcher {
     }
 
       phase = "serialized_execution";
-    return this.#serialize(context.rsid, async () => {
+      return await this.#serialize(context.rsid, async () => {
       const recovery = this.#recoveryAuthority;
       const window = await recovery.acquireInvocationWindow({
         tenantId: auth.actor.tenantId,
