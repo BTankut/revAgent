@@ -30,6 +30,7 @@ import {
   GATEWAY_RBP_UNREGISTER_NAMESPACE,
   GatewayBridgeSessionAuthority,
   type BridgeConnectionChannel,
+  type DispatchTransportHandoff,
 } from "./bridgeSession.js";
 import type {
   GatewayAtomicBatchExecutorRequest,
@@ -38,6 +39,7 @@ import type {
   GatewayJsonValue,
 } from "./dispatch.js";
 import { gatewayUuidV7 } from "./identifiers.js";
+import { createEffectiveMcpRequestScopeV1 } from "./invocationContext.js";
 import { createPreProductionRuntimeAdapters } from "./preProductionRuntimeAdapters.js";
 import {
   GatewayRecoveryAuthority,
@@ -201,6 +203,52 @@ function channel(
   };
 }
 
+function queuedDispatchChannel(input: {
+  readonly queued: Deferred<AbortSignal>;
+  readonly releaseRevalidate: Deferred<void>;
+  readonly cancelled: Deferred<void>;
+}): TestChannel {
+  const frames: RbpEnvelope[] = [];
+  return {
+    frames,
+    async send(serialized): Promise<void> {
+      frames.push(JSON.parse(serialized) as RbpEnvelope);
+    },
+    sendDispatchStarted(serialized: string, handoff: DispatchTransportHandoff) {
+      const started = deferred();
+      const completion = deferred();
+      const controller = new AbortController();
+      void (async () => {
+        input.queued.resolve(controller.signal);
+        try {
+          await input.releaseRevalidate.promise;
+          await handoff.revalidate(controller.signal);
+          if (controller.signal.aborted) throw new Error("test dispatch cancelled");
+          frames.push(JSON.parse(serialized) as RbpEnvelope);
+          started.resolve();
+          completion.resolve();
+        } catch (error) {
+          const failure = error instanceof Error ? error : new Error(String(error));
+          started.reject(failure);
+          completion.reject(failure);
+        }
+      })();
+      void started.promise.catch(() => undefined);
+      void completion.promise.catch(() => undefined);
+      return {
+        started: started.promise,
+        completion: completion.promise,
+        async cancel(): Promise<boolean> {
+          controller.abort();
+          input.cancelled.resolve();
+          return await handoff.cancelBeforeStart();
+        },
+      };
+    },
+    async close(): Promise<void> {},
+  };
+}
+
 function registeredFrame(channel: TestChannel): SessionRegisteredEnvelope {
   const frame = channel.frames.find(
     (candidate): candidate is SessionRegisteredEnvelope =>
@@ -279,6 +327,12 @@ function request(
   invocationId = id(),
 ): GatewayExecutorRequest {
   const args: GatewayJsonObject = { probe: "wp02-unregister" };
+  const effectiveMcpRequestScope = createEffectiveMcpRequestScopeV1({
+    principalKey: `${TENANT_ID}:${USER_ID}`,
+    transportMcpSessionId: "mcp-unregister",
+    identityMcpSessionId: null,
+    nowMs: Date.now(),
+  });
   return {
     toolName: mutating ? "core.set_parameter" : "core.get_status",
     toolVersion: "1.0.0",
@@ -296,6 +350,7 @@ function request(
       gatewaySessionId: "gateway-unregister",
       oauthClientId: "oauth-unregister",
       mcpSessionId: "mcp-unregister",
+      effectiveMcpRequestScope,
       rsid,
       toolName: mutating ? "core.set_parameter" : "core.get_status",
       toolVersion: "1.0.0",
@@ -1425,22 +1480,34 @@ describe("GatewayBridgeSessionAuthority durable unregister", () => {
 
   it("cancels a reserved mutation as known-not-dispatched without creating a hold", async () => {
     const store = new ControlledStoreHarness();
+    const queued = deferred<AbortSignal>();
+    const releaseRevalidate = deferred();
+    const cancelled = deferred();
+    const senderChannel = queuedDispatchChannel({ queued, releaseRevalidate, cancelled });
     const sender = new GatewayBridgeSessionAuthority(store.createPort(), identity());
     const revoker = new GatewayBridgeSessionAuthority(store.createPort(), identity());
     authorities.push(sender, revoker);
     await sender.open();
     await revoker.open();
-    const session = await register(sender);
+    const opened = await openConnection(sender, { channel: senderChannel });
+    await sender.receive(opened.connectionId, registration());
+    const registered = registeredFrame(senderChannel);
+    const session = { connectionId: opened.connectionId, channel: senderChannel, rsid: registered.payload.rsid };
     const revokerConnection = await openConnection(revoker);
-    const reservation = store.holdAfterCommit(leaseTransition("dispatch", "reserved"));
 
     const execution = sender.createExecutor().execute(request(session.rsid, true));
-    await reservation.entered;
+    const signal = await Promise.race([
+      queued.promise,
+      new Promise<AbortSignal>((_, reject) => setTimeout(() => reject(new Error("dispatch did not queue")), 1_000)),
+    ]);
+    expect(signal.aborted).toBe(false);
     await revoker.receive(
       revokerConnection.connectionId,
       unregister(session.rsid),
     );
-    reservation.release();
+    releaseRevalidate.resolve();
+    await cancelled.promise;
+    expect(signal.aborted).toBe(true);
 
     await expect(execution).resolves.toMatchObject({
       state: "failed",
