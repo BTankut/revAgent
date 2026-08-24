@@ -47,6 +47,8 @@ internal sealed partial class RbpConnectionCoordinator
     /// </summary>
     private readonly RbpBatchCoordinator? _batchCoordinator;
     private readonly RbpArtifactCarrierProducer? _carrierProducer;
+    private readonly RbpProtectedRecoveryCarrierMaterializer
+        _recoveryCarrierMaterializer;
 
     /// <summary>
     /// Bounded, non-secret dispatch trace. The batch path has several silent
@@ -92,7 +94,9 @@ internal sealed partial class RbpConnectionCoordinator
         Func<RbpLifecycleTimeoutObservation, ValueTask>?
             onLifecycleTimeoutObservation = null,
         Func<RbpDocumentContextObservation, ValueTask>?
-            onDocumentContextObservation = null)
+            onDocumentContextObservation = null,
+        RbpProtectedRecoveryCarrierMaterializer?
+            recoveryCarrierMaterializer = null)
     {
         _batchCoordinator = batchCoordinator;
         _carrierProducer = carrierProducer;
@@ -105,6 +109,8 @@ internal sealed partial class RbpConnectionCoordinator
         _cycleFactory = cycleFactory ??
             throw new ArgumentNullException(nameof(cycleFactory));
         _journal = journal ?? throw new ArgumentNullException(nameof(journal));
+        _recoveryCarrierMaterializer = recoveryCarrierMaterializer ??
+            new RbpProtectedRecoveryCarrierMaterializer(_journal);
         _catalog = catalog ?? throw new ArgumentNullException(nameof(catalog));
         _options = options ??
             throw new ArgumentNullException(nameof(options));
@@ -371,6 +377,8 @@ internal sealed partial class RbpConnectionCoordinator
             context.MarkSteady(_clock.MonotonicMilliseconds);
             context.StartHeartbeatLoop();
             await FlushPendingRetransmitAsync(context)
+                .ConfigureAwait(false);
+            await ScheduleActiveRecoveryCarriersAsync(context)
                 .ConfigureAwait(false);
 
             Task completed = await Task.WhenAny(

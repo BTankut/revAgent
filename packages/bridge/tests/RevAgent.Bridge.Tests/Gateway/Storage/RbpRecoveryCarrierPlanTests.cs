@@ -137,6 +137,39 @@ public sealed class RbpRecoveryCarrierPlanTests
     }
 
     [Fact]
+    public async Task ReservedRecoveryWaitsForEarlierGenericAcknowledgementInsteadOfTombstoning()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        await using RbpJournalStore store = OpenStore(directory);
+        (RbpInvocationIdentity origin, byte[] raw, string digest) =
+            await PersistRecoverableTerminalAsync(
+                store, "0197a3c2-0000-7000-8000-0000000000d5");
+        RbpQueueOutboundResult generic = await store.QueueOutboundDataAsync(
+            origin.Rsid, new RbpOutboundDataDraft(
+                "result", "generic-before-recovery", RbpJournalTestData.Json("{}")));
+        Assert.Equal(1, generic.Envelope!.Sequence);
+        var request = new RbpRecoveryCarrierReservationRequest(
+            origin.Rsid, "0197a3c2-0000-7000-8000-0000000000d6",
+            origin.InvocationId, digest, raw.Length,
+            new RbpRecoveryCarrierHeader("application/json", "base64"),
+            "sha256:" + new string('d', 64), RbpJournalTestData.Now.AddHours(1));
+        await EnsureRecoveryExecutingAsync(store, request);
+        RbpRecoveryCarrierReservation reserved =
+            await store.PersistProtectedRecoveryTerminalAndReserveAsync(request);
+        Assert.Equal(2, reserved.CurrentReservedSequence);
+
+        Assert.Equal(RbpRecoveryCarrierPhase.Reserved,
+            (await store.MarkRecoveryCarrierSendStartedAsync(
+                request.RecoveryInvocationId)).Phase);
+        _ = await store.ApplyResumeAcknowledgementAsync(
+            origin.Rsid, 1, RbpJournalTestData.Now.AddHours(1));
+        Assert.Equal(RbpRecoveryCarrierPhase.SendStarted,
+            (await store.MarkRecoveryCarrierSendStartedAsync(
+                request.RecoveryInvocationId)).Phase);
+        Assert.Empty((await store.LoadSequenceAsync(origin.Rsid)).Outbox);
+    }
+
+    [Fact]
     public async Task ExactProtectedTerminalReservesCurrentSequenceWithoutOutboxPayload()
     {
         using var directory = new RbpJournalTestDirectory();

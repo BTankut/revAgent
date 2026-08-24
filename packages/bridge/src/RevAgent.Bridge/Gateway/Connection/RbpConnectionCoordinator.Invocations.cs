@@ -248,6 +248,13 @@ internal sealed partial class RbpConnectionCoordinator
             .ConfigureAwait(false);
         try
         {
+            if (answer.RecoveryReservation is { } recovery)
+            {
+                await SendRecoveryCarrierAsync(context, recovery)
+                    .ConfigureAwait(false);
+                return;
+            }
+
             if (answer.Prefixes is not null)
             {
                 foreach (RbpInvocationAnswer prefix in answer.Prefixes)

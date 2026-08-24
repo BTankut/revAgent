@@ -419,6 +419,10 @@ internal sealed partial class RbpConnectionCoordinator
         {
             IReadOnlyList<RbpSessionAcknowledgement> acknowledgements =
                 ParseHeartbeatAcknowledgements(envelope);
+            await ApplyRecoveryCarrierAcknowledgementsAsync(
+                    context,
+                    acknowledgements)
+                .ConfigureAwait(false);
             RbpHeartbeatFence fence = flight.Fence with
             {
                 Acknowledgements = acknowledgements,
@@ -452,6 +456,9 @@ internal sealed partial class RbpConnectionCoordinator
                         context.Token)
                     .ConfigureAwait(false);
             }
+
+            await ScheduleActiveRecoveryCarriersAsync(context)
+                .ConfigureAwait(false);
 
             context.CompleteHeartbeatFlight(flight);
         }
