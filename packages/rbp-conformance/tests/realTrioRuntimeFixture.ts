@@ -13,6 +13,8 @@ import {
   publicGatewayControl,
   startRealTrioSupervisor,
   type RealTrioBinding,
+  type RealTrioDocumentContextCursorRow,
+  type RealTrioDocumentContextSnapshot,
   type RealTrioDocumentContextFailureState,
   type RealTrioSupervisorResult,
 } from "../src/realTrioSupervisor.js";
@@ -152,6 +154,9 @@ export interface RealTrioDocumentContextAudit {
 interface RealTrioDocumentContextCorrelation {
   readonly rsidHash: `sha256:${string}`;
   readonly sequence: number;
+  /** Selected journal ordinal; never infer this from an array index. */
+  readonly sendCursor: string;
+  readonly generation: number;
   readonly sendTranscriptIndex: number;
   readonly sendRecordedAt: string | null;
 }
@@ -503,6 +508,7 @@ export function correlatedDocumentContextSendSince(
       if (next === expected.length) {
         if (canonicalHash === null || canonicalSequence === null) return null;
         return Object.freeze({ rsidHash: canonicalHash, sequence: canonicalSequence,
+          sendCursor: String(index + 1), generation: 1,
           sendTranscriptIndex: index, sendRecordedAt: typeof record.at === "string" ? record.at : null });
       }
     } catch { return null; }
@@ -510,19 +516,127 @@ export function correlatedDocumentContextSendSince(
   return null;
 }
 
+function documentObservation(row: RealTrioDocumentContextCursorRow): Record<string, unknown> | null {
+  try {
+    const value = JSON.parse(row.line) as unknown;
+    return isObject(value) && value.event === "bridge.document_context_observation" ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Captures the only pre-control observation that may participate in a later
+ * lifecycle: the last retained, otherwise-unmatched probe.  It is an opaque
+ * cursor row, not a transcript position and not a payload identity.
+ */
+export function unmatchedDocumentContextProbe(
+  snapshot: RealTrioDocumentContextSnapshot,
+): RealTrioDocumentContextCursorRow | null {
+  const candidate = snapshot.rows.at(-1);
+  if (candidate === undefined) return null;
+  const probe = documentObservation(candidate);
+  if (probe === null || probe.stage !== "probe" || probe.outcome !== "started" ||
+      !isSha256(probe.rsidHash) ||
+      !(probe.sequence === null || (Number.isSafeInteger(probe.sequence) && Number(probe.sequence) >= 1))) return null;
+  for (const row of snapshot.rows.slice(0, -1)) {
+    const prior = documentObservation(row);
+    if (prior !== null && prior.rsidHash === probe.rsidHash) return null;
+  }
+  return candidate;
+}
+
+/**
+ * Cursor-native lifecycle selection. `rows` must be the exact result of one
+ * `since(controlCursor, generation)` call. An immediately pre-control probe
+ * is admitted only when supplied as the separate snapshot row.
+ */
+export function correlatedDocumentContextSendFromCursor(
+  rows: readonly RealTrioDocumentContextCursorRow[],
+  generation: number,
+  precedingProbe: RealTrioDocumentContextCursorRow | null,
+): RealTrioDocumentContextCorrelation | null {
+  if (!Number.isSafeInteger(generation) || generation < 1) return null;
+  const prefix = precedingProbe === null ? null : documentObservation(precedingProbe);
+  if (prefix !== null && (prefix.stage !== "probe" || prefix.outcome !== "started" ||
+      !isSha256(prefix.rsidHash) ||
+      !(prefix.sequence === null || (Number.isSafeInteger(prefix.sequence) && Number(prefix.sequence) >= 1)))) return null;
+  const expected = prefix === null
+    ? [["probe", "started"], ["snapshot", "ready"], ["queue", "durably_queued"], ["send", "sent"]] as const
+    : [["snapshot", "ready"], ["queue", "durably_queued"], ["send", "sent"]] as const;
+  let canonicalHash: `sha256:${string}` | null = prefix === null ? null : prefix.rsidHash as `sha256:${string}`;
+  let canonicalSequence: number | null = prefix === null || prefix.sequence === null ? null : Number(prefix.sequence);
+  for (let index = 0; index < expected.length; index += 1) {
+    const row = rows[index];
+    if (row === undefined || !/^[1-9][0-9]*$/u.test(row.cursor)) return null;
+    const value = documentObservation(row);
+    const [stage, outcome] = expected[index]!;
+    if (value === null || value.stage !== stage || value.outcome !== outcome ||
+        !isSha256(value.rsidHash) ||
+        !(value.sequence === null || (Number.isSafeInteger(value.sequence) && Number(value.sequence) >= 1))) return null;
+    if (canonicalHash === null) canonicalHash = value.rsidHash;
+    else if (canonicalHash !== value.rsidHash) return null;
+    const sequence = value.sequence === null ? null : Number(value.sequence);
+    if (sequence !== null) {
+      if (canonicalSequence === null) canonicalSequence = sequence;
+      else if (canonicalSequence !== sequence) return null;
+    }
+    if ((stage === "queue" || stage === "send") && sequence === null) return null;
+    if (stage === "send") {
+      if (canonicalHash === null || canonicalSequence === null) return null;
+      return Object.freeze({
+        rsidHash: canonicalHash,
+        sequence: canonicalSequence,
+        sendCursor: row.cursor,
+        generation,
+        // This non-authoritative compatibility field is never used by the
+        // cursor-native runtime path.
+        sendTranscriptIndex: index,
+        sendRecordedAt: row.at.length === 0 ? null : row.at,
+      });
+    }
+  }
+  return null;
+}
+
+function cursorSinceOrThrow(input: {
+  readonly supervisor: RealTrioSupervisorResult;
+  readonly cursor: string;
+  readonly generation: number;
+}): readonly RealTrioDocumentContextCursorRow[] {
+  const before = input.supervisor.readDocumentContextSnapshot();
+  if (before.generation !== input.generation) {
+    throw new Error("real trio document-context generation changed before cursor query");
+  }
+  const result = input.supervisor.readDocumentContextSince(input.cursor, input.generation);
+  const after = input.supervisor.readDocumentContextSnapshot();
+  if (after.generation !== input.generation) {
+    throw new Error("real trio document-context generation changed during cursor query");
+  }
+  if (result.state !== "ok" || result.generation !== input.generation) {
+    throw new Error(`real trio document-context cursor query failed closed: ${result.state}`);
+  }
+  return result.rows;
+}
+
 async function waitForDocumentContextSend(input: {
   readonly supervisor: RealTrioSupervisorResult;
-  readonly transcriptFloor: number;
+  readonly controlCursor: string;
+  readonly generation: number;
+  readonly precedingProbe: RealTrioDocumentContextCursorRow | null;
   readonly timeoutMs?: number;
-}): Promise<void> {
+}): Promise<RealTrioDocumentContextCorrelation> {
   const deadline = Date.now() + (input.timeoutMs ?? DOCUMENT_CONTEXT_WATCHER_TIMEOUT_MS);
   for (;;) {
     if (input.supervisor.readDocumentContextFailureState().childExited) {
       throw new Error("real trio child exited before document-context send");
     }
-    if (correlatedDocumentContextSendSince(
-      input.supervisor.readDocumentContextDiagnostics(), input.transcriptFloor,
-    ) !== null) return;
+    const expected = correlatedDocumentContextSendFromCursor(
+      cursorSinceOrThrow({ supervisor: input.supervisor, cursor: input.controlCursor, generation: input.generation }),
+      input.generation,
+      input.precedingProbe,
+    );
+    if (expected !== null) return expected;
     if (Date.now() >= deadline) {
       throw new Error("real trio document-context stages were not ordered through send");
     }
@@ -552,6 +666,23 @@ export function hasDurableDocumentContextHeartbeatAckSince(
           value.rsidHash !== expected.rsidHash || value.sequence !== expected.sequence) return false;
       acknowledged = true;
     } catch { return false; }
+  }
+  return acknowledged;
+}
+
+/** Cursor-native ACK check: exact later rows only, never an index slice. */
+export function hasDurableDocumentContextHeartbeatAckFromCursor(
+  rows: readonly RealTrioDocumentContextCursorRow[],
+  expected: RealTrioDocumentContextCorrelation,
+): boolean {
+  let acknowledged = false;
+  for (const row of rows) {
+    const value = documentObservation(row);
+    if (value === null) return false;
+    if (acknowledged || value.stage !== "ack" || value.outcome !== "durably_acknowledged" ||
+        !isSha256(value.rsidHash) || !Number.isSafeInteger(value.sequence) || Number(value.sequence) < 1 ||
+        value.rsidHash !== expected.rsidHash || Number(value.sequence) !== expected.sequence) return false;
+    acknowledged = true;
   }
   return acknowledged;
 }
@@ -588,7 +719,6 @@ export function gatewayAuditBaseline(audit: unknown): RealTrioGatewayAuditBaseli
 
 async function waitForPostRouteDocumentContextHeartbeatAck(input: {
   readonly supervisor: RealTrioSupervisorResult;
-  readonly transcriptFloor: number;
   readonly expected: RealTrioDocumentContextCorrelation;
   readonly timeoutMs?: number;
 }): Promise<void> {
@@ -597,8 +727,9 @@ async function waitForPostRouteDocumentContextHeartbeatAck(input: {
     if (input.supervisor.readDocumentContextFailureState().childExited) {
       throw new Error("real trio child exited before post-route heartbeat acknowledgement");
     }
-    if (hasDurableDocumentContextHeartbeatAckSince(
-      input.supervisor.readDocumentContextDiagnostics(), input.transcriptFloor, input.expected,
+    if (hasDurableDocumentContextHeartbeatAckFromCursor(
+      cursorSinceOrThrow({ supervisor: input.supervisor, cursor: input.expected.sendCursor, generation: input.expected.generation }),
+      input.expected,
     )) return;
     if (Date.now() >= deadline) {
       throw new Error("real trio did not durably acknowledge document context after route persistence");
@@ -786,25 +917,25 @@ export async function startRealTrioRuntimeFixture(
     const controlAudit = documentContextControlAudit(await supervisor.fixtureControl("apply_document_context", {
       event: realTrioFixtureDocumentContextEvent(),
     }));
+    // Capture exactly at the acknowledged control boundary. Its final,
+    // unmatched probe (if any) is carried separately; all later lifecycle and
+    // ACK checks use opaque cursor `since` queries, never array lengths.
+    const controlAckSnapshot = supervisor.readDocumentContextSnapshot();
+    const precedingProbe = unmatchedDocumentContextProbe(controlAckSnapshot);
     timeline.push("control_ack");
     const gatewayBaseline = gatewayAuditBaseline(await supervisor.readRealCaseAudit());
     if (gatewayBaseline === null) throw new Error("real trio Gateway audit baseline is unavailable");
-    // Capture immediately after control completion: historical valid sends
-    // cannot establish this controlled case's route correlation.
-    const transcriptFloor = supervisor.readDocumentContextDiagnostics().length;
     // This probe is value-free and must succeed before any public Gateway
     // route can qualify. The regular 15 s C# watcher is the only forwarder.
     failureReason = "stage_timeout";
-    await waitForDocumentContextSend({
+    const expected = await waitForDocumentContextSend({
       supervisor,
-      transcriptFloor,
+      controlCursor: controlAckSnapshot.highWaterCursor,
+      generation: controlAckSnapshot.generation,
+      precedingProbe,
       timeoutMs: options.documentContextTimeoutMs,
     });
     timeline.push("document_sent");
-    const expected = correlatedDocumentContextSendSince(
-      supervisor.readDocumentContextDiagnostics(), transcriptFloor,
-    );
-    if (expected === null) throw new Error("real trio document-context send lacks strict route correlation");
     failureReason = "ack_failure";
     const counts = probeRealTrioFixtureDocumentContext(
       await supervisor.fixtureControl("snapshot_evidence"),
@@ -826,14 +957,13 @@ export async function startRealTrioRuntimeFixture(
     failureReason = "ack_failure";
     await waitForPostRouteDocumentContextHeartbeatAck({
       supervisor,
-      transcriptFloor,
       expected,
       timeoutMs: options.documentContextTimeoutMs,
     });
     timeline.push("heartbeat_ack");
     const finalAudit = await supervisor.readRealCaseAudit();
-    if (!hasDurableDocumentContextHeartbeatAckSince(
-      supervisor.readDocumentContextDiagnostics(), transcriptFloor, expected,
+    if (!hasDurableDocumentContextHeartbeatAckFromCursor(
+      cursorSinceOrThrow({ supervisor, cursor: expected.sendCursor, generation: expected.generation }), expected,
     ) || !hasGatewayAcceptedDocumentContextRoute(finalAudit, expected, gatewayBaseline)) {
       throw new Error("real trio document-context proof changed before north dispatch");
     }
@@ -877,8 +1007,8 @@ export async function startRealTrioRuntimeFixture(
       documentContextAudit,
       verifyNorthDispatchFence: async (): Promise<void> => {
         const audit = await supervisor.readRealCaseAudit();
-        if (!hasDurableDocumentContextHeartbeatAckSince(
-          supervisor.readDocumentContextDiagnostics(), transcriptFloor, expected,
+        if (!hasDurableDocumentContextHeartbeatAckFromCursor(
+          cursorSinceOrThrow({ supervisor, cursor: expected.sendCursor, generation: expected.generation }), expected,
         ) || !hasGatewayAcceptedDocumentContextRoute(audit, expected, gatewayBaseline)) {
           throw new Error("real trio north dispatch fence rejected stale route evidence");
         }

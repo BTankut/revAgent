@@ -29,6 +29,14 @@ export const REAL_TRIO_FAILURE_DIAGNOSTICS_SCHEMA =
   "rbp-real-trio-failure-diagnostics/v1" as const;
 const MAX_REAL_TRIO_DIAGNOSTIC_RECORDS = 16;
 const MAX_REAL_TRIO_READINESS_TRACE = 64;
+/**
+ * The cursor journal is deliberately smaller than the child transcript.  It
+ * retains only admitted, redacted document-context observations, never raw
+ * stderr, and its cursor is a decimal BigInt rather than a wrapping array
+ * index.
+ */
+export const MAX_REAL_TRIO_DOCUMENT_CONTEXT_ROWS = 16;
+export const MAX_REAL_TRIO_DOCUMENT_CONTEXT_ROW_BYTES = 2 * 1024;
 export const MAX_REAL_TRIO_CONTROL_BYTES = 64 * 1024;
 export const MAX_REAL_TRIO_CONTROL_TIMEOUT_MS = 15_000;
 /** Test-host-only cadence; the RBP/1 hello_ack remains 15 seconds on wire. */
@@ -83,6 +91,13 @@ export interface RealTrioSupervisorResult {
   readonly readDocumentContextDiagnostics: () => readonly ProcessTranscriptRecord[];
   /** Fixed document-context stage sequence for failure artifacts only. */
   readonly readDocumentContextFailureStages: () => readonly ProcessTranscriptRecord[];
+  /** Atomic bounded snapshot of redacted, admitted observations. */
+  readonly readDocumentContextSnapshot: () => RealTrioDocumentContextSnapshot;
+  /** Exact rows strictly later than a prior snapshot high-water cursor. */
+  readonly readDocumentContextSince: (
+    cursor: string,
+    generation: number,
+  ) => RealTrioDocumentContextSince;
   /**
    * Bounded child state for a document-context failure artifact. This returns
    * no endpoint, command, control, or document values.
@@ -92,6 +107,33 @@ export interface RealTrioSupervisorResult {
   readonly restartBridge: () => Promise<RealTrioSessionReadiness>;
   readonly stop: () => Promise<void>;
 }
+
+export interface RealTrioDocumentContextCursorRow {
+  /** Opaque, non-wrapping decimal cursor.  Callers must not derive order. */
+  readonly cursor: string;
+  readonly line: string;
+  readonly at: string;
+}
+
+export interface RealTrioDocumentContextSnapshot {
+  readonly generation: number;
+  readonly lowWaterCursor: string;
+  readonly highWaterCursor: string;
+  readonly rows: readonly RealTrioDocumentContextCursorRow[];
+}
+
+export type RealTrioDocumentContextSince =
+  | Readonly<{
+    readonly state: "ok";
+    readonly generation: number;
+    readonly highWaterCursor: string;
+    readonly rows: readonly RealTrioDocumentContextCursorRow[];
+  }>
+  | Readonly<{
+    readonly state: "cursor_expired" | "generation_changed" | "gap";
+    readonly generation: number;
+    readonly highWaterCursor: string;
+  }>;
 
 export interface RealTrioSessionReadiness {
   readonly rsid: string;
@@ -310,6 +352,136 @@ export function redactBridgeTranscript(
     }
   }
   return Object.freeze(retained);
+}
+
+/**
+ * Monotonic cursor carrier for a single real C# child generation.  Source
+ * identity, not a payload hash, is the de-duplication key: repeated
+ * heartbeats that happen to have identical redacted payloads are distinct,
+ * while re-reading the same child stderr line is inert.
+ */
+export class RealTrioDocumentContextCursorJournal {
+  private generation = 1;
+  private highWater = 0n;
+  private rows: RealTrioDocumentContextCursorRow[] = [];
+  private seenObjectLines = new WeakSet<object>();
+  private seenOffsets = new Set<string>();
+
+  public ingest(transcript: readonly ProcessTranscriptRecord[]): void {
+    for (const record of transcript) {
+      if (record.stream !== "stderr") continue;
+      const source = this.sourceIdentity(record);
+      if (source === null) continue;
+      // Mark before parsing: one malformed/oversize physical source line can
+      // never become a valid observation on a later re-read.
+      if (source.kind === "offset") {
+        if (this.seenOffsets.has(source.value)) continue;
+        this.seenOffsets.add(source.value);
+      } else {
+        if (this.seenObjectLines.has(source.value)) continue;
+        this.seenObjectLines.add(source.value);
+      }
+      if (Buffer.byteLength(record.line, "utf8") > MAX_REAL_TRIO_CONTROL_BYTES) continue;
+      const redacted = redactBridgeTranscript([record]);
+      const retained = redacted[0];
+      if (retained === undefined ||
+          Buffer.byteLength(retained.line, "utf8") > MAX_REAL_TRIO_DOCUMENT_CONTEXT_ROW_BYTES) continue;
+      try {
+        const parsed = JSON.parse(retained.line) as unknown;
+        if (!isObject(parsed) ||
+            parsed.event !== "bridge.document_context_observation") continue;
+      } catch {
+        continue;
+      }
+      this.highWater += 1n;
+      this.rows.push(Object.freeze({
+        cursor: this.highWater.toString(10),
+        line: retained.line,
+        at: retained.at,
+      }));
+      if (this.rows.length > MAX_REAL_TRIO_DOCUMENT_CONTEXT_ROWS) {
+        this.rows.splice(0, this.rows.length - MAX_REAL_TRIO_DOCUMENT_CONTEXT_ROWS);
+      }
+    }
+  }
+
+  /** A child process restart invalidates all cursors from the prior epoch. */
+  public restartGeneration(): void {
+    if (this.generation === Number.MAX_SAFE_INTEGER) {
+      throw new Error("real trio document-context generation exhausted");
+    }
+    this.generation += 1;
+    this.highWater = 0n;
+    this.rows = [];
+    this.seenObjectLines = new WeakSet<object>();
+    this.seenOffsets = new Set<string>();
+  }
+
+  public snapshot(transcript: readonly ProcessTranscriptRecord[]): RealTrioDocumentContextSnapshot {
+    this.ingest(transcript);
+    const lowWater = this.rows.length === 0
+      ? this.highWater + 1n
+      : BigInt(this.rows[0]!.cursor);
+    return Object.freeze({
+      generation: this.generation,
+      lowWaterCursor: lowWater.toString(10),
+      highWaterCursor: this.highWater.toString(10),
+      rows: Object.freeze([...this.rows]),
+    });
+  }
+
+  public since(
+    cursor: string,
+    generation: number,
+    transcript: readonly ProcessTranscriptRecord[],
+  ): RealTrioDocumentContextSince {
+    this.ingest(transcript);
+    const highWaterCursor = this.highWater.toString(10);
+    if (!Number.isSafeInteger(generation) || generation !== this.generation) {
+      return Object.freeze({ state: "generation_changed", generation: this.generation, highWaterCursor });
+    }
+    if (!/^(?:0|[1-9][0-9]*)$/u.test(cursor)) {
+      return Object.freeze({ state: "gap", generation: this.generation, highWaterCursor });
+    }
+    const requested = BigInt(cursor);
+    const lowWater = this.rows.length === 0
+      ? this.highWater + 1n
+      : BigInt(this.rows[0]!.cursor);
+    if (requested < lowWater - 1n) {
+      return Object.freeze({ state: "cursor_expired", generation: this.generation, highWaterCursor });
+    }
+    if (requested > this.highWater) {
+      return Object.freeze({ state: "gap", generation: this.generation, highWaterCursor });
+    }
+    const rows = this.rows.filter((row) => BigInt(row.cursor) > requested);
+    // The ring must represent every valid observation after the requested
+    // cursor. Anything else is a failure, never a clamp or historic search.
+    if (rows.length > 0 && BigInt(rows[0]!.cursor) !== requested + 1n) {
+      return Object.freeze({ state: "gap", generation: this.generation, highWaterCursor });
+    }
+    return Object.freeze({
+      state: "ok",
+      generation: this.generation,
+      highWaterCursor,
+      rows: Object.freeze(rows),
+    });
+  }
+
+  private sourceIdentity(record: ProcessTranscriptRecord):
+    | Readonly<{ readonly kind: "offset"; readonly value: string }>
+    | Readonly<{ readonly kind: "object"; readonly value: object }>
+    | null {
+    const offset = (record as ProcessTranscriptRecord & { readonly sourceOffset?: unknown }).sourceOffset;
+    if (typeof offset === "string" && /^(?:0|[1-9][0-9]*)$/u.test(offset)) {
+      return Object.freeze({ kind: "offset", value: `${record.stream}:${offset}` });
+    }
+    if (typeof offset === "number" && Number.isSafeInteger(offset) && offset >= 0) {
+      return Object.freeze({ kind: "offset", value: `${record.stream}:${offset}` });
+    }
+    return typeof record === "object" && record !== null
+      ? Object.freeze({ kind: "object", value: record })
+      : null;
+  }
 }
 
 /** Retains the fixed document-stage progression while excluding all values. */
@@ -826,6 +998,7 @@ export async function startRealTrioSupervisor(input: RealTrioSupervisorLaunch): 
           expectedReadinessFields: input.bridgeExpected,
           requiredActions: ["shutdown"],
         });
+        const documentContextJournal = new RealTrioDocumentContextCursorJournal();
         let sessionReadiness: RealTrioSessionReadiness;
         try {
           sessionReadiness = await pollRbpSessionV2Readiness({
@@ -855,6 +1028,7 @@ export async function startRealTrioSupervisor(input: RealTrioSupervisorLaunch): 
           if (stoppedBridge.killEscalated || stoppedBridge.exitCode === 0) {
             throw new Error("real trio crash boundary did not observe an actual worker termination");
           }
+          documentContextJournal.restartGeneration();
           bridge = await harness.startJsonl({
             componentId: "bridge_worker",
             command: replaceTokens({ ...fixtureBoundWorker, executable: bridgeExecutable }, {
@@ -915,20 +1089,13 @@ export async function startRealTrioSupervisor(input: RealTrioSupervisorLaunch): 
         sessionReadiness,
         fixtureControl,
         readRealCaseAudit,
-        readDocumentContextDiagnostics: () => redactBridgeTranscript(
-          bridge.transcript,
-        ).filter((record) => {
-          try {
-            const value = JSON.parse(record.line) as unknown;
-            return isObject(value) &&
-              value.event === "bridge.document_context_observation";
-          } catch {
-            return false;
-          }
-        }),
-        readDocumentContextFailureStages: () => redactDocumentContextFailureStages(
-          bridge.transcript,
-        ),
+        readDocumentContextSnapshot: () => documentContextJournal.snapshot(bridge.transcript),
+        readDocumentContextSince: (cursor: string, generation: number) =>
+          documentContextJournal.since(cursor, generation, bridge.transcript),
+        readDocumentContextDiagnostics: () => documentContextJournal.snapshot(bridge.transcript).rows
+          .map((row) => Object.freeze({ stream: "stderr" as const, at: row.at, line: row.line })),
+        readDocumentContextFailureStages: () => documentContextJournal.snapshot(bridge.transcript).rows
+          .map((row) => Object.freeze({ stream: "stderr" as const, at: row.at, line: row.line })),
         readDocumentContextFailureState: () => Object.freeze({
           childExited: gateway.process.exitCode !== null ||
             fixture.process.exitCode !== null || bridge.process.exitCode !== null,

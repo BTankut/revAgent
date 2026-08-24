@@ -8,19 +8,75 @@ import {
   REAL_TRIO_RUNTIME_FAILURE_SCHEMA,
   RealTrioDocumentContextFailureError,
   correlatedDocumentContextSendSince,
+  correlatedDocumentContextSendFromCursor,
   createRealTrioDocumentContextFailure,
   gatewayAuditBaseline,
   hasGatewayAcceptedDocumentContextRoute,
   hasDurableDocumentContextHeartbeatAckSince,
+  hasDurableDocumentContextHeartbeatAckFromCursor,
   hasRealTrioLiveDocumentRoute,
   probeRealTrioFixtureDocumentContext,
   realTrioWorkerBuildPlan,
   realTrioFixtureDocumentContextEvent,
   writeRealTrioDocumentContextFailure,
   writeRealTrioRuntimeFailure,
+  unmatchedDocumentContextProbe,
 } from "./realTrioRuntimeFixture.js";
 
 describe("WP-12 real-trio fixture document route gate", () => {
+  const cursorRow = (cursor: string, stage: string, outcome: string, sequence: number | null,
+    hash = `sha256:${"a".repeat(64)}`) => ({ cursor, at: "2026-08-24T00:00:01.000Z", line: JSON.stringify({
+      event: "bridge.document_context_observation", stage, outcome, rsidHash: hash, sequence,
+    }) });
+
+  it("uses cursor rows for strict control lifecycle and later ACK, never transcript indices", () => {
+    const hash = `sha256:${"a".repeat(64)}`;
+    const probe = cursorRow("4", "probe", "started", null, hash);
+    const selected = correlatedDocumentContextSendFromCursor([
+      cursorRow("5", "snapshot", "ready", null, hash),
+      cursorRow("6", "queue", "durably_queued", 9, hash),
+      cursorRow("7", "send", "sent", 9, hash),
+    ], 2, probe);
+    expect(selected).toMatchObject({ generation: 2, sendCursor: "7", rsidHash: hash, sequence: 9 });
+    expect(selected).not.toBeNull();
+    expect(hasDurableDocumentContextHeartbeatAckFromCursor([
+      cursorRow("8", "ack", "durably_acknowledged", 9, hash),
+    ], selected!)).toBe(true);
+    expect(hasDurableDocumentContextHeartbeatAckFromCursor([
+      cursorRow("8", "ack", "durably_acknowledged", 8, hash),
+    ], selected!)).toBe(false);
+  });
+
+  it("rejects cursor lifecycle wrong order, hash, sequence, and duplicate rows", () => {
+    const hash = `sha256:${"a".repeat(64)}`;
+    const flow = [
+      cursorRow("1", "probe", "started", null, hash),
+      cursorRow("2", "snapshot", "ready", null, hash),
+      cursorRow("3", "queue", "durably_queued", 3, hash),
+      cursorRow("4", "send", "sent", 3, hash),
+    ];
+    expect(correlatedDocumentContextSendFromCursor(flow, 1, null)).not.toBeNull();
+    expect(correlatedDocumentContextSendFromCursor([flow[1]!, flow[0]!, flow[2]!, flow[3]!], 1, null)).toBeNull();
+    expect(correlatedDocumentContextSendFromCursor([
+      flow[0]!, flow[1]!, cursorRow("3", "queue", "durably_queued", 3, `sha256:${"b".repeat(64)}`), flow[3]!,
+    ], 1, null)).toBeNull();
+    expect(correlatedDocumentContextSendFromCursor([
+      flow[0]!, flow[1]!, flow[2]!, cursorRow("4", "send", "sent", 4, hash),
+    ], 1, null)).toBeNull();
+    expect(correlatedDocumentContextSendFromCursor([
+      flow[0]!, flow[1]!, flow[2]!, flow[2]!, flow[3]!,
+    ], 1, null)).toBeNull();
+  });
+
+  it("uses only a final unmatched probe from the atomic pre-control snapshot", () => {
+    const hash = `sha256:${"a".repeat(64)}`;
+    expect(unmatchedDocumentContextProbe({ generation: 1, lowWaterCursor: "1", highWaterCursor: "1", rows: [
+      cursorRow("1", "probe", "started", null, hash),
+    ] })?.cursor).toBe("1");
+    expect(unmatchedDocumentContextProbe({ generation: 1, lowWaterCursor: "1", highWaterCursor: "2", rows: [
+      cursorRow("1", "probe", "started", null, hash), cursorRow("2", "probe", "started", null, hash),
+    ] })).toBeNull();
+  });
   it("restores the real C# carrier from its committed lock before isolated build and publish", () => {
     const plan = realTrioWorkerBuildPlan("C:/temp/wp12-real-trio");
     const output = path.join("C:/temp/wp12-real-trio", "publish");

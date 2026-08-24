@@ -12,6 +12,8 @@ import {
   pollRbpSessionV2Readiness,
   realTrioFailureDiagnostics,
   RealTrioSessionReadinessPollError,
+  RealTrioDocumentContextCursorJournal,
+  MAX_REAL_TRIO_DOCUMENT_CONTEXT_ROWS,
   readRbpSessionV2Readiness,
   realTrioCredentialRequest,
   redactBridgeTranscript,
@@ -20,6 +22,81 @@ import {
 } from "../src/realTrioSupervisor.js";
 
 const worker = (binding: "wss" | "streamable_http_sse"): readonly string[] => ["--binding", binding];
+
+function cursorObservation(stage: string, outcome: string, sequence: number, sourceOffset: number, hash = `sha256:${"a".repeat(64)}`) {
+  return {
+    stream: "stderr" as const,
+    at: "2026-08-24T00:00:00.000Z",
+    sourceOffset,
+    line: JSON.stringify({
+      contractVersion: "revagent.rbp-document-context-observation/v1",
+      event: "bridge.document_context_observation",
+      stage,
+      outcome,
+      rsidHash: hash,
+      payloadHash: `sha256:${"b".repeat(64)}`,
+      sequence,
+    }),
+  };
+}
+
+describe("WP-12 C38 monotonic document-context cursor journal", () => {
+  it("rolls over more than sixteen observations without borrowing expired history", () => {
+    const journal = new RealTrioDocumentContextCursorJournal();
+    const records = Array.from({ length: MAX_REAL_TRIO_DOCUMENT_CONTEXT_ROWS + 4 }, (_, index) =>
+      cursorObservation("ack", "durably_acknowledged", index + 1, index));
+    const snapshot = journal.snapshot(records);
+    expect(snapshot.rows).toHaveLength(MAX_REAL_TRIO_DOCUMENT_CONTEXT_ROWS);
+    expect(snapshot.highWaterCursor).toBe(String(MAX_REAL_TRIO_DOCUMENT_CONTEXT_ROWS + 4));
+    expect(journal.since("0", snapshot.generation, records).state).toBe("cursor_expired");
+    const since = journal.since(String(4), snapshot.generation, records);
+    expect(since).toMatchObject({ state: "ok", highWaterCursor: String(MAX_REAL_TRIO_DOCUMENT_CONTEXT_ROWS + 4) });
+    expect(since.state === "ok" && since.rows[0]?.cursor).toBe("5");
+  });
+
+  it("deduplicates a re-read source line but gives identical real events distinct cursors", () => {
+    const journal = new RealTrioDocumentContextCursorJournal();
+    const one = cursorObservation("ack", "durably_acknowledged", 1, 11);
+    const two = cursorObservation("ack", "durably_acknowledged", 1, 12);
+    const first = journal.snapshot([one, one, two]);
+    expect(first.rows.map((row) => row.cursor)).toEqual(["1", "2"]);
+    const reread = journal.snapshot([one, two]);
+    expect(reread.highWaterCursor).toBe("2");
+  });
+
+  it("fails closed for expiry, malformed cursor, and generation changes", () => {
+    const journal = new RealTrioDocumentContextCursorJournal();
+    const rows = Array.from({ length: MAX_REAL_TRIO_DOCUMENT_CONTEXT_ROWS + 1 }, (_, index) =>
+      cursorObservation("ack", "durably_acknowledged", index + 1, index));
+    const snapshot = journal.snapshot(rows);
+    expect(journal.since("00", snapshot.generation, rows).state).toBe("gap");
+    expect(journal.since("0", snapshot.generation, rows).state).toBe("cursor_expired");
+    journal.restartGeneration();
+    expect(journal.since(snapshot.highWaterCursor, snapshot.generation, []).state).toBe("generation_changed");
+  });
+
+  it("never admits malformed, partial, or oversize source lines and keeps snapshot memory bounded", () => {
+    const journal = new RealTrioDocumentContextCursorJournal();
+    const valid = cursorObservation("ack", "durably_acknowledged", 1, 1);
+    const malformed = { stream: "stderr" as const, at: "", sourceOffset: 2, line: "{partial" };
+    const oversize = { stream: "stderr" as const, at: "", sourceOffset: 3, line: "x".repeat(70 * 1024) };
+    const snapshot = journal.snapshot([valid, malformed, oversize]);
+    expect(snapshot.rows).toHaveLength(1);
+    expect(snapshot.rows[0]!.line.length).toBeLessThanOrEqual(2 * 1024);
+  });
+
+  it("returns an atomic snapshot and exact later rows when an append races a read", () => {
+    const journal = new RealTrioDocumentContextCursorJournal();
+    const first = cursorObservation("probe", "started", 1, 1);
+    const before = journal.snapshot([first]);
+    const second = cursorObservation("snapshot", "ready", 1, 2);
+    const since = journal.since(before.highWaterCursor, before.generation, [first, second]);
+    const after = journal.snapshot([first, second]);
+    expect(since).toMatchObject({ state: "ok", generation: before.generation });
+    expect(since.state === "ok" && since.rows.map((row) => row.cursor)).toEqual(["2"]);
+    expect(after.highWaterCursor).toBe("2");
+  });
+});
 
 describe("WP-12 real trio bridge endpoint derivation", () => {
   it.each([
