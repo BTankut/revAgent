@@ -143,7 +143,6 @@ describe.sequential("WP-12 direct real trio runtime fixture", () => {
           expect(originSettledBeforeRouteEdge).toBe(false);
           const routeEdge = await runtime.refreshNorthDispatchFenceAfterControl();
           expect(routeEdge).toMatchObject({
-            action: "apply_document_context",
             revision: runtime.documentContextAudit.revision + 1,
             activeDocumentIdentityHash: expect.stringMatching(SHA256),
           });

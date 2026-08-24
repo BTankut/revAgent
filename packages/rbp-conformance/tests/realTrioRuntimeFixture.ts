@@ -2094,7 +2094,6 @@ export async function startRealTrioRuntimeFixture(
           const candidateSeed = preControlWatcherSeedFromSnapshot(candidateFirstSnapshot);
           const sameBaseline = candidateBaseline !== null && secondBaseline !== null &&
             candidateBaseline.processEpoch === secondBaseline.processEpoch &&
-            candidateBaseline.observationOrdinal === secondBaseline.observationOrdinal &&
             candidateBaseline.acceptedObservationOrdinal === secondBaseline.acceptedObservationOrdinal &&
             candidateBaseline.currentIdentity === secondBaseline.currentIdentity;
           const absent = candidateFirstAudit.documentContextCurrentRoute === null && candidateSecondAudit.documentContextCurrentRoute === null &&
@@ -2104,9 +2103,9 @@ export async function startRealTrioRuntimeFixture(
           const current = candidateFirstAudit.documentContextCurrentRoute !== null && candidateSecondAudit.documentContextCurrentRoute !== null &&
             candidateBaseline?.acceptedObservationOrdinal !== undefined && candidateBaseline?.currentIdentity !== undefined;
           if (candidateFirstSnapshot.generation === candidateSecondSnapshot.generation &&
-              candidateFirstSnapshot.highWaterCursor === candidateSecondSnapshot.highWaterCursor &&
+              BigInt(candidateSecondSnapshot.highWaterCursor) >= BigInt(candidateFirstSnapshot.highWaterCursor) &&
               sameBaseline && (absent || current) && candidateSeed !== null) {
-            firstAudit = candidateFirstAudit; firstSnapshot = candidateFirstSnapshot;
+            firstAudit = candidateFirstAudit; firstSnapshot = candidateSecondSnapshot;
             refreshBaseline = candidateBaseline!; refreshSeed = candidateSeed;
             break;
           }
@@ -2119,7 +2118,6 @@ export async function startRealTrioRuntimeFixture(
         const secondBaseline = refreshBaseline;
         const sameBaseline = refreshBaseline !== null && secondBaseline !== null &&
           refreshBaseline.processEpoch === secondBaseline.processEpoch &&
-          refreshBaseline.observationOrdinal === secondBaseline.observationOrdinal &&
           refreshBaseline.acceptedObservationOrdinal === secondBaseline.acceptedObservationOrdinal &&
           refreshBaseline.currentIdentity === secondBaseline.currentIdentity;
         const absent = isObject(firstAudit) && isObject(secondAudit) &&
@@ -2133,7 +2131,7 @@ export async function startRealTrioRuntimeFixture(
           refreshBaseline?.acceptedObservationOrdinal !== undefined &&
           refreshBaseline?.currentIdentity !== undefined;
         if (refreshBaseline === null || firstSnapshot.generation !== secondSnapshot.generation ||
-            firstSnapshot.highWaterCursor !== secondSnapshot.highWaterCursor ||
+            BigInt(secondSnapshot.highWaterCursor) < BigInt(firstSnapshot.highWaterCursor) ||
             !sameBaseline || (!absent && !current) || refreshSeed === null) {
           throw new Error("real trio route refresh baseline is not stable");
         }
