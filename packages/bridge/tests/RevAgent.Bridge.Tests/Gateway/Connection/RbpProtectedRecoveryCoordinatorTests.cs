@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -250,6 +251,87 @@ public sealed partial class RbpConnectionCoordinatorTests
     }
 
     [Fact]
+    public async Task C39C1cCrashAfterFinalConfirmationBeforeWriteReconnectsOneExactReservedFrame()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        var clock = new ManualCoordinatorClock();
+        await using RbpJournalStore store = RbpJournalStore.Open(
+            directory.JournalPath,
+            new TestResumeTokenProtector(),
+            RbpJournalTestData.Options(),
+            new TestRecoveryPayloadProtector());
+        var responder = new ScriptedGatewayResponder(clock);
+        var first = new FakeConnectionCycle(responder.Respond);
+        var second = new FakeConnectionCycle(responder.Respond);
+        RbpRecoveryCarrierReservation reservation =
+            await PrepareRecoveryReservationAsync(store);
+        var dispatcher = new RecoveryDispatcher(reservation);
+        var diagnostics = new ConcurrentQueue<string>();
+        int crashAttempts = 0;
+        var postConfirmationEntered = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var crashBeforeWrite = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var coordinator = new RbpConnectionCoordinator(
+            new FakeConnectionCycleFactory(first, second),
+            store,
+            new MutableSessionCatalog(LocalSession(8080, 1000)),
+            new RbpConnectionCoordinatorOptions(
+                new Uri("wss://gateway.revagent.app/bridge/v1"),
+                new RbpHelloProfile("0.1.0", "WS01", "Windows 11",
+                    new[] { "2026.07.26.0" })),
+            dispatcher,
+            new RecordingInboundJournal(),
+            clock,
+            new FixedRandomSource(0),
+            onDispatchDiagnostic: diagnostics.Enqueue,
+            beforeRecoveryCarrierWrite: _ =>
+            {
+                if (Interlocked.Increment(ref crashAttempts) != 1)
+                {
+                    return Task.CompletedTask;
+                }
+
+                postConfirmationEntered.TrySetResult();
+                return crashBeforeWrite.Task;
+            });
+        using var stop = new CancellationTokenSource();
+
+        Task run = coordinator.RunAsync(stop.Token);
+        await EventuallyAsync(() => coordinator.GetSnapshot().ActiveRsids.Count == 1);
+        // Startup scheduling consumes the durable reservation directly; no
+        // inbound replay, origin dispatch, or add-in call is permitted.
+        await postConfirmationEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(1, Volatile.Read(ref crashAttempts));
+        Assert.DoesNotContain(first.Sent, item => item.Scope == RbpEnvelopeScope.Data);
+        crashBeforeWrite.TrySetException(new IOException(
+            "C39 post-confirmation crash before first SendAsync"));
+        await EventuallyAsync(() => coordinator.GetSnapshot().ConnectionGeneration == 2);
+        Assert.DoesNotContain(first.Sent, item => item.Scope == RbpEnvelopeScope.Data);
+
+        RbpEnvelope replay = await EventuallySentAsync(second,
+            item => item.Type == "partial" &&
+                    item.Id == reservation.RecoveryInvocationId);
+        Assert.Equal(reservation.CurrentReservedSequence, replay.Sequence);
+        Assert.Equal(reservation.Rsid, replay.Rsid);
+        byte[] serialized = RbpEnvelopeCodec.Encode(replay);
+        Assert.Equal(serialized, RbpEnvelopeCodec.Encode(replay));
+        _ = Assert.Single(second.Sent, item => item.Scope == RbpEnvelopeScope.Data &&
+            item.Id == reservation.RecoveryInvocationId);
+        Assert.Equal(0, dispatcher.DispatchCalls);
+        Assert.Empty((await store.LoadSequenceAsync(reservation.Rsid)).Outbox);
+        Assert.NotEqual(RbpRecoveryCarrierPhase.Tombstoned,
+            (await store.GetRecoveryCarrierReservationAsync(
+                reservation.RecoveryInvocationId))!.Phase);
+        // Recovery success and the injected pre-write fault never emit raw
+        // payload, base64, digest, owner, or JSON through diagnostics.
+        Assert.Empty(diagnostics);
+
+        stop.Cancel();
+        await run.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    [Fact]
     public void C39C1cExposesPostConfirmationPreSendCrashHook()
     {
         Assert.Contains(typeof(RbpConnectionCoordinator).GetConstructors(
@@ -323,13 +405,22 @@ public sealed partial class RbpConnectionCoordinatorTests
     {
         private readonly RbpInFlightGate _gate = new();
 
+        internal int DispatchCalls { get; private set; }
+
         public IRbpInvocationClaim? TryClaim(string rsid) =>
             _gate.TryEnter(rsid) ? new GateClaim(_gate, rsid) : null;
 
         public Task<RbpInvocationAnswer> DispatchClaimedAsync(
             IRbpInvocationClaim claim, JsonElement payload,
-            IReadOnlyList<string> capabilities, CancellationToken cancellationToken) =>
-            Task.FromResult(RbpInvocationAnswer.Recovery(reservation));
+            IReadOnlyList<string> capabilities, CancellationToken cancellationToken)
+        {
+            _ = claim;
+            _ = payload;
+            _ = capabilities;
+            _ = cancellationToken;
+            DispatchCalls++;
+            return Task.FromResult(RbpInvocationAnswer.Recovery(reservation));
+        }
 
         public RbpInvocationAnswer RejectConcurrent(string invocationId) =>
             RbpInvocationAnswer.Error(Json("{}"));
