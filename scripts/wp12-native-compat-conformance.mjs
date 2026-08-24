@@ -3,7 +3,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // This is intentionally a standalone, fail-closed compatibility probe.  It is
@@ -23,7 +23,7 @@ const NODE_ADDON_API = Object.freeze({
   integrity: "sha512-VijLXbi3UACN69I0JVXJsX4tjACjNoQDgv2gTF6sx2wWEi8tkSg2eX8p5gSIFi8z2+DL3oHmY6OyKce38SDolg==",
 });
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const gatewayRequire = createRequire(join(root, "packages", "gateway", "package.json"));
+const gatewayOwnerPackageJson = join(root, "packages", "gateway", "package.json");
 const bridgeRequire = createRequire(join(root, "packages", "bridge-simulator", "package.json"));
 const cleanupRoots = [];
 const results = {
@@ -47,25 +47,80 @@ function fail(message) {
   throw new Error(`WP-12 native compatibility conformance failed: ${message}`);
 }
 
+function normalizeChildDiagnostic(value, redactValues = []) {
+  let normalized = String(value ?? "").replace(/[\r\n\t]+/gu, " ").replace(/\s{2,}/gu, " ").trim();
+  normalized = normalized
+    .replace(/(?:\\\\\?\\)?[A-Za-z]:\\[^\r\n"']+/gu, "<path>")
+    .replace(/\/(?:tmp|home|Users|workspace)\/[^\s"']+/gu, "<path>");
+  const redactions = new Set([
+    root,
+    tmpdir(),
+    ...cleanupRoots,
+    ...Object.values(process.env),
+    ...redactValues,
+  ].filter((item) => typeof item === "string" && item.length >= 4));
+  for (const secret of redactions) normalized = normalized.replaceAll(secret, "<redacted>");
+  return normalized.slice(0, 2048);
+}
+
+function classifyChildFailure(stderr, error) {
+  const diagnostic = `${stderr ?? ""}\n${error?.message ?? ""}`;
+  if (diagnostic.includes("Could not locate the bindings file")) return "native-binding-unavailable";
+  if (diagnostic.includes("Cannot find module")) return "module-resolution";
+  if (diagnostic.includes("ELIFECYCLE")) return "lifecycle";
+  return "unknown";
+}
+
+function failedChildMessage(command, completed, redactValues = []) {
+  const exit = completed.status === null ? "none" : String(completed.status);
+  const signal = completed.signal ?? "none";
+  const category = classifyChildFailure(completed.stderr, completed.error);
+  const output = normalizeChildDiagnostic(
+    `stdout=${String(completed.stdout ?? "")} stderr=${String(completed.stderr ?? "")}`,
+    redactValues,
+  );
+  return `subprocess ${basename(command)} failed (exit=${exit}; signal=${signal}; category=${category}; output=${output || "<empty>"})`;
+}
+
+function assertDiagnosticRedaction() {
+  const sentinel = "WP12_DIAGNOSTIC_SECRET_SENTINEL";
+  const raw = `stderr ${root} ${join(tmpdir(), "wp12-secret-path")} ${sentinel} ${"x".repeat(4096)}`;
+  const normalized = normalizeChildDiagnostic(raw, [sentinel]);
+  if (normalized.includes(root) || normalized.includes(sentinel) || normalized.length > 2048) {
+    fail("child diagnostic redaction regression");
+  }
+}
+
 function run(command, args, options = {}) {
-  const useWindowsCommandProcessor = process.platform === "win32" && command === "npm";
-  const executable = useWindowsCommandProcessor ? (process.env.ComSpec ?? "cmd.exe") : command;
-  const commandArgs = useWindowsCommandProcessor ? ["/d", "/s", "/c", "npm.cmd", ...args] : args;
+  const npmCli = command === "npm" ? process.env.REVAGENT_NPM_CLI : undefined;
+  if (npmCli !== undefined && !npmCli.startsWith("/") && !/^[A-Za-z]:\\/u.test(npmCli)) {
+    fail("REVAGENT_NPM_CLI must be an absolute npm-cli.js path when set");
+  }
+  const useWindowsCommandProcessor = npmCli === undefined && process.platform === "win32" && command === "npm";
+  const executable = npmCli === undefined ?
+    (useWindowsCommandProcessor ? (process.env.ComSpec ?? "cmd.exe") : command) : process.execPath;
+  const commandArgs = npmCli === undefined ?
+    (useWindowsCommandProcessor ? ["/d", "/s", "/c", "npm.cmd", ...args] : args) : [npmCli, ...args];
+  const pathKey = Object.keys(process.env).find((key) => key.toLowerCase() === "path") ?? "PATH";
+  const pairedNodePath = npmCli === undefined ? {} : {
+    [pathKey]: `${dirname(process.execPath)}${delimiter}${process.env[pathKey] ?? ""}`,
+  };
   const completed = spawnSync(executable, commandArgs, {
-    cwd: options.cwd ?? root,
-    env: { ...process.env, ...options.env },
+    cwd: options.cwd,
+    env: { ...process.env, ...pairedNodePath, ...options.env },
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
   });
   if (completed.status !== 0 || completed.signal !== null || completed.error !== undefined) {
-    const stderr = String(completed.stderr ?? "");
-    const npmCode = stderr.match(/npm error code ([A-Z_0-9-]+)/iu)?.[1] ?? "unknown";
-    const status = completed.status === null ? "signal" : String(completed.status);
-    const category = stderr.includes("Could not locate the bindings file") ? "native-binding-unavailable" :
-      stderr.includes("Cannot find module") ? "module-resolution" : "unknown";
-    fail(`subprocess ${basename(command)} exited unsuccessfully (${npmCode}; status=${status}; ${category})`);
+    fail(failedChildMessage(command, completed, Object.values(options.env ?? {})));
   }
   return completed.stdout;
+}
+
+function resolveInstalledModule(ownerPackageJson) {
+  const owner = resolve(ownerPackageJson);
+  const entry = createRequire(owner).resolve("better-sqlite3");
+  return { ownerPackageJson: owner, entry };
 }
 
 function assertPackage(record, expected, label) {
@@ -102,7 +157,8 @@ async function validateProvenance() {
   }
   results.lock = true;
 
-  const gatewayEntry = gatewayRequire.resolve("better-sqlite3");
+  const gateway = resolveInstalledModule(gatewayOwnerPackageJson);
+  const gatewayEntry = gateway.entry;
   const bridgeEntry = bridgeRequire.resolve("better-sqlite3");
   const gatewayPackage = await readJson(join(dirname(dirname(gatewayEntry)), "package.json"));
   const bridgePackage = await readJson(join(dirname(dirname(bridgeEntry)), "package.json"));
@@ -115,7 +171,7 @@ async function validateProvenance() {
     }
   }
   results.installed = true;
-  return gatewayEntry;
+  return gateway;
 }
 
 async function createLegacySandbox() {
@@ -132,13 +188,18 @@ async function createLegacySandbox() {
   const lock = await readJson(join(sandbox, "package-lock.json"));
   assertPackage(lock.packages?.["node_modules/better-sqlite3"], LEGACY, "legacy better-sqlite3");
   run("npm", ["ci", "--ignore-scripts", "--no-audit", "--no-fund"], { cwd: sandbox });
-  run("npm", ["rebuild", "better-sqlite3", "--ignore-scripts=false", "--foreground-scripts"], { cwd: sandbox });
-  return { sandbox, entry: join(sandbox, "node_modules", "better-sqlite3") };
+  run("npm", ["rebuild", "better-sqlite3", "--ignore-scripts=false", "--foreground-scripts"], {
+    cwd: sandbox,
+    env: { npm_config_build_from_source: "true" },
+  });
+  const owner = resolveInstalledModule(join(sandbox, "package.json"));
+  return { sandbox, ownerPackageJson: owner.ownerPackageJson };
 }
 
-function runDatabaseChild(entry, databasePath, mode) {
+function runDatabaseChild(ownerPackageJson, databasePath, mode) {
   const code = String.raw`
-    const Database = require(process.env.REVAGENT_SQLITE_ENTRY);
+    const { createRequire } = require("node:module");
+    const Database = createRequire(process.env.REVAGENT_SQLITE_OWNER_PACKAGE_JSON)("better-sqlite3");
     const db = new Database(process.env.REVAGENT_SQLITE_DB);
     try {
       if (process.env.REVAGENT_SQLITE_MODE === "seed") {
@@ -152,13 +213,18 @@ function runDatabaseChild(entry, databasePath, mode) {
     } finally { db.close(); }
   `;
   run(process.execPath, ["-e", code], {
-    env: { REVAGENT_SQLITE_ENTRY: entry, REVAGENT_SQLITE_DB: databasePath, REVAGENT_SQLITE_MODE: mode },
+    env: {
+      REVAGENT_SQLITE_OWNER_PACKAGE_JSON: ownerPackageJson,
+      REVAGENT_SQLITE_DB: databasePath,
+      REVAGENT_SQLITE_MODE: mode,
+    },
   });
 }
 
-function runConcurrentLeaseRound(entry, databasePath, round) {
+function runConcurrentLeaseRound(ownerPackageJson, databasePath, round) {
   const code = String.raw`
-    const Database = require(process.env.REVAGENT_SQLITE_ENTRY);
+    const { createRequire } = require("node:module");
+    const Database = createRequire(process.env.REVAGENT_SQLITE_OWNER_PACKAGE_JSON)("better-sqlite3");
     const db = new Database(process.env.REVAGENT_SQLITE_DB);
     let winner = false;
     try {
@@ -171,34 +237,41 @@ function runConcurrentLeaseRound(entry, databasePath, round) {
   `;
   return new Promise((resolvePromise, rejectPromise) => {
     const child = spawn(process.execPath, ["-e", code], {
-      cwd: root,
       env: {
         ...process.env,
-        REVAGENT_SQLITE_ENTRY: entry,
+        REVAGENT_SQLITE_OWNER_PACKAGE_JSON: ownerPackageJson,
         REVAGENT_SQLITE_DB: databasePath,
         REVAGENT_HOLDER: `round-${round}-${Math.random().toString(16).slice(2)}`,
         REVAGENT_EPOCH: String(round),
       },
       stdio: ["ignore", "pipe", "pipe"],
     });
-    let output = "";
-    child.stdout.on("data", (value) => { output += String(value); });
-    child.once("error", rejectPromise);
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (value) => { stdout += String(value); });
+    child.stderr.on("data", (value) => { stderr += String(value); });
+    child.once("error", (error) => rejectPromise(new Error(normalizeChildDiagnostic(
+      `lease contender spawn failed (category=${classifyChildFailure(stderr, error)}; stdout=${stdout}; stderr=${stderr})`,
+      [ownerPackageJson, databasePath],
+    ))));
     child.once("exit", (codeValue, signal) => {
-      if (codeValue === 0 && signal === null && (output === "winner" || output === "loser")) resolvePromise(output);
-      else rejectPromise(new Error("lease contender exited unsuccessfully"));
+      if (codeValue === 0 && signal === null && (stdout === "winner" || stdout === "loser")) resolvePromise(stdout);
+      else rejectPromise(new Error(normalizeChildDiagnostic(
+        `lease contender failed (exit=${codeValue ?? "none"}; signal=${signal ?? "none"}; category=${classifyChildFailure(stderr)}; stdout=${stdout}; stderr=${stderr})`,
+        [ownerPackageJson, databasePath],
+      )));
     });
   });
 }
 
-async function runDatabaseCompatibility(entry) {
+async function runDatabaseCompatibility(currentOwnerPackageJson) {
   const stateRoot = await mkdtemp(join(tmpdir(), "revagent-wp12-sqlite-state-"));
   cleanupRoots.push(stateRoot);
   const databasePath = join(stateRoot, "compat.db");
   const legacy = await createLegacySandbox();
-  runDatabaseChild(legacy.entry, databasePath, "seed");
+  runDatabaseChild(legacy.ownerPackageJson, databasePath, "seed");
 
-  const Database = createRequire(join(root, "packages", "gateway", "package.json"))("better-sqlite3");
+  const Database = createRequire(currentOwnerPackageJson)("better-sqlite3");
   const db = new Database(databasePath);
   try {
     db.pragma("journal_mode = WAL", { simple: true });
@@ -219,26 +292,27 @@ async function runDatabaseCompatibility(entry) {
   } finally {
     db.close();
   }
-  runDatabaseChild(legacy.entry, databasePath, "verify");
+  runDatabaseChild(legacy.ownerPackageJson, databasePath, "verify");
   results.legacyReopen = true;
   results.walFullCas = true;
 
   for (let round = 0; round < 8; round += 1) {
-    const contenders = await Promise.all(Array.from({ length: 4 }, () => runConcurrentLeaseRound(entry, databasePath, round)));
+    const contenders = await Promise.all(Array.from({ length: 4 }, () => runConcurrentLeaseRound(currentOwnerPackageJson, databasePath, round)));
     if (contenders.filter((value) => value === "winner").length !== 1) fail("BEGIN IMMEDIATE lease CAS admitted an invalid winner count");
     results.competingLeaseRounds += 1;
   }
 }
 
-async function runLifecycleStress(entry) {
-  const childCode = "const D=require(process.env.REVAGENT_SQLITE_ENTRY); const db=new D(':memory:'); db.prepare('SELECT 1').get(); db.close();";
+async function runLifecycleStress(ownerPackageJson) {
+  const childCode = "const {createRequire}=require('node:module'); const D=createRequire(process.env.REVAGENT_SQLITE_OWNER_PACKAGE_JSON)('better-sqlite3'); const db=new D(':memory:'); db.prepare('SELECT 1').get(); db.close();";
   for (let index = 0; index < 100; index += 1) {
-    run(process.execPath, ["-e", childCode], { env: { REVAGENT_SQLITE_ENTRY: entry } });
+    run(process.execPath, ["-e", childCode], { env: { REVAGENT_SQLITE_OWNER_PACKAGE_JSON: ownerPackageJson } });
     results.childExits += 1;
   }
   const workerCode = String.raw`
     const { parentPort } = require("node:worker_threads");
-    const D = require(process.env.REVAGENT_SQLITE_ENTRY); const db = new D(":memory:");
+    const { createRequire } = require("node:module");
+    const D = createRequire(process.env.REVAGENT_SQLITE_OWNER_PACKAGE_JSON)("better-sqlite3"); const db = new D(":memory:");
     db.prepare("SELECT 1").get(); db.close(); parentPort.postMessage("ready"); setInterval(() => {}, 1000);
   `;
   const workerFileRoot = await mkdtemp(join(tmpdir(), "revagent-wp12-sqlite-workers-"));
@@ -248,7 +322,7 @@ async function runLifecycleStress(entry) {
   const { Worker } = await import("node:worker_threads");
   for (let batch = 0; batch < 10; batch += 1) {
     const workers = await Promise.all(Array.from({ length: 10 }, async () => {
-      const worker = new Worker(workerFile, { env: { ...process.env, REVAGENT_SQLITE_ENTRY: entry } });
+      const worker = new Worker(workerFile, { env: { ...process.env, REVAGENT_SQLITE_OWNER_PACKAGE_JSON: ownerPackageJson } });
       await new Promise((resolvePromise, rejectPromise) => {
         worker.once("message", (value) => value === "ready" ? resolvePromise() : rejectPromise(new Error("worker readiness drift")));
         worker.once("error", rejectPromise);
@@ -258,7 +332,7 @@ async function runLifecycleStress(entry) {
     }));
     await Promise.all(workers);
   }
-  const Database = createRequire(join(root, "packages", "gateway", "package.json"))("better-sqlite3");
+  const Database = createRequire(ownerPackageJson)("better-sqlite3");
   for (let index = 0; index < 100; index += 1) {
     const db = new Database(":memory:");
     db.prepare("SELECT 1").get();
@@ -269,9 +343,10 @@ async function runLifecycleStress(entry) {
 
 async function main() {
   if (!Number.isInteger(results.nodeMajor) || results.nodeMajor < 22) fail("Node 22 or newer is required");
-  const entry = await validateProvenance();
-  const packageRoot = dirname(dirname(entry));
-  const Database = createRequire(join(root, "packages", "gateway", "package.json"))("better-sqlite3");
+  assertDiagnosticRedaction();
+  const current = await validateProvenance();
+  const packageRoot = dirname(dirname(current.entry));
+  const Database = createRequire(current.ownerPackageJson)("better-sqlite3");
   const smoke = new Database(":memory:");
   try {
     if (smoke.prepare("SELECT 42 AS answer").get()?.answer !== 42) fail("native SQLite query did not return expected value");
@@ -282,8 +357,8 @@ async function main() {
     results.linuxSourceRebuild = true;
   }
   results.nativeSmoke = true;
-  await runDatabaseCompatibility(entry);
-  await runLifecycleStress(entry);
+  await runDatabaseCompatibility(current.ownerPackageJson);
+  await runLifecycleStress(current.ownerPackageJson);
   process.stdout.write(`${JSON.stringify(results)}\n`);
 }
 
