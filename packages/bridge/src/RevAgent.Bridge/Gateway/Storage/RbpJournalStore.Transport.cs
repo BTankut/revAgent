@@ -169,6 +169,37 @@ internal sealed partial class RbpJournalStore
         }, cancellationToken);
     }
 
+    internal Task<RbpRecoveryCarrierMaterializationSnapshot?>
+        ReadRecoveryCarrierMaterializationSnapshotAsync(
+            string recoveryInvocationId, string rsid,
+            CancellationToken cancellationToken = default) =>
+        ReadAsync(connection =>
+        {
+            RbpRecoveryCarrierReservation? reservation =
+                ReadRecoveryCarrierReservation(connection, recoveryInvocationId);
+            if (reservation is null || !string.Equals(reservation.Rsid, rsid, StringComparison.Ordinal) ||
+                reservation.Phase != RbpRecoveryCarrierPhase.SendStarted ||
+                reservation.RawPayloadVersion != 7 || reservation.PlanVersion != 1 ||
+                reservation.ExpiresAtMilliseconds <= NowMilliseconds()) return null;
+            using SqliteCommand state = CreateCommand(connection, """
+                SELECT sequence.last_peer_ack,sequence.highest_tx_seq,sequence.next_tx_seq
+                FROM rbp_sessions AS session JOIN rbp_session_sequence AS sequence ON sequence.rsid=session.rsid
+                WHERE session.rsid=$rsid
+                  AND NOT EXISTS(SELECT 1 FROM rbp_unregister_tombstones WHERE rsid=$rsid)
+                  AND NOT EXISTS(SELECT 1 FROM rbp_recovery_sequence_tombstones WHERE rsid=$rsid)
+                  AND NOT EXISTS(SELECT 1 FROM rbp_outbox WHERE rsid=$rsid AND seq=$seq);
+                """);
+            state.Parameters.AddWithValue("$rsid", rsid); state.Parameters.AddWithValue("$seq", reservation.CurrentReservedSequence);
+            using SqliteDataReader reader = state.ExecuteReader();
+            if (!reader.Read() || reader.GetInt64(0) != reservation.AcknowledgementCursor ||
+                reader.GetInt64(1) != reservation.CurrentReservedSequence ||
+                reader.GetInt64(2) != reservation.CurrentReservedSequence + 1) return null;
+            RbpRecoveredPayload? raw = ReadCorrelatedRecoveryPayload(connection, rsid,
+                reservation.OriginInvocationId, reservation.ResultDigest);
+            if (raw is null || raw.RawResponseBytes.Length != reservation.PlaintextLength) { raw?.Dispose(); return null; }
+            return new RbpRecoveryCarrierMaterializationSnapshot(reservation, raw);
+        }, cancellationToken);
+
     internal Task<RbpRecoveryCarrierReservation> MarkRecoveryCarrierSendStartedAsync(
         string recoveryInvocationId,
         CancellationToken cancellationToken = default)
@@ -1569,4 +1600,14 @@ internal sealed partial class RbpJournalStore
         long MaximumSequence,
         long ContiguousJournaledSequence);
 
+}
+
+internal sealed class RbpRecoveryCarrierMaterializationSnapshot : IDisposable
+{
+    internal RbpRecoveryCarrierMaterializationSnapshot(
+        RbpRecoveryCarrierReservation reservation, RbpRecoveredPayload raw)
+    { Reservation = reservation; Raw = raw; }
+    internal RbpRecoveryCarrierReservation Reservation { get; }
+    internal RbpRecoveredPayload Raw { get; }
+    public void Dispose() => Raw.Dispose();
 }

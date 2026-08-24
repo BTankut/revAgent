@@ -17,17 +17,16 @@ internal sealed class RbpProtectedRecoveryCarrierMaterializer
     internal RbpProtectedRecoveryCarrierMaterializer(RbpJournalStore journal) =>
         _journal = journal ?? throw new ArgumentNullException(nameof(journal));
 
-    internal async Task<RbpInvocationAnswer?> MaterializeCurrentAsync(
+    internal async Task<RbpRecoveryCarrierMaterializedFrame?> MaterializeCurrentAsync(
         string recoveryInvocationId,
         string rsid,
         CancellationToken cancellationToken)
     {
-        RbpRecoveryCarrierReservation? durable = await _journal
-            .GetRecoveryCarrierReservationAsync(recoveryInvocationId, cancellationToken)
+        using RbpRecoveryCarrierMaterializationSnapshot? snapshot = await _journal
+            .ReadRecoveryCarrierMaterializationSnapshotAsync(recoveryInvocationId, rsid, cancellationToken)
             .ConfigureAwait(false);
-        if (durable is null || !string.Equals(durable.Rsid, rsid, StringComparison.Ordinal))
-            return null;
-        RbpRecoveryCarrierReservation reservation = durable;
+        if (snapshot is null) return null;
+        RbpRecoveryCarrierReservation reservation = snapshot.Reservation;
         if (reservation.Phase != RbpRecoveryCarrierPhase.SendStarted ||
             reservation.ChunkSize is <= 0 or > RbpArtifactCarrierProducer.MaximumChunkBytes ||
             reservation.ChunkIndex < 0 || reservation.ChunkIndex >= reservation.ChunkCount ||
@@ -43,12 +42,7 @@ internal sealed class RbpProtectedRecoveryCarrierMaterializer
             return null;
         }
 
-        using RbpRecoveredPayload? lease = await _journal
-            .GetCorrelatedRecoveryPayloadAsync(reservation.Rsid,
-                reservation.OriginInvocationId, reservation.ResultDigest,
-                cancellationToken).ConfigureAwait(false);
-        if (lease is null) return null;
-        byte[] raw = lease.TakeRawResponseBytes();
+        byte[] raw = snapshot.Raw.TakeRawResponseBytes();
         try
         {
             string digest = "sha256:" + Convert.ToHexString(SHA256.HashData(raw)).ToLowerInvariant();
@@ -64,7 +58,20 @@ internal sealed class RbpProtectedRecoveryCarrierMaterializer
             int length = Math.Min(reservation.ChunkSize, raw.Length - offset);
             if (length <= 0 || length > RbpArtifactCarrierProducer.MaximumChunkBytes) return null;
             byte[] chunk = raw.AsSpan(offset, length).ToArray();
-            try { return RbpInvocationAnswer.Partial(Chunk(reservation, chunk)); }
+            try
+            {
+                RbpRecoveryCarrierMaterializationSnapshot? fresh = await _journal
+                    .ReadRecoveryCarrierMaterializationSnapshotAsync(recoveryInvocationId, rsid, cancellationToken)
+                    .ConfigureAwait(false);
+                using (fresh)
+                {
+                    if (fresh is null || fresh.Reservation.PlanVersion != reservation.PlanVersion ||
+                        fresh.Reservation.CurrentReservedSequence != reservation.CurrentReservedSequence) return null;
+                }
+                return new RbpRecoveryCarrierMaterializedFrame(
+                    RbpInvocationAnswer.Partial(Chunk(reservation, chunk)),
+                    reservation.CurrentReservedSequence, reservation.PlanVersion);
+            }
             finally { CryptographicOperations.ZeroMemory(chunk); }
         }
         finally { CryptographicOperations.ZeroMemory(raw); }
@@ -85,3 +92,7 @@ internal sealed class RbpProtectedRecoveryCarrierMaterializer
         return document.RootElement.Clone();
     }
 }
+
+/// <summary>Internal epoch-tagged draft; C1c must revalidate before any socket write.</summary>
+internal sealed record RbpRecoveryCarrierMaterializedFrame(
+    RbpInvocationAnswer Answer, long ReservedSequence, int PlanVersion);
