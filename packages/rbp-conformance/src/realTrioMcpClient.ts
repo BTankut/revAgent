@@ -29,6 +29,8 @@ export interface RealTrioNorthCredential {
   readonly audience: string;
   readonly credentialProvenance: "gateway_production_conformance";
   readonly identityContract: "revagent.auth-context/v1";
+  /** Optional server-bound conformance session; never copied into evidence. */
+  readonly serverMcpSessionId?: string;
 }
 
 export interface RealTrioNorthWireEvidence {
@@ -189,7 +191,7 @@ export class RealTrioNorthMcpClient {
       endpoint,
       certificateSha256: input.certificateSha256,
       credential: input.credential,
-      sessionId: null,
+      sessionId: input.expectedMcpSessionId ?? input.credential.serverMcpSessionId ?? null,
       method: "initialize",
       payload: Object.freeze({
         jsonrpc: "2.0",
@@ -209,10 +211,12 @@ export class RealTrioNorthMcpClient {
     if (issued !== null && (!SESSION_ID.test(issued) || expected === undefined || issued !== expected)) {
       throw new RealTrioNorthMcpError("real trio MCP returned an unexpected mcp-session-id", initialization.evidence);
     }
-    if (expected !== undefined && issued === null) {
-      throw new RealTrioNorthMcpError("real trio MCP omitted configured mcp-session-id", initialization.evidence);
-    }
-    const client = new RealTrioNorthMcpClient(endpoint, input.certificateSha256, input.credential, issued);
+    // A conformance-issued session is server-bound by authenticated ingress
+    // before initialize. The MCP library may remain stateless and omit an
+    // echo header; a present header must still match exactly.
+    const client = new RealTrioNorthMcpClient(
+      endpoint, input.certificateSha256, input.credential, expected ?? issued,
+    );
     await client.notification("notifications/initialized", Object.freeze({}));
     return client;
   }
@@ -260,7 +264,7 @@ export class RealTrioNorthMcpClient {
 
   private assertOpen(): void { if (this.closed) throw new Error("real trio MCP client is closed"); }
   private assertResponseSession(observed: string | null, evidence: RealTrioNorthWireEvidence): void {
-    if (observed !== this.sessionId) {
+    if (observed !== null && observed !== this.sessionId) {
       throw new RealTrioNorthMcpError("real trio MCP response mcp-session-id does not match configured identity", evidence);
     }
   }
@@ -272,7 +276,10 @@ export async function withRealTrioNorthMcpClient<T>(input: {
   readonly credential: RealTrioNorthCredential;
   readonly expectedMcpSessionId?: string;
 }, action: (client: RealTrioNorthMcpClient) => Promise<T>): Promise<T> {
-  const client = await RealTrioNorthMcpClient.connect(input);
+  const client = await RealTrioNorthMcpClient.connect({
+    ...input,
+    expectedMcpSessionId: input.expectedMcpSessionId ?? input.credential.serverMcpSessionId,
+  });
   try { return await action(client); } finally { client.close(); }
 }
 

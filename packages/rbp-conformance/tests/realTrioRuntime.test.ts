@@ -132,6 +132,31 @@ describe.sequential("WP-12 direct real trio runtime fixture", () => {
           await expect(client.readResource({ uri: uri as string, requestId: `wp12-c39-owner-read-${binding}` }))
             .resolves.toMatchObject({ response: expect.any(Object) });
 
+          const rebound = await runtime.issueReboundNorthCredential();
+          assertDistinctBoundSessions(runtime.credential, rebound, "same-principal rebound");
+          expect(rebound.bearer).toBe(runtime.credential.bearer);
+          await withRealTrioNorthMcpClient({
+            endpoint: runtime.endpoint,
+            certificateSha256: runtime.certificateSha256,
+            credential: rebound,
+          }, async (samePrincipalNewSession) => {
+            await expect(samePrincipalNewSession.readResource({
+              uri: uri as string, requestId: `wp12-c39-rebound-read-${binding}`,
+            })).rejects.toThrow();
+          });
+
+          const foreignCredential = await runtime.issueForeignNorthCredential();
+          assertDistinctBoundSessions(runtime.credential, foreignCredential, "foreign principal");
+          expect(foreignCredential.bearer).not.toBe(runtime.credential.bearer);
+          await withRealTrioNorthMcpClient({
+            endpoint: runtime.endpoint,
+            certificateSha256: runtime.certificateSha256,
+            credential: foreignCredential,
+          }, async (foreign) => {
+            await expect(foreign.readResource({ uri: uri as string, requestId: `wp12-c39-foreign-read-${binding}` }))
+              .rejects.toThrow();
+          });
+
           // A retry is the same public fixed-argument tool, never a private
           // replay control; it must not call the attested fixture again.
           const retry = await client.toolCall({
@@ -144,21 +169,15 @@ describe.sequential("WP-12 direct real trio runtime fixture", () => {
 
           await runtime.supervisor.restartBridge();
           await runtime.verifyNorthDispatchFence();
+          await expect(client.readResource({
+            uri: uri as string, requestId: `wp12-c39-post-rebind-read-${binding}`,
+          })).rejects.toThrow();
           await expect(client.toolCall({
             name: realTrioNorthToolForCase("O1-C39").toolName,
             arguments: { origin_invocation_id: origin.requestId, expected_result_digest: origin.responseDigest },
             requestId: `wp12-c39-restart-retry-${binding}`,
-          })).resolves.toMatchObject({ content: { state: "completed" } });
+          })).rejects.toThrow();
           expect(await c39ExecutionCount(runtime, origin.requestId)).toBe(1);
-
-          await withRealTrioNorthMcpClient({
-            endpoint: runtime.endpoint,
-            certificateSha256: runtime.certificateSha256,
-            credential: runtime.credential,
-          }, async (foreign) => {
-            await expect(foreign.readResource({ uri: uri as string, requestId: `wp12-c39-foreign-read-${binding}` }))
-              .rejects.toThrow();
-          });
         });
         const cleanup = await runtime.supervisor.fixtureControl("snapshot_evidence");
         expect(cleanup).toMatchObject({ openSocketCount: 0, pendingStalls: [] });
@@ -175,6 +194,17 @@ describe.sequential("WP-12 direct real trio runtime fixture", () => {
 interface C39OriginProvenance {
   readonly requestId: string;
   readonly responseDigest: `sha256:${string}`;
+}
+
+function assertDistinctBoundSessions(
+  owner: { readonly serverMcpSessionId?: string },
+  candidate: { readonly serverMcpSessionId?: string },
+  label: string,
+): void {
+  if (typeof owner.serverMcpSessionId !== "string" || typeof candidate.serverMcpSessionId !== "string" ||
+      owner.serverMcpSessionId === candidate.serverMcpSessionId) {
+    throw new Error(`${label} did not receive a distinct server-bound MCP session`);
+  }
 }
 
 function object(value: unknown): Record<string, unknown> | null {

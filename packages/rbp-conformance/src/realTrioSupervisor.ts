@@ -934,7 +934,9 @@ export async function publicGatewayControl(
 ): Promise<JsonObject> {
   const url = new URL("/__conformance/v1/control", endpoint);
   const action = payloadObject.action;
-  if (action !== "issue_device_credential" && action !== "issue_north_credential" && action !== "snapshot_audit" && action !== "read_real_case_audit") {
+  if (action !== "issue_device_credential" && action !== "issue_north_credential" &&
+      action !== "issue_north_foreign_credential" && action !== "snapshot_audit" &&
+      action !== "read_real_case_audit") {
     throw new PublicGatewayControlError("invalid_shape");
   }
   const payload = Buffer.from(JSON.stringify(payloadObject), "utf8");

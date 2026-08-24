@@ -199,6 +199,11 @@ export function issueNorthCredentialControlPayload(): { readonly action: "issue_
   return Object.freeze({ action: "issue_north_credential" });
 }
 
+/** Conformance-only same-tenant but distinct-principal credential issuance. */
+export function issueForeignNorthCredentialControlPayload(): { readonly action: "issue_north_foreign_credential" } {
+  return Object.freeze({ action: "issue_north_foreign_credential" });
+}
+
 /**
  * Uses the actual loopback TLS `/mcp` server.  The returned evidence contains
  * only wire hashes and sizes: bearer, JSON-RPC payload and resource paths are

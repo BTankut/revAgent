@@ -486,8 +486,31 @@ function constantTokenEquals(actual: unknown, expected: string): boolean {
 export async function runProductionConformanceHostCli(args: readonly string[]): Promise<void> {
   const options = parse(args);
   const [cert, key] = await Promise.all([readFile(options.certificate), readFile(options.key)]);
-  const credentials = [{ tenantId: "conformance", userId: "conformance", deviceId: "wp12-device", token: "wp12-device-token" }];
+  const credentials = [
+    { tenantId: "conformance", userId: "conformance", deviceId: "wp12-device", token: "wp12-device-token" },
+    { tenantId: "conformance", userId: "conformance-foreign", deviceId: "wp12-north-foreign", token: createHash("sha256").update("revagent.wp12.c39.foreign-north/v1\0", "utf8").update(options.controlToken, "utf8").digest("base64url") },
+  ] as const;
   const identity = new ConformanceCredentialAuthority(credentials);
+  const northSessions = new Map<string, Readonly<{ readonly token: string; readonly tenantId: string; readonly userId: string }>>();
+  let conformanceEndpoint: string | null = null;
+  const issueNorthCredential = (
+    credential: typeof credentials[number],
+    action: "issue_north_credential" | "issue_north_foreign_credential",
+  ) => {
+    if (northSessions.size >= 64 || conformanceEndpoint === null) {
+      throw new Error("conformance north session issuance is unavailable");
+    }
+    const serverMcpSessionId = randomUUID();
+    northSessions.set(serverMcpSessionId, Object.freeze({
+      token: credential.token, tenantId: credential.tenantId, userId: credential.userId,
+    }));
+    return Object.freeze({
+      ok: true as const, action, bearer: credential.token,
+      audience: `${conformanceEndpoint}/mcp`, serverMcpSessionId,
+      credentialProvenance: "gateway_production_conformance" as const,
+      identityContract: "revagent.auth-context/v1" as const,
+    });
+  };
   const protocolStore = new SqliteConformanceProtocolStore(options.root);
   const opened = await protocolStore.open();
   if (!opened.ok) throw new Error("conformance protocol store did not open");
@@ -642,6 +665,12 @@ export async function runProductionConformanceHostCli(args: readonly string[]): 
         const token = typeof authorization === "string" && authorization.startsWith("Bearer ")
           ? authorization.slice("Bearer ".length)
           : "";
+        const header = request.headers["mcp-session-id"];
+        const serverMcpSessionId = typeof header === "string" ? header : null;
+        const bound = serverMcpSessionId === null ? undefined : northSessions.get(serverMcpSessionId);
+        if (bound === undefined || bound.token !== token ||
+            bound.tenantId !== outcome.value.actor.tenantId ||
+            bound.userId !== outcome.value.actor.userId) return null;
         const authInfo: AuthInfo = {
           token,
           clientId: "conformance-loopback",
@@ -666,7 +695,6 @@ export async function runProductionConformanceHostCli(args: readonly string[]): 
       },
     },
   });
-  let conformanceEndpoint: string | null = null;
   try {
     const handle = await startProductionGatewayHost({
       hostProfile: "production_conformance",
@@ -745,15 +773,13 @@ export async function runProductionConformanceHostCli(args: readonly string[]): 
             if (Object.keys(body ?? {}).length !== 1 || conformanceEndpoint === null) {
               return reply.code(400).send({ ok: false, action, error: "invalid_north_credential_request" });
             }
-            const credential = credentials[0]!;
-            return reply.send({
-              ok: true,
-              action,
-              bearer: credential.token,
-              audience: `${conformanceEndpoint}/mcp`,
-              credentialProvenance: "gateway_production_conformance",
-              identityContract: "revagent.auth-context/v1",
-            });
+            return reply.send(issueNorthCredential(credentials[0]!, action));
+          }
+          if (action === "issue_north_foreign_credential") {
+            if (Object.keys(body ?? {}).length !== 1 || conformanceEndpoint === null) {
+              return reply.code(400).send({ ok: false, action, error: "invalid_north_credential_request" });
+            }
+            return reply.send(issueNorthCredential(credentials[1]!, action));
           }
           if (action === "revoke_device") {
             const credential = credentials[0]!;

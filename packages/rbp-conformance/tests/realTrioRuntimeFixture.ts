@@ -6,6 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
+  issueForeignNorthCredentialControlPayload,
   issueNorthCredentialControlPayload,
   type RealTrioNorthCredential,
 } from "../src/realTrioCaseDriver.js";
@@ -116,7 +117,10 @@ function requiredFile(relative: string): string {
 function credential(value: Record<string, unknown>): RealTrioNorthCredential {
   if (typeof value.bearer !== "string" || typeof value.audience !== "string" ||
       value.credentialProvenance !== "gateway_production_conformance" ||
-      value.identityContract !== "revagent.auth-context/v1") {
+      value.identityContract !== "revagent.auth-context/v1" ||
+      (value.serverMcpSessionId !== undefined &&
+        (typeof value.serverMcpSessionId !== "string" ||
+          !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(value.serverMcpSessionId)))) {
     throw new Error("real trio north credential control response is malformed");
   }
   return Object.freeze({
@@ -124,6 +128,9 @@ function credential(value: Record<string, unknown>): RealTrioNorthCredential {
     audience: value.audience,
     credentialProvenance: value.credentialProvenance,
     identityContract: value.identityContract,
+    ...(typeof value.serverMcpSessionId === "string"
+      ? { serverMcpSessionId: value.serverMcpSessionId }
+      : {}),
   });
 }
 
@@ -132,6 +139,10 @@ export interface RealTrioRuntimeFixture {
   readonly binding: RealTrioBinding;
   readonly supervisor: RealTrioSupervisorResult;
   readonly credential: RealTrioNorthCredential;
+  /** Mints a same-principal, different server-bound MCP session for denial tests. */
+  issueReboundNorthCredential(): Promise<RealTrioNorthCredential>;
+  /** Mints a same-tenant, different-principal server-bound credential. */
+  issueForeignNorthCredential(): Promise<RealTrioNorthCredential>;
   readonly endpoint: string;
   readonly certificateSha256: string;
   /** Revalidates the current post-control proof immediately around north I/O. */
@@ -2014,6 +2025,22 @@ export async function startRealTrioRuntimeFixture(
       binding,
       supervisor,
       credential: credential(issued),
+      issueReboundNorthCredential: async (): Promise<RealTrioNorthCredential> => {
+        if (controlledHarness !== undefined) {
+          return credential(await controlledHarness.issueNorthCredential());
+        }
+        return credential(await publicGatewayControl(
+          endpoint, controlToken, certificateSha256, issueNorthCredentialControlPayload(),
+        ));
+      },
+      issueForeignNorthCredential: async (): Promise<RealTrioNorthCredential> => {
+        if (controlledHarness !== undefined) {
+          throw new Error("controlled real-trio harness cannot mint a foreign C39 credential");
+        }
+        return credential(await publicGatewayControl(
+          endpoint, controlToken, certificateSha256, issueForeignNorthCredentialControlPayload(),
+        ));
+      },
       endpoint,
       certificateSha256,
       documentContextAudit,
