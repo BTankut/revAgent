@@ -586,6 +586,9 @@ interface LocalDocumentContextCandidate extends RealTrioDocumentContextCorrelati
 
 interface StrictDocumentContextCandidate extends LocalDocumentContextCandidate {
   readonly routeDigest: `sha256:${string}`;
+  readonly controlCursor: string;
+  readonly precedingProbe: RealTrioDocumentContextCursorRow | null;
+  readonly watcherOrdinal: number;
 }
 
 type StrictDocumentObservation = Readonly<{
@@ -634,15 +637,17 @@ function strictDocumentObservation(row: RealTrioDocumentContextCursorRow): Stric
 interface ParsedDocumentContextCandidate extends LocalDocumentContextCandidate {
   readonly startCursor: string;
   readonly startTranscriptIndex: number;
+  readonly watcherOrdinal: number;
 }
 
 interface ParsedDocumentContextGrammar {
   readonly candidates: readonly ParsedDocumentContextCandidate[];
   readonly acknowledgements: ReadonlyMap<string, number>;
+  readonly currentWatcherOrdinal: number;
 }
 
-function candidateKey(rsidHash: `sha256:${string}`, sequence: number): string {
-  return `${rsidHash}:${sequence}`;
+function candidateKey(watcherOrdinal: number, rsidHash: `sha256:${string}`, sequence: number): string {
+  return `${watcherOrdinal}:${rsidHash}:${sequence}`;
 }
 
 /**
@@ -666,6 +671,7 @@ function parseDocumentContextGrammar(input: {
   }
 
   let watcher: {
+    readonly ordinal: number;
     readonly rsidHash: `sha256:${string}`;
     lastSentSequence: number | null;
     lastAcknowledgedSequence: number | null;
@@ -674,11 +680,13 @@ function parseDocumentContextGrammar(input: {
   } | null = null;
   const candidates: ParsedDocumentContextCandidate[] = [];
   const acknowledgements = new Map<string, number>();
+  let nextWatcherOrdinal = 0;
 
   const openProbe = (observation: StrictDocumentObservation): boolean => {
     if (observation.stage !== "probe") return false;
     if (watcher !== null && watcher.cycle !== null) return false;
     watcher = {
+      ordinal: nextWatcherOrdinal += 1,
       rsidHash: observation.rsidHash,
       lastSentSequence: null,
       lastAcknowledgedSequence: null,
@@ -711,7 +719,7 @@ function parseDocumentContextGrammar(input: {
       if (sent === undefined || (watcher.lastAcknowledgedSequence !== null &&
           observation.sequence! <= watcher.lastAcknowledgedSequence)) return null;
       watcher.lastAcknowledgedSequence = observation.sequence!;
-      acknowledgements.set(candidateKey(observation.rsidHash, observation.sequence!), index);
+      acknowledgements.set(candidateKey(watcher.ordinal, observation.rsidHash, observation.sequence!), index);
       continue;
     }
 
@@ -748,6 +756,7 @@ function parseDocumentContextGrammar(input: {
       contextDigest: observation.contextDigest!,
       startCursor: watcher.cycle.startCursor,
       startTranscriptIndex: watcher.cycle.startIndex,
+      watcherOrdinal: watcher.ordinal,
     });
     watcher.sent.set(candidate.sequence, candidate);
     watcher.lastSentSequence = candidate.sequence;
@@ -755,26 +764,8 @@ function parseDocumentContextGrammar(input: {
     candidates.push(candidate);
   }
   if (watcher !== null && watcher.cycle !== null) return null;
-  return Object.freeze({ candidates: Object.freeze(candidates), acknowledgements });
-}
-
-/**
- * Parse the complete retained post-control transcript as cycles, rather than
- * stopping at its first send.  This makes a newer authoritative route select
- * its own lifecycle (for example sequence 2), never an earlier sequence 1.
- *
- * A route digest is intentionally required on the trusted send observation.
- * The current real C# transcript does not yet emit one; returning null is the
- * explicit evidence blocker, not permission to correlate by sequence alone.
- */
-function strictDocumentContextCandidates(input: {
-  readonly rows: readonly RealTrioDocumentContextCursorRow[];
-  readonly generation: number;
-  readonly controlCursor: string;
-  readonly precedingProbe: RealTrioDocumentContextCursorRow | null;
-}): readonly LocalDocumentContextCandidate[] | null {
-  const parsed = parseDocumentContextGrammar(input);
-  return parsed === null ? null : parsed.candidates;
+  return Object.freeze({ candidates: Object.freeze(candidates), acknowledgements,
+    currentWatcherOrdinal: watcher?.ordinal ?? 0 });
 }
 
 interface CurrentRouteAuditIdentity {
@@ -844,15 +835,17 @@ export function selectCurrentDocumentContextSendFromCursor(
   input: RealTrioCurrentRouteSelectorInput,
 ): StrictDocumentContextCandidate | null {
   if (!isObject(input.audit) || input.audit.documentContextGeneration !== input.generation) return null;
-  const candidates = strictDocumentContextCandidates(input);
+  const parsed = parseDocumentContextGrammar(input);
   const current = currentRouteAuditIdentity(input.audit, input.baseline);
-  if (candidates === null || current === null || !hasOneCurrentAcceptedObservation(input.audit, current, input.baseline)) {
+  if (parsed === null || current === null || !hasOneCurrentAcceptedObservation(input.audit, current, input.baseline)) {
     return null;
   }
-  const selected = candidates.filter((candidate) => candidate.rsidHash === current.rsidHash &&
-    candidate.sequence === current.sequence && candidate.contextDigest === current.contextDigest);
+  const selected = parsed.candidates.filter((candidate) => candidate.watcherOrdinal === parsed.currentWatcherOrdinal &&
+    candidate.rsidHash === current.rsidHash && candidate.sequence === current.sequence &&
+    candidate.contextDigest === current.contextDigest);
   if (selected.length !== 1) return null;
-  return Object.freeze({ ...selected[0]!, routeDigest: current.routeDigest });
+  return Object.freeze({ ...selected[0]!, routeDigest: current.routeDigest,
+    controlCursor: input.controlCursor, precedingProbe: input.precedingProbe });
 }
 
 function cursorSinceOrThrow(input: {
@@ -934,21 +927,27 @@ export function hasDurableDocumentContextHeartbeatAckSince(
   return acknowledged;
 }
 
-/** Cursor-native ACK check: exact later rows only, never an index slice. */
+/**
+ * Cursor-native ACK proof replays the complete retained grammar.  The ACK is
+ * tied to the selected send's watcher, not merely to a matching line later in
+ * a slice; a later valid cycle in that watcher is harmless, while a new probe
+ * makes the old watcher ineligible.
+ */
 export function hasDurableDocumentContextHeartbeatAckFromCursor(
   rows: readonly RealTrioDocumentContextCursorRow[],
-  expected: RealTrioDocumentContextCorrelation,
+  expected: StrictDocumentContextCandidate,
 ): boolean {
-  let acknowledged = false;
-  for (const row of rows) {
-    const value = documentObservation(row);
-    if (value === null) return false;
-    if (acknowledged || value.stage !== "ack" || value.outcome !== "durably_acknowledged" ||
-        !isSha256(value.rsidHash) || !Number.isSafeInteger(value.sequence) || Number(value.sequence) < 1 ||
-        value.rsidHash !== expected.rsidHash || Number(value.sequence) !== expected.sequence) return false;
-    acknowledged = true;
-  }
-  return acknowledged;
+  const parsed = parseDocumentContextGrammar({ rows, generation: expected.generation,
+    controlCursor: expected.controlCursor, precedingProbe: expected.precedingProbe });
+  if (parsed === null || expected.watcherOrdinal !== parsed.currentWatcherOrdinal) return false;
+  const selected = parsed.candidates.filter((candidate) => candidate.watcherOrdinal === expected.watcherOrdinal &&
+    candidate.rsidHash === expected.rsidHash && candidate.sequence === expected.sequence &&
+    candidate.contextDigest === expected.contextDigest && candidate.sendCursor === expected.sendCursor);
+  if (selected.length !== 1 || selected[0]!.sendTranscriptIndex !== expected.sendTranscriptIndex) return false;
+  const acknowledgementOrdinal = parsed.acknowledgements.get(
+    candidateKey(expected.watcherOrdinal, expected.rsidHash, expected.sequence),
+  );
+  return acknowledgementOrdinal !== undefined && acknowledgementOrdinal > expected.sendTranscriptIndex;
 }
 
 export function hasGatewayAcceptedDocumentContextRoute(
@@ -1002,7 +1001,7 @@ async function waitForPostRouteDocumentContextHeartbeatAck(input: {
       throw new Error("real trio child exited before post-route heartbeat acknowledgement");
     }
     if (hasDurableDocumentContextHeartbeatAckFromCursor(
-      cursorSinceOrThrow({ supervisor: input.supervisor, cursor: input.expected.sendCursor, generation: input.expected.generation }),
+      cursorSinceOrThrow({ supervisor: input.supervisor, cursor: input.expected.controlCursor, generation: input.expected.generation }),
       input.expected,
     )) return;
     if (Date.now() >= deadline) {
@@ -1231,7 +1230,7 @@ export async function startRealTrioRuntimeFixture(
     timeline.push("heartbeat_ack");
     const finalAudit = await supervisor.readRealCaseAudit();
     if (!hasDurableDocumentContextHeartbeatAckFromCursor(
-      cursorSinceOrThrow({ supervisor, cursor: expected.sendCursor, generation: expected.generation }), expected,
+      cursorSinceOrThrow({ supervisor, cursor: expected.controlCursor, generation: expected.generation }), expected,
     ) || !hasGatewayAcceptedDocumentContextRoute(finalAudit, expected, gatewayBaseline)) {
       throw new Error("real trio document-context proof changed before north dispatch");
     }
@@ -1276,7 +1275,7 @@ export async function startRealTrioRuntimeFixture(
       verifyNorthDispatchFence: async (): Promise<void> => {
         const audit = await supervisor.readRealCaseAudit();
         if (!hasDurableDocumentContextHeartbeatAckFromCursor(
-          cursorSinceOrThrow({ supervisor, cursor: expected.sendCursor, generation: expected.generation }), expected,
+          cursorSinceOrThrow({ supervisor, cursor: expected.controlCursor, generation: expected.generation }), expected,
         ) || !hasGatewayAcceptedDocumentContextRoute(audit, expected, gatewayBaseline)) {
           throw new Error("real trio north dispatch fence rejected stale route evidence");
         }

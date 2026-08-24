@@ -41,12 +41,6 @@ describe("WP-12 real-trio fixture document route gate", () => {
     ], 2, probe);
     expect(selected).toMatchObject({ generation: 2, sendCursor: "7", rsidHash: hash, sequence: 9 });
     expect(selected).not.toBeNull();
-    expect(hasDurableDocumentContextHeartbeatAckFromCursor([
-      cursorRow("8", "ack", "durably_acknowledged", 9, hash),
-    ], selected!)).toBe(true);
-    expect(hasDurableDocumentContextHeartbeatAckFromCursor([
-      cursorRow("8", "ack", "durably_acknowledged", 8, hash),
-    ], selected!)).toBe(false);
   });
 
   it("rejects cursor lifecycle wrong order, hash, sequence, and duplicate rows", () => {
@@ -193,6 +187,7 @@ describe("WP-12 real-trio fixture document route gate", () => {
 
     const selected = select(ordinary)!;
     expect(hasDurableDocumentContextHeartbeatAckSince(ordinary.map((value) => ({ line: value.line })), 0, selected)).toBe(true);
+    expect(hasDurableDocumentContextHeartbeatAckFromCursor(ordinary, selected)).toBe(true);
     expect(hasDurableDocumentContextHeartbeatAckSince([{ line: acknowledgement(9, 1).line }], 0, selected)).toBe(false);
     expect(hasDurableDocumentContextHeartbeatAckSince([], 0, selected)).toBe(false);
     expect(select([...ordinary, acknowledgement(9, 2)])).toBeNull();
@@ -215,6 +210,21 @@ describe("WP-12 real-trio fixture document route gate", () => {
     expect(select([probe(1), ...cycle(2, 2, context1), ...cycle(5, 1, context2)])).toBeNull();
     expect(select(ordinary, { ...audit(), documentContextGeneration: 8 })).toBeNull();
     expect(select(ordinary, audit(1, context1))).toMatchObject({ sequence: 1, sendCursor: "4" });
+
+    // The exact selected ACK remains valid through later cycles in its watcher.
+    const cycle1AcknowledgedThenCycle2 = [probe(1), ...cycle(2, 1, context1), acknowledgement(5, 1), ...cycle(6, 2, context2)];
+    const selectedCycle1 = select(cycle1AcknowledgedThenCycle2, audit(1, context1))!;
+    expect(hasDurableDocumentContextHeartbeatAckFromCursor(cycle1AcknowledgedThenCycle2, selectedCycle1)).toBe(true);
+    // The ACK may arrive after cycle 2 starts, provided it references an already-sent cycle 1.
+    const cycle2BeforeAck1 = [probe(1), ...cycle(2, 1, context1), row(5, "snapshot", "ready", 2, context2),
+      acknowledgement(6, 1), row(7, "queue", "durably_queued", 2, context2), row(8, "send", "sent", 2, context2)];
+    const lateAck1 = select(cycle2BeforeAck1, audit(1, context1))!;
+    expect(hasDurableDocumentContextHeartbeatAckFromCursor(cycle2BeforeAck1, lateAck1)).toBe(true);
+    const beforeNewProbe = [probe(1), ...cycle(2, 1, context1), acknowledgement(5, 1)];
+    const staleSelected = select(beforeNewProbe, audit(1, context1))!;
+    expect(hasDurableDocumentContextHeartbeatAckFromCursor([...beforeNewProbe, probe(6, otherHash), acknowledgement(7, 1)], staleSelected)).toBe(false);
+    expect(hasDurableDocumentContextHeartbeatAckFromCursor([...beforeNewProbe, acknowledgement(6, 1)], staleSelected)).toBe(false);
+    expect(select([probe(1), acknowledgement(2, 1), ...cycle(3, 1, context1)], audit(1, context1))).toBeNull();
   });
 
   it("uses only a final unmatched probe from the atomic pre-control snapshot", () => {
