@@ -154,11 +154,14 @@ export async function callRealTrioNorthTool(input: {
   readonly certificateSha256: string;
   readonly credential: RealTrioNorthCredential;
   readonly call: RealTrioNorthToolCall;
+  readonly dispatchGuard?: () => Promise<void>;
 }): Promise<RealTrioNorthToolResult> {
   return await withRealTrioNorthMcpClient(input, async (client) => {
+    await input.dispatchGuard?.();
     const preview = await client.toolCall({
       name: input.call.toolName, arguments: input.call.args, requestId: input.call.requestId,
     });
+    await input.dispatchGuard?.();
     const state = preview.content.state;
     const requestId = preview.content.requestId;
     if (typeof state !== "string" || typeof requestId !== "string") {
@@ -180,6 +183,7 @@ export async function callRealTrioNorthTool(input: {
         originating_preview_invocation_id: originatingPreviewInvocationId }),
       requestId: `${input.call.requestId}-commit`,
     });
+    await input.dispatchGuard?.();
     if (commit.content.state !== "completed" || typeof commit.content.requestId !== "string") {
       throw new Error("real trio MCP confirmed tool call did not complete");
     }
@@ -203,8 +207,14 @@ export async function callRealTrioNorthMcp(input: {
   readonly certificateSha256: string;
   readonly credential: RealTrioNorthCredential;
   readonly request: Readonly<Record<string, unknown>>;
+  readonly dispatchGuard?: () => Promise<void>;
 }): Promise<{ readonly response: unknown; readonly evidence: RealTrioNorthWireEvidence }> {
-  return await withRealTrioNorthMcpClient(input, async (client) => await client.request(input.request));
+  return await withRealTrioNorthMcpClient(input, async (client) => {
+    await input.dispatchGuard?.();
+    const result = await client.request(input.request);
+    await input.dispatchGuard?.();
+    return result;
+  });
 }
 
 export interface RealTrioCaseControlSurface {

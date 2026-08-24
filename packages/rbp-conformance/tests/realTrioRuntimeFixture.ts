@@ -125,6 +125,8 @@ export interface RealTrioRuntimeFixture {
   readonly credential: RealTrioNorthCredential;
   readonly endpoint: string;
   readonly certificateSha256: string;
+  /** Revalidates the current post-control proof immediately around north I/O. */
+  verifyNorthDispatchFence(): Promise<void>;
   /** Value-free proof that a controlled cache update preceded the public route. */
   readonly documentContextAudit: RealTrioDocumentContextAudit;
   stop(): Promise<void>;
@@ -829,6 +831,14 @@ export async function startRealTrioRuntimeFixture(
       endpoint,
       certificateSha256,
       documentContextAudit,
+      verifyNorthDispatchFence: async (): Promise<void> => {
+        const audit = await supervisor.readRealCaseAudit();
+        if (!hasDurableDocumentContextHeartbeatAckSince(
+          supervisor.readDocumentContextDiagnostics(), transcriptFloor, expected,
+        ) || !hasGatewayAcceptedDocumentContextRoute(audit, expected, gatewayBaseline)) {
+          throw new Error("real trio north dispatch fence rejected stale route evidence");
+        }
+      },
       stop: async () => await supervisor.stop(),
     });
   } catch (error) {

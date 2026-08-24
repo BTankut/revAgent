@@ -30,6 +30,7 @@ describe.sequential("WP-12 direct real trio runtime fixture", () => {
           endpoint: runtime.endpoint,
           certificateSha256: runtime.certificateSha256,
           credential: runtime.credential,
+          dispatchGuard: async () => await runtime.verifyNorthDispatchFence(),
           call: { toolName: tool.toolName, args: {}, requestId: `wp12-c38-${binding}` },
         });
         expect(result.state).toBe("completed");
