@@ -8,6 +8,8 @@ Base and rollback: `252234c321ddc395da6dae356f0dda32070c9f86`.
 - better-sqlite3 is `13.0.3` only; `13.0.1` is prohibited. Existing gitHead/SRI and C38 evidence remain authoritative.
 - C38 is green for WSS and HTTP/SSE at the approved base. WP-12 remains unaccepted.
 
+Immutable better-sqlite3 provenance: version `13.0.3`; gitHead `dbc2ea1165fef1f599b9be12faea33fa5e9d7ffb`; registered SRI `sha512-RbOBxmLBG8uvFUc15X9+9SFemKcQ0WBuISBVkpuiaUB2qblC8UWlHEjdWVoZ8AdhSwmoEgsiXKfopX0CQxaACQ==`. Version `13.0.1` is prohibited. Its approved rollback remains `adce556a6b700e75d5fd464ad4ac65ba3bd0932e`.
+
 ## C39 production semantic extension
 
 Add only an authority-owned, entitled, non-mutating `dispatch_payload_recovery` path for correlated omitted-payload retrieval. Observation/provenance may be fixture-only; recovery semantics and enforcement are production implementation.
@@ -23,3 +25,7 @@ Prohibited: origin execution, generic replay, admin/private-store mutation, hold
 C39 WSS + HTTP/SSE adversarial gates, including authorization, digest/origin binding, idempotency/CAS, restart/retention, cap, and indistinguishable-denial cases, must be green. C29 and C28 remain locked until C39 is green. WP-12 cannot be accepted without these gates and independent security review PASS_PLAN.
 
 Architecture review: PASS_PLAN required/recorded for this freeze. Security review: PASS_PLAN required/recorded for this freeze.
+
+## Append-only C39 scope amendment
+
+Amendment base and rollback: `252234c321ddc395da6dae356f0dda32070c9f86`. C38 is green WSS+HTTP; C39 is required and not yet green. C29/C28 remain locked, WP-12 is not accepted, and M4 is never accepted.
