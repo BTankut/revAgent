@@ -41,8 +41,13 @@ internal static class Program
             var recoveryObservations = new RecoveryCarrierObservationRing(
                 MaxRecoveryCarrierObservations,
                 MaxRecoveryCarrierObservationBytes);
+            var postWriteFault = options.TestC39PostWriteFault
+                ? new OneShotPostWriteRecoveryFault()
+                : null;
+            Func<CancellationToken, Task>? postWriteFaultCallback =
+                postWriteFault is null ? null : postWriteFault.InvokeAsync;
             await using WorkerGatewayRuntime runtime = Compose(options,
-                recoveryObservations);
+                recoveryObservations, postWriteFaultCallback);
             using var cancellation = new CancellationTokenSource();
             Task run = runtime.RunAsync(cancellation.Token);
             await Console.Out.WriteLineAsync(JsonSerializer.Serialize(new
@@ -116,7 +121,8 @@ internal static class Program
 
     private static WorkerGatewayRuntime Compose(
         Options options,
-        IRbpRecoveryCarrierObservationSink recoveryCarrierObservationSink)
+        IRbpRecoveryCarrierObservationSink recoveryCarrierObservationSink,
+        Func<CancellationToken, Task>? afterRecoveryCarrierWriteBeforeAck)
     {
         var layout = new BridgeInstallLayout(options.InstallRoot, options.StateRoot);
         Directory.CreateDirectory(layout.StateRoot);
@@ -179,7 +185,9 @@ internal static class Program
                     CarrierProducer: carrier,
                     OmittedOriginObservation: omittedOriginObservation,
                     RecoveryCarrierObservationSink:
-                        recoveryCarrierObservationSink));
+                        recoveryCarrierObservationSink,
+                    AfterRecoveryCarrierWriteBeforeAck:
+                        afterRecoveryCarrierWriteBeforeAck));
             return new WorkerGatewayRuntime(coordinator, catalog, journal, carrierProducer: carrier);
         }
         catch
@@ -597,11 +605,29 @@ internal static class Program
             Task.Delay(delay == FrozenHeartbeatInterval ? _testHeartbeatInterval : delay, cancellationToken);
     }
 
-    private sealed record Options(Uri GatewayUri, int AddinPort, int FixtureProcessId, string InstallRoot, string StateRoot, string DeviceId, string DeviceToken, string Fingerprint, string CertificateSha256, string Binding, int TestHeartbeatIntervalMilliseconds)
+    /// <summary>Fixed test-host launch profile: one close after one carrier write.</summary>
+    private sealed class OneShotPostWriteRecoveryFault
+    {
+        private int _used;
+
+        internal Task InvokeAsync(CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (Interlocked.Exchange(ref _used, 1) == 0)
+            {
+                throw new RbpGatewayTransportException(
+                    RbpGatewayFailureKind.Network,
+                    "Test-only C39 post-write recovery cycle close.");
+            }
+            return Task.CompletedTask;
+        }
+    }
+
+    private sealed record Options(Uri GatewayUri, int AddinPort, int FixtureProcessId, string InstallRoot, string StateRoot, string DeviceId, string DeviceToken, string Fingerprint, string CertificateSha256, string Binding, int TestHeartbeatIntervalMilliseconds, bool TestC39PostWriteFault)
     {
         public static Options Parse(IReadOnlyList<string> args)
         {
-            if (args.Count != 22) throw new ArgumentException("real worker host requires exactly eleven --key value pairs");
+            if (args.Count is not (22 or 24)) throw new ArgumentException("real worker host requires fixed --key value pairs");
             var values = new Dictionary<string, string>(StringComparer.Ordinal);
             for (int index = 0; index < args.Count; index += 2)
             {
@@ -616,7 +642,9 @@ internal static class Program
             if (!int.TryParse(Required("--addin-port"), out int port) || port is < 1 or > 65535) throw new ArgumentException("invalid addin port");
             if (!int.TryParse(Required("--fixture-pid"), out int fixturePid) || fixturePid <= 0) throw new ArgumentException("invalid fixture pid");
             if (!int.TryParse(Required("--test-heartbeat-interval-ms"), out int testHeartbeatIntervalMilliseconds) || testHeartbeatIntervalMilliseconds is < 250 or > 5_000) throw new ArgumentException("test heartbeat interval must be between 250 and 5000 milliseconds");
-            Options result = new(endpoint, port, fixturePid, Required("--install-root"), Required("--state-root"), Required("--device-id"), Required("--device-token"), Required("--fingerprint"), Required("--certificate-sha256"), binding, testHeartbeatIntervalMilliseconds);
+            bool testC39PostWriteFault = values.Remove("--test-c39-postwrite-fault", out string? faultProfile);
+            if (testC39PostWriteFault && !string.Equals(faultProfile, "once", StringComparison.Ordinal)) throw new ArgumentException("invalid C39 post-write fault profile");
+            Options result = new(endpoint, port, fixturePid, Required("--install-root"), Required("--state-root"), Required("--device-id"), Required("--device-token"), Required("--fingerprint"), Required("--certificate-sha256"), binding, testHeartbeatIntervalMilliseconds, testC39PostWriteFault);
             if (values.Count != 0 || !result.Fingerprint.StartsWith("sha256:", StringComparison.Ordinal) || result.CertificateSha256.Length != 64) throw new ArgumentException("invalid test identity or certificate pin");
             return result;
         }

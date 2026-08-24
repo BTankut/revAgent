@@ -430,6 +430,8 @@ internal sealed partial class RbpConnectionCoordinator
         {
             IReadOnlyList<RbpSessionAcknowledgement> acknowledgements =
                 ParseHeartbeatAcknowledgements(envelope);
+            acknowledgements = GateRecoveryCarrierAcknowledgements(
+                context, acknowledgements);
             await ApplyRecoveryCarrierAcknowledgementsAsync(
                     context,
                     acknowledgements)

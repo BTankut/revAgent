@@ -102,12 +102,34 @@ internal sealed partial class RbpConnectionCoordinator
 
                 // The only recovery-carrier socket write.  Do not route through
                 // QueueOutboundDataAsync, generic outbox/spool, or diagnostics.
-            await context.Cycle.SendAsync(envelope, context.Token)
-                .ConfigureAwait(false);
-            if (_afterRecoveryCarrierWriteBeforeAck is { } afterWrite)
-            {
-                await afterWrite(context.Token).ConfigureAwait(false);
-            }
+                RecoveryCarrierAckGateKey? ackGate =
+                    _afterRecoveryCarrierWriteBeforeAck is null ? null :
+                    new RecoveryCarrierAckGateKey(context, started.Rsid,
+                        started.RecoveryInvocationId,
+                        started.CurrentReservedSequence,
+                        started.AcknowledgementCursor);
+                if (ackGate is not null) InstallRecoveryCarrierAckGate(ackGate);
+                bool postWriteCallbackReturned = false;
+                try
+                {
+                    await context.Cycle.SendAsync(envelope, context.Token)
+                        .ConfigureAwait(false);
+                    if (_afterRecoveryCarrierWriteBeforeAck is { } afterWrite)
+                    {
+                        await afterWrite(context.Token).ConfigureAwait(false);
+                        postWriteCallbackReturned = true;
+                    }
+                }
+                finally
+                {
+                    // A throwing one-shot test fault deliberately retains the
+                    // gate until cycle close; a normal callback leaves ordinary
+                    // ACK processing completely unchanged.
+                    if (ackGate is not null &&
+                        (_afterRecoveryCarrierWriteBeforeAck is null ||
+                         postWriteCallbackReturned))
+                        RemoveRecoveryCarrierAckGate(ackGate);
+                }
             }
             finally
             {
@@ -134,6 +156,8 @@ internal sealed partial class RbpConnectionCoordinator
         foreach (RbpSessionAcknowledgement acknowledgement in acknowledgements
                      .OrderBy(value => value.Rsid, StringComparer.Ordinal))
         {
+            if (TryDropGatedRecoveryCarrierAcknowledgement(
+                    context, acknowledgement, out _)) continue;
             RbpRecoveryCarrierReservation? applied = await _journal
                 .ApplyRecoveryCarrierFenceAcknowledgementAsync(
                     acknowledgement.Rsid,
@@ -171,6 +195,18 @@ internal sealed partial class RbpConnectionCoordinator
             }
         }
     }
+
+    private IReadOnlyList<RbpSessionAcknowledgement>
+        GateRecoveryCarrierAcknowledgements(
+            ConnectionCycleContext context,
+            IReadOnlyList<RbpSessionAcknowledgement> acknowledgements) =>
+        acknowledgements.Select(acknowledgement =>
+        {
+            return TryDropGatedRecoveryCarrierAcknowledgement(
+                context, acknowledgement, out long cursor)
+                ? new RbpSessionAcknowledgement(acknowledgement.Rsid, cursor)
+                : acknowledgement;
+        }).ToArray();
 
     private async Task ApplyRecoveryTerminalAcknowledgementsAsync(
         ConnectionCycleContext context,
@@ -370,12 +406,40 @@ internal sealed partial class RbpConnectionCoordinator
         {
             _recoveryCarrierClaims.RemoveWhere(claim =>
                 ReferenceEquals(claim.Context, context));
+            _recoveryCarrierAckGates.RemoveWhere(gate =>
+                ReferenceEquals(gate.Context, context));
             _recoveryTerminalClaims.RemoveWhere(claim =>
                 ReferenceEquals(claim.Context, context));
             _recoveryCarrierOuterDigests.Keys
                 .Where(key => ReferenceEquals(key.Context, context))
                 .ToList()
                 .ForEach(key => _recoveryCarrierOuterDigests.Remove(key));
+        }
+    }
+
+    private void InstallRecoveryCarrierAckGate(RecoveryCarrierAckGateKey gate)
+    {
+        lock (_recoveryCarrierClaimSync) _recoveryCarrierAckGates.Add(gate);
+    }
+
+    private void RemoveRecoveryCarrierAckGate(RecoveryCarrierAckGateKey gate)
+    {
+        lock (_recoveryCarrierClaimSync) _recoveryCarrierAckGates.Remove(gate);
+    }
+
+    private bool TryDropGatedRecoveryCarrierAcknowledgement(
+        ConnectionCycleContext context, RbpSessionAcknowledgement acknowledgement,
+        out long cursor)
+    {
+        lock (_recoveryCarrierClaimSync)
+        {
+            RecoveryCarrierAckGateKey? gate = _recoveryCarrierAckGates.FirstOrDefault(
+                item => ReferenceEquals(item.Context, context) &&
+                    string.Equals(item.Rsid, acknowledgement.Rsid,
+                        StringComparison.Ordinal) &&
+                    item.Sequence == acknowledgement.Sequence);
+            cursor = gate?.AcknowledgementCursor ?? acknowledgement.Sequence;
+            return gate is not null;
         }
     }
 
@@ -491,6 +555,10 @@ internal sealed partial class RbpConnectionCoordinator
         string RecoveryInvocationId,
         long ReservedSequence,
         int PlanVersion);
+
+    private sealed record RecoveryCarrierAckGateKey(
+        ConnectionCycleContext Context, string Rsid, string RecoveryInvocationId,
+        long Sequence, long AcknowledgementCursor);
 
     private sealed record RecoveryTerminalCycleKey(
         ConnectionCycleContext Context,

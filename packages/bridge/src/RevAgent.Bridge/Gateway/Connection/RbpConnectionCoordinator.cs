@@ -82,6 +82,7 @@ internal sealed partial class RbpConnectionCoordinator
         new(StringComparer.Ordinal);
     private readonly object _recoveryCarrierClaimSync = new();
     private readonly HashSet<RecoveryCarrierCycleKey> _recoveryCarrierClaims = new();
+    private readonly HashSet<RecoveryCarrierAckGateKey> _recoveryCarrierAckGates = new();
     private readonly HashSet<RecoveryTerminalCycleKey> _recoveryTerminalClaims = new();
     private readonly Dictionary<RecoveryCarrierDigestCycleKey, string>
         _recoveryCarrierOuterDigests = new();

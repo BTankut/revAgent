@@ -72,7 +72,9 @@ describe.sequential("WP-12 direct real trio runtime fixture", () => {
       const evidenceDirectory = mkdtempSync(path.join(tmpdir(), `wp12-real-${binding}-`));
       const launched = await runRealTrioCli(
         ["real-trio", binding],
-        async (selectedBinding) => await startRealTrioRuntimeFixture(selectedBinding, { evidenceDirectory }),
+        async (selectedBinding) => await startRealTrioRuntimeFixture(selectedBinding, {
+          evidenceDirectory, c39PostWriteFault: true,
+        }),
       );
       const runtime = launched.result;
       try {
@@ -364,7 +366,7 @@ function observedC39Recovery(
   const materialized = worker.filter((entry) => entry.phase === "materialized");
   const writes = worker.filter((entry) => entry.phase === "write");
   const acknowledgements = worker.filter((entry) => entry.phase === "ack");
-  if (materialized.length !== 1 || new Set(worker.map((entry) => entry.ordinal)).size !== worker.length ||
+  if (materialized.length < 1 || new Set(worker.map((entry) => entry.ordinal)).size !== worker.length ||
       worker.some((entry, index) => index > 0 && entry.ordinal <= worker[index - 1]!.ordinal)) {
     throw new Error("C39 Worker IPC has duplicate or unordered observation ordinals");
   }
@@ -372,9 +374,11 @@ function observedC39Recovery(
   const exactCarrierAckOrder = expectedSequences.every((sequence) => {
     const sent = writes.filter((entry) => entry.sequence === sequence);
     const acked = acknowledgements.filter((entry) => entry.sequence === sequence);
-    return sent.length === 1 && acked.length === 1 && acked[0]!.ordinal > sent[0]!.ordinal &&
-      acked[0]!.outerDigest === sent[0]!.outerDigest;
-  }) && writes.length === expectedSequences.length && acknowledgements.length === expectedSequences.length;
+    const finalWrite = sent.at(-1);
+    return sent.length >= 1 && acked.length === 1 && finalWrite !== undefined &&
+      acked[0]!.ordinal > finalWrite.ordinal &&
+      acked[0]!.outerDigest === finalWrite.outerDigest;
+  }) && acknowledgements.length === expectedSequences.length;
   if (!exactCarrierAckOrder) {
     throw new Error("C39 Worker IPC did not prove one ordered acknowledgement per carrier sequence");
   }
@@ -383,11 +387,11 @@ function observedC39Recovery(
   if (!omittedReplayObserved) {
     throw new Error("C39 Gateway audit did not prove the exact omitted replay");
   }
-  if (writes.length !== expectedSequences.length || acknowledgements.length !== expectedSequences.length) {
+  if (writes.length < expectedSequences.length || acknowledgements.length !== expectedSequences.length) {
     throw new Error("C39 Worker IPC has an unexpected carrier frame count");
   }
   const restarts = worker.filter((entry) => entry.phase === "restart_resend");
-  const restartResendExact = restarts.every((entry) => {
+  const restartResendExact = restarts.length > 0 && restarts.every((entry) => {
     const original = writes.find((write) => write.sequence === entry.sequence);
     return original !== undefined && original.outerDigest === entry.outerDigest && entry.ordinal > original.ordinal;
   });
