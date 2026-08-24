@@ -1322,7 +1322,7 @@ export class GatewayResourceAuthority {
       const ackKey = carrierAckKey(scope, rsid, String(input.sequence)); const ack = await tx.read(CARRIER_ACK_NAMESPACE, ackKey);
       if (ack === null) tx.stage({ namespace: CARRIER_ACK_NAMESPACE, key: ackKey, value: { schemaVersion: "revagent-gateway-carrier/v1", setId, rsid, invocationId, seq: input.sequence, chunkIdentity: identity, tenantId: scope.tenantId, principalKey: scope.principalKey, effectiveMcpSessionId: scope.mcpSessionId, state: "chunk_durable" } as unknown as GatewayJsonValue, expect: { kind: "absent" } });
       else { const value = ack.value as { setId?: string; invocationId?: string; chunkIdentity?: string; state?: string; tenantId?: string; principalKey?: string; effectiveMcpSessionId?: string }; if (value.setId !== setId || value.invocationId !== invocationId || value.chunkIdentity !== identity || value.state !== "chunk_durable" || value.tenantId !== scope.tenantId || value.principalKey !== scope.principalKey || value.effectiveMcpSessionId !== scope.mcpSessionId) return false; }
-      await commitBridge?.(tx);
+      await commitBridge?.(tx, "activate");
       return true;
     });
     if (!durable.ok || !durable.value) fail("storage_unavailable", "carrier chunk durability acknowledgement was not accepted");
@@ -1567,8 +1567,13 @@ export class GatewayResourceAuthority {
       tx.stage({ namespace: RESOURCE_SET_NAMESPACE, key: setRow.key, value: { ...set, state: "active" } as unknown as GatewayJsonValue, expect: { kind: "version", version: setRow.version } });
       return members.map(({ member }) => this.#carrierRef(scope, member, set.expiresAtMs));
     });
-    if (activated.ok && activated.value === null) throw new BridgeCarrierTerminalAborted();
-    if (activated.ok && activated.value !== false) return Object.freeze(activated.value);
+    if (activated.ok) {
+      if (activated.value === null) throw new BridgeCarrierTerminalAborted();
+      if (activated.value !== false) {
+        const refs: readonly GatewayArtifactRef[] = activated.value;
+        return Object.freeze(refs);
+      }
+    }
     // A durability-uncertain Tx-C is never recovered from a resource-only
     // readback: that cannot prove the paired Bridge terminal.  Keep the
     // invocation fail-closed; only a definitive competing CAS can have a
