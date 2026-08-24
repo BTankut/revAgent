@@ -6356,7 +6356,11 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     const started = await this.#withSessionAuthorization(input.rsid, async () =>
       this.#beginDispatch(input, connection, authorityTicket),
     );
-    return await started.outcome;
+    // The per-rsid authorization tail protects selection/authentication and
+    // the durable reservation commit only.  Carrier start can await a bounded
+    // queue/revalidation and must not prevent this same authority from
+    // unregistering that exact reserved lease.
+    return await started.start();
   }
 
   async #beginDispatch(
@@ -6373,10 +6377,10 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     },
     connection: LiveConnection,
     authorityTicket: TenantAuthorityTicket,
-  ): Promise<{ readonly outcome: Promise<GatewayExecutorOutcome> }> {
+  ): Promise<{ readonly start: () => Promise<GatewayExecutorOutcome> }> {
     const active = this.#active.get(input.rsid);
     if (active === undefined || active.tenantId !== input.tenantId) {
-      return { outcome: Promise.resolve({ state: "failed", error: { code: "executor_unavailable", message: "registered rsid is not active" } }) };
+      return { start: async () => ({ state: "failed", error: { code: "executor_unavailable", message: "registered rsid is not active" } }) };
     }
     try {
       this.#assertAuthorityTicket(authorityTicket, connection, {
@@ -6384,7 +6388,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       });
     } catch {
       return {
-        outcome: Promise.resolve({
+        start: async () => ({
           state: "failed",
           error: {
             code: "executor_unavailable",
@@ -6432,7 +6436,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     if (
       input.effectiveMcpRequestScope === undefined
     ) {
-      return { outcome: Promise.resolve({ state: "failed", error: {
+      return { start: async () => ({ state: "failed", error: {
         code: "executor_unavailable",
         message: "dispatch lacks an authoritative effective scope",
       } }) };
@@ -6601,7 +6605,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       });
       if (persisted.ok) {
         if (persisted.value.kind === "blocked") {
-          return { outcome: Promise.resolve({ state: "failed", error: { code: "executor_unavailable", message: "registered rsid has unresolved durable authority" } }) };
+          return { start: async () => ({ state: "failed", error: { code: "executor_unavailable", message: "registered rsid has unresolved durable authority" } }) };
         }
         reservation = {
           tenantId: input.tenantId,
@@ -6646,10 +6650,11 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     }
     active.record = reservation.record;
 
-    const outcome: { current: Promise<GatewayExecutorOutcome> | null } = {
-      current: null,
-    };
-    try {
+    return { start: async (): Promise<GatewayExecutorOutcome> => {
+      const outcome: { current: Promise<GatewayExecutorOutcome> | null } = {
+        current: null,
+      };
+      try {
       await this.#sendWithDurableReservation(
         connection,
         reservation,
@@ -6672,38 +6677,37 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
           });
         },
       );
-    } catch {
-      if (outcome.current === null) {
-        await this.#settleLocalFinalTombstoneIfPresent(
-          input.tenantId,
-          input.rsid,
-        );
-        return {
-          outcome: Promise.resolve({
+      } catch {
+        if (outcome.current === null) {
+          await this.#settleLocalFinalTombstoneIfPresent(
+            input.tenantId,
+            input.rsid,
+          );
+          return {
             state: "failed",
             error: {
               code: "executor_unavailable",
               message: "dispatch did not begin before durable revocation",
             },
-          }),
-        };
+          };
+        }
+        const waiter = this.#waiters.get(input.correlationId);
+        if (waiter !== undefined) {
+          clearTimeout(waiter.timer);
+          this.#waiters.delete(input.correlationId);
+          waiter.resolve(this.#indeterminateOutcome(input.mutating));
+        }
       }
-      const waiter = this.#waiters.get(input.correlationId);
-      if (waiter !== undefined) {
-        clearTimeout(waiter.timer);
-        this.#waiters.delete(input.correlationId);
-        waiter.resolve(this.#indeterminateOutcome(input.mutating));
+      if (outcome.current === null) {
+        throw new GatewayRbpFault(
+          "unavailable",
+          "dispatch send did not install its waiter",
+          503,
+          1011,
+        );
       }
-    }
-    if (outcome.current === null) {
-      throw new GatewayRbpFault(
-        "unavailable",
-        "dispatch send did not install its waiter",
-        503,
-        1011,
-      );
-    }
-    return { outcome: outcome.current };
+      return await outcome.current;
+    } };
   }
 
   async #promoteEgressReservation(
