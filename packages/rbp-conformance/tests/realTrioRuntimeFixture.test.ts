@@ -4,6 +4,11 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 import {
+  redactBridgeTranscript,
+  RealTrioDocumentContextCursorJournal,
+} from "../src/realTrioSupervisor.js";
+
+import {
   REAL_TRIO_FIXTURE_DOCUMENT_ID,
   REAL_TRIO_RUNTIME_FAILURE_SCHEMA,
   RealTrioDocumentContextFailureError,
@@ -33,6 +38,109 @@ describe("WP-12 real-trio fixture document route gate", () => {
         cacheIncarnationDigest: `sha256:${"c".repeat(64)}`,
       } : {}),
     }) });
+
+  it("carries only a validated C# context digest through redaction and the cursor journal", () => {
+    const rsidHash = `sha256:${"a".repeat(64)}` as const;
+    const incarnation = `sha256:${"b".repeat(64)}` as const;
+    const contextDigest = "c".repeat(64);
+    const epoch = "123e4567-e89b-42d3-a456-426614174000";
+    const raw = (sourceOffset: number, stage: string, outcome: string, sequence: number | null,
+      digest: string | undefined = contextDigest) => ({
+      stream: "stderr" as const,
+      at: "2026-08-24T00:00:01.000Z",
+      sourceOffset,
+      line: JSON.stringify({
+        contractVersion: "revagent.rbp-document-context-observation/v1",
+        event: "bridge.document_context_observation",
+        stage, outcome, rsidHash, sequence,
+        ...(stage === "snapshot" || stage === "queue" || stage === "send" ? {
+          ...(digest === undefined ? {} : { contextDigest: digest }),
+          sourceRevision: 2,
+          cacheIncarnationDigest: incarnation,
+          documentId: "raw-document-id-must-not-cross",
+          payload: "raw-payload-must-not-cross",
+          sessionId: "raw-session-id-must-not-cross",
+        } : {}),
+      }),
+    });
+    const lifecycle = (digest: string | undefined = contextDigest) => [
+      raw(1, "probe", "started", null),
+      raw(2, "snapshot", "ready", null, digest),
+      raw(3, "queue", "durably_queued", 2, digest),
+      raw(4, "send", "sent", 2, digest),
+    ];
+    const route = (sequence: number, digest: string, ordinal: number) => {
+      const current = {
+        processEpoch: epoch, rsidHash, observedSequence: sequence, contextDigest: digest,
+        routeDigest: `sha256:${"d".repeat(64)}`,
+        recordDigest: `sha256:${"e".repeat(64)}`,
+        sessionBindingDigest: `sha256:${"f".repeat(64)}`,
+        connectionDigest: `sha256:${"1".repeat(64)}`,
+        sessionRecordVersion: 2,
+      };
+      return {
+        documentContextEpochSchema: "revagent.wp12-document-context-epoch/v1",
+        documentContextProcessEpoch: epoch,
+        documentContextGeneration: 1,
+        documentContextObservationHighWaterOrdinal: ordinal,
+        documentContextCurrentRoute: current,
+        documentContextUpdates: [{
+          contractVersion: "revagent.wp12-document-context-audit/v1",
+          event: "gateway.doc_context_update_observation",
+          stage: "accepted",
+          ...current,
+          observationOrdinal: ordinal,
+        }],
+      };
+    };
+    const preControlAudit = route(1, "2".repeat(64), 1);
+    const baseline = gatewayAuditBaseline(preControlAudit)!;
+    const baselineBeforeFailure = JSON.parse(JSON.stringify(baseline));
+    const select = (rows: readonly ReturnType<typeof raw>[]) => {
+      const journal = new RealTrioDocumentContextCursorJournal();
+      const snapshot = journal.snapshot(rows);
+      return selectCurrentDocumentContextSendFromCursor({
+        rows: snapshot.rows,
+        generation: snapshot.generation,
+        controlCursor: "0",
+        precedingProbe: null,
+        audit: route(2, contextDigest, 2),
+        baseline,
+        control: { revision: 2, cacheIncarnationDigest: incarnation },
+      });
+    };
+    const redacted = redactBridgeTranscript(lifecycle());
+    expect(redacted).toHaveLength(4);
+    expect(JSON.parse(redacted[1]!.line)).toMatchObject({
+      stage: "snapshot", sequence: null, contextDigest,
+      sourceRevision: 2, cacheIncarnationDigest: incarnation,
+    });
+    expect(JSON.stringify(redacted)).not.toContain("raw-document-id-must-not-cross");
+    expect(JSON.stringify(redacted)).not.toContain("raw-payload-must-not-cross");
+    expect(JSON.stringify(redacted)).not.toContain("raw-session-id-must-not-cross");
+    expect(select(lifecycle())).toMatchObject({ sequence: 2, contextDigest,
+      source: { sourceRevision: 2, cacheIncarnationDigest: incarnation } });
+
+    // A failed public-audit read is separate diagnostic metadata. It cannot
+    // replace or erase the pre-control causal baseline captured above.
+    const failure = createRealTrioDocumentContextFailure({
+      reason: "route_timeout", binding: "wss", timeline: ["control_ack"], transcript: [],
+      fixtureEvidence: null, gatewayAudit: null, coherentAudit: null,
+      coherentAuditControl: { outcome: "failure", error: "tls_pin", statusCode: null,
+        okKeyPresent: false, actionKeyPresent: false },
+      childState: { childExited: false, processDiagnostics: [] },
+    });
+    expect(failure.gatewayAuditControl).toEqual({ outcome: "failure", error: "tls_pin", statusCode: null,
+      okKeyPresent: false, actionKeyPresent: false });
+    expect(baseline).toEqual(baselineBeforeFailure);
+    expect(select(lifecycle())).not.toBeNull();
+
+    for (const invalidDigest of [undefined, "c".repeat(63), "C".repeat(64)]) {
+      const redactedInvalid = redactBridgeTranscript(lifecycle(invalidDigest));
+      expect(redactedInvalid).toHaveLength(1);
+      expect(select(lifecycle(invalidDigest))).toBeNull();
+    }
+  });
 
   it("uses cursor rows for strict control lifecycle and later ACK, never transcript indices", () => {
     const hash = `sha256:${"a".repeat(64)}`;

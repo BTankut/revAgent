@@ -39,7 +39,10 @@ describe("WP-12 bounded real-case-audit control outcomes", () => {
   });
 });
 
-function cursorObservation(stage: string, outcome: string, sequence: number, sourceOffset: number, hash = `sha256:${"a".repeat(64)}`) {
+function cursorObservation(stage: string, outcome: string, sequence: number | null, sourceOffset: number, hash = `sha256:${"a".repeat(64)}`) {
+  const payloadBearing = (stage === "snapshot" && outcome === "ready") ||
+    (stage === "queue" && outcome === "durably_queued") ||
+    (stage === "send" && outcome === "sent");
   return {
     stream: "stderr" as const,
     at: "2026-08-24T00:00:00.000Z",
@@ -52,6 +55,11 @@ function cursorObservation(stage: string, outcome: string, sequence: number, sou
       rsidHash: hash,
       payloadHash: `sha256:${"b".repeat(64)}`,
       sequence,
+      ...(payloadBearing ? {
+        contextDigest: "d".repeat(64),
+        sourceRevision: 1,
+        cacheIncarnationDigest: `sha256:${"c".repeat(64)}`,
+      } : {}),
     }),
   };
 }
@@ -105,7 +113,7 @@ describe("WP-12 C38 monotonic document-context cursor journal", () => {
     const journal = new RealTrioDocumentContextCursorJournal();
     const first = cursorObservation("probe", "started", 1, 1);
     const before = journal.snapshot([first]);
-    const second = cursorObservation("snapshot", "ready", 1, 2);
+    const second = cursorObservation("snapshot", "ready", null, 2);
     const since = journal.since(before.highWaterCursor, before.generation, [first, second]);
     const after = journal.snapshot([first, second]);
     expect(since).toMatchObject({ state: "ok", generation: before.generation });
@@ -499,6 +507,9 @@ describe("WP-12 real-trio v2 session smoke reader", () => {
           rsidHash: `sha256:${"a".repeat(64)}`,
           payloadHash: `sha256:${"b".repeat(64)}`,
           sequence: 7,
+          contextDigest: "c".repeat(64),
+          sourceRevision: 3,
+          cacheIncarnationDigest: `sha256:${"d".repeat(64)}`,
           path: "C:\\private",
           token: "never-retain",
         }),
@@ -516,6 +527,9 @@ describe("WP-12 real-trio v2 session smoke reader", () => {
       rsidHash: `sha256:${"a".repeat(64)}`,
       sequence: 7,
       payloadHashPresent: true,
+      contextDigest: "c".repeat(64),
+      sourceRevision: 3,
+      cacheIncarnationDigest: `sha256:${"d".repeat(64)}`,
     });
     expect(redactBridgeTranscript([{ stream: "stderr", at: "now", line: JSON.stringify({
       contractVersion: "revagent.rbp-document-context-observation/v1",
@@ -534,7 +548,7 @@ describe("WP-12 real-trio v2 session smoke reader", () => {
       contractVersion: "revagent.rbp-document-context-observation/v1",
       event: "bridge.document_context_observation", stage: "send", outcome: "sent",
       rsidHash: `sha256:${"a".repeat(64)}`, payloadHash: `sha256:${"b".repeat(64)}`,
-      sequence: 7,
+      sequence: 7, contextDigest: "d".repeat(64),
     };
     const valid = redactBridgeTranscript([{ stream: "stderr", at: "now", line: JSON.stringify({
       ...base, sourceRevision: 9, cacheIncarnationDigest: `sha256:${"c".repeat(64)}`,

@@ -333,6 +333,21 @@ const DOCUMENT_CONTEXT_OUTCOMES = new Set([
   "send_deferred",
 ]);
 const SHA256 = /^sha256:[0-9a-f]{64}$/u;
+const BARE_CONTEXT_DIGEST = /^[0-9a-f]{64}$/u;
+
+/**
+ * These three stages are the only child observations that carry the document
+ * context identity used by the strict current-route selector.  A digest on a
+ * different stage is not evidence and must not cross the redaction boundary.
+ */
+function isPayloadBearingDocumentContextStage(
+  stage: unknown,
+  outcome: unknown,
+): stage is "snapshot" | "queue" | "send" {
+  return (stage === "snapshot" && outcome === "ready") ||
+    (stage === "queue" && outcome === "durably_queued") ||
+    (stage === "send" && outcome === "sent");
+}
 
 /**
  * A fixture cache revision is meaningful only together with the incarnation
@@ -397,11 +412,19 @@ export function redactBridgeTranscript(
           (parsed.payloadHash === null || typeof parsed.payloadHash === "string") &&
           (parsed.sequence === null || isSafeDocumentContextSequence(parsed.sequence))) {
         const source = documentContextSourcePair(parsed);
+        const payloadBearing = isPayloadBearingDocumentContextStage(parsed.stage, parsed.outcome);
+        const contextDigest = typeof parsed.contextDigest === "string" &&
+          BARE_CONTEXT_DIGEST.test(parsed.contextDigest) ? parsed.contextDigest : null;
         // The real C# projection admits neither a partial pair nor malformed
         // source identity.  It is a diagnostic boundary, never a repair path.
         if ((parsed.sourceRevision === null || parsed.sourceRevision === undefined) !==
             (parsed.cacheIncarnationDigest === null || parsed.cacheIncarnationDigest === undefined) ||
-            ((parsed.sourceRevision !== null && parsed.sourceRevision !== undefined) && source === null)) continue;
+            ((parsed.sourceRevision !== null && parsed.sourceRevision !== undefined) && source === null) ||
+            // Snapshot is the only payload-bearing row without a queue/send
+            // sequence. A missing, malformed, or uppercase digest cannot be
+            // downgraded into a value-free diagnostic row.
+            (payloadBearing && (source === null || contextDigest === null ||
+              (parsed.stage === "snapshot" ? parsed.sequence !== null : !isSafeDocumentContextSequence(parsed.sequence))))) continue;
         retained.push(Object.freeze({
           stream: "stderr",
           at: record.at,
@@ -415,10 +438,14 @@ export function redactBridgeTranscript(
             rsidHash: parsed.rsidHash,
             sequence: isSafeDocumentContextSequence(parsed.sequence) ? parsed.sequence : null,
             payloadHashPresent: typeof parsed.payloadHash === "string" && SHA256.test(parsed.payloadHash),
-            ...(source === null ? {} : {
-              sourceRevision: source.sourceRevision,
-              cacheIncarnationDigest: source.cacheIncarnationDigest,
-            }),
+            // Never project payloads, document ids, or raw session ids. The
+            // bare digest and paired C# cache provenance are sufficient for
+            // causal correlation and have independently validated grammar.
+            ...(payloadBearing ? {
+              contextDigest: contextDigest!,
+              sourceRevision: source!.sourceRevision,
+              cacheIncarnationDigest: source!.cacheIncarnationDigest,
+            } : {}),
           }),
         }));
       }
@@ -465,6 +492,11 @@ export class RealTrioDocumentContextCursorJournal {
         const parsed = JSON.parse(retained.line) as unknown;
         if (!isObject(parsed) ||
             parsed.event !== "bridge.document_context_observation") continue;
+        const payloadBearing = isPayloadBearingDocumentContextStage(parsed.stage, parsed.outcome);
+        if (payloadBearing &&
+            (typeof parsed.contextDigest !== "string" || !BARE_CONTEXT_DIGEST.test(parsed.contextDigest) ||
+             documentContextSourcePair(parsed) === null ||
+             (parsed.stage === "snapshot" ? parsed.sequence !== null : !isSafeDocumentContextSequence(parsed.sequence)))) continue;
       } catch {
         continue;
       }
