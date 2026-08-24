@@ -45,7 +45,7 @@ describe("WP-12 real-trio fixture document route gate", () => {
     const contextDigest = "c".repeat(64);
     const epoch = "123e4567-e89b-42d3-a456-426614174000";
     const raw = (sourceOffset: number, stage: string, outcome: string, sequence: number | null,
-      digest: string | undefined = contextDigest) => ({
+      digest: string | null) => ({
       stream: "stderr" as const,
       at: "2026-08-24T00:00:01.000Z",
       sourceOffset,
@@ -58,7 +58,7 @@ describe("WP-12 real-trio fixture document route gate", () => {
           // commitment together with the bare contextDigest; the journal
           // intentionally retains only its presence bit after redaction.
           payloadHash: `sha256:${"9".repeat(64)}`,
-          ...(digest === undefined ? {} : { contextDigest: digest }),
+          ...(digest === null ? {} : { contextDigest: digest }),
           sourceRevision: 2,
           cacheIncarnationDigest: incarnation,
           documentId: "raw-document-id-must-not-cross",
@@ -74,7 +74,7 @@ describe("WP-12 real-trio fixture document route gate", () => {
         }),
       }),
     });
-    const lifecycle = (digest: string | undefined = contextDigest) => [
+    const lifecycle = (digest: string | null = contextDigest) => [
       raw(1, "probe", "started", null),
       raw(2, "snapshot", "ready", null, digest),
       raw(3, "queue", "durably_queued", 2, digest),
@@ -157,7 +157,7 @@ describe("WP-12 real-trio fixture document route gate", () => {
     expect(baseline).toEqual(baselineBeforeFailure);
     expect(select(lifecycle())).not.toBeNull();
 
-    for (const invalidDigest of [undefined, "c".repeat(63), "C".repeat(64)]) {
+    for (const invalidDigest of [null, "c".repeat(63), "C".repeat(64)]) {
       const redactedInvalid = redactBridgeTranscript(lifecycle(invalidDigest));
       expect(redactedInvalid).toHaveLength(1);
       expect(select(lifecycle(invalidDigest))).toBeNull();
