@@ -26,7 +26,7 @@ function admission(overrides: Partial<OmittedPayloadRecoveryAdmission> = {}): Om
     },
     originInvocationId: id(),
     originResultDigest: digest("a"),
-    recoveryInvocationId: id(),
+    newCarrierRecoveryInvocationId: id(),
     terminalEvidenceDigest: digest("b"),
     terminalRetentionExpiresAtMs: 1_775_000_060_000,
     ownerSessionExpiresAtMs: 1_775_000_120_000,
@@ -93,6 +93,25 @@ describe("omitted payload recovery CAS admission", () => {
       claimWithRetry(fixture.store, { ...value, terminalEvidenceDigest: digest("d") }),
     ]);
     expect(attempts).toEqual([{ kind: "guarded" }, { kind: "guarded" }, { kind: "guarded" }, { kind: "guarded" }]);
+  });
+
+  it("joins a new North request identity to the first durable carrier identity", async () => {
+    const fixture = createRestartableTestStore();
+    await fixture.store.open();
+    const first = admission();
+    const retry = {
+      ...first,
+      newCarrierRecoveryInvocationId: id(),
+    };
+    const winner = await claimWithRetry(fixture.store, first);
+    const joined = await claimWithRetry(fixture.store, retry);
+    expect(winner).toMatchObject({ kind: "admitted" });
+    expect(joined).toMatchObject({ kind: "resume" });
+    if (winner.kind === "guarded" || joined.kind === "guarded") {
+      throw new Error("exact recovery retry was unexpectedly guarded");
+    }
+    expect(joined.record.carrierRecoveryInvocationId)
+      .toBe(winner.record.carrierRecoveryInvocationId);
   });
 
   it("survives restart as a bounded resume and completes idempotently under a distinct ref digest", async () => {

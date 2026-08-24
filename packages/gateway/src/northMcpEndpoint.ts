@@ -176,8 +176,17 @@ export interface NorthMcpEndpointOptions {
       readonly rsid: string;
       readonly originInvocationId: string;
       readonly originResultDigest: `sha256:${string}`;
-      readonly recoveryInvocationId: string;
-    }): Promise<{ readonly kind: "admitted" | "resume" | "completed" | "guarded" }>;
+    }): Promise<{
+      readonly kind: "admitted" | "resume" | "completed" | "guarded";
+      readonly record?: { readonly carrierRecoveryInvocationId: string };
+    }>;
+    replayCompleted(input: {
+      readonly tenantId: string;
+      readonly userId: string;
+      readonly effectiveMcpSessionId: string;
+      readonly rsid: string;
+      readonly carrierRecoveryInvocationId: string;
+    }): Promise<GatewayJsonValue | null>;
   };
   /** O6 instruction package pin; independent from callable tool schemas. */
   readonly instructionVersion?: string;
@@ -884,6 +893,75 @@ function createSessionServer(input: {
           "dispatch",
           input.effectiveMcpRequestScope,
         );
+        let carrierRecoveryInvocationId: string | undefined;
+        if (record.name === C39_PAYLOAD_RECOVERY_CALLABLE) {
+          const raw = call.args as {
+            readonly origin_invocation_id?: unknown;
+            readonly expected_result_digest?: unknown;
+          };
+          if (
+            input.payloadRecovery === undefined ||
+            typeof raw.origin_invocation_id !== "string" ||
+            typeof raw.expected_result_digest !== "string"
+          ) {
+            return toolResult(Object.freeze({
+              ok: false as const, state: "failed" as const, toolName: record.name,
+              requestId: "correlated-recovery-guarded", executorReached: false,
+              error: Object.freeze({ code: "recovery_unavailable" as const }),
+            }));
+          }
+          try {
+            const route = await input.invocationRouteFor(
+              input.authenticated,
+              mcpSessionId,
+              input.effectiveMcpRequestScope,
+            );
+            const claim = await input.payloadRecovery.admit({
+              tenantId: input.authenticated.authContext.actor.tenantId,
+              userId: input.authenticated.authContext.actor.userId,
+              effectiveMcpSessionId: mcpSessionId,
+              rsid: route.rsid,
+              originInvocationId: raw.origin_invocation_id,
+              originResultDigest: raw.expected_result_digest as `sha256:${string}`,
+            });
+            if (claim.kind === "guarded" || claim.record === undefined) {
+              return toolResult(Object.freeze({
+                ok: false as const, state: "failed" as const, toolName: record.name,
+                requestId: "correlated-recovery-guarded", executorReached: false,
+                error: Object.freeze({ code: "recovery_unavailable" as const }),
+              }));
+            }
+            carrierRecoveryInvocationId = claim.record.carrierRecoveryInvocationId;
+            if (claim.kind === "completed") {
+              const replay = await input.payloadRecovery.replayCompleted({
+                tenantId: input.authenticated.authContext.actor.tenantId,
+                userId: input.authenticated.authContext.actor.userId,
+                effectiveMcpSessionId: mcpSessionId,
+                rsid: route.rsid,
+                carrierRecoveryInvocationId,
+              });
+              if (replay === null) {
+                return toolResult(Object.freeze({
+                  ok: false as const, state: "failed" as const, toolName: record.name,
+                  requestId: "correlated-recovery-guarded", executorReached: false,
+                  error: Object.freeze({ code: "recovery_unavailable" as const }),
+                }));
+              }
+              return modeAToolResult(Object.freeze({
+                ok: true,
+                state: "completed",
+                toolName: record.name,
+                result: replay,
+              }));
+            }
+          } catch {
+            return toolResult(Object.freeze({
+              ok: false as const, state: "failed" as const, toolName: record.name,
+              requestId: "correlated-recovery-guarded", executorReached: false,
+              error: Object.freeze({ code: "recovery_unavailable" as const }),
+            }));
+          }
+        }
         const outcome = await trackPromise(
           input.inflightOperations,
           dispatcher.dispatch({
@@ -893,33 +971,12 @@ function createSessionServer(input: {
             mcpSessionId,
             confirmationSessionId: mcpSessionId,
             effectiveMcpRequestScope: input.effectiveMcpRequestScope,
+            ...(carrierRecoveryInvocationId === undefined
+              ? {}
+              : { invocationIdOverride: carrierRecoveryInvocationId }),
             ...(call.confirmation === undefined
               ? {}
               : { confirmation: call.confirmation }),
-            ...(record.name !== C39_PAYLOAD_RECOVERY_CALLABLE || input.payloadRecovery === undefined
-              ? {}
-              : {
-                  beforeExecute: async (context) => {
-                    const raw = call.args as {
-                      readonly origin_invocation_id?: unknown;
-                      readonly expected_result_digest?: unknown;
-                    };
-                    if (
-                      typeof raw.origin_invocation_id !== "string" ||
-                      typeof raw.expected_result_digest !== "string"
-                    ) return false;
-                    const admitted = await input.payloadRecovery!.admit({
-                      tenantId: context.actor.tenantId,
-                      userId: context.actor.userId,
-                      effectiveMcpSessionId: context.mcpSessionId,
-                      rsid: context.rsid,
-                      originInvocationId: raw.origin_invocation_id,
-                      originResultDigest: raw.expected_result_digest as `sha256:${string}`,
-                      recoveryInvocationId: context.invocationId,
-                    });
-                    return admitted.kind !== "guarded";
-                  },
-                }),
             resolveRoute: (authContext) => {
               if (
                 authContext.principalKey !==

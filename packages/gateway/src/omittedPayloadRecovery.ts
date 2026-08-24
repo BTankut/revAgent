@@ -29,8 +29,8 @@ export interface OmittedPayloadRecoveryAdmission {
   readonly owner: OmittedPayloadRecoveryOwner;
   readonly originInvocationId: string;
   readonly originResultDigest: `sha256:${string}`;
-  /** Server-minted C1 recovery invocation; never caller-selected storage. */
-  readonly recoveryInvocationId: string;
+  /** Candidate used only if this exact durable identity has no prior record. */
+  readonly newCarrierRecoveryInvocationId: string;
   /** Gateway terminal-persistence proof; never supplied by an RBP peer. */
   readonly terminalEvidenceDigest: `sha256:${string}`;
   /** Bound by the admitted terminal's own bounded retention window. */
@@ -54,7 +54,8 @@ export interface OmittedPayloadRecoveryRecord {
   readonly owner: Omit<OmittedPayloadRecoveryOwner, "tenantId">;
   readonly originInvocationId: string;
   readonly originResultDigest: `sha256:${string}`;
-  readonly recoveryInvocationId: string;
+  /** Durable Bridge/C1 carrier identity, never a North MCP request id. */
+  readonly carrierRecoveryInvocationId: string;
   readonly terminalEvidenceDigest: `sha256:${string}`;
   readonly state: "awaiting_correlated_read" | "completed";
   readonly expiresAtMs: number;
@@ -83,7 +84,7 @@ function validOwner(value: OmittedPayloadRecoveryOwner): boolean {
 
 function validAdmission(value: OmittedPayloadRecoveryAdmission): boolean {
   return validOwner(value.owner) && isGatewayUuidV7(value.originInvocationId) &&
-    isGatewayUuidV7(value.recoveryInvocationId) &&
+    isGatewayUuidV7(value.newCarrierRecoveryInvocationId) &&
     DIGEST.test(value.originResultDigest) && DIGEST.test(value.terminalEvidenceDigest) &&
     Number.isSafeInteger(value.nowMs) && value.nowMs >= 0 &&
     Number.isSafeInteger(value.ownerSessionExpiresAtMs) &&
@@ -119,7 +120,7 @@ function parseRecord(value: GatewayJsonValue, tenantId: string, key: string): Om
     candidate.schema !== GATEWAY_OMITTED_PAYLOAD_RECOVERY_NAMESPACE ||
     candidate.recordVersion !== 1 || candidate.tenantId !== tenantId ||
     candidate.originInvocationId !== key || !isGatewayUuidV7(candidate.originInvocationId) ||
-    typeof candidate.recoveryInvocationId !== "string" || !isGatewayUuidV7(candidate.recoveryInvocationId) ||
+    typeof candidate.carrierRecoveryInvocationId !== "string" || !isGatewayUuidV7(candidate.carrierRecoveryInvocationId) ||
     typeof candidate.originResultDigest !== "string" || !DIGEST.test(candidate.originResultDigest) ||
     typeof candidate.terminalEvidenceDigest !== "string" || !DIGEST.test(candidate.terminalEvidenceDigest) ||
     owner === undefined || !validOwner({ tenantId, ...owner }) ||
@@ -142,7 +143,6 @@ function sameBinding(record: OmittedPayloadRecoveryRecord, admission: OmittedPay
     record.owner.sessionBindingId === owner.sessionBindingId &&
     record.owner.sessionVersion === owner.sessionVersion &&
     record.originInvocationId === admission.originInvocationId &&
-    record.recoveryInvocationId === admission.recoveryInvocationId &&
     record.originResultDigest === admission.originResultDigest &&
     record.terminalEvidenceDigest === admission.terminalEvidenceDigest &&
     record.expiresAtMs === Math.min(admission.ownerSessionExpiresAtMs, admission.terminalRetentionExpiresAtMs);
@@ -174,7 +174,7 @@ export async function claimOmittedPayloadRecovery(
       }),
       originInvocationId: admission.originInvocationId,
       originResultDigest: admission.originResultDigest,
-      recoveryInvocationId: admission.recoveryInvocationId,
+      carrierRecoveryInvocationId: admission.newCarrierRecoveryInvocationId,
       terminalEvidenceDigest: admission.terminalEvidenceDigest,
       state: "awaiting_correlated_read",
       expiresAtMs: Math.min(admission.ownerSessionExpiresAtMs, admission.terminalRetentionExpiresAtMs),
@@ -190,7 +190,7 @@ export async function claimOmittedPayloadRecovery(
     });
     tx.stage({
       namespace: GATEWAY_OMITTED_PAYLOAD_RECOVERY_INVOCATION_NAMESPACE,
-      key: admission.recoveryInvocationId,
+      key: admission.newCarrierRecoveryInvocationId,
       value: Object.freeze({
         originInvocationId: admission.originInvocationId,
         tenantId: admission.owner.tenantId,
@@ -202,7 +202,7 @@ export async function claimOmittedPayloadRecovery(
   const record = parseRecord(stored.value, admission.owner.tenantId, key);
   const invocation = await tx.read<GatewayJsonValue>(
     GATEWAY_OMITTED_PAYLOAD_RECOVERY_INVOCATION_NAMESPACE,
-    admission.recoveryInvocationId,
+    record?.carrierRecoveryInvocationId ?? admission.newCarrierRecoveryInvocationId,
   );
   if (
     record === null || !sameBinding(record, admission) ||
@@ -234,12 +234,12 @@ function isRecordInvocationIndex(
 export async function readOmittedPayloadRecoveryByInvocation(
   tx: StoreTransaction,
   owner: OmittedPayloadRecoveryCurrentOwner,
-  recoveryInvocationId: string,
+  carrierRecoveryInvocationId: string,
 ): Promise<OmittedPayloadRecoveryRecord | null> {
-  if (!validOwner(owner) || owner.active !== true || !isGatewayUuidV7(recoveryInvocationId)) return null;
+  if (!validOwner(owner) || owner.active !== true || !isGatewayUuidV7(carrierRecoveryInvocationId)) return null;
   const index = await tx.read<GatewayJsonValue>(
     GATEWAY_OMITTED_PAYLOAD_RECOVERY_INVOCATION_NAMESPACE,
-    recoveryInvocationId,
+    carrierRecoveryInvocationId,
   );
   const indexValue = index?.value;
   if (
@@ -250,7 +250,7 @@ export async function readOmittedPayloadRecoveryByInvocation(
   const originInvocationId = (indexValue as { originInvocationId: string }).originInvocationId;
   const stored = await tx.read<GatewayJsonValue>(GATEWAY_OMITTED_PAYLOAD_RECOVERY_NAMESPACE, originInvocationId);
   const record = stored === null ? null : parseRecord(stored.value, owner.tenantId, originInvocationId);
-  return record !== null && record.recoveryInvocationId === recoveryInvocationId &&
+  return record !== null && record.carrierRecoveryInvocationId === carrierRecoveryInvocationId &&
     record.owner.userId === owner.userId &&
     record.owner.effectiveMcpSessionId === owner.effectiveMcpSessionId &&
     record.owner.rsid === owner.rsid &&

@@ -333,7 +333,7 @@ export type GatewayOmittedPayloadRecoveryAdmissionInput = Readonly<{
   readonly sessionVersion: number;
   readonly originInvocationId: string;
   readonly originResultDigest: `sha256:${string}`;
-  readonly recoveryInvocationId: string;
+  readonly newCarrierRecoveryInvocationId: string;
 }>;
 
 type GatewayDocumentContextObserver = (
@@ -6649,7 +6649,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       !isGatewayUuidV7(input.sessionBindingId) ||
       !isSafePositiveInteger(input.sessionVersion) ||
       !isGatewayUuidV7(input.originInvocationId) ||
-      !isGatewayUuidV7(input.recoveryInvocationId) ||
+      !isGatewayUuidV7(input.newCarrierRecoveryInvocationId) ||
       !DIGEST_PATTERN.test(input.originResultDigest)
     ) return guarded();
     try {
@@ -6698,7 +6698,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
                 },
                 originInvocationId: input.originInvocationId,
                 originResultDigest: input.originResultDigest,
-                recoveryInvocationId: input.recoveryInvocationId,
+                newCarrierRecoveryInvocationId: input.newCarrierRecoveryInvocationId,
                 terminalEvidenceDigest: evidence.terminalDigest,
                 terminalRetentionExpiresAtMs: evidence.retentionExpiresAtMs,
                 ownerSessionExpiresAtMs: record.resumeExpiresAtMs,
@@ -6734,7 +6734,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
    */
   public async admitOmittedPayloadRecoveryFromNorth(input: Omit<
     GatewayOmittedPayloadRecoveryAdmissionInput,
-    "sessionBindingId" | "sessionVersion"
+    "sessionBindingId" | "sessionVersion" | "newCarrierRecoveryInvocationId"
   >): Promise<OmittedPayloadRecoveryClaim> {
     const active = this.#active.get(input.rsid);
     if (
@@ -6743,9 +6743,39 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     ) return Object.freeze({ kind: "guarded" as const });
     return this.admitOmittedPayloadRecovery({
       ...input,
+      newCarrierRecoveryInvocationId: gatewayUuidV7(this.#clock()),
       sessionBindingId: active.record.sessionBindingId,
       sessionVersion: active.record.sessionVersion,
     });
+  }
+
+  /** Returns only an already-active, current-scope recovery reference. */
+  public async replayOmittedPayloadRecoveryReferenceFromNorth(input: {
+    readonly tenantId: string;
+    readonly userId: string;
+    readonly effectiveMcpSessionId: string;
+    readonly rsid: string;
+    readonly carrierRecoveryInvocationId: string;
+  }): Promise<GatewayJsonValue | null> {
+    const active = this.#active.get(input.rsid);
+    if (
+      active === undefined || this.#resourceAuthority === undefined ||
+      active.tenantId !== input.tenantId || active.record.userId !== input.userId ||
+      !isGatewayUuidV7(input.carrierRecoveryInvocationId)
+    ) return null;
+    const { scope, effective } = this.#carrierScope(active.record);
+    if (effective.effectiveMcpSessionId !== input.effectiveMcpSessionId) return null;
+    const owner = await this.#recoveryOwnerForInvocation(
+      active.record,
+      input.carrierRecoveryInvocationId,
+    );
+    if (owner === null) return null;
+    const result = await this.#resourceAuthority.resumeRecoveryResultRef({
+      scope,
+      effectiveMcpRequestScope: effective,
+      owner,
+    });
+    return result === null ? null : (result as unknown as GatewayJsonValue);
   }
 
   /**
@@ -10487,7 +10517,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
 
   async #recoveryOwnerForInvocation(
     record: DurableRbpSession,
-    recoveryInvocationId: string,
+    carrierRecoveryInvocationId: string,
   ): Promise<RecoveryOwner | null> {
     const { scope, effective } = this.#carrierScope(record);
     const found = await this.#sessionRepository.transact(
@@ -10502,7 +10532,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         active: true,
         ownerSessionExpiresAtMs: record.resumeExpiresAtMs,
         nowMs: this.#clock(),
-      }, recoveryInvocationId),
+      }, carrierRecoveryInvocationId),
     );
     if (!found.ok || found.value === null || found.value.state !== "awaiting_correlated_read") return null;
     return Object.freeze({
@@ -10513,7 +10543,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       sessionBindingId: record.sessionBindingId,
       sessionBindingVersion: record.sessionVersion,
       rsid: record.rsid,
-      recoveryInvocationId,
+      recoveryInvocationId: carrierRecoveryInvocationId,
       originInvocationId: found.value.originInvocationId,
       originResultDigest: found.value.originResultDigest,
     });

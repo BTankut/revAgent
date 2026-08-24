@@ -1070,6 +1070,37 @@ export class GatewayResourceAuthority {
   }
 
   /**
+   * Replays only an already-active C39 reference. It cannot stage, finalize,
+   * read bytes, or revive an expired recovery; current owner reauthorization
+   * remains mandatory on every retry.
+   */
+  public async resumeRecoveryResultRef(input: {
+    readonly scope: GatewayResourceScope;
+    readonly effectiveMcpRequestScope: EffectiveMcpRequestScopeV1;
+    readonly owner: RecoveryOwner;
+  }): Promise<GatewayResultRef | null> {
+    try {
+      assertScope(input.scope);
+      assertEffectiveScope(input.scope, input.effectiveMcpRequestScope);
+      this.#assertRecoveryOwner(input.scope, input.owner);
+      const completion = await this.#protocolStore.transact(
+        { tenantId: input.scope.tenantId },
+        (tx) => tx.read<GatewayJsonValue>(
+          RECOVERY_COMPLETION_NAMESPACE,
+          recoveryCompletionKey(input.owner),
+        ),
+      );
+      const record = completion.ok
+        ? asRecoveryCompletion(completion.value?.value)
+        : null;
+      if (record === null || record.state !== "active") return null;
+      return await this.#deliverRecoveryResultRef(input.scope, input.owner, record.refId);
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * A capability is not evidence of a carrier.  The bridge may grant carrier
    * capabilities only when this exact authority owns its exact protocol store
    * and has a non-stub object-store port.  No serving path calls this as a

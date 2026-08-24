@@ -34,7 +34,7 @@ import {
   type GatewayInvocationRoute,
   type EffectiveMcpRequestScopeV1,
 } from "./invocationContext.js";
-import { gatewayUuidV7 } from "./identifiers.js";
+import { gatewayUuidV7, isGatewayUuidV7 } from "./identifiers.js";
 import type {
   GatewayDurableBatchTerminal,
   GatewayExpectedMutationDispatch,
@@ -729,6 +729,8 @@ export interface GatewayDispatchRequest {
   readonly mcpSessionId: string;
   /** Required immutable carrier minted once at north ingress. */
   readonly effectiveMcpRequestScope: EffectiveMcpRequestScopeV1;
+  /** Gateway-owned durable carrier identity for an idempotent C39 retry. */
+  readonly invocationIdOverride?: string;
   /**
    * C39-only authority hook. It runs after the immutable context is minted
    * and the durable RSID window is held, but before any executor contact.
@@ -2162,7 +2164,24 @@ export class GatewayDispatcher {
   ): Promise<GatewayDispatchOutcome> {
     const startedAtMs = this.#clock();
     const attemptId = this.#newAttemptId(startedAtMs);
-    const invocationId = this.#newInvocationId(startedAtMs);
+    const invocationId = input.invocationIdOverride ?? this.#newInvocationId(startedAtMs);
+    if (
+      input.invocationIdOverride !== undefined &&
+      !isGatewayUuidV7(input.invocationIdOverride)
+    ) {
+      return Object.freeze({
+        ok: false as const,
+        state: "failed" as const,
+        toolName: input.toolName,
+        requestId: "effective-mcp-scope-rejected",
+        executorReached: false,
+        error: Object.freeze({
+          code: "invalid_invocation_context" as const,
+          detailCode: "invalid_invocation_route",
+          message: "Gateway-owned invocation identity is invalid",
+        }),
+      });
+    }
     const auth = snapshotAuthContext(input.auth);
     const confirmationSessionId = confirmationSessionIdFor(
       auth,

@@ -1264,7 +1264,7 @@ describe("Gateway omitted-payload recovery admission", () => {
       await expect(created.admitOmittedPayloadRecovery({
         tenantId: TENANT_ID, userId: USER_ID, effectiveMcpSessionId: MCP_SESSION_ID,
         rsid: session.payload.rsid, sessionBindingId: binding.sessionBindingId,
-        sessionVersion: binding.sessionVersion, originInvocationId: invocationId, originResultDigest, recoveryInvocationId: id(),
+        sessionVersion: binding.sessionVersion, originInvocationId: invocationId, originResultDigest, newCarrierRecoveryInvocationId: id(),
       })).resolves.toEqual({ kind: "guarded" });
     } finally {
       await created.close();
@@ -1303,7 +1303,7 @@ describe("Gateway omitted-payload recovery admission", () => {
       await expect(created.admitOmittedPayloadRecovery({
         tenantId: TENANT_ID, userId: USER_ID, effectiveMcpSessionId: MCP_SESSION_ID,
         rsid: session.payload.rsid, sessionBindingId: binding.sessionBindingId,
-        sessionVersion: binding.sessionVersion, originInvocationId: invocationId, originResultDigest, recoveryInvocationId: id(),
+        sessionVersion: binding.sessionVersion, originInvocationId: invocationId, originResultDigest, newCarrierRecoveryInvocationId: id(),
       })).resolves.toEqual({ kind: "guarded" });
     } finally {
       // The deliberately corrupt durable child also makes shutdown fail closed.
@@ -1368,7 +1368,7 @@ describe("Gateway omitted-payload recovery admission", () => {
         sessionVersion: sessionBinding.sessionVersion,
         originInvocationId: invocationId,
         originResultDigest,
-        recoveryInvocationId: id(),
+        newCarrierRecoveryInvocationId: id(),
       };
       const claims = await Promise.all(Array.from({ length: 8 }, async () =>
         await created.admitOmittedPayloadRecovery(input),
