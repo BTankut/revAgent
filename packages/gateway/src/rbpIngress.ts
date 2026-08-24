@@ -16,6 +16,7 @@ import { WebSocket, WebSocketServer, type RawData } from "ws";
 import {
   GatewayRbpFault,
   type BridgeConnectionChannel,
+  type DispatchPreStartCancellation,
   type DispatchTransportHandoff,
   type GatewayBridgeSessionAuthority,
 } from "./bridgeSession.js";
@@ -83,8 +84,8 @@ async function boundedDispatchRevalidate(
     }
   } catch (error) {
     controller.abort();
-    const released = await boundedDispatchCancellation(handoff);
-    if (!released) {
+    const settlement = await boundedDispatchCancellation(handoff);
+    if (settlement !== "settled_no_send") {
       throw new Error("dispatch cancellation cleanup is uncertain; durable reservation remains frozen");
     }
     throw error;
@@ -95,21 +96,32 @@ async function boundedDispatchRevalidate(
 
 async function boundedDispatchCancellation(
   handoff: DispatchTransportHandoff,
-): Promise<boolean> {
-  const cleanup = handoff.cancelBeforeStart();
+): Promise<DispatchPreStartCancellation> {
+  return await observeDispatchCancellation(handoff.cancelBeforeStart());
+}
+
+/** Observe one shared cancellation task without turning a timeout into truth. */
+async function observeDispatchCancellation(
+  cleanup: Promise<boolean>,
+): Promise<DispatchPreStartCancellation> {
   // A late store completion must never create an unhandled rejection after a
   // transport queue has advanced past this cancelled generation.
   void cleanup.catch(() => undefined);
   let timer: ReturnType<typeof setTimeout> | null = null;
   try {
-    return await Promise.race([
+    const observed = await Promise.race([
       cleanup,
       new Promise<boolean>((resolve) => {
+        // This is an observation bound, not a durable outcome. The shared
+        // handoff promise continues after connection detach/queue advance.
         timer = setTimeout(() => resolve(false), RBP_DISPATCH_CLEANUP_TIMEOUT_MS);
       }),
     ]);
+    return observed === true
+      ? "settled_no_send"
+      : "cancellation_pending";
   } catch {
-    return false;
+    return "cancellation_pending";
   } finally {
     if (timer !== null) clearTimeout(timer);
   }
@@ -669,7 +681,7 @@ class HttpSseChannel implements BridgeConnectionChannel {
       const failure = new Error("SSE dispatch queue cancelled before invocation");
       rejectStarted(failure);
       rejectCompletion(failure);
-      return await boundedDispatchCancellation(handoff);
+      return (await boundedDispatchCancellation(handoff)) === "settled_no_send";
     };
     return { started, completion, cancel };
   }
@@ -1515,6 +1527,12 @@ export function createProductionRbpIngressHost(
               nextFrames > egressQueuedFrameLimit ||
               nextBytes > egressQueuedByteLimit
             ) {
+              // Claim the one durable cancellation task before closing this
+              // transport. Teardown may detach the connection immediately;
+              // it must inherit this task rather than race a stale session
+              // write against phase two.
+              const cleanup = handoff.cancelBeforeStart();
+              void cleanup.catch(() => undefined);
               egressOverload();
               throw new Error("WSS application egress queue overloaded");
             }
@@ -1557,6 +1575,11 @@ export function createProductionRbpIngressHost(
             // become a process-level unhandled rejection.
             void started.catch(() => undefined);
             let cancelled = false;
+            // `startedSettled` means only that the caller was notified. A
+            // synchronous queue rejection also settles it, but has not
+            // crossed websocket.send(). Cancellation must remain eligible
+            // until that concrete invocation boundary.
+            let transportStarted = false;
             const controller = new AbortController();
             const rejectStart = (error: unknown): void => {
               if (startedSettled) return;
@@ -1570,6 +1593,8 @@ export function createProductionRbpIngressHost(
               nextFrames > egressQueuedFrameLimit ||
               nextBytes > egressQueuedByteLimit
             ) {
+              const cleanup = handoff.cancelBeforeStart();
+              void cleanup.catch(() => undefined);
               egressOverload();
               const overloadError = new Error("WSS application egress queue overloaded");
               rejectStart(overloadError);
@@ -1581,12 +1606,10 @@ export function createProductionRbpIngressHost(
               // durable cancellation wins.  The promise is intentionally
               // shared so a started-race cleanup and teardown cannot each
               // invoke a new cancellation against a later lease.
-              let cancellation: Promise<boolean> | null = null;
+              let cancellation: Promise<DispatchPreStartCancellation> | null =
+                observeDispatchCancellation(cleanup);
               const cancel = async (): Promise<boolean> => {
-                if (cancellation === null) {
-                  cancellation = boundedDispatchCancellation(handoff);
-                }
-                return await cancellation;
+                return (await cancellation) === "settled_no_send";
               };
               return { started, completion, cancel };
             }
@@ -1615,6 +1638,7 @@ export function createProductionRbpIngressHost(
                 const cancel = (error: Error): void => finish(error);
                 pendingSendCancellations.add(cancel);
                 try {
+                  transportStarted = true;
                   websocket.send(serialized, (error) => finish(error));
                   if (!startedSettled) {
                     startedSettled = true;
@@ -1634,11 +1658,11 @@ export function createProductionRbpIngressHost(
               started,
               completion,
               async cancel(): Promise<boolean> {
-                if (startedSettled) return false;
+                if (transportStarted) return false;
                 cancelled = true;
                 controller.abort();
                 rejectStart(new Error("WSS dispatch queue cancelled before invocation"));
-                return await boundedDispatchCancellation(handoff);
+                return (await boundedDispatchCancellation(handoff)) === "settled_no_send";
               },
             };
           };

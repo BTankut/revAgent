@@ -696,14 +696,14 @@ interface DurableEgressReservation {
  */
 class PreStartCancellationCoordinator {
   #cancelRequested = false;
-  #cancellation: Promise<boolean> | null = null;
+  #cancellation: Promise<DispatchPreStartCancellation> | null = null;
   #promotion: Promise<DurableEgressReservation> | null = null;
 
   public constructor(
-    private readonly releaseReserved: () => Promise<boolean>,
+    private readonly releaseReserved: () => Promise<DispatchPreStartCancellation>,
   ) {}
 
-  public requestCancel(): Promise<boolean> {
+  public requestCancel(): Promise<DispatchPreStartCancellation> {
     this.#cancelRequested = true;
     if (this.#cancellation === null) {
       this.#cancellation = this.releaseReserved();
@@ -756,9 +756,17 @@ class PreStartCancellationCoordinator {
 /** In-memory-only dispatch handoff; no proof or lease data crosses the carrier. */
 export interface DispatchTransportHandoff {
   readonly revalidate: (signal: AbortSignal) => Promise<void>;
-  /** True only after the exact reserved fence was durably released. */
+  /**
+   * True is only a local adapter observation. The authority rechecks the
+   * exact durable no-send receipt before treating it as semantic settlement.
+   */
   readonly cancelBeforeStart: () => Promise<boolean>;
 }
+
+export type DispatchPreStartCancellation =
+  | "settled_no_send"
+  | "cancellation_pending"
+  | "promotion_won";
 
 interface ReservedResumeAck extends DurableEgressReservation {
   readonly serialized: string;
@@ -7277,8 +7285,8 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
    */
   async #markReservedEgressCancellationPending(
     reservation: DurableEgressReservation,
-  ): Promise<boolean> {
-    if (reservation.lease.operation !== "dispatch") return true;
+  ): Promise<"marked" | "cancellation_pending" | "promotion_won"> {
+    if (reservation.lease.operation !== "dispatch") return "marked";
     for (let attempt = 0; attempt < MAX_AUTHORIZATION_CAS_ATTEMPTS; attempt += 1) {
       const attempted: { current: {
         readonly prior: StoredRecord<GatewayJsonValue>;
@@ -7291,7 +7299,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
             GATEWAY_RBP_SESSION_NAMESPACE,
             reservation.rsid,
           );
-          if (stored === null) return { kind: "not_reserved" as const };
+          if (stored === null) return { kind: "cancellation_pending" as const };
           const record = parseStoredSession(stored, reservation.tenantId, reservation.rsid);
           const fence = sessionEgressFence(record);
           const pending = record.pending;
@@ -7303,7 +7311,14 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
             pending.envelopeDigest === reservation.lease.envelopeDigest &&
             pending.expectedNoSendAuthorityDigest !== undefined &&
             pending.expectedNoSendAuthorityDigest !== null;
-          if (!exactLease || !exactPending) return { kind: "not_reserved" as const };
+          if (!exactLease || !exactPending) {
+            // A changed lease/pending/authority is never evidence that this
+            // cancellation won.  In particular, do not reopen a fence after a
+            // racing promotion or a foreign durable writer.
+            return {
+              kind: fence.lease?.phase === "started" ? "promotion_won" as const : "cancellation_pending" as const,
+            };
+          }
           const expectedNoSendAuthorityDigest = pending.expectedNoSendAuthorityDigest!;
           if (fence.state === "cancellation_pending") {
             const existing = fence.cancellation;
@@ -7313,10 +7328,10 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
               existing.envelopeDigest === reservation.lease.envelopeDigest &&
               existing.expectedNoSendAuthorityDigest === expectedNoSendAuthorityDigest
               ? { kind: "pending" as const }
-              : { kind: "not_reserved" as const };
+              : { kind: "cancellation_pending" as const };
           }
           if (fence.state !== "open" || fence.revocation !== null || fence.cancellation !== null) {
-            return { kind: "not_reserved" as const };
+            return { kind: "cancellation_pending" as const };
           }
           const cancellation: DurableEgressCancellation = {
             leaseId: reservation.lease.leaseId,
@@ -7361,9 +7376,11 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         },
       );
       if (marked.ok) {
-        if (marked.value.kind === "not_reserved") return false;
+        if (marked.value.kind !== "marked" && marked.value.kind !== "pending") {
+          return marked.value.kind;
+        }
         if (marked.value.kind === "marked") this.#syncActiveRecord(marked.value.next);
-        return true;
+        return "marked";
       }
       if (marked.code === "conflict") continue;
       if (marked.code === "durability_uncertain" && attempted.current !== null) {
@@ -7371,18 +7388,20 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         const readBack = await this.#readStoredSession(reservation.tenantId, reservation.rsid);
         if (readBack !== null && sameJson(readBack.value, evidence.next)) {
           this.#syncActiveRecord(parseStoredSession(readBack, reservation.tenantId, reservation.rsid));
-          return true;
+          return "marked";
         }
-        if (readBack !== null && readBack.version === evidence.prior.version && sameJson(readBack.value, evidence.prior.value)) continue;
+        // Durability uncertainty is not a conflict retry. The durable fence
+        // stays fail-closed until a later recovery/resume can prove it.
+        return "cancellation_pending";
       }
-      throw new GatewayRbpFault("unavailable", marked.message, 503, 1011);
+      return "cancellation_pending";
     }
-    return false;
+    return "cancellation_pending";
   }
 
   async #settleReservedEgressCancellation(
     reservation: DurableEgressReservation,
-  ): Promise<boolean> {
+  ): Promise<DispatchPreStartCancellation> {
     for (let attempt = 0; attempt < MAX_AUTHORIZATION_CAS_ATTEMPTS; attempt += 1) {
       const attempted: { current: {
         readonly prior: StoredRecord<GatewayJsonValue>;
@@ -7395,7 +7414,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
             GATEWAY_RBP_SESSION_NAMESPACE,
             reservation.rsid,
           );
-          if (stored === null) return { kind: "not_reserved" as const };
+          if (stored === null) return { kind: "cancellation_pending" as const };
           const record = parseStoredSession(stored, reservation.tenantId, reservation.rsid);
           const fence = sessionEgressFence(record);
           const cancellation = fence.cancellation;
@@ -7423,7 +7442,9 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
                   invocationId: record.pending?.invocationId ?? null,
                 })))) ||
             (reservation.lease.operation !== "dispatch" && fence.state !== "open")
-          ) return { kind: "not_reserved" as const };
+          ) return {
+            kind: fence.lease?.phase === "started" ? "promotion_won" as const : "cancellation_pending" as const,
+          };
           const cancelledPending =
             record.pending?.envelopeDigest === reservation.lease.envelopeDigest
               ? record.pending
@@ -7513,9 +7534,9 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         },
       );
       if (released.ok) {
-        if (released.value.kind !== "released") return false;
+        if (released.value.kind !== "released") return released.value.kind;
         this.#syncActiveRecord(released.value.next);
-        return true;
+        return "settled_no_send";
       }
       if (released.code === "conflict") continue;
       if (released.code === "durability_uncertain" && attempted.current !== null) {
@@ -7523,24 +7544,71 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         const readBack = await this.#readStoredSession(reservation.tenantId, reservation.rsid);
         if (readBack !== null && sameJson(readBack.value, evidence.next)) {
           this.#syncActiveRecord(parseStoredSession(readBack, reservation.tenantId, reservation.rsid));
-          return true;
+          return "settled_no_send";
         }
         // A reservation whose release cannot be proven is an unavailable
         // dispatch path, never a license to retry or replay it in memory.
       }
-      throw new GatewayRbpFault("unavailable", released.message, 503, 1011);
+      return "cancellation_pending";
     }
-    return false;
+    return "cancellation_pending";
   }
 
   async #releaseReservedEgressLease(
     reservation: DurableEgressReservation,
-  ): Promise<boolean> {
+  ): Promise<DispatchPreStartCancellation> {
     // Phase one must complete before the no-send receipt may be minted. A
     // caller's timeout is only an observation bound; this shared promise
     // continues through phase two in the background coordinator.
-    if (!(await this.#markReservedEgressCancellationPending(reservation))) return false;
+    const marked = await this.#markReservedEgressCancellationPending(reservation);
+    if (marked === "promotion_won" || marked === "cancellation_pending") return marked;
     return await this.#settleReservedEgressCancellation(reservation);
+  }
+
+  /**
+   * A legacy adapter Boolean is only an observation about its local queue.
+   * Treat it as settled only after the durable v2 row proves the exact
+   * receipt/journal/fence transition; otherwise retain the fail-closed
+   * cancellation-pending outcome for recovery.
+   */
+  async #confirmNoSendCancellation(
+    reservation: DurableEgressReservation,
+  ): Promise<DispatchPreStartCancellation> {
+    const stored = await this.#readStoredSession(reservation.tenantId, reservation.rsid);
+    if (stored === null) return "cancellation_pending";
+    let record: DurableRbpSession;
+    try {
+      record = parseStoredSession(stored, reservation.tenantId, reservation.rsid);
+    } catch {
+      return "cancellation_pending";
+    }
+    const fence = sessionEgressFence(record);
+    if (fence.lease?.phase === "started") return "promotion_won";
+    const evidence = record.evidence.find(
+      (candidate) => candidate.envelopeDigest === reservation.lease.envelopeDigest,
+    );
+    const receipt = evidence?.noSendReceipt ?? null;
+    if (
+      fence.state !== "open" ||
+      fence.lease !== null ||
+      fence.cancellation !== null ||
+      record.pending !== null ||
+      evidence?.acceptance !== null ||
+      evidence?.journal?.kind !== "known_terminal" ||
+      receipt === null ||
+      receipt.envelopeDigest !== reservation.lease.envelopeDigest ||
+      receipt.leaseTicket !== reservation.lease.ticket ||
+      receipt.leaseHolderInstanceId !== reservation.lease.holderInstanceId ||
+      receipt.transportStarted !== false ||
+      receipt.cumulativeAck !== null ||
+      evidence.noSendAuthorityDigest !== receipt.authorityDigest
+    ) {
+      return "cancellation_pending";
+    }
+    const { authorityDigest: _authorityDigest, recordedAtMs: _recordedAtMs, ...coordinates } = receipt;
+    return noSendAuthorityDigest({ ...coordinates, binding: record.binding }) === receipt.authorityDigest
+      ? "settled_no_send"
+      : "cancellation_pending";
   }
 
   async #sendWithDurableReservation(
@@ -7564,7 +7632,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     let releaseFailure: unknown = null;
     let sendBegan = false;
     let completedAndVerified = false;
-    let provenPreStartCancellation = false;
+    let cancellationOutcome: DispatchPreStartCancellation | null = null;
     let started: DurableEgressReservation | null = null;
     const preStartCancellation = new PreStartCancellationCoordinator(
       async () => await this.#releaseReservedEgressLease(reservation),
@@ -7593,7 +7661,8 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
           if (signal.aborted) throw new GatewayRbpFault("unavailable", "dispatch carrier cancelled before invocation", 503, 1011);
           this.#assertAuthorityTicket(authorityTicket, connection, { session: started.record });
         },
-        cancelBeforeStart: async () => await preStartCancellation.requestCancel(),
+        cancelBeforeStart: async () =>
+          (await preStartCancellation.requestCancel()) === "settled_no_send",
       });
       if (startedDispatch === undefined) {
         started = await this.#promoteEgressReservation(reservation);
@@ -7622,7 +7691,10 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
           // cancel() is linearized with the adapter invocation boundary.  A
           // true result proves no bytes were handed to transport; a false
           // result means the outcome is already started/indeterminate.
-          provenPreStartCancellation = await startedDispatch.cancel();
+          const cancellation = await startedDispatch.cancel();
+          cancellationOutcome = cancellation
+            ? await this.#confirmNoSendCancellation(reservation)
+            : "cancellation_pending";
           throw error;
         } finally {
           if (startTimer !== null) clearTimeout(startTimer);
@@ -7646,7 +7718,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         // for terminal/recovery handling; mutating work remains held.
         if (started !== null && completedAndVerified) {
           await this.#releaseStartedEgressLease(started);
-        } else if (started === null && provenPreStartCancellation) {
+        } else if (started === null && cancellationOutcome === "settled_no_send") {
           // cancelBeforeStart already performed the exact durable release.
         }
       } catch (error) {
@@ -8222,31 +8294,47 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       (candidate) => candidate.envelopeDigest === expected.envelopeDigest,
     );
     if (evidence === undefined) return { kind: "not_durable_yet" };
-    if (
-      evidence.noSendReceipt !== undefined &&
-      evidence.noSendReceipt !== null &&
-      (evidence.noSendAuthorityDigest === undefined ||
+    const expectedJournalBindingsPresent = evidence.journal === null ||
+      !expected.invocationBindings.some((binding) =>
+        !evidence.journal!.journalRecords.some(
+          (record) =>
+            record.bindingDigest === binding.bindingDigest &&
+            `${record.binding.rsid}/${record.binding.invocationId}` ===
+              binding.idempotencyKey,
+        ),
+      );
+    const noSend = evidence.noSendReceipt ?? null;
+    if (noSend !== null) {
+      // No-send is a distinct terminal proof, not an ACK with a null value.
+      // It must bind the exact public recovery coordinates and retain the
+      // no-invocation facts; acceptance is prohibited on this branch.
+      if (
+        evidence.acceptance !== null ||
+        evidence.journal?.kind !== "known_terminal" ||
+        noSend.gatewaySequence !== expected.gatewaySequence ||
+        noSend.envelopeDigest !== expected.envelopeDigest ||
+        noSend.sessionBindingId !== expected.sessionBindingId ||
+        noSend.transportStarted !== false ||
+        noSend.cumulativeAck !== null ||
+        !expectedJournalBindingsPresent
+      ) {
+        return { kind: "protocol_fault", reason: "dispatch_evidence_mismatch" };
+      }
+      if (
+        evidence.noSendAuthorityDigest === undefined ||
         evidence.noSendAuthorityDigest === null ||
-        evidence.noSendAuthorityDigest !== evidence.noSendReceipt.authorityDigest ||
+        evidence.noSendAuthorityDigest !== noSend.authorityDigest ||
         (() => {
-          const { authorityDigest: _authorityDigest, recordedAtMs: _recordedAtMs, ...coordinates } = evidence.noSendReceipt!;
+          const { authorityDigest: _authorityDigest, recordedAtMs: _recordedAtMs, ...coordinates } = noSend;
           return noSendAuthorityDigest({ ...coordinates, binding: session.binding }) !==
-            evidence.noSendReceipt!.authorityDigest;
-        })())
-    ) {
-      return { kind: "protocol_fault", reason: "no_send_authority_mismatch" };
-    }
-    if (
+            noSend.authorityDigest;
+        })()
+      ) {
+        return { kind: "protocol_fault", reason: "no_send_authority_mismatch" };
+      }
+    } else if (
       evidence.acceptance?.gatewaySequence !== expected.gatewaySequence ||
-      (evidence.journal !== null &&
-        expected.invocationBindings.some((binding) =>
-          !evidence.journal!.journalRecords.some(
-            (record) =>
-              record.bindingDigest === binding.bindingDigest &&
-              `${record.binding.rsid}/${record.binding.invocationId}` ===
-                binding.idempotencyKey,
-          ),
-        ))
+      !expectedJournalBindingsPresent
     ) {
       return { kind: "protocol_fault", reason: "dispatch_evidence_mismatch" };
     }

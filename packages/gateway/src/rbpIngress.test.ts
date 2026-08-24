@@ -1247,8 +1247,14 @@ describe("GW-12 production RBP ingress", () => {
       // The capacity-one carrier rejected before its transport invocation
       // boundary; only the occupying real websocket.send is observable.
       expect(vi.mocked(serverSocket.send).mock.calls).toHaveLength(sendsBeforeDispatch);
-      const durable = JSON.stringify(restartable.snapshot().records);
-      expect(durable).toContain("no_send");
+      // The caller's bounded cancellation observation is not semantic
+      // settlement. Poll the real durable row for the background phase-two
+      // CAS rather than interpreting the immediate unavailable result.
+      await vi.waitFor(() => {
+        const durable = JSON.stringify(restartable.snapshot().records);
+        expect(durable).toContain("no_send");
+        expect(durable).not.toContain("cancellation_pending");
+      });
 
       held.callbacks.shift()!();
       await occupying.catch(() => undefined);
