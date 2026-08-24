@@ -264,6 +264,37 @@ public sealed partial class RbpConnectionCoordinatorTests
     }
 
     [Fact]
+    public async Task ChangedFixtureIncarnationWithSameRevisionAndPayloadEmitsFreshMetadataFreeUpdate()
+    {
+        const string incarnation =
+            "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+        await using var harness = await DocContextHarness.StartAsync(
+            DocContextLocalSession(8092, 1021));
+        await EventuallyAsync(() => harness.SentDocContextUpdates().Length == 1);
+        RbpEnvelope first = harness.SentDocContextUpdates()[0];
+
+        harness.Channel.SetSnapshot(revision: 1, title: "Project A", incarnation);
+        harness.Clock.Advance(TimeSpan.FromSeconds(15));
+        await EventuallyAsync(() => harness.SentDocContextUpdates().Length == 2);
+
+        RbpEnvelope second = harness.SentDocContextUpdates()[1];
+        Assert.Equal(first.Payload.GetRawText(), second.Payload.GetRawText());
+        Assert.False(second.Payload.TryGetProperty("cache_incarnation_digest", out _));
+        Assert.DoesNotContain("cache_incarnation", second.Payload.GetRawText(), StringComparison.Ordinal);
+        Assert.Contains(harness.Observations, observation =>
+            observation.Stage == "snapshot" &&
+            observation.Outcome == "ready" &&
+            observation.SourceRevision == 1 &&
+            observation.CacheIncarnationDigest == incarnation);
+
+        // Same process/cache incarnation on the next poll stays deduped.
+        harness.Clock.Advance(TimeSpan.FromSeconds(15));
+        await EventuallyAsync(() => harness.Channel.CallCount >= 3);
+        await Task.Delay(30);
+        Assert.Equal(2, harness.SentDocContextUpdates().Length);
+    }
+
+    [Fact]
     public async Task ResumeTriggersAnImmediatePollWithoutATick()
     {
         RbpLocalSessionSnapshot local = DocContextLocalSession(8083, 1003);
@@ -484,6 +515,7 @@ public sealed partial class RbpConnectionCoordinatorTests
         private int _failNextRoutes;
         private long _revision = 1;
         private string _title = "Project A";
+        private string? _incarnation;
 
         internal int CallCount => Volatile.Read(ref _callCount);
 
@@ -498,12 +530,13 @@ public sealed partial class RbpConnectionCoordinatorTests
         internal void FailNextRoute() =>
             Interlocked.Increment(ref _failNextRoutes);
 
-        internal void SetSnapshot(long revision, string title)
+        internal void SetSnapshot(long revision, string title, string? incarnation = null)
         {
             lock (_methods)
             {
                 _revision = revision;
                 _title = title;
+                _incarnation = incarnation;
             }
         }
 
@@ -546,24 +579,30 @@ public sealed partial class RbpConnectionCoordinatorTests
 
             long revision;
             string title;
+            string? incarnation;
             lock (_methods)
             {
                 revision = _revision;
                 title = _title;
+                incarnation = _incarnation;
             }
 
             var lease = new RecordingLease();
             _leases.Enqueue(lease);
             return Task.FromResult(
-                DocContextOutcome(call, revision, title, lease));
+                DocContextOutcome(call, revision, title, incarnation, lease));
         }
 
         private static RbpAddinOutcome DocContextOutcome(
             AddinCall call,
             long revision,
             string title,
+            string? incarnation,
             IRbpDispatchLease lease)
         {
+            string incarnationProperty = incarnation == null
+                ? string.Empty
+                : ",\"cache_incarnation_digest\":\"" + incarnation + "\"";
             string result =
                 $$"""
                 {
@@ -590,7 +629,7 @@ public sealed partial class RbpConnectionCoordinatorTests
                     "type":"FloorPlan",
                     "level":"Level 2"
                   },
-                  "disciplineHint":"mech"
+                  "disciplineHint":"mech"{{incarnationProperty}}
                 }
                 """;
             byte[] raw = Encoding.UTF8.GetBytes(

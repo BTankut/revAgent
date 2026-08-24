@@ -398,34 +398,24 @@ internal sealed class RbpDocContextWatcher
             return;
         }
 
-        lock (_sync)
-        {
-            if (_emitted.TryGetValue(rsid, out EmittedContext? current) &&
-                current.Revision == snapshot.Revision)
-            {
-                // The add-in revision is the primary change signal: an
-                // unchanged revision proves an unchanged normalized
-                // snapshot without re-serializing it.
-                return;
-            }
-        }
-
         string normalized =
             DocumentContextMapper.NormalizeForComparison(snapshot);
         lock (_sync)
         {
             if (_emitted.TryGetValue(rsid, out EmittedContext? current) &&
+                current.Revision == snapshot.Revision &&
                 string.Equals(
                     current.Normalized,
                     normalized,
+                    StringComparison.Ordinal) &&
+                string.Equals(
+                    current.CacheIncarnationDigest,
+                    snapshot.CacheIncarnationDigest,
                     StringComparison.Ordinal))
             {
-                // Revision moved but the normalized payload is identical;
-                // Section 14 sends doc_context_update only when the
-                // normalized snapshot differs.
-                _emitted[rsid] = new EmittedContext(
-                    snapshot.Revision,
-                    normalized);
+                // The emitted identity has not changed. A missing fixture
+                // correlate compares equal only to another missing correlate,
+                // preserving the production/add-in v1 path exactly.
                 return;
             }
         }
@@ -460,7 +450,8 @@ internal sealed class RbpDocContextWatcher
             {
                 _emitted[rsid] = new EmittedContext(
                     snapshot.Revision,
-                    normalized);
+                    normalized,
+                    snapshot.CacheIncarnationDigest);
             }
         }
         else
@@ -560,7 +551,10 @@ internal sealed class RbpDocContextWatcher
         AddinDocumentContextSnapshot? Snapshot,
         bool RouteFailure);
 
-    private sealed record EmittedContext(long Revision, string Normalized);
+    private sealed record EmittedContext(
+        long Revision,
+        string Normalized,
+        string? CacheIncarnationDigest);
 
     private sealed class WatchLoop
     {
