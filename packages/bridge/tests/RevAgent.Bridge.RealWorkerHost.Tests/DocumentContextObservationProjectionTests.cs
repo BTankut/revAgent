@@ -46,6 +46,50 @@ public sealed class DocumentContextObservationProjectionTests
         Assert.Equal(string.Empty, transcript);
     }
 
+    [Theory]
+    [InlineData("not-a-digest")]
+    [InlineData("0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF")]
+    [InlineData(ContextDigest)]
+    public void ContextDigestWithoutPayloadHashIsNotAdmitted(string contextDigest)
+    {
+        string transcript = InvokeProjection(CreateObservation(
+            "snapshot", "captured", contextDigest, payloadHash: null));
+
+        Assert.Equal(string.Empty, transcript);
+    }
+
+    [Theory]
+    [InlineData("not-a-payload-hash")]
+    [InlineData("sha256:0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF")]
+    public void InvalidPayloadHashIsNotAdmittedEvenWithValidContextDigest(string payloadHash)
+    {
+        string transcript = InvokeProjection(CreateObservation(
+            "queue", "durably_queued", ContextDigest, payloadHash));
+
+        Assert.Equal(string.Empty, transcript);
+    }
+
+    [Fact]
+    public void PayloadHashWithoutContextDigestIsNotAdmitted()
+    {
+        string transcript = InvokeProjection(CreateObservation(
+            "send", "sent", contextDigest: null));
+
+        Assert.Equal(string.Empty, transcript);
+    }
+
+    [Fact]
+    public void BothNullHashesRemainValueFreeObservation()
+    {
+        string line = InvokeProjection(CreateObservation(
+            "snapshot", "not_ready", contextDigest: null, payloadHash: null));
+
+        using JsonDocument json = JsonDocument.Parse(line);
+        Assert.Equal("snapshot", json.RootElement.GetProperty("stage").GetString());
+        Assert.Equal(JsonValueKind.Null, json.RootElement.GetProperty("payloadHash").ValueKind);
+        Assert.Equal(JsonValueKind.Null, json.RootElement.GetProperty("contextDigest").ValueKind);
+    }
+
     [Fact]
     public void ProjectionNeverSerializesRawPayloadOrIdentity()
     {

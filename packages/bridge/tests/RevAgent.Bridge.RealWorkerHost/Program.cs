@@ -204,8 +204,11 @@ internal static class Program
         // already supplied its canonical context digest.  This host is a
         // diagnostic sink, so it must neither re-canonicalize a payload nor
         // manufacture a correlate when that proof is absent.
+        bool hasPayloadHash = observation.PayloadHash is not null;
+        bool hasContextDigest = observation.ContextDigest is not null;
         if (!IsDiagnosticSha256(observation.RsidHash) ||
-            (observation.PayloadHash is not null &&
+            hasPayloadHash != hasContextDigest ||
+            (hasPayloadHash &&
              (!IsDiagnosticSha256(observation.PayloadHash) ||
               !IsBareLowercaseSha256(observation.ContextDigest))))
         {
