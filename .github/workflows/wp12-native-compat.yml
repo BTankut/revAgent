@@ -5,9 +5,16 @@ on:
     paths:
       - package.json
       - package-lock.json
+      - installer/runtime-mcp-server/**
+      - packages/gateway/package.json
       - packages/gateway/**
+      - packages/bridge-simulator/package.json
       - packages/bridge-simulator/**
+      - packages/rbp-conformance/package.json
+      - packages/rbp-conformance/manifest/**
+      - packages/rbp-conformance/schemas/**
       - packages/rbp-conformance/**
+      - scripts/test-updater-npm-dependencies.ps1
       - scripts/wp12-native-compat-conformance.mjs
       - .github/workflows/wp12-native-compat.yml
   workflow_dispatch:
@@ -29,14 +36,14 @@ jobs:
         node: [22, 24]
     steps:
       - name: Checkout exact candidate head
-        # actions/checkout v6.0.0, tag dereferenced 2026-08-24.
+        # actions/checkout v6.1.0, tag resolved to this commit on 2026-08-24.
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
 
       - name: Setup Node ${{ matrix.node }}
-        # actions/setup-node v6.0.0, tag dereferenced 2026-08-24.
+        # actions/setup-node v6.5.0, tag resolved to this commit on 2026-08-24.
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
         with:
           node-version: ${{ matrix.node }}.x
