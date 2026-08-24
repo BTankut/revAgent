@@ -196,6 +196,94 @@ public sealed partial class RbpConnectionCoordinatorTests
         await run.WaitAsync(TimeSpan.FromSeconds(5));
     }
 
+    [Fact]
+    public async Task C39C1cEqualCoordinatorAckCompletesTheCarrierWithoutANextDuplicate()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        var clock = new ManualCoordinatorClock();
+        await using RbpJournalStore store = RbpJournalStore.Open(
+            directory.JournalPath,
+            new TestResumeTokenProtector(),
+            RbpJournalTestData.Options(),
+            new TestRecoveryPayloadProtector());
+        var responder = new ScriptedGatewayResponder(clock);
+        var cycle = new FakeConnectionCycle(envelope =>
+            envelope.Type == "heartbeat" ? null : responder.Respond(envelope));
+        RbpRecoveryCarrierReservation reservation =
+            await PrepareRecoveryReservationAsync(store);
+        var coordinator = Coordinator(
+            new FakeConnectionCycleFactory(cycle),
+            store,
+            new MutableSessionCatalog(LocalSession(8080, 1000)),
+            clock,
+            new RecordingInboundJournal(),
+            invocationDispatcher: new RecoveryDispatcher(reservation));
+        using var stop = new CancellationTokenSource();
+
+        Task run = coordinator.RunAsync(stop.Token);
+        await EventuallyAsync(() => coordinator.GetSnapshot().ActiveRsids.Count == 1);
+        cycle.Deliver(DataEnvelope(
+            "invoke", Id(9731), reservation.Rsid, 1,
+            Json($$"""{"invocation_id":"{{reservation.RecoveryInvocationId}}"}""")));
+        _ = await EventuallySentAsync(cycle, item =>
+            item.Type == "partial" && item.Id == reservation.RecoveryInvocationId);
+        await EventuallyAsync(() => coordinator.GetSnapshot().ActiveInvocationCount == 0);
+
+        clock.Advance(TimeSpan.FromSeconds(15));
+        await EventuallyAsync(() => cycle.Sent.Any(item => item.Type == "heartbeat"));
+        cycle.Deliver(HeartbeatAck(clock, Id(9732), reservation.Rsid,
+            reservation.CurrentReservedSequence));
+        await EventuallyAsync(async () =>
+            (await store.GetRecoveryCarrierReservationAsync(
+                reservation.RecoveryInvocationId))!.Phase ==
+            RbpRecoveryCarrierPhase.Completed);
+
+        // Completion must leave no schedulable protected carrier behind.
+        await Task.Delay(25);
+        _ = Assert.Single(cycle.Sent, item =>
+            item.Type == "partial" && item.Id == reservation.RecoveryInvocationId);
+        Assert.Empty((await store.LoadSequenceAsync(reservation.Rsid)).Outbox);
+
+        stop.Cancel();
+        await run.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    [Fact]
+    public void C39C1cRequiresPostConfirmationPreSendCrashHook()
+    {
+        // The only current fault seam is RecoverySendStarted, before recovery
+        // materialization/final confirmation. The C1c invariant needs a
+        // deterministic process-abort seam after ConfirmRecoveryCarrierMaterializationAsync
+        // succeeds and before the first low-level IRbpConnectionCycle.SendAsync.
+        Assert.Fail(
+            "MISSING HOOK: RbpConnectionCoordinator recovery post-confirmation/pre-SendAsync crash seam.");
+    }
+
+    private static RbpEnvelope HeartbeatAck(
+        ManualCoordinatorClock clock,
+        string id,
+        string rsid,
+        long sequence) =>
+        new(
+            1,
+            "heartbeat_ack",
+            id,
+            clock.UtcNow.ToString("O"),
+            JsonSerializer.SerializeToElement(new
+            {
+                server_time = clock.UtcNow.ToString("O"),
+                acks = new[] { new { rsid, seq = sequence } },
+            }),
+            RbpEnvelopeScope.Control,
+            Rsid: null,
+            Sequence: null,
+            Acknowledgement: null,
+            Hello: null,
+            HelloAck: null,
+            RbpEnvelopeDisposition.Known,
+            RbpEnvelope.FreezeAdditionalProperties(
+                new Dictionary<string, JsonElement>()));
+
     private static async Task<RbpRecoveryCarrierReservation>
         PrepareRecoveryReservationAsync(RbpJournalStore store)
     {
