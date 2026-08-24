@@ -59,3 +59,7 @@ ACK below the fence is no progress; exact current sequence after durable Gateway
 ### Migration-version clarification
 
 Reviewed C39 raw-response retention remains contiguous v7. The protected source-backed recovery carrier plan and sequence-fence metadata are a separate contiguous v8 migration; the earlier v7 plan wording is superseded by this clarification. Existing and intermediate valid v7 records upgrade transactionally and idempotently. Partial, missing, or corrupt v7/v8 records fail closed. v6-to-v8 creates or reuses an immutable pre-v7 backup; v7-to-v8 never overwrites it. Rollback to SHA252/base uses offline v6 restore and rejects v7/v8 in-place. Required tests cover v6-to-v8, v7-to-v8, reopen/idempotency, partial-v8 denial, and rollback. Wire, C38, authority, and locks are unchanged.
+
+### Tombstone privacy clarification
+
+Raw bytes and plan remain pinned only while the recovery fence/session is live and resumable. When an unacked fence permanently tombstones the RSID/route (revocation, expiry, impossible ACK, or corruption), atomically invalidate Gateway private staging with no reference, permanently close the sequence space, and delete DPAPI raw response bytes immediately or before the transaction commits. Retain only bounded authenticated nonsecret tombstone audit metadata, tied to parent retention (7-day minimum, 14-day default); never retain raw bytes indefinitely. A tombstone cannot resume, reopen, or recycle; a new RSID is required. Tests must cover atomic raw deletion, powercut, no-reference, and audit pruning.
