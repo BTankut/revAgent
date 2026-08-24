@@ -906,7 +906,8 @@ export function hasGatewayAcceptedDocumentContextRoute(
     value.event === "gateway.doc_context_update_observation" && value.stage === "accepted" &&
     value.rsidHash === expected.rsidHash && value.observedSequence === expected.sequence &&
     value.processEpoch === baseline.processEpoch && value.contextDigest === current.contextDigest &&
-    value.routeDigest === current.routeDigest &&
+    value.routeDigest === current.routeDigest && value.recordDigest === current.recordDigest &&
+    value.sessionBindingDigest === current.sessionBindingDigest && value.connectionDigest === current.connectionDigest &&
     value.sessionRecordVersion === current.sessionRecordVersion &&
     isSha256(value.rsidHash) && Number.isSafeInteger(value.observedSequence) && Number(value.observedSequence) >= 1 &&
     Number.isSafeInteger(value.observationOrdinal) && Number(value.observationOrdinal) > baseline.observationOrdinal &&

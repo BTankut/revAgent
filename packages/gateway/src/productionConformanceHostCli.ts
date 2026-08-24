@@ -44,8 +44,8 @@ const REQUIRED_CONNECTION_CAPABILITIES = Object.freeze([
 
 const REAL_CASE_AUDIT_SCHEMA = "revagent.wp12-real-case-audit/v1" as const;
 const DOCUMENT_CONTEXT_EPOCH_SCHEMA = "revagent.wp12-document-context-epoch/v1" as const;
-const MAX_DOCUMENT_CONTEXT_OBSERVATIONS = 32;
-const MAX_DOCUMENT_CONTEXT_OBSERVATION_BYTES = 2 * 1024;
+export const MAX_DOCUMENT_CONTEXT_OBSERVATIONS = 32;
+export const MAX_DOCUMENT_CONTEXT_OBSERVATION_BYTES = 2 * 1024;
 const DOCUMENT_CONTEXT_DIGEST = /^[0-9a-f]{64}$/u;
 
 function digest(value: unknown): `sha256:${string}` {
@@ -101,7 +101,7 @@ type DocumentContextObservation = Readonly<{
   readonly observedAtUtc: string;
 }>;
 
-interface DocumentContextObservationSnapshot {
+export interface DocumentContextObservationSnapshot {
   readonly processEpoch: string;
   readonly highWaterOrdinal: number;
   readonly rows: readonly DocumentContextObservation[];
@@ -139,8 +139,12 @@ function sameDocumentContextRoute(
  * Any journal churn, restart, eviction, route advancement, or ambiguity
  * produces no row. It is an evidence projection, never an authority path.
  */
-function coherentDocumentContextAudit(input: {
-  readonly authority: GatewayBridgeSessionAuthority;
+export interface CoherentDocumentContextAuditAuthority {
+  readCurrentDocumentRouteAuditSnapshot(input: { readonly tenantId: string }): ReturnType<GatewayBridgeSessionAuthority["readCurrentDocumentRouteAuditSnapshot"]>;
+}
+
+export function coherentDocumentContextAudit(input: {
+  readonly authority: CoherentDocumentContextAuditAuthority;
   readonly processEpoch: string;
   readonly snapshotObservations: () => DocumentContextObservationSnapshot;
 }): Readonly<{

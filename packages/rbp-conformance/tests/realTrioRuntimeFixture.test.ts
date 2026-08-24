@@ -132,6 +132,10 @@ describe("WP-12 real-trio fixture document route gate", () => {
     expect(select([flow[0]!, flow[1]!, flow[1]!, flow[2]!, flow[3]!], audit())).toBeNull();
     expect(select(flow, audit([{ contractVersion: "revagent.wp12-document-context-audit/v1", event: "gateway.doc_context_update_observation", stage: "accepted", ...current, observationOrdinal: 5 }, { contractVersion: "revagent.wp12-document-context-audit/v1", event: "gateway.doc_context_update_observation", stage: "accepted", ...current, observationOrdinal: 5 }]))).toBeNull();
     expect(select(flow, audit([{ contractVersion: "revagent.wp12-document-context-audit/v1", event: "gateway.doc_context_update_observation", stage: "accepted", ...current, sessionRecordVersion: 3, observationOrdinal: 5 }]))).toBeNull();
+    for (const field of ["contextDigest", "routeDigest", "recordDigest", "sessionBindingDigest", "connectionDigest"] as const) {
+      expect(select(flow, audit([{ contractVersion: "revagent.wp12-document-context-audit/v1", event: "gateway.doc_context_update_observation", stage: "accepted", ...current, [field]: field === "contextDigest" ? "e".repeat(64) : `sha256:${"9".repeat(64)}`, observationOrdinal: 5 }]))).toBeNull();
+      expect(select(flow, { ...audit(), documentContextCurrentRoute: { ...current, [field]: field === "contextDigest" ? "e".repeat(64) : `sha256:${"9".repeat(64)}` } })).toBeNull();
+    }
   });
 
   it("uses only a final unmatched probe from the atomic pre-control snapshot", () => {
@@ -222,16 +226,18 @@ describe("WP-12 real-trio fixture document route gate", () => {
   it("requires Gateway accepted-route correlation with the intended send", () => {
     const expected = { rsidHash: `sha256:${"a".repeat(64)}` as const, sequence: 7,
       routeDigest: `sha256:${"b".repeat(64)}` as const,
+      contextDigest: "c".repeat(64),
       sendTranscriptIndex: 3, sendRecordedAt: "2026-08-24T00:00:01.000Z" };
     const epoch = "123e4567-e89b-42d3-a456-426614174000";
     const baseline = gatewayAuditBaseline({ documentContextEpochSchema: "revagent.wp12-document-context-epoch/v1",
       documentContextProcessEpoch: epoch, documentContextObservationHighWaterOrdinal: 4 })!;
     const audit = (rsidHash: string, observedSequence: number, observationOrdinal = 5,
       observedAtUtc = "2026-08-24T00:00:01.000Z", highWater = observationOrdinal, processEpoch = epoch,
-      sessionRecordVersion = 4, routeDigest = expected.routeDigest) => ({ documentContextEpochSchema: "revagent.wp12-document-context-epoch/v1", documentContextProcessEpoch: processEpoch, documentContextGeneration: 1, documentContextObservationHighWaterOrdinal: highWater,
-      documentContextCurrentRoute: { processEpoch, rsidHash, observedSequence, routeDigest, sessionRecordVersion }, documentContextUpdates: [{
+      sessionRecordVersion = 4, routeDigest = expected.routeDigest, contextDigest = expected.contextDigest,
+      recordDigest = `sha256:${"d".repeat(64)}`, sessionBindingDigest = `sha256:${"e".repeat(64)}`, connectionDigest = `sha256:${"f".repeat(64)}`) => ({ documentContextEpochSchema: "revagent.wp12-document-context-epoch/v1", documentContextProcessEpoch: processEpoch, documentContextGeneration: 1, documentContextObservationHighWaterOrdinal: highWater,
+      documentContextCurrentRoute: { processEpoch, rsidHash, observedSequence, contextDigest, routeDigest, recordDigest, sessionBindingDigest, connectionDigest, sessionRecordVersion }, documentContextUpdates: [{
       contractVersion: "revagent.wp12-document-context-audit/v1",
-      event: "gateway.doc_context_update_observation", stage: "accepted", processEpoch, rsidHash, observedSequence, routeDigest, sessionRecordVersion, observationOrdinal, observedAtUtc,
+      event: "gateway.doc_context_update_observation", stage: "accepted", processEpoch, rsidHash, observedSequence, contextDigest, routeDigest, recordDigest, sessionBindingDigest, connectionDigest, sessionRecordVersion, observationOrdinal, observedAtUtc,
     }] });
     expect(hasGatewayAcceptedDocumentContextRoute(audit(expected.rsidHash, expected.sequence), expected, baseline)).toBe(true);
     expect(hasGatewayAcceptedDocumentContextRoute(audit(expected.rsidHash, 6), expected, baseline)).toBe(false);
