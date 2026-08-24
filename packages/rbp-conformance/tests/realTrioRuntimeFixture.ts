@@ -237,7 +237,11 @@ export interface RealTrioDocumentContextFailure {
     readonly status: "joined" | "route_absent" | "observation_missing" |
       "sequence_mismatch" | "context_digest_mismatch" | "route_changed" |
       "record_or_binding_changed" | "epoch_churn" | "cursor_evicted" |
-      "retry_exhausted" | null;
+      "observation_churn" | "retry_exhausted" | null;
+    readonly lastAttemptStatus: "joined" | "route_absent" | "observation_missing" |
+      "sequence_mismatch" | "context_digest_mismatch" | "route_changed" |
+      "record_or_binding_changed" | "epoch_churn" | "cursor_evicted" |
+      "observation_churn" | "retry_exhausted" | null;
     readonly attemptCount: number | null;
     readonly observationCount: number | null;
     readonly highWaterOrdinal: number | null;
@@ -335,18 +339,22 @@ function gatewayRouteAudits(value: unknown): RealTrioDocumentContextFailure["gat
 const coherentAuditStatuses = new Set([
   "joined", "route_absent", "observation_missing", "sequence_mismatch",
   "context_digest_mismatch", "route_changed", "record_or_binding_changed",
-  "epoch_churn", "cursor_evicted", "retry_exhausted",
+  "epoch_churn", "cursor_evicted", "observation_churn", "retry_exhausted",
 ]);
 
 function gatewayCoherentAudit(value: unknown): RealTrioDocumentContextFailure["gatewayCoherentAudit"] {
   if (!isObject(value) || typeof value.documentContextAuditStatus !== "string" ||
       !coherentAuditStatuses.has(value.documentContextAuditStatus)) {
-    return Object.freeze({ status: null, attemptCount: null, observationCount: null, highWaterOrdinal: null });
+    return Object.freeze({ status: null, lastAttemptStatus: null, attemptCount: null, observationCount: null, highWaterOrdinal: null });
   }
   const count = (candidate: unknown, maximum: number): number | null =>
     Number.isSafeInteger(candidate) && Number(candidate) >= 0 && Number(candidate) <= maximum ? Number(candidate) : null;
   return Object.freeze({
     status: value.documentContextAuditStatus as RealTrioDocumentContextFailure["gatewayCoherentAudit"]["status"],
+    lastAttemptStatus: typeof value.documentContextAuditLastStatus === "string" &&
+      coherentAuditStatuses.has(value.documentContextAuditLastStatus)
+      ? value.documentContextAuditLastStatus as RealTrioDocumentContextFailure["gatewayCoherentAudit"]["lastAttemptStatus"]
+      : null,
     attemptCount: count(value.documentContextAuditAttemptCount, 3),
     observationCount: count(value.documentContextAuditObservationCount, 32),
     highWaterOrdinal: count(value.documentContextObservationHighWaterOrdinal, Number.MAX_SAFE_INTEGER),

@@ -482,6 +482,7 @@ describe("WP-12 real-trio fixture document route gate", () => {
       } })) },
       coherentAudit: {
         documentContextAuditStatus: "sequence_mismatch",
+        documentContextAuditLastStatus: "observation_churn",
         documentContextAuditAttemptCount: 3,
         documentContextAuditObservationCount: 1,
         documentContextObservationHighWaterOrdinal: 2,
@@ -496,7 +497,7 @@ describe("WP-12 real-trio fixture document route gate", () => {
       schemaVersion: "rbp-real-trio-document-context-failure/v1",
       reason: "stage_timeout",
       fixtureSnapshot: { cacheReadCount: 3, pollRequestCount: 2, cachedContextHashPresent: true },
-      gatewayCoherentAudit: { status: "sequence_mismatch", attemptCount: 3, observationCount: 1, highWaterOrdinal: 2 },
+      gatewayCoherentAudit: { status: "sequence_mismatch", lastAttemptStatus: "observation_churn", attemptCount: 3, observationCount: 1, highWaterOrdinal: 2 },
     });
     expect(failure.documentStages).toHaveLength(64);
     expect(failure.gatewayRouteAudits).toHaveLength(32);

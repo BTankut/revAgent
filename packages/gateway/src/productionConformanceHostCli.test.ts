@@ -88,20 +88,47 @@ describe("WP-12 coherent document-context host audit", () => {
     expect(result).toMatchObject({ status: expected, attemptCount: 3 });
   });
 
-  it("prioritizes epoch churn and identifies a bounded retained cursor eviction", () => {
+  it("prioritizes epoch churn", () => {
     const epochChurn = coherentDocumentContextAudit({
       authority: { readCurrentDocumentRouteAuditSnapshot: () => null }, processEpoch: epoch,
       snapshotObservations: () => snapshot([], 0, "223e4567-e89b-42d3-a456-426614174000"),
     });
     expect(epochChurn.status).toBe("epoch_churn");
-    const evictedRows = Array.from({ length: MAX_DOCUMENT_CONTEXT_OBSERVATIONS }, (_, index) => ({
-      ...observation, ordinal: index + 2, sequence: index + 100,
-    }));
-    const evicted = coherentDocumentContextAudit({
+  });
+
+  it("classifies ordinary A/B append as churn and exhausts only repeated churn", () => {
+    let read = 0;
+    const appended = Object.freeze({ ...observation, ordinal: 3, sequence: 8, contextDigest: "d".repeat(64) });
+    const result = coherentDocumentContextAudit({
       authority: { readCurrentDocumentRouteAuditSnapshot: () => route() }, processEpoch: epoch,
-      snapshotObservations: () => snapshot(evictedRows, MAX_DOCUMENT_CONTEXT_OBSERVATIONS + 1),
+      snapshotObservations: () => (++read % 2 === 1 ? snapshot([observation], 2) : snapshot([observation, appended], 3)),
     });
-    expect(evicted).toMatchObject({ status: "cursor_evicted", observationCount: MAX_DOCUMENT_CONTEXT_OBSERVATIONS });
+    expect(result).toMatchObject({ status: "retry_exhausted", lastAttemptStatus: "observation_churn", attemptCount: 3 });
+  });
+
+  it("reports cursor eviction only when the A candidate is below B's full retained window", () => {
+    let read = 0;
+    const candidate = Object.freeze({ ...observation, ordinal: 1 });
+    const after = Array.from({ length: MAX_DOCUMENT_CONTEXT_OBSERVATIONS }, (_, index) => Object.freeze({
+      ...observation, ordinal: index + 2, sequence: index + 100, contextDigest: "d".repeat(64),
+    }));
+    const result = coherentDocumentContextAudit({
+      authority: { readCurrentDocumentRouteAuditSnapshot: () => route() }, processEpoch: epoch,
+      snapshotObservations: () => (++read % 2 === 1 ? snapshot([candidate], 1) : snapshot(after, MAX_DOCUMENT_CONTEXT_OBSERVATIONS + 1)),
+    });
+    expect(result).toMatchObject({ status: "cursor_evicted", lastAttemptStatus: "cursor_evicted", observationCount: MAX_DOCUMENT_CONTEXT_OBSERVATIONS });
+  });
+
+  it("retries one observation churn and preserves the existing stable join", () => {
+    const appended = Object.freeze({ ...observation, ordinal: 3, sequence: 8, contextDigest: "d".repeat(64) });
+    const snapshots = [snapshot([observation], 2), snapshot([observation, appended], 3), snapshot(), snapshot()];
+    let read = 0;
+    const result = coherentDocumentContextAudit({
+      authority: { readCurrentDocumentRouteAuditSnapshot: () => route() }, processEpoch: epoch,
+      snapshotObservations: () => snapshots[read++] ?? snapshot(),
+    });
+    expect(result).toMatchObject({ status: "joined", lastAttemptStatus: "joined", attemptCount: 2 });
+    expect(result.updates).toHaveLength(1);
   });
 
   it("fails closed for append A/route/B, post-B route churn, restart, and eviction", () => {

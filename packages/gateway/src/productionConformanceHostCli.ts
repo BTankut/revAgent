@@ -170,6 +170,7 @@ export const COHERENT_DOCUMENT_CONTEXT_AUDIT_STATUSES = Object.freeze([
   "record_or_binding_changed",
   "epoch_churn",
   "cursor_evicted",
+  "observation_churn",
   "retry_exhausted",
 ] as const);
 
@@ -186,6 +187,7 @@ function coherentAuditPriority(status: CoherentDocumentContextAuditStatus): numb
     case "record_or_binding_changed": return 80;
     case "route_changed": return 70;
     case "cursor_evicted": return 60;
+    case "observation_churn": return 55;
     case "sequence_mismatch": return 50;
     case "context_digest_mismatch": return 40;
     case "observation_missing": return 30;
@@ -232,17 +234,10 @@ function recordOrBindingChanged(
     left.sessionRecordVersion !== right.sessionRecordVersion;
 }
 
-function retainedDocumentContextCursorEvicted(snapshot: DocumentContextObservationSnapshot): boolean {
-  const first = snapshot.rows[0];
-  return snapshot.rows.length === MAX_DOCUMENT_CONTEXT_OBSERVATIONS &&
-    first !== undefined && first.ordinal > 1 && snapshot.highWaterOrdinal >= first.ordinal;
-}
-
 function observationStatus(
   route: NonNullable<ReturnType<GatewayBridgeSessionAuthority["readCurrentDocumentRouteAuditSnapshot"]>>,
   after: DocumentContextObservationSnapshot,
 ): CoherentDocumentContextAuditStatus {
-  if (retainedDocumentContextCursorEvicted(after)) return "cursor_evicted";
   const accepted = after.rows.filter((observation) => observation.stage === "accepted" &&
     observation.ordinal >= 1 && observation.ordinal <= after.highWaterOrdinal &&
     isCanonicalUtc(observation.observedAtUtc));
@@ -251,6 +246,37 @@ function observationStatus(
   if (accepted.some((observation) => observation.sequence === route.observedSequence &&
       observation.contextDigest !== route.contextDigest)) return "context_digest_mismatch";
   return "observation_missing";
+}
+
+function sameObservationWindow(left: DocumentContextObservationSnapshot, right: DocumentContextObservationSnapshot): boolean {
+  return left.highWaterOrdinal === right.highWaterOrdinal && left.rows.length === right.rows.length &&
+    left.rows.every((row, index) => {
+      const other = right.rows[index];
+      return other !== undefined && row.stage === other.stage && row.sequence === other.sequence &&
+        row.contextDigest === other.contextDigest && row.ordinal === other.ordinal &&
+        row.observedAtUtc === other.observedAtUtc;
+    });
+}
+
+/**
+ * A full B window alone proves nothing about the A candidate.  Eviction is
+ * reported only when the exact candidate required by the join was retained in
+ * A and is now provably older than B's bounded retained window.
+ */
+function demonstratedCursorEviction(
+  before: DocumentContextObservationSnapshot,
+  after: DocumentContextObservationSnapshot,
+  route: NonNullable<ReturnType<GatewayBridgeSessionAuthority["readCurrentDocumentRouteAuditSnapshot"]>> | null,
+): boolean {
+  if (route === null || after.rows.length !== MAX_DOCUMENT_CONTEXT_OBSERVATIONS) return false;
+  const candidate = before.rows.filter((observation) => observation.stage === "accepted" &&
+    observation.sequence === route.observedSequence && observation.contextDigest === route.contextDigest &&
+    observation.ordinal >= 1 && observation.ordinal <= before.highWaterOrdinal &&
+    isCanonicalUtc(observation.observedAtUtc));
+  const oldestAfter = after.rows[0];
+  return candidate.length === 1 && oldestAfter !== undefined && candidate[0]!.ordinal < oldestAfter.ordinal &&
+    !after.rows.some((observation) => observation.ordinal === candidate[0]!.ordinal) &&
+    after.highWaterOrdinal >= oldestAfter.ordinal;
 }
 
 /**
@@ -271,11 +297,14 @@ export function coherentDocumentContextAudit(input: {
   readonly updates: readonly Record<string, unknown>[];
   readonly highWaterOrdinal: number;
   readonly status: CoherentDocumentContextAuditStatus;
+  readonly lastAttemptStatus: CoherentDocumentContextAuditStatus;
   readonly attemptCount: number;
   readonly observationCount: number;
 }> {
   let highestStatus: CoherentDocumentContextAuditStatus = "retry_exhausted";
   let highestPriority = coherentAuditPriority(highestStatus);
+  let lastAttemptStatus: CoherentDocumentContextAuditStatus = "retry_exhausted";
+  let allAttemptsObservationChurn = true;
   let finalHighWaterOrdinal = 0;
   let finalObservationCount = 0;
   for (let attempt = 0; attempt < MAX_COHERENT_DOCUMENT_CONTEXT_AUDIT_ATTEMPTS; attempt += 1) {
@@ -287,8 +316,8 @@ export function coherentDocumentContextAudit(input: {
     let status: CoherentDocumentContextAuditStatus;
     if (before.processEpoch !== input.processEpoch || after.processEpoch !== input.processEpoch) {
       status = "epoch_churn";
-    } else if (before.highWaterOrdinal !== after.highWaterOrdinal) {
-      status = "cursor_evicted";
+    } else if (!sameObservationWindow(before, after)) {
+      status = demonstratedCursorEviction(before, after, route) ? "cursor_evicted" : "observation_churn";
     } else if (route === null) {
       status = "route_absent";
     } else if (!DOCUMENT_CONTEXT_DIGEST.test(route.contextDigest)) {
@@ -332,6 +361,7 @@ export function coherentDocumentContextAudit(input: {
             })]),
             highWaterOrdinal: after.highWaterOrdinal,
             status: "joined",
+            lastAttemptStatus: "joined",
             attemptCount: attempt + 1,
             observationCount: finalObservationCount,
           });
@@ -339,6 +369,8 @@ export function coherentDocumentContextAudit(input: {
       }
     }
     const priority = coherentAuditPriority(status);
+    lastAttemptStatus = status;
+    allAttemptsObservationChurn &&= status === "observation_churn";
     if (priority > highestPriority) {
       highestStatus = status;
       highestPriority = priority;
@@ -349,7 +381,8 @@ export function coherentDocumentContextAudit(input: {
     currentRoute: null,
     updates: Object.freeze([]),
     highWaterOrdinal: finalHighWaterOrdinal === 0 ? latest.highWaterOrdinal : finalHighWaterOrdinal,
-    status: highestStatus,
+    status: allAttemptsObservationChurn ? "retry_exhausted" : highestStatus,
+    lastAttemptStatus,
     attemptCount: MAX_COHERENT_DOCUMENT_CONTEXT_AUDIT_ATTEMPTS,
     observationCount: finalObservationCount === 0 ? Math.min(latest.rows.length, MAX_DOCUMENT_CONTEXT_OBSERVATIONS) : finalObservationCount,
   });
@@ -700,6 +733,7 @@ export async function runProductionConformanceHostCli(args: readonly string[]): 
               documentContextGeneration: 1,
               documentContextObservationHighWaterOrdinal: coherentDocumentContext.highWaterOrdinal,
               documentContextAuditStatus: coherentDocumentContext.status,
+              documentContextAuditLastStatus: coherentDocumentContext.lastAttemptStatus,
               documentContextAuditAttemptCount: coherentDocumentContext.attemptCount,
               documentContextAuditObservationCount: coherentDocumentContext.observationCount,
               counts: Object.freeze({ records: records.length, auditAccesses: auditAccesses.length }),
