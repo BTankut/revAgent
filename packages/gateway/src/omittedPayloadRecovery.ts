@@ -9,6 +9,8 @@ import type { StoreTransaction } from "./store.js";
  */
 export const GATEWAY_OMITTED_PAYLOAD_RECOVERY_NAMESPACE =
   "gateway.omitted-payload-recovery/v1" as const;
+const GATEWAY_OMITTED_PAYLOAD_RECOVERY_INVOCATION_NAMESPACE =
+  "gateway.omitted-payload-recovery-invocation/v1" as const;
 
 const DIGEST = /^sha256:[0-9a-f]{64}$/u;
 const MAX_STRING = 4_096;
@@ -27,6 +29,8 @@ export interface OmittedPayloadRecoveryAdmission {
   readonly owner: OmittedPayloadRecoveryOwner;
   readonly originInvocationId: string;
   readonly originResultDigest: `sha256:${string}`;
+  /** Server-minted C1 recovery invocation; never caller-selected storage. */
+  readonly recoveryInvocationId: string;
   /** Gateway terminal-persistence proof; never supplied by an RBP peer. */
   readonly terminalEvidenceDigest: `sha256:${string}`;
   /** Bound by the admitted terminal's own bounded retention window. */
@@ -50,6 +54,7 @@ export interface OmittedPayloadRecoveryRecord {
   readonly owner: Omit<OmittedPayloadRecoveryOwner, "tenantId">;
   readonly originInvocationId: string;
   readonly originResultDigest: `sha256:${string}`;
+  readonly recoveryInvocationId: string;
   readonly terminalEvidenceDigest: `sha256:${string}`;
   readonly state: "awaiting_correlated_read" | "completed";
   readonly expiresAtMs: number;
@@ -78,6 +83,7 @@ function validOwner(value: OmittedPayloadRecoveryOwner): boolean {
 
 function validAdmission(value: OmittedPayloadRecoveryAdmission): boolean {
   return validOwner(value.owner) && isGatewayUuidV7(value.originInvocationId) &&
+    isGatewayUuidV7(value.recoveryInvocationId) &&
     DIGEST.test(value.originResultDigest) && DIGEST.test(value.terminalEvidenceDigest) &&
     Number.isSafeInteger(value.nowMs) && value.nowMs >= 0 &&
     Number.isSafeInteger(value.ownerSessionExpiresAtMs) &&
@@ -113,6 +119,7 @@ function parseRecord(value: GatewayJsonValue, tenantId: string, key: string): Om
     candidate.schema !== GATEWAY_OMITTED_PAYLOAD_RECOVERY_NAMESPACE ||
     candidate.recordVersion !== 1 || candidate.tenantId !== tenantId ||
     candidate.originInvocationId !== key || !isGatewayUuidV7(candidate.originInvocationId) ||
+    typeof candidate.recoveryInvocationId !== "string" || !isGatewayUuidV7(candidate.recoveryInvocationId) ||
     typeof candidate.originResultDigest !== "string" || !DIGEST.test(candidate.originResultDigest) ||
     typeof candidate.terminalEvidenceDigest !== "string" || !DIGEST.test(candidate.terminalEvidenceDigest) ||
     owner === undefined || !validOwner({ tenantId, ...owner }) ||
@@ -135,6 +142,7 @@ function sameBinding(record: OmittedPayloadRecoveryRecord, admission: OmittedPay
     record.owner.sessionBindingId === owner.sessionBindingId &&
     record.owner.sessionVersion === owner.sessionVersion &&
     record.originInvocationId === admission.originInvocationId &&
+    record.recoveryInvocationId === admission.recoveryInvocationId &&
     record.originResultDigest === admission.originResultDigest &&
     record.terminalEvidenceDigest === admission.terminalEvidenceDigest &&
     record.expiresAtMs === Math.min(admission.ownerSessionExpiresAtMs, admission.terminalRetentionExpiresAtMs);
@@ -166,6 +174,7 @@ export async function claimOmittedPayloadRecovery(
       }),
       originInvocationId: admission.originInvocationId,
       originResultDigest: admission.originResultDigest,
+      recoveryInvocationId: admission.recoveryInvocationId,
       terminalEvidenceDigest: admission.terminalEvidenceDigest,
       state: "awaiting_correlated_read",
       expiresAtMs: Math.min(admission.ownerSessionExpiresAtMs, admission.terminalRetentionExpiresAtMs),
@@ -179,16 +188,75 @@ export async function claimOmittedPayloadRecovery(
       value: record as unknown as GatewayJsonValue,
       expect: { kind: "absent" },
     });
+    tx.stage({
+      namespace: GATEWAY_OMITTED_PAYLOAD_RECOVERY_INVOCATION_NAMESPACE,
+      key: admission.recoveryInvocationId,
+      value: Object.freeze({
+        originInvocationId: admission.originInvocationId,
+        tenantId: admission.owner.tenantId,
+      }) as unknown as GatewayJsonValue,
+      expect: { kind: "absent" },
+    });
     return Object.freeze({ kind: "admitted" as const, record });
   }
   const record = parseRecord(stored.value, admission.owner.tenantId, key);
-  if (record === null || !sameBinding(record, admission) || record.expiresAtMs <= currentOwner.nowMs) {
+  const invocation = await tx.read<GatewayJsonValue>(
+    GATEWAY_OMITTED_PAYLOAD_RECOVERY_INVOCATION_NAMESPACE,
+    admission.recoveryInvocationId,
+  );
+  if (
+    record === null || !sameBinding(record, admission) ||
+    !isRecordInvocationIndex(invocation?.value, admission) ||
+    record.expiresAtMs <= currentOwner.nowMs
+  ) {
     return Object.freeze({ kind: "guarded" as const });
   }
   return Object.freeze({
     kind: record.state === "completed" ? "completed" as const : "resume" as const,
     record,
   });
+}
+
+function isRecordInvocationIndex(
+  value: GatewayJsonValue | undefined,
+  admission: OmittedPayloadRecoveryAdmission,
+): boolean {
+  return value !== null && typeof value === "object" && !Array.isArray(value) &&
+    (value as { originInvocationId?: unknown }).originInvocationId === admission.originInvocationId &&
+    (value as { tenantId?: unknown }).tenantId === admission.owner.tenantId;
+}
+
+/**
+ * Durable reverse lookup used only by the Bridge's C39 carrier admission.
+ * It returns no payload and requires the same live owner tuple that created
+ * the admission; malformed or stale rows are deliberately indistinguishable.
+ */
+export async function readOmittedPayloadRecoveryByInvocation(
+  tx: StoreTransaction,
+  owner: OmittedPayloadRecoveryCurrentOwner,
+  recoveryInvocationId: string,
+): Promise<OmittedPayloadRecoveryRecord | null> {
+  if (!validOwner(owner) || owner.active !== true || !isGatewayUuidV7(recoveryInvocationId)) return null;
+  const index = await tx.read<GatewayJsonValue>(
+    GATEWAY_OMITTED_PAYLOAD_RECOVERY_INVOCATION_NAMESPACE,
+    recoveryInvocationId,
+  );
+  const indexValue = index?.value;
+  if (
+    indexValue === null || typeof indexValue !== "object" || Array.isArray(indexValue) ||
+    (indexValue as { tenantId?: unknown }).tenantId !== owner.tenantId ||
+    typeof (indexValue as { originInvocationId?: unknown }).originInvocationId !== "string"
+  ) return null;
+  const originInvocationId = (indexValue as { originInvocationId: string }).originInvocationId;
+  const stored = await tx.read<GatewayJsonValue>(GATEWAY_OMITTED_PAYLOAD_RECOVERY_NAMESPACE, originInvocationId);
+  const record = stored === null ? null : parseRecord(stored.value, owner.tenantId, originInvocationId);
+  return record !== null && record.recoveryInvocationId === recoveryInvocationId &&
+    record.owner.userId === owner.userId &&
+    record.owner.effectiveMcpSessionId === owner.effectiveMcpSessionId &&
+    record.owner.rsid === owner.rsid &&
+    record.owner.sessionBindingId === owner.sessionBindingId &&
+    record.owner.sessionVersion === owner.sessionVersion &&
+    record.expiresAtMs > owner.nowMs ? record : null;
 }
 
 /**

@@ -327,6 +327,19 @@ export const E5_TOOL_BINDINGS: readonly ToolBindingRow[] = Object.freeze([
   },
 ] as const);
 
+/**
+ * Gateway-owned C39 recovery is intentionally outside the collected Revit
+ * tool map.  It has no legacy handler and is only registered by the normal
+ * north surface after C39 composition readiness has passed.
+ */
+export const C39_PAYLOAD_RECOVERY_BINDING: ToolBindingRow = Object.freeze({
+  tool: "dispatch_payload_recovery",
+  target: "core.dispatch.payload_recovery",
+  module: "runtime",
+  policyClass: "auto",
+  executor: "bridge",
+});
+
 /** E5's stated totals, asserted rather than recomputed from the rows above. */
 export const E5_EXPECTED_TOTALS = Object.freeze({
   tools: 40,
@@ -404,6 +417,10 @@ export const E5_NO_RECOVERY_TOOLS: readonly string[] = Object.freeze([
   "summarize_spatial_state",
 ]);
 
+const C39_NO_RECOVERY_TOOLS = Object.freeze([
+  "dispatch_payload_recovery",
+]);
+
 export function mutationScopePolicyForTool(
   tool: string,
 ): GatewayMutationScopePolicy {
@@ -411,6 +428,7 @@ export function mutationScopePolicyForTool(
     E5_SESSION_RECOVERY_TOOLS.includes(tool),
     E5_DOCUMENT_RECOVERY_TOOLS.includes(tool),
     E5_NO_RECOVERY_TOOLS.includes(tool),
+    C39_NO_RECOVERY_TOOLS.includes(tool),
   ].filter(Boolean).length;
   if (matches !== 1) {
     fail(

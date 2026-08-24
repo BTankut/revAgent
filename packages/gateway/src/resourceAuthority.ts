@@ -228,6 +228,8 @@ export interface StageRecoveryChunkInput {
   readonly data: string;
   readonly contentType: "application/json";
   readonly expiresAtMs?: number;
+  /** Gateway-only ACK commit after encrypted receipt activation. */
+  readonly commitBridge?: (tx: StoreTransaction) => Promise<void>;
 }
 
 export interface FinalizeRecoveryResultInput {
@@ -237,6 +239,8 @@ export interface FinalizeRecoveryResultInput {
   readonly terminalChunkCount: number;
   readonly terminalByteLength: number;
   readonly expiresAtMs?: number;
+  /** Gateway-only terminal ACK commit after ref/completion activation. */
+  readonly commitBridge?: (tx: StoreTransaction) => Promise<void>;
 }
 
 interface RecoveryProtectedRef {
@@ -998,7 +1002,7 @@ export class GatewayResourceAuthority {
         fail("not_found", "recovery receipt unavailable");
       }
       if (previous.state === "active") return;
-      await this.#writeProtectedRecoveryChunk(input.scope, protectedStore, previous, bytes);
+      await this.#writeProtectedRecoveryChunk(input.scope, protectedStore, previous, bytes, input.commitBridge);
       return;
     }
     if (input.chunkIndex > 0) {
@@ -1013,7 +1017,7 @@ export class GatewayResourceAuthority {
       tx.stage({ namespace: RECOVERY_CHUNK_NAMESPACE, key, value: record as unknown as GatewayJsonValue, expect: { kind: "absent" } });
     });
     if (reserved.ok) {
-      await this.#writeProtectedRecoveryChunk(input.scope, protectedStore, record, bytes);
+      await this.#writeProtectedRecoveryChunk(input.scope, protectedStore, record, bytes, input.commitBridge);
       return;
     }
     // A CAS loser never reports a transient write as failure without reading
@@ -1021,7 +1025,7 @@ export class GatewayResourceAuthority {
     const joined = await this.#protocolStore.transact({ tenantId: input.scope.tenantId }, (tx) => tx.read<GatewayJsonValue>(RECOVERY_CHUNK_NAMESPACE, key));
     const winner = joined.ok ? asRecoveryChunk(joined.value?.value) : null;
     if (winner === null || !sameRecoveryChunk(winner, input.owner, input.bridgeSequence, input.chunkIndex, digest, bytes.byteLength) || winner.expiresAtMs !== expiresAtMs) fail("not_found", "recovery receipt unavailable");
-    if (winner.state !== "active") await this.#writeProtectedRecoveryChunk(input.scope, protectedStore, winner, bytes);
+    if (winner.state !== "active") await this.#writeProtectedRecoveryChunk(input.scope, protectedStore, winner, bytes, input.commitBridge);
     } finally { bytes.fill(0); }
   }
 
@@ -2283,6 +2287,7 @@ export class GatewayResourceAuthority {
     protectedStore: ProtectedObjectStorePort,
     record: RecoveryChunkRecord,
     bytes: Uint8Array,
+    commitBridge?: (tx: StoreTransaction) => Promise<void>,
   ): Promise<void> {
     if (bytes.byteLength !== record.plainLength || sha256(bytes) !== record.plainDigest) fail("not_found", "recovery receipt unavailable");
     const written = await protectedStore.putProtected({ storageKey: record.storageKey, contentType: "application/json", bytes, kid: record.kid, binding: recoveryBinding(record.owner, record.bridgeSequence, record.chunkIndex, record.plainDigest, record.resultRefDigest, record.plainLength, record.expiresAtMs) });
@@ -2291,11 +2296,24 @@ export class GatewayResourceAuthority {
       const current = await tx.read<GatewayJsonValue>(RECOVERY_CHUNK_NAMESPACE, recoveryChunkKey(record.owner, record.chunkIndex));
       const candidate = asRecoveryChunk(current?.value);
       if (current === null || candidate === null || !sameRecoveryChunk(candidate, record.owner, record.bridgeSequence, record.chunkIndex, record.plainDigest, record.plainLength)) return false;
-      if (candidate.state === "active") return true;
+      if (candidate.state === "active") {
+        await commitBridge?.(tx);
+        return true;
+      }
       tx.stage({ namespace: RECOVERY_CHUNK_NAMESPACE, key: current.key, value: { ...candidate, state: "active" } as unknown as GatewayJsonValue, expect: { kind: "version", version: current.version } });
+      await commitBridge?.(tx);
       return true;
     });
-    if (!activated.ok || !activated.value) fail("storage_unavailable", "recovery receipt was not activated");
+    if (activated.ok && activated.value) return;
+    // Concurrent byte-identical retries may lose the activation CAS after the
+    // winner made the receipt active. Join only that exact durable winner.
+    const joined = await this.#protocolStore.transact({ tenantId: scope.tenantId }, (tx) =>
+      tx.read<GatewayJsonValue>(RECOVERY_CHUNK_NAMESPACE, recoveryChunkKey(record.owner, record.chunkIndex)),
+    );
+    const winner = joined.ok ? asRecoveryChunk(joined.value?.value) : null;
+    if (winner === null || winner.state !== "active" || !sameRecoveryChunk(winner, record.owner, record.bridgeSequence, record.chunkIndex, record.plainDigest, record.plainLength)) {
+      fail("storage_unavailable", "recovery receipt was not activated");
+    }
   }
 
   async #loadRecoveryChunks(scope: GatewayResourceScope, owner: RecoveryOwner, count: number): Promise<readonly RecoveryChunkRecord[]> {
@@ -2376,8 +2394,13 @@ export class GatewayResourceAuthority {
         const current = await tx.read<GatewayJsonValue>(RECOVERY_COMPLETION_NAMESPACE, recoveryCompletionKey(input.owner));
         const candidate = asRecoveryCompletion(current?.value);
         if (current === null || candidate === null || candidate.refId !== completion.refId || !sameRecoveryOwner(candidate.owner, input.owner)) return false;
-        if (candidate.state === "active") return candidate.activatedSessionBindingId === authorization.sessionBindingId && candidate.activatedSessionBindingVersion === authorization.sessionBindingVersion;
+        if (candidate.state === "active") {
+          if (candidate.activatedSessionBindingId !== authorization.sessionBindingId || candidate.activatedSessionBindingVersion !== authorization.sessionBindingVersion) return false;
+          await input.commitBridge?.(tx);
+          return true;
+        }
         tx.stage({ namespace: RECOVERY_COMPLETION_NAMESPACE, key: current.key, value: { ...candidate, state: "active", activatedSessionBindingId: authorization.sessionBindingId, activatedSessionBindingVersion: authorization.sessionBindingVersion } as unknown as GatewayJsonValue, expect: { kind: "version", version: current.version } });
+        await input.commitBridge?.(tx);
         return true;
       });
       if (!completed.ok || !completed.value) fail("storage_unavailable", "recovery completion was not activated");

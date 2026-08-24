@@ -3,6 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
+  C39_PAYLOAD_RECOVERY_BINDING,
   DYNAMIC_CODE_TOOL,
   E5_CONFIRM_CLASS_TOOLS,
   E5_DOCUMENT_RECOVERY_TOOLS,
@@ -54,7 +55,7 @@ describe("E5 tool binding map", () => {
       ),
     );
     const seeded = seed.tools.map((t) => t.name).sort();
-    const mapped = E5_TOOL_BINDINGS.map((r) => r.tool).sort();
+    const mapped = [...E5_TOOL_BINDINGS, C39_PAYLOAD_RECOVERY_BINDING].map((r) => r.tool).sort();
     expect(mapped).toEqual(seeded);
 
     for (const row of E5_TOOL_BINDINGS) {

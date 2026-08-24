@@ -95,6 +95,7 @@ import {
 import {
   claimOmittedPayloadRecovery,
   OMITTED_PAYLOAD_RECOVERY_MAX_AGE_MS,
+  readOmittedPayloadRecoveryByInvocation,
   type OmittedPayloadRecoveryClaim,
 } from "./omittedPayloadRecovery.js";
 import type {
@@ -102,6 +103,7 @@ import type {
   BridgeCarrierCommitMode,
   GatewayResourceAuthority,
   GatewayResourceScope,
+  RecoveryOwner,
 } from "./resourceAuthority.js";
 import type {
   IdentityDeviceV2,
@@ -331,6 +333,7 @@ export type GatewayOmittedPayloadRecoveryAdmissionInput = Readonly<{
   readonly sessionVersion: number;
   readonly originInvocationId: string;
   readonly originResultDigest: `sha256:${string}`;
+  readonly recoveryInvocationId: string;
 }>;
 
 type GatewayDocumentContextObserver = (
@@ -6646,6 +6649,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       !isGatewayUuidV7(input.sessionBindingId) ||
       !isSafePositiveInteger(input.sessionVersion) ||
       !isGatewayUuidV7(input.originInvocationId) ||
+      !isGatewayUuidV7(input.recoveryInvocationId) ||
       !DIGEST_PATTERN.test(input.originResultDigest)
     ) return guarded();
     try {
@@ -6694,6 +6698,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
                 },
                 originInvocationId: input.originInvocationId,
                 originResultDigest: input.originResultDigest,
+                recoveryInvocationId: input.recoveryInvocationId,
                 terminalEvidenceDigest: evidence.terminalDigest,
                 terminalRetentionExpiresAtMs: evidence.retentionExpiresAtMs,
                 ownerSessionExpiresAtMs: record.resumeExpiresAtMs,
@@ -6720,6 +6725,27 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       // External callers get no store/tenant/expiry oracle from this seam.
       return guarded();
     }
+  }
+
+  /**
+   * North-only C39 admission freezes the currently active RSID binding before
+   * any recovery dispatch can be built. The public caller cannot select a
+   * binding/version and learns only the uniform guarded outcome on drift.
+   */
+  public async admitOmittedPayloadRecoveryFromNorth(input: Omit<
+    GatewayOmittedPayloadRecoveryAdmissionInput,
+    "sessionBindingId" | "sessionVersion"
+  >): Promise<OmittedPayloadRecoveryClaim> {
+    const active = this.#active.get(input.rsid);
+    if (
+      active === undefined || active.tenantId !== input.tenantId ||
+      active.record.userId !== input.userId
+    ) return Object.freeze({ kind: "guarded" as const });
+    return this.admitOmittedPayloadRecovery({
+      ...input,
+      sessionBindingId: active.record.sessionBindingId,
+      sessionVersion: active.record.sessionVersion,
+    });
   }
 
   /**
@@ -10146,7 +10172,28 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         throw new GatewayRbpFault("unsupported", "chunk carrier was not granted", 403, 4403);
       }
       const { scope, effective } = this.#carrierScope(active.record);
+      const recoveryOwner = await this.#recoveryOwnerForInvocation(
+        active.record,
+        envelope.payload.invocation_id,
+      );
       const committed: { current: DurableRbpSession | null } = { current: null };
+      if (recoveryOwner !== null) {
+        await this.#resourceAuthority.stageRecoveryChunk({
+          scope,
+          effectiveMcpRequestScope: effective,
+          owner: recoveryOwner,
+          bridgeSequence: envelope.seq,
+          chunkIndex: envelope.payload.chunk_index,
+          data: envelope.payload.data,
+          contentType: "application/json",
+          commitBridge: async (tx) => {
+            await this.#commitCarrierChunk(tx, active, connection, envelope, authorityTicket, committed);
+          },
+        });
+        if (committed.current === null) throw new GatewayRbpFault("unavailable", "recovery receipt commit was not observable", 503, 1011);
+        active.record = committed.current;
+        return;
+      }
       await this.#resourceAuthority.acceptBridgeChunk({
         scope,
         effectiveMcpRequestScope: effective,
@@ -10169,6 +10216,44 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         throw new GatewayRbpFault("unsupported", "result carrier was not granted", 403, 4403);
       }
       const { scope, effective } = this.#carrierScope(active.record);
+      const recoveryOwner = await this.#recoveryOwnerForInvocation(
+        active.record,
+        envelope.payload.invocation_id,
+      );
+      if (recoveryOwner !== null) {
+        const totalChunks = envelope.payload.total_chunks;
+        const totalSize = envelope.payload.total_size;
+        if (
+          typeof totalChunks !== "number" || !Number.isSafeInteger(totalChunks) ||
+          totalChunks < 1 || typeof totalSize !== "number" ||
+          !Number.isSafeInteger(totalSize) || totalSize < 0
+        ) {
+          throw new GatewayRbpFault("protocol", "C39 recovery terminal is incomplete", 400, 4400);
+        }
+        const admission = terminalAdmissionFor(active.record, connection.connectionId, envelope);
+        const committed: { current: DurableRbpSession | null } = { current: null };
+        const completion: { current: GatewayExecutorOutcome | null } = { current: null };
+        const resultRef = await this.#resourceAuthority.finalizeRecoveryResultRef({
+          scope,
+          effectiveMcpRequestScope: effective,
+          owner: recoveryOwner,
+          terminalChunkCount: totalChunks,
+          terminalByteLength: totalSize,
+          commitBridge: async (tx) => {
+            const result = await this.#commitCarrierTerminal(tx, active, connection, envelope, authorityTicket, admission, "activate", committed, completion);
+            if (result.kind === "aborted") throw new BridgeCarrierTerminalAborted();
+          },
+        });
+        if (committed.current === null) throw new GatewayRbpFault("unavailable", "recovery terminal commit was not observable", 503, 1011);
+        active.record = committed.current;
+        const waiter = this.#waiters.get(envelope.payload.invocation_id);
+        if (waiter !== undefined) {
+          clearTimeout(waiter.timer);
+          this.#waiters.delete(envelope.payload.invocation_id);
+          waiter.resolve({ state: "completed", result: resultRef as unknown as GatewayJsonValue });
+        }
+        return;
+      }
       // Freeze immutable admission and resource scope before Stage C.  Retries
       // reuse this exact proof; they never rerun the Bridge or mint handles.
       const admission = terminalAdmissionFor(active.record, connection.connectionId, envelope);
@@ -10398,6 +10483,40 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         4403,
       );
     }
+  }
+
+  async #recoveryOwnerForInvocation(
+    record: DurableRbpSession,
+    recoveryInvocationId: string,
+  ): Promise<RecoveryOwner | null> {
+    const { scope, effective } = this.#carrierScope(record);
+    const found = await this.#sessionRepository.transact(
+      { tenantId: record.tenantId },
+      async (tx) => await readOmittedPayloadRecoveryByInvocation(tx, {
+        tenantId: record.tenantId,
+        userId: record.userId,
+        effectiveMcpSessionId: effective.effectiveMcpSessionId,
+        rsid: record.rsid,
+        sessionBindingId: record.sessionBindingId,
+        sessionVersion: record.sessionVersion,
+        active: true,
+        ownerSessionExpiresAtMs: record.resumeExpiresAtMs,
+        nowMs: this.#clock(),
+      }, recoveryInvocationId),
+    );
+    if (!found.ok || found.value === null || found.value.state !== "awaiting_correlated_read") return null;
+    return Object.freeze({
+      tenantId: scope.tenantId,
+      userId: scope.actorId,
+      principalKey: scope.principalKey,
+      effectiveMcpSessionId: scope.mcpSessionId,
+      sessionBindingId: record.sessionBindingId,
+      sessionBindingVersion: record.sessionVersion,
+      rsid: record.rsid,
+      recoveryInvocationId,
+      originInvocationId: found.value.originInvocationId,
+      originResultDigest: found.value.originResultDigest,
+    });
   }
 
   async #activate(record: DurableRbpSession): Promise<void> {

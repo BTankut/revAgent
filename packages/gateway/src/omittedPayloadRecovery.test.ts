@@ -26,6 +26,7 @@ function admission(overrides: Partial<OmittedPayloadRecoveryAdmission> = {}): Om
     },
     originInvocationId: id(),
     originResultDigest: digest("a"),
+    recoveryInvocationId: id(),
     terminalEvidenceDigest: digest("b"),
     terminalRetentionExpiresAtMs: 1_775_000_060_000,
     ownerSessionExpiresAtMs: 1_775_000_120_000,
@@ -75,7 +76,9 @@ describe("omitted payload recovery CAS admission", () => {
       "admitted", "resume", "resume", "resume", "resume", "resume",
       "resume", "resume", "resume", "resume", "resume", "resume",
     ]);
-    expect(fixture.snapshot().records).toHaveLength(1);
+    // The owner admission and its reverse recovery-invocation index are both
+    // durable so a C1d terminal can be correlated after a process restart.
+    expect(fixture.snapshot().records).toHaveLength(2);
   });
 
   it("denies binding drift and cross-owner or digest substitution with one guarded shape", async () => {

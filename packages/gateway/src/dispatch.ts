@@ -729,6 +729,13 @@ export interface GatewayDispatchRequest {
   readonly mcpSessionId: string;
   /** Required immutable carrier minted once at north ingress. */
   readonly effectiveMcpRequestScope: EffectiveMcpRequestScopeV1;
+  /**
+   * C39-only authority hook. It runs after the immutable context is minted
+   * and the durable RSID window is held, but before any executor contact.
+   */
+  readonly beforeExecute?: (
+    context: GatewayInvocationContext,
+  ) => Promise<boolean> | boolean;
   /** Stable confirmation authority when transport requests are stateless. */
   readonly confirmationSessionId?: string;
   readonly confirmation?: GatewayConfirmationControl;
@@ -2536,6 +2543,28 @@ export class GatewayDispatcher {
       }
 
       try {
+        if (input.beforeExecute !== undefined) {
+          phase = "executor";
+          const admitted = await input.beforeExecute(context);
+          if (!admitted) {
+            const outcome: GatewayDispatchOutcome = {
+              ok: false,
+              state: "failed",
+              toolName: input.toolName,
+              requestId: invocationId,
+              error: {
+                code: "recovery_unavailable",
+                detailCode: "correlated_recovery_denied",
+                message: "correlated recovery is unavailable",
+              },
+              executorReached: false,
+            };
+            phase = "audit_finish";
+            return await this.#finish(outcome, {
+              ...auditBase, route, tool, context, authority, executorReached: false,
+            });
+          }
+        }
         phase = "executor";
         executorReached = true;
         const executorOutcome: unknown = await runWithGatewayInvocationContext(

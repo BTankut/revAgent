@@ -29,7 +29,7 @@ import type {
   GatewayDispatcher,
   GatewayJsonValue,
 } from "./dispatch.js";
-import type { CatalogEntry, EntitledCatalogView } from "./entitledRegistry.js";
+import { EntitledCatalogView, type CatalogEntry } from "./entitledRegistry.js";
 import {
   createEffectiveMcpRequestScopeV1,
   GatewayInvocationContextError,
@@ -49,6 +49,7 @@ import {
   type ModeAActivationResult,
 } from "./modeADiscovery.js";
 import type { GatewayToolRegistry } from "./registry.js";
+import { C39_PAYLOAD_RECOVERY_CALLABLE } from "./northFirstSlice.js";
 import {
   GatewayResourceError,
   resourceScopeFromEffectiveMcpRequestScope,
@@ -165,6 +166,19 @@ export interface NorthMcpEndpointOptions {
     "boundResult" | "readResource"
   >;
   readonly resourceMaxInlineResultBytes?: number;
+  /** C39 is absent unless its production provider and durable authority pass readiness. */
+  readonly payloadRecovery?: {
+    readonly ready: () => boolean;
+    admit(input: {
+      readonly tenantId: string;
+      readonly userId: string;
+      readonly effectiveMcpSessionId: string;
+      readonly rsid: string;
+      readonly originInvocationId: string;
+      readonly originResultDigest: `sha256:${string}`;
+      readonly recoveryInvocationId: string;
+    }): Promise<{ readonly kind: "admitted" | "resume" | "completed" | "guarded" }>;
+  };
   /** O6 instruction package pin; independent from callable tool schemas. */
   readonly instructionVersion?: string;
   /** Complete executable registry when Mode A is enabled. */
@@ -744,13 +758,24 @@ function createSessionServer(input: {
     "boundResult" | "readResource"
   >;
   readonly resourceMaxInlineResultBytes: number;
+  readonly payloadRecovery?: NorthMcpEndpointOptions["payloadRecovery"];
   readonly invocationRouteFor: NorthMcpEndpointOptions["invocationRouteFor"];
   readonly instructionVersion: string;
   readonly verifyRequestState: RequestStateCodec["verify"];
 }): McpServer {
-  const capabilityIndexBytes = input.catalogView.capabilityIndexBytes();
+  // C39 readiness is a registration boundary, not a callable error branch:
+  // an unavailable provider must not leak the tool through the capability
+  // index, instructions, search, or schema activation.
+  const catalogView =
+    input.payloadRecovery?.ready() === true
+      ? input.catalogView
+      : new EntitledCatalogView(
+          input.catalogView.entries(),
+          (entry) => entry.name !== C39_PAYLOAD_RECOVERY_CALLABLE,
+        );
+  const capabilityIndexBytes = catalogView.capabilityIndexBytes();
   const instructionPackage = buildGatewayInstructionPackage(
-    input.catalogView,
+    catalogView,
     input.instructionVersion,
   );
   const dispatcher = input.dispatcher;
@@ -804,7 +829,13 @@ function createSessionServer(input: {
 
 
   for (const record of input.registry.records()) {
-    const catalogEntry = input.catalogView.get(record.name);
+    if (
+      record.name === C39_PAYLOAD_RECOVERY_CALLABLE &&
+      (input.payloadRecovery === undefined || !input.payloadRecovery.ready())
+    ) {
+      continue;
+    }
+    const catalogEntry = catalogView.get(record.name);
     if (
       catalogEntry === undefined ||
       (input.modeASession !== undefined &&
@@ -865,6 +896,30 @@ function createSessionServer(input: {
             ...(call.confirmation === undefined
               ? {}
               : { confirmation: call.confirmation }),
+            ...(record.name !== C39_PAYLOAD_RECOVERY_CALLABLE || input.payloadRecovery === undefined
+              ? {}
+              : {
+                  beforeExecute: async (context) => {
+                    const raw = call.args as {
+                      readonly origin_invocation_id?: unknown;
+                      readonly expected_result_digest?: unknown;
+                    };
+                    if (
+                      typeof raw.origin_invocation_id !== "string" ||
+                      typeof raw.expected_result_digest !== "string"
+                    ) return false;
+                    const admitted = await input.payloadRecovery!.admit({
+                      tenantId: context.actor.tenantId,
+                      userId: context.actor.userId,
+                      effectiveMcpSessionId: context.mcpSessionId,
+                      rsid: context.rsid,
+                      originInvocationId: raw.origin_invocation_id,
+                      originResultDigest: raw.expected_result_digest as `sha256:${string}`,
+                      recoveryInvocationId: context.invocationId,
+                    });
+                    return admitted.kind !== "guarded";
+                  },
+                }),
             resolveRoute: (authContext) => {
               if (
                 authContext.principalKey !==
@@ -1110,6 +1165,9 @@ export function createNorthMcpHttpHandler(
         ...(options.resourceAuthority === undefined
           ? {}
           : { resourceAuthority: options.resourceAuthority }),
+        ...(options.payloadRecovery === undefined
+          ? {}
+          : { payloadRecovery: options.payloadRecovery }),
         notifyToolsChanged: () => mcpHandler.notify.toolsChanged(),
         registry: options.registry,
         effectiveMcpRequestScope,

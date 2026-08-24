@@ -449,4 +449,38 @@ export const M2_BOOTSTRAP_TOOL_RECORDS = Object.freeze([
       type: "object",
     }),
   }),
+  Object.freeze({
+    name: "core.dispatch.payload_recovery",
+    summary: "Recover one authenticated omitted result as an expiring reference.",
+    namespace: "core",
+    version: "1.0.0",
+    policyClass: "auto",
+    mutationScopePolicy: "none",
+    executor: "bridge",
+    executorMethod: "dispatch_payload_recovery",
+    inputSchema: Object.freeze({
+      origin_invocation_id: z.string().uuid(),
+      expected_result_digest: z.string().regex(/^sha256:[0-9a-f]{64}$/u),
+    }),
+    inputJsonSchema: Object.freeze({
+      $schema: JSON_SCHEMA_2020_12_URI,
+      additionalProperties: false,
+      properties: Object.freeze({
+        origin_invocation_id: Object.freeze({
+          format: "uuid",
+          pattern: "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+          type: "string",
+        }),
+        expected_result_digest: Object.freeze({
+          pattern: "^sha256:[0-9a-f]{64}$",
+          type: "string",
+        }),
+      }),
+      required: Object.freeze([
+        "origin_invocation_id",
+        "expected_result_digest",
+      ]),
+      type: "object",
+    }),
+  }),
 ] satisfies readonly GatewayToolRecord[]);

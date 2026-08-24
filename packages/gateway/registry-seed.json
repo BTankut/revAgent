@@ -966,6 +966,23 @@
       "handlerDigest": "sha256:15af3594017fc904c61f7ee2f9b48a0daa00e2bb1cb3ae76b2f0ecb7e383f460"
     },
     {
+      "name": "dispatch_payload_recovery",
+      "module": "runtime",
+      "description": "Recover one authenticated omitted result through the Gateway's owner-bound correlated recovery authority.",
+      "inputJsonSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "origin_invocation_id": { "type": "string", "format": "uuid" },
+          "expected_result_digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+        },
+        "required": ["origin_invocation_id", "expected_result_digest"],
+        "additionalProperties": false
+      },
+      "handlerModule": "dispatch_payload_recovery.js",
+      "handlerDigest": "sha256:54ab803407d59b4851375b55021a5b60ad373ba0c88e2414d62fca3d0f7231a6"
+    },
+    {
       "name": "export_revit_coordination_image",
       "module": "runtime",
       "description": "[VISUAL_ARTIFACT_EXPORT_ONLY] Create or reuse a visual QA 3D view, optionally section-box target elements, apply a selectable target visual style, and export an image artifact. Auto style is report-friendly and never selects qa_high_contrast by itself. Use qa_high_contrast explicitly for debug/LLM evidence, technical_report or outline_only for report-style evidence, and raw when the target must keep native appearance. Use this when the user asks for PNG/JPEG/report/LLM visual evidence. If elementIds are provided but none are found, it returns guarded no_requested_elements_found unless allowFullViewFallback=true is explicit. Do not use this as the primary tool for live view navigation, selected-element zoom, or opening an element in a Revit view; for that workflow use create_3d_view_for_elements or show_element_in_plan_and_3d, then optionally export the active view with export_revit_view_image. It only writes review view settings; it does not create or modify MEP model elements. Set cleanupAfterExport=true when a newly created review view should be deleted after the image file is produced.",
@@ -6091,5 +6108,5 @@
       "handlerDigest": "sha256:7f7219c315efb74510bc88dcc4548fea4d71afd456006533af7a0c13031f8fa5"
     }
   ],
-  "seedDigest": "sha256:9eacbb8ccdaaba6bb106d8d41fc26c092302d9992e8e75c8e62fb2a82c172037"
+  "seedDigest": "sha256:24bc8bef1ce74ebd44797be63f473b0acbaee687f1e5539ffcf0cf50699d243b"
 }
