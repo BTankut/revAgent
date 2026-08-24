@@ -37,15 +37,21 @@ describe("productionGatewayHost", () => {
       originInvocationId: "019f9ac3-ae89-7342-9f6d-b9269e167187",
       method: "fixture_multi_file_output", toolName: "conformance.fixture.c39_multifile",
     })).toBe(true);
-    expect(policy.takeResumeRequest({
-      tenantId: "conformance", userId: "conformance", rsid: "r1", sessionBindingId: "b1",
-    })).toEqual({
+    const resume = {
+      tenantId: "conformance", userId: "conformance", deviceId: "wp12-device",
+      seatId: "seat-wp12-device", rsid: "r1", sessionBindingId: "b1",
+    } as const;
+    expect(policy.peekResumeRequest?.(resume)).toEqual({
       originInvocationId: "019f9ac3-ae89-7342-9f6d-b9269e167187",
       originIdempotencyKey: "r1/019f9ac3-ae89-7342-9f6d-b9269e167187",
     });
-    expect(policy.takeResumeRequest({
-      tenantId: "conformance", userId: "conformance", rsid: "r1", sessionBindingId: "b1",
-    })).toBeNull();
+    expect(policy.peekResumeRequest?.(resume)).toEqual({
+      originInvocationId: "019f9ac3-ae89-7342-9f6d-b9269e167187",
+      originIdempotencyKey: "r1/019f9ac3-ae89-7342-9f6d-b9269e167187",
+    });
+    expect(policy.peekResumeRequest?.({ ...resume, deviceId: "foreign" })).toBeNull();
+    policy.clear({ rsid: "r1", originInvocationId: "019f9ac3-ae89-7342-9f6d-b9269e167187" });
+    expect(policy.peekResumeRequest?.(resume)).toBeNull();
     expect(policy.allowCapture({
       tenantId: "other", userId: "conformance", rsid: "r2",
       originInvocationId: "019f9ac3-ae89-7342-9f6d-b9269e167188",

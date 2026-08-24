@@ -42,13 +42,13 @@ export function createProductionConformanceC39OriginResendPolicy(): ConformanceO
       }));
       return true;
     },
-    takeResumeRequest(input: Parameters<ConformanceOriginResendPolicy["takeResumeRequest"]>[0]) {
+    peekResumeRequest(input: Parameters<NonNullable<ConformanceOriginResendPolicy["peekResumeRequest"]>>[0]) {
       for (const [candidateKey, candidate] of pending) {
         if (
           candidate.tenantId === input.tenantId && candidate.userId === input.userId &&
-          candidate.rsid === input.rsid
+          candidate.rsid === input.rsid &&
+          input.deviceId === "wp12-device" && input.seatId === "seat-wp12-device"
         ) {
-          pending.delete(candidateKey);
           return Object.freeze({
             originInvocationId: candidate.originInvocationId,
             originIdempotencyKey: `${candidate.rsid}/${candidate.originInvocationId}`,
@@ -57,6 +57,9 @@ export function createProductionConformanceC39OriginResendPolicy(): ConformanceO
       }
       return null;
     },
+    // This legacy entry must never consume. D2a uses peek and calls clear only
+    // after a terminal/success/failure lifecycle decision.
+    takeResumeRequest: () => null,
     clear(input: Parameters<ConformanceOriginResendPolicy["clear"]>[0]) {
       pending.delete(key(input.rsid, input.originInvocationId));
     },
