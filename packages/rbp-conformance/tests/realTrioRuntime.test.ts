@@ -78,6 +78,7 @@ describe.sequential("WP-12 direct real trio runtime fixture", () => {
       );
       const runtime = launched.result;
       try {
+        expect(runtime.supervisor.bridgeReadiness.c39Profile).toBe("none");
         const tool = realTrioNorthToolForCase("O1-C38");
         const result = await callRealTrioNorthTool({
           endpoint: runtime.endpoint,
@@ -112,6 +113,7 @@ describe.sequential("WP-12 direct real trio runtime fixture", () => {
       );
       const runtime = launched.result;
       try {
+        expect(runtime.supervisor.bridgeReadiness.c39Profile).toBe("d0_postwrite_once");
         await withRealTrioNorthMcpClient({
           endpoint: runtime.endpoint,
           certificateSha256: runtime.certificateSha256,

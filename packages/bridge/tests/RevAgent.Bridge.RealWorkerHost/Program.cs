@@ -58,6 +58,8 @@ internal static class Program
                 controlVersion = 1,
                 maxControlLineBytes = MaxControlLineBytes,
                 actions = new[] { "read_recovery_observations", "shutdown" },
+                c39Profile = options.TestC39D0PostWriteFault
+                    ? "d0_postwrite_once" : "none",
                 pid = Environment.ProcessId,
                 bindings = new[] { options.Binding },
                 state_root_redacted = true,
@@ -134,9 +136,13 @@ internal static class Program
             var fixtureAttestor = new FixtureAddinProcessAttestor(
                 options.FixtureProcessId,
                 options.AddinPort);
-            var omittedOriginObservation =
-                RbpConformanceOmittedOriginObservation.CreateFixtureOneShot(
-                    fixtureAttestor.ReadLiveFixtureAttestation);
+            // The D0 observation policy is inseparable from the fixed C39
+            // post-write profile. C38 and ordinary real-worker launches stay
+            // on the sealed Never policy.
+            var omittedOriginObservation = options.TestC39D0PostWriteFault
+                ? RbpConformanceOmittedOriginObservation.CreateFixtureOneShot(
+                    fixtureAttestor.ReadLiveFixtureAttestation)
+                : RbpConformanceOmittedOriginObservation.Never;
             var router = new AddinSessionRouter(transport, fixtureAttestor);
             var claims = new RbpCredentialClaimBinding(enrollment);
             var catalog = new WorkerAddinSessionCatalog(

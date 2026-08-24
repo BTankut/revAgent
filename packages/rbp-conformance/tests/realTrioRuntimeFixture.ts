@@ -1896,7 +1896,11 @@ export async function startRealTrioRuntimeFixture(
       workingDirectory: repoRoot,
     },
     gatewayExpected: { component: "gateway_production_conformance", contract: "wp12-production-conformance-host/v1" },
-    bridgeExpected: { component: "bridge_worker", contract: "wp12-real-worker-host/v1" },
+    bridgeExpected: {
+      component: "bridge_worker",
+      contract: "wp12-real-worker-host/v1",
+      c39Profile: options.c39D0PostWriteFault === true ? "d0_postwrite_once" : "none",
+    },
     fixtureExpected: { component: "addin_loopback_fixture", contract: "addin-loopback/v1" },
     csharpPublishPath: worker,
     gatewayBuildPath: gatewayCli,
