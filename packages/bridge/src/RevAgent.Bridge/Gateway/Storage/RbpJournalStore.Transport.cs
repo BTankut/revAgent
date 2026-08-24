@@ -141,14 +141,10 @@ internal sealed partial class RbpJournalStore
                     terminalize.Parameters.AddWithValue("$digest", request.ResultDigest);
                     terminalize.Parameters.AddWithValue("$now", now);
                     terminalize.Parameters.AddWithValue("$key", recoveryKey);
-                    // Storage-only C1a power-cut vectors reserve an explicit
-                    // synthetic recovery id without an invocation row. The
-                    // production dispatcher always created/marked that row;
-                    // when it exists this update is in the same transaction.
                     int updated = terminalize.ExecuteNonQuery();
-                    if (updated is < 0 or > 1)
+                    if (updated != 1)
                         throw RbpJournalSerialization.Corrupt(
-                            "The recovery terminal update was non-unique.");
+                            "The recovery terminal did not transition exactly one executing invocation.");
                 }
                 _faultInjector?.Hit(RbpJournalFaultPoint.RecoverySequenceReserved);
                 return ReadRecoveryCarrierReservation(context, request.RecoveryInvocationId) ??

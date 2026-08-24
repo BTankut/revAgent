@@ -657,18 +657,33 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
     {
         JsonElement body = RbpInvocationPayloads.KnownError(request.InvocationId,
             "environment", false, "The correlated recovery payload is unavailable.");
+        Exception? failure = null;
         try
         {
             await _journal.PersistInvocationTerminalAsync(identity.IdempotencyKey,
                 new RbpInvocationTerminal(RbpInvocationState.Failed, body,
                     JournalEvidenceDigest(body)), DurableDecisionToken).ConfigureAwait(false);
         }
-        catch (RbpJournalException)
+        catch (Exception exception)
         {
-            // An already durable success/failure is resolved by normal replay;
-            // no raw cause is allowed onto the wire.
+            failure = exception;
         }
-        return RbpInvocationAnswer.Error(body);
+        RbpStoredInvocation? stored = await _journal
+            .GetInvocationAsync(identity.IdempotencyKey, DurableDecisionToken)
+            .ConfigureAwait(false);
+        string digest = JournalEvidenceDigest(body);
+        if (stored?.State == RbpInvocationState.Failed &&
+            string.Equals(stored.ResultDigest, digest, StringComparison.Ordinal) &&
+            stored.TerminalOutcomeJson is { Length: > 0 } terminal &&
+            string.Equals(Rfc8785Json.Canonicalize(JsonDocument.Parse(terminal).RootElement),
+                Rfc8785Json.Canonicalize(body), StringComparison.Ordinal))
+        {
+            return RbpInvocationAnswer.Error(body);
+        }
+        if (failure is not null) System.Runtime.ExceptionServices.ExceptionDispatchInfo
+            .Capture(failure).Throw();
+        throw new RbpDispatchException(RbpDispatchErrorCode.Environment,
+            "The recovery terminal was not durably recorded.");
     }
 
     private async Task<RbpInvocationAnswer> TerminalizeSuccessAsync(

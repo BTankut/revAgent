@@ -229,7 +229,14 @@ public static class RbpJournalPowerCutChild
                 RbpJournalTestData.Json("{\"outcome\":\"completed\"}"),
                 digest,
                 RecoveryPayload: new RbpRecoveryPayload(digest, raw)));
-        return RbpJournalPowerCutData.RecoveryRequest();
+        RbpRecoveryCarrierReservationRequest request = RbpJournalPowerCutData.RecoveryRequest();
+        var recovery = new RbpInvocationIdentity(request.Rsid,
+            request.RecoveryInvocationId, "dispatch_payload_recovery", false,
+            null, "sha256:" + new string('f', 64),
+            "{\"decision\":\"auto\"}", "[]");
+        _ = await store.AdmitInvocationAsync(recovery);
+        await store.MarkInvocationExecutingAsync(recovery.IdempotencyKey);
+        return request;
     }
 
     private static void Park(

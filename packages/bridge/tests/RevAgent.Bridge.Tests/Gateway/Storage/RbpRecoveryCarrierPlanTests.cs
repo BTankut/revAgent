@@ -33,6 +33,7 @@ public sealed class RbpRecoveryCarrierPlanTests
         _ = await Assert.ThrowsAsync<ArgumentException>(() => store.PersistProtectedRecoveryTerminalAndReserveAsync(bad));
 
         var request = bad with { ChunkSize = raw.Length, Header = new RbpRecoveryCarrierHeader("application/json", "base64") };
+        await EnsureRecoveryExecutingAsync(store, request);
         RbpRecoveryCarrierReservation reserved = await store.PersistProtectedRecoveryTerminalAndReserveAsync(request);
         _ = await store.MarkRecoveryCarrierSendStartedAsync(reserved.RecoveryInvocationId);
         RbpRecoveryCarrierReservation tombstone = (await store.ApplyRecoveryCarrierFenceAcknowledgementAsync(origin.Rsid, 2))!;
@@ -74,6 +75,7 @@ public sealed class RbpRecoveryCarrierPlanTests
                 origin.Rsid, "0197a3c2-0000-7000-8000-0000000000f2", origin.InvocationId, digest,
                 raw.Length, new RbpRecoveryCarrierHeader("application/json", "base64"),
                 "sha256:" + new string('e', 64), RbpJournalTestData.Now.AddHours(1));
+            await EnsureRecoveryExecutingAsync(store, request);
             reservation = await store.PersistProtectedRecoveryTerminalAndReserveAsync(request);
             Assert.Equal(RbpRecoveryCarrierPhase.Reserved, reservation.Phase);
             Assert.Equal(1, reservation.CurrentReservedSequence);
@@ -110,6 +112,7 @@ public sealed class RbpRecoveryCarrierPlanTests
             origin.Rsid, "0197a3c2-0000-7000-8000-0000000000d2", origin.InvocationId, digest,
             raw.Length, new RbpRecoveryCarrierHeader("application/json", "base64"),
             "sha256:" + new string('f', 64), RbpJournalTestData.Now.AddHours(1));
+        await EnsureRecoveryExecutingAsync(store, request);
 
         Task<RbpRecoveryCarrierReservation> reserve =
             store.PersistProtectedRecoveryTerminalAndReserveAsync(request);
@@ -158,6 +161,7 @@ public sealed class RbpRecoveryCarrierPlanTests
             raw.Length, new RbpRecoveryCarrierHeader("application/json", "base64"),
             "sha256:" + new string('b', 64),
             RbpJournalTestData.Now.AddHours(1));
+        await EnsureRecoveryExecutingAsync(store, request);
         RbpRecoveryCarrierReservation reservation =
             await store.PersistProtectedRecoveryTerminalAndReserveAsync(request);
 
@@ -212,6 +216,7 @@ public sealed class RbpRecoveryCarrierPlanTests
                 new RbpInvocationTerminal(RbpInvocationState.Completed,
                     RbpJournalTestData.Json("{\"outcome\":\"completed\"}"), digest,
                     RecoveryPayload: new RbpRecoveryPayload(digest, raw)));
+            await EnsureRecoveryExecutingAsync(store, request);
             _ = await store.PersistProtectedRecoveryTerminalAndReserveAsync(request);
         }
         // Closing only releases the file handles; the active reservation is
@@ -229,6 +234,17 @@ public sealed class RbpRecoveryCarrierPlanTests
     private static RbpJournalStore OpenStore(RbpJournalTestDirectory directory) =>
         RbpJournalStore.Open(directory.JournalPath, new TestResumeTokenProtector(),
             RbpJournalTestData.Options(), new TestRecoveryPayloadProtector());
+
+    private static async Task EnsureRecoveryExecutingAsync(
+        RbpJournalStore store, RbpRecoveryCarrierReservationRequest request)
+    {
+        var recovery = new RbpInvocationIdentity(request.Rsid,
+            request.RecoveryInvocationId, "dispatch_payload_recovery", false,
+            null, "sha256:" + new string('f', 64),
+            "{\"decision\":\"auto\"}", "[]");
+        _ = await store.AdmitInvocationAsync(recovery);
+        await store.MarkInvocationExecutingAsync(recovery.IdempotencyKey);
+    }
 
     private static async Task<(RbpInvocationIdentity Origin, byte[] Raw, string Digest)> PersistRecoverableTerminalAsync(
         RbpJournalStore store,
