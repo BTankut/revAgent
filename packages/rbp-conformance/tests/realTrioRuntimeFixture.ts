@@ -1001,30 +1001,51 @@ function parseDocumentContextGrammar(input: {
 export function preControlWatcherSeedFromSnapshot(
   snapshot: RealTrioDocumentContextSnapshot,
 ): RealTrioPreControlWatcherSeed | null {
+  const state = preControlWatcherSnapshotState(snapshot);
+  return state.kind === "seed" ? state.seed : null;
+}
+
+type PreControlWatcherSnapshotState =
+  | Readonly<{ readonly kind: "seed"; readonly seed: RealTrioPreControlWatcherSeed }>
+  | Readonly<{ readonly kind: "ack_pending" }>
+  | Readonly<{ readonly kind: "invalid" }>;
+
+function preControlWatcherSnapshotState(
+  snapshot: RealTrioDocumentContextSnapshot,
+): PreControlWatcherSnapshotState {
   if (!Number.isSafeInteger(snapshot.generation) || snapshot.generation < 1 ||
       !/^(?:0|[1-9][0-9]*)$/u.test(snapshot.lowWaterCursor) ||
-      !/^(?:0|[1-9][0-9]*)$/u.test(snapshot.highWaterCursor)) return null;
+      !/^(?:0|[1-9][0-9]*)$/u.test(snapshot.highWaterCursor)) return Object.freeze({ kind: "invalid" });
   const lowWater = BigInt(snapshot.lowWaterCursor);
   const highWater = BigInt(snapshot.highWaterCursor);
   if (snapshot.rows.length === 0 || snapshot.rows.some((row) => !/^[1-9][0-9]*$/u.test(row.cursor)) ||
       lowWater !== 1n || highWater < lowWater ||
       BigInt(snapshot.rows[0]!.cursor) !== lowWater ||
-      BigInt(snapshot.rows.at(-1)!.cursor) !== highWater) return null;
+      BigInt(snapshot.rows.at(-1)!.cursor) !== highWater) return Object.freeze({ kind: "invalid" });
   const parsed = parseDocumentContextGrammar({ rows: snapshot.rows, generation: snapshot.generation,
     controlCursor: "0", precedingProbe: null });
-  if (parsed === null || parsed.currentWatcher === null || parsed.currentWatcher.watcherOrdinal < 1) return null;
+  if (parsed === null || parsed.currentWatcher === null || parsed.currentWatcher.watcherOrdinal < 1) {
+    return Object.freeze({ kind: "invalid" });
+  }
   // A seed is valid only after every retained watcher history has settled.
   // In particular, a later empty probe cannot erase an unacknowledged send in
   // an earlier watcher. `parseDocumentContextGrammar` binds ACKs to their
   // watcher and rejects wrong/backward/duplicate ACKs; this pass requires one
   // exact post-send ACK for every completed cycle through high water.
-  for (const candidate of parsed.candidates) {
+  const unacknowledged = parsed.candidates.filter((candidate) => {
     const acknowledgedAt = parsed.acknowledgements.get(
       candidateKey(candidate.watcherOrdinal, candidate.rsidHash, candidate.sequence),
     );
-    if (acknowledgedAt === undefined || acknowledgedAt <= candidate.sendTranscriptIndex) return null;
+    return acknowledgedAt === undefined || acknowledgedAt <= candidate.sendTranscriptIndex;
+  });
+  if (unacknowledged.length === 0) return Object.freeze({ kind: "seed", seed: parsed.currentWatcher });
+  const outstanding = unacknowledged[0];
+  if (unacknowledged.length === 1 && outstanding !== undefined &&
+      outstanding.watcherOrdinal === parsed.currentWatcher.watcherOrdinal &&
+      outstanding.sequence === parsed.currentWatcher.lastSentSequence) {
+    return Object.freeze({ kind: "ack_pending" });
   }
-  return parsed.currentWatcher;
+  return Object.freeze({ kind: "invalid" });
 }
 
 function snapshotsAreSameCompleteGeneration(
@@ -1036,8 +1057,7 @@ function snapshotsAreSameCompleteGeneration(
     return candidate !== undefined && candidate.cursor === row.cursor && candidate.at === row.at && candidate.line === row.line;
   });
   return first.generation === second.generation && first.highWaterCursor === second.highWaterCursor &&
-    first.lowWaterCursor === second.lowWaterCursor && sameRows &&
-    preControlWatcherSeedFromSnapshot(first) !== null && preControlWatcherSeedFromSnapshot(second) !== null;
+    first.lowWaterCursor === second.lowWaterCursor && sameRows;
 }
 
 interface CurrentRouteAuditIdentity {
@@ -1364,6 +1384,15 @@ export interface RealTrioPreControlBundle {
   readonly seed: RealTrioPreControlWatcherSeed;
 }
 
+export class RealTrioPreControlCaptureError extends Error {
+  public constructor(
+    readonly reason: "ack_timeout" | "invalid_history" | "generation_changed" | "child_exit",
+  ) {
+    super(`real trio pre-control capture failed closed: ${reason}`);
+    this.name = "RealTrioPreControlCaptureError";
+  }
+}
+
 /**
  * Capture an atomic causal floor before the fixture control. The two complete
  * ring snapshots prevent a Gateway audit from being paired with a cursor
@@ -1371,31 +1400,53 @@ export interface RealTrioPreControlBundle {
  * yet been durably ACKed is retried as a whole bundle; it is never seeded.
  */
 export async function capturePreControlDocumentContextBundle(input: {
-  readonly supervisor: Pick<RealTrioSupervisorResult, "readDocumentContextSnapshot">;
+  readonly supervisor: Pick<RealTrioSupervisorResult, "readDocumentContextSnapshot"> &
+    Partial<Pick<RealTrioSupervisorResult, "readDocumentContextFailureState">>;
   readonly readGatewayAudit: () => Promise<unknown>;
-  readonly attempts?: number;
-  readonly retryDelayMs?: number;
+  /** Existing document-context ACK/route deadline; default covers 15 s production heartbeat plus jitter. */
+  readonly timeoutMs?: number;
+  /** Bounded observation poll. Production callers use 100 ms; tests may inject 50-100 ms. */
+  readonly pollIntervalMs?: number;
+  readonly now?: () => number;
+  readonly sleep?: (milliseconds: number) => Promise<void>;
 }): Promise<RealTrioPreControlBundle> {
-  const attempts = input.attempts ?? 4;
-  if (!Number.isSafeInteger(attempts) || attempts < 1) throw new Error("invalid real trio pre-control capture bound");
-  for (let attempt = 0; attempt < attempts; attempt += 1) {
+  const timeoutMs = input.timeoutMs ?? DOCUMENT_CONTEXT_WATCHER_TIMEOUT_MS;
+  const pollIntervalMs = input.pollIntervalMs ?? 100;
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || !Number.isSafeInteger(pollIntervalMs) ||
+      pollIntervalMs < 50 || pollIntervalMs > 100) throw new Error("invalid real trio pre-control capture timing bound");
+  const now = input.now ?? Date.now;
+  const sleep = input.sleep ?? (async (milliseconds: number): Promise<void> => {
+    await new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
+  });
+  const deadline = now() + timeoutMs;
+  for (;;) {
+    if (input.supervisor.readDocumentContextFailureState?.().childExited === true) {
+      throw new RealTrioPreControlCaptureError("child_exit");
+    }
     const first = input.supervisor.readDocumentContextSnapshot();
-    const audit = await input.readGatewayAudit();
-    const baseline = gatewayAuditBaseline(audit);
+    let audit: unknown = null;
+    let baseline: RealTrioGatewayAuditBaseline | null = null;
+    try {
+      audit = await input.readGatewayAudit();
+      baseline = gatewayAuditBaseline(audit);
+    } catch {
+      // A public audit control can transiently lose its current route while
+      // the worker's heartbeat is in flight. It is retried under this bound.
+    }
     const second = input.supervisor.readDocumentContextSnapshot();
-    const seed = snapshotsAreSameCompleteGeneration(first, second)
-      ? preControlWatcherSeedFromSnapshot(second)
-      : null;
-    if (baseline !== null && baseline.acceptedObservationOrdinal !== undefined && baseline.currentIdentity !== undefined &&
-        seed !== null && (seed.lastSentSequence === null || seed.lastAckSequence !== null &&
-          seed.lastAckSequence >= seed.lastSentSequence)) {
-      return Object.freeze({ snapshot: second, baseline, audit, seed });
+    if (first.generation !== second.generation) throw new RealTrioPreControlCaptureError("generation_changed");
+    const firstState = preControlWatcherSnapshotState(first);
+    const secondState = preControlWatcherSnapshotState(second);
+    if (firstState.kind === "invalid" || secondState.kind === "invalid") {
+      throw new RealTrioPreControlCaptureError("invalid_history");
     }
-    if (attempt + 1 < attempts) {
-      await new Promise<void>((resolve) => setTimeout(resolve, input.retryDelayMs ?? 50));
+    if (snapshotsAreSameCompleteGeneration(first, second) && secondState.kind === "seed" &&
+        baseline !== null && baseline.acceptedObservationOrdinal !== undefined && baseline.currentIdentity !== undefined) {
+      return Object.freeze({ snapshot: second, baseline, audit, seed: secondState.seed });
     }
+    if (now() >= deadline) throw new RealTrioPreControlCaptureError("ack_timeout");
+    await sleep(Math.min(pollIntervalMs, Math.max(1, deadline - now())));
   }
-  throw new Error("real trio pre-control cursor/audit bundle was not coherent and durably acknowledged");
 }
 
 async function waitForPostRouteDocumentContextHeartbeatAck(input: {
@@ -1612,6 +1663,7 @@ export async function startRealTrioRuntimeFixture(
     const preControl = await capturePreControlDocumentContextBundle({
       supervisor,
       readGatewayAudit: () => readCapturedRealCaseAudit(supervisor, auditCapture),
+      timeoutMs: options.documentContextTimeoutMs,
     });
     const preControlSnapshot = preControl.snapshot;
     const preControlAudit = preControl.audit;

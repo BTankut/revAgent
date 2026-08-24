@@ -12,6 +12,7 @@ import {
   REAL_TRIO_FIXTURE_DOCUMENT_ID,
   REAL_TRIO_RUNTIME_FAILURE_SCHEMA,
   RealTrioDocumentContextFailureError,
+  RealTrioPreControlCaptureError,
   correlatedDocumentContextSendSince,
   correlatedDocumentContextSendFromCursor,
   capturePreControlDocumentContextBundle,
@@ -545,7 +546,7 @@ describe("WP-12 real-trio fixture document route gate", () => {
     ]))).toBeNull();
   });
 
-  it("captures optimistic A/audit/B pre-control bundles only after settled ACK, with bounded churn retry", async () => {
+  it("captures optimistic A/audit/B pre-control bundles through the heartbeat deadline", async () => {
     const hash = `sha256:${"a".repeat(64)}`;
     const epoch = "123e4567-e89b-42d3-a456-426614174000";
     const rows = (ack: boolean) => [
@@ -565,18 +566,79 @@ describe("WP-12 real-trio fixture document route gate", () => {
         contractVersion: "revagent.wp12-document-context-audit/v1", event: "gateway.doc_context_update_observation",
         stage: "accepted", ...route, observationOrdinal: 1,
       }] };
-    // First A/B differs (optimistic churn), second pair has an outstanding
-    // send, and only the final pair supplies the settled causal floor.
-    const snapshots = [snapshot(rows(false)), snapshot(rows(true)), snapshot(rows(false)), snapshot(rows(false)), snapshot(rows(true)), snapshot(rows(true))];
+    let now = 0;
+    let reads = 0;
+    let auditReads = 0;
+    const sleep = async (milliseconds: number): Promise<void> => { now += milliseconds; };
+    // Initial A/B immutable-row churn and one unavailable audit are
+    // transient. The accepted initial send receives its ACK only after 300
+    // ms, beyond the old 4x50ms window but within the heartbeat deadline.
     const bundle = await capturePreControlDocumentContextBundle({
-      supervisor: { readDocumentContextSnapshot: () => snapshots.shift()! } as never,
-      readGatewayAudit: async () => audit, attempts: 3, retryDelayMs: 0,
+      supervisor: { readDocumentContextSnapshot: () => {
+        reads += 1;
+        const value = snapshot(rows(now >= 300));
+        return reads === 2 ? { ...value, rows: value.rows.map((row, index) => index === 0 ? { ...row, at: "churn" } : row) } : value;
+      } } as never,
+      readGatewayAudit: async () => {
+        auditReads += 1;
+        if (auditReads === 1) throw new Error("temporarily unavailable");
+        return audit;
+      }, timeoutMs: 500, pollIntervalMs: 100,
+      now: () => now, sleep,
     });
     expect(bundle.seed).toMatchObject({ generation: 1, rsidHash: hash, lastSentSequence: 1, lastAckSequence: 1 });
+    expect(now).toBe(300);
+    // An ACK one poll before the deadline remains admissible.
+    now = 0;
+    const nearBound = await capturePreControlDocumentContextBundle({
+      supervisor: { readDocumentContextSnapshot: () => snapshot(rows(now >= 400)) } as never,
+      readGatewayAudit: async () => audit, timeoutMs: 450, pollIntervalMs: 100,
+      now: () => now, sleep,
+    });
+    expect(nearBound.seed.lastAckSequence).toBe(1);
+    expect(now).toBe(400);
+    now = 0;
     await expect(capturePreControlDocumentContextBundle({
       supervisor: { readDocumentContextSnapshot: () => snapshot(rows(false)) } as never,
-      readGatewayAudit: async () => audit, attempts: 1, retryDelayMs: 0,
-    })).rejects.toThrow(/not coherent/u);
+      readGatewayAudit: async () => audit, timeoutMs: 250, pollIntervalMs: 100,
+      now: () => now, sleep,
+    })).rejects.toMatchObject({ reason: "ack_timeout" } satisfies Partial<RealTrioPreControlCaptureError>);
+    expect(now).toBe(250);
+  });
+
+  it("rejects malformed pre-control ACK history and generation changes without polling", async () => {
+    const hash = `sha256:${"a".repeat(64)}`;
+    const epoch = "123e4567-e89b-42d3-a456-426614174000";
+    const route = { processEpoch: epoch, rsidHash: hash, observedSequence: 1, contextDigest: "d".repeat(64),
+      routeDigest: `sha256:${"e".repeat(64)}`, recordDigest: `sha256:${"f".repeat(64)}`,
+      sessionBindingDigest: `sha256:${"1".repeat(64)}`, connectionDigest: `sha256:${"2".repeat(64)}`,
+      sessionRecordVersion: 1 };
+    const audit = { documentContextEpochSchema: "revagent.wp12-document-context-epoch/v1",
+      documentContextProcessEpoch: epoch, documentContextObservationHighWaterOrdinal: 1,
+      documentContextCurrentRoute: route, documentContextUpdates: [{
+        contractVersion: "revagent.wp12-document-context-audit/v1", event: "gateway.doc_context_update_observation",
+        stage: "accepted", ...route, observationOrdinal: 1,
+      }] };
+    const wrongAckRows = [
+      cursorRow("1", "probe", "started", null, hash), cursorRow("2", "snapshot", "ready", null, hash),
+      cursorRow("3", "queue", "durably_queued", 1, hash), cursorRow("4", "send", "sent", 1, hash),
+      cursorRow("5", "ack", "durably_acknowledged", 2, hash),
+    ];
+    const snapshot = (generation: number, rows = wrongAckRows) => ({ generation, lowWaterCursor: "1",
+      highWaterCursor: rows.at(-1)!.cursor, rows });
+    let sleeps = 0;
+    const sleep = async (): Promise<void> => { sleeps += 1; };
+    await expect(capturePreControlDocumentContextBundle({
+      supervisor: { readDocumentContextSnapshot: () => snapshot(1) } as never,
+      readGatewayAudit: async () => audit, timeoutMs: 1_000, now: () => 0, sleep,
+    })).rejects.toMatchObject({ reason: "invalid_history" } satisfies Partial<RealTrioPreControlCaptureError>);
+    expect(sleeps).toBe(0);
+    const snapshots = [snapshot(1, wrongAckRows.slice(0, 4)), snapshot(2, wrongAckRows.slice(0, 4))];
+    await expect(capturePreControlDocumentContextBundle({
+      supervisor: { readDocumentContextSnapshot: () => snapshots.shift()! } as never,
+      readGatewayAudit: async () => audit, timeoutMs: 1_000, now: () => 0, sleep,
+    })).rejects.toMatchObject({ reason: "generation_changed" } satisfies Partial<RealTrioPreControlCaptureError>);
+    expect(sleeps).toBe(0);
   });
 
   it("uses a value-free seed for snapshot-first post-control selection and never carries the old pair", () => {
