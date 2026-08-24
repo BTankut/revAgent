@@ -2079,13 +2079,44 @@ export async function startRealTrioRuntimeFixture(
           lastSuccessfulAudit: null, lastControlOutcome: null,
           preControlBaseline: null, preControlAudit: null, lastSelectorReason: null,
         };
-        const firstAudit = await readCapturedRealCaseAudit(supervisor, refreshAuditCapture);
-        const firstSnapshot = supervisor.readDocumentContextSnapshot();
-        const secondAudit = await readCapturedRealCaseAudit(supervisor, refreshAuditCapture);
-        const secondSnapshot = supervisor.readDocumentContextSnapshot();
-        const refreshBaseline = gatewayAuditBaseline(firstAudit);
-        const secondBaseline = gatewayAuditBaseline(secondAudit);
-        const refreshSeed = preControlWatcherSeedFromSnapshot(firstSnapshot);
+        const deadline = Date.now() + (options.documentContextTimeoutMs ?? DOCUMENT_CONTEXT_WATCHER_TIMEOUT_MS);
+        let firstAudit: JsonObject;
+        let firstSnapshot: RealTrioDocumentContextSnapshot;
+        let refreshBaseline: RealTrioGatewayAuditBaseline;
+        let refreshSeed: RealTrioPreControlWatcherSeed;
+        for (;;) {
+          const candidateFirstAudit = await readCapturedRealCaseAudit(supervisor, refreshAuditCapture);
+          const candidateFirstSnapshot = supervisor.readDocumentContextSnapshot();
+          const candidateSecondAudit = await readCapturedRealCaseAudit(supervisor, refreshAuditCapture);
+          const candidateSecondSnapshot = supervisor.readDocumentContextSnapshot();
+          const candidateBaseline = gatewayAuditBaseline(candidateFirstAudit);
+          const secondBaseline = gatewayAuditBaseline(candidateSecondAudit);
+          const candidateSeed = preControlWatcherSeedFromSnapshot(candidateFirstSnapshot);
+          const sameBaseline = candidateBaseline !== null && secondBaseline !== null &&
+            candidateBaseline.processEpoch === secondBaseline.processEpoch &&
+            candidateBaseline.observationOrdinal === secondBaseline.observationOrdinal &&
+            candidateBaseline.acceptedObservationOrdinal === secondBaseline.acceptedObservationOrdinal &&
+            candidateBaseline.currentIdentity === secondBaseline.currentIdentity;
+          const absent = candidateFirstAudit.documentContextCurrentRoute === null && candidateSecondAudit.documentContextCurrentRoute === null &&
+            Array.isArray(candidateFirstAudit.documentContextUpdates) && candidateFirstAudit.documentContextUpdates.length === 0 &&
+            Array.isArray(candidateSecondAudit.documentContextUpdates) && candidateSecondAudit.documentContextUpdates.length === 0 &&
+            candidateBaseline?.acceptedObservationOrdinal === undefined && candidateBaseline?.currentIdentity === undefined;
+          const current = candidateFirstAudit.documentContextCurrentRoute !== null && candidateSecondAudit.documentContextCurrentRoute !== null &&
+            candidateBaseline?.acceptedObservationOrdinal !== undefined && candidateBaseline?.currentIdentity !== undefined;
+          if (candidateFirstSnapshot.generation === candidateSecondSnapshot.generation &&
+              candidateFirstSnapshot.highWaterCursor === candidateSecondSnapshot.highWaterCursor &&
+              sameBaseline && (absent || current) && candidateSeed !== null) {
+            firstAudit = candidateFirstAudit; firstSnapshot = candidateFirstSnapshot;
+            refreshBaseline = candidateBaseline!; refreshSeed = candidateSeed;
+            break;
+          }
+          if (Date.now() >= deadline) throw new Error("real trio route refresh baseline did not stabilize: transition_or_mismatch");
+          await new Promise<void>((resolve) => setTimeout(resolve, 100));
+        }
+        /* Stable pair captured above; do not average or mix observations. */
+        const secondAudit = firstAudit;
+        const secondSnapshot = firstSnapshot;
+        const secondBaseline = refreshBaseline;
         const sameBaseline = refreshBaseline !== null && secondBaseline !== null &&
           refreshBaseline.processEpoch === secondBaseline.processEpoch &&
           refreshBaseline.observationOrdinal === secondBaseline.observationOrdinal &&
