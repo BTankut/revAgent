@@ -1,4 +1,7 @@
-import { GatewayBridgeSessionAuthority } from "./bridgeSession.js";
+import {
+  GatewayBridgeSessionAuthority,
+  type ConformanceOriginResendPolicy,
+} from "./bridgeSession.js";
 import { GatewayResourceAuthority } from "./resourceAuthority.js";
 import { isFactoryConformanceRbpIngressHost, type ConformanceRbpIngressHost } from "./rbpIngress.js";
 import {
@@ -8,6 +11,57 @@ import {
 } from "./server.js";
 import type { FastifyInstance } from "fastify";
 import type { NorthMcpEndpointOptions } from "./northMcpEndpoint.js";
+
+/**
+ * The only D2b-capable policy factory. It is intentionally not configurable:
+ * productionConformanceHost owns the fixed C39 fixture identity, while every
+ * ordinary composition retains the BridgeSession's sealed Never policy.
+ */
+export function createProductionConformanceC39OriginResendPolicy(): ConformanceOriginResendPolicy {
+  const pending = new Map<string, {
+    readonly tenantId: string;
+    readonly userId: string;
+    readonly rsid: string;
+    readonly originInvocationId: string;
+  }>();
+  const key = (rsid: string, originInvocationId: string) => `${rsid}\u0000${originInvocationId}`;
+  return Object.freeze({
+    kind: "internal_d2b_conformance" as const,
+    allowCapture(input: Parameters<ConformanceOriginResendPolicy["allowCapture"]>[0]) {
+      if (
+        input.tenantId !== "conformance" ||
+        input.userId !== "conformance" ||
+        input.method !== "fixture_multi_file_output" ||
+        input.toolName !== "conformance.fixture.c39_multifile"
+      ) return false;
+      pending.set(key(input.rsid, input.originInvocationId), Object.freeze({
+        tenantId: input.tenantId,
+        userId: input.userId,
+        rsid: input.rsid,
+        originInvocationId: input.originInvocationId,
+      }));
+      return true;
+    },
+    takeResumeRequest(input: Parameters<ConformanceOriginResendPolicy["takeResumeRequest"]>[0]) {
+      for (const [candidateKey, candidate] of pending) {
+        if (
+          candidate.tenantId === input.tenantId && candidate.userId === input.userId &&
+          candidate.rsid === input.rsid
+        ) {
+          pending.delete(candidateKey);
+          return Object.freeze({
+            originInvocationId: candidate.originInvocationId,
+            originIdempotencyKey: `${candidate.rsid}/${candidate.originInvocationId}`,
+          });
+        }
+      }
+      return null;
+    },
+    clear(input: Parameters<ConformanceOriginResendPolicy["clear"]>[0]) {
+      pending.delete(key(input.rsid, input.originInvocationId));
+    },
+  });
+}
 
 /**
  * WP-12's distinct, explicitly non-production Gateway process composition.

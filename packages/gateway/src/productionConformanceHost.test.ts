@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { startProductionGatewayHost } from "./productionConformanceHost.js";
+import {
+  createProductionConformanceC39OriginResendPolicy,
+  startProductionGatewayHost,
+} from "./productionConformanceHost.js";
 import { conformanceConnectionCapabilitiesForBinding, validateConformanceDeviceProvision } from "./productionConformanceHostCli.js";
 import type { GatewayServerOptions } from "./server.js";
 import { createFailClosedPorts } from "./server.js";
@@ -26,6 +29,29 @@ function server(nodeEnv: "test" | "production", bindHost: string): Omit<GatewayS
 }
 
 describe("productionGatewayHost", () => {
+  it("mints the D2b one-shot policy only for the fixed C39 fixture identity", () => {
+    const policy = createProductionConformanceC39OriginResendPolicy();
+    expect(policy.kind).toBe("internal_d2b_conformance");
+    expect(policy.allowCapture({
+      tenantId: "conformance", userId: "conformance", rsid: "r1",
+      originInvocationId: "019f9ac3-ae89-7342-9f6d-b9269e167187",
+      method: "fixture_multi_file_output", toolName: "conformance.fixture.c39_multifile",
+    })).toBe(true);
+    expect(policy.takeResumeRequest({
+      tenantId: "conformance", userId: "conformance", rsid: "r1", sessionBindingId: "b1",
+    })).toEqual({
+      originInvocationId: "019f9ac3-ae89-7342-9f6d-b9269e167187",
+      originIdempotencyKey: "r1/019f9ac3-ae89-7342-9f6d-b9269e167187",
+    });
+    expect(policy.takeResumeRequest({
+      tenantId: "conformance", userId: "conformance", rsid: "r1", sessionBindingId: "b1",
+    })).toBeNull();
+    expect(policy.allowCapture({
+      tenantId: "other", userId: "conformance", rsid: "r2",
+      originInvocationId: "019f9ac3-ae89-7342-9f6d-b9269e167188",
+      method: "fixture_multi_file_output", toolName: "conformance.fixture.c39_multifile",
+    })).toBe(false);
+  });
   it("requires the one public provisioning contract to name the selected carrier explicitly", () => {
     expect(conformanceConnectionCapabilitiesForBinding("wss")).toEqual([
       "journal_v1", "chunked_results", "artifact_result_v1",

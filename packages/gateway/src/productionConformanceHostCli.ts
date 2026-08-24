@@ -21,7 +21,10 @@ import {
   SqliteConformanceProtocolStore,
   createConformanceSupportingPorts,
 } from "./conformanceEphemeralAdapters.js";
-import { startProductionGatewayHost } from "./productionConformanceHost.js";
+import {
+  createProductionConformanceC39OriginResendPolicy,
+  startProductionGatewayHost,
+} from "./productionConformanceHost.js";
 import { ConformanceProtectedObjectKeyProvider } from "./protectedObjectKeyProvider.js";
 import { EncryptedProtectedObjectStore } from "./protectedObjectStore.js";
 import { createConformanceRbpIngressHost } from "./rbpIngress.js";
@@ -766,6 +769,8 @@ export async function runProductionConformanceHostCli(args: readonly string[]): 
     );
   authority = new GatewayBridgeSessionAuthority(protocolStore, identity, {
     resourceAuthority,
+    internalConformanceOriginResendPolicy:
+      createProductionConformanceC39OriginResendPolicy(),
     onDocumentContextObservation(observation) {
       if (documentContextObservationOrdinal >= Number.MAX_SAFE_INTEGER) return;
       if (observation.stage !== "accepted" || !DOCUMENT_CONTEXT_DIGEST.test(observation.contextDigest) ||
