@@ -28,6 +28,8 @@ import {
   createGatewayDispatchProofAuthority,
 } from "./invocationContext.js";
 import { GatewayResourceAuthority } from "./resourceAuthority.js";
+import { ConformanceProtectedObjectKeyProvider } from "./protectedObjectKeyProvider.js";
+import { EncryptedProtectedObjectStore } from "./protectedObjectStore.js";
 import { createMemoryObjectStore, createRestartableTestStore } from "./testAdapters.js";
 
 const TENANT_ID = "tenant-route";
@@ -272,6 +274,29 @@ function bridgeRequest(
   };
 }
 
+function recoveryBridgeRequest(
+  rsid: string,
+  recoveryInvocationId: string,
+  originInvocationId: string,
+  originResultDigest: `sha256:${string}`,
+): GatewayExecutorRequest {
+  const args: GatewayJsonObject = {
+    origin_invocation_id: originInvocationId,
+    expected_result_digest: originResultDigest,
+  };
+  const base = bridgeRequest(rsid, recoveryInvocationId, "dispatch_payload_recovery");
+  return {
+    ...base,
+    toolName: "core.dispatch.payload_recovery",
+    args,
+    context: {
+      ...base.context,
+      toolName: "core.dispatch.payload_recovery",
+      paramsDigest: makeParamsDigest(args as unknown as Parameters<typeof makeParamsDigest>[0]),
+    },
+  };
+}
+
 async function emittedInvoke(channel: TestChannel): Promise<Extract<RbpEnvelope, { type: "invoke" }>> {
   for (let turn = 0; turn < 30; turn += 1) {
     const frame = channel.frames.find(
@@ -281,6 +306,21 @@ async function emittedInvoke(channel: TestChannel): Promise<Extract<RbpEnvelope,
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
   }
   throw new Error("carrier dispatch did not emit an invoke frame");
+}
+
+async function emittedInvokeFor(
+  channel: TestChannel,
+  invocationId: string,
+): Promise<Extract<RbpEnvelope, { type: "invoke" }>> {
+  for (let turn = 0; turn < 30; turn += 1) {
+    const frame = channel.frames.find(
+      (candidate): candidate is Extract<RbpEnvelope, { type: "invoke" }> =>
+        candidate.type === "invoke" && candidate.payload.invocation_id === invocationId,
+    );
+    if (frame !== undefined) return frame;
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  }
+  throw new Error("C39 recovery dispatch did not emit its exact carrier invocation");
 }
 
 function resolve(authority: GatewayBridgeSessionAuthority) {
@@ -1525,6 +1565,129 @@ describe("Gateway omitted-payload recovery admission", () => {
         recoveryInvocationId: claim.record.carrierRecoveryInvocationId,
         originInvocationId: invocationId, originResultDigest,
       })).resolves.toBeNull();
+    } finally {
+      await created.close().catch(() => undefined);
+    }
+  });
+
+  it("C2 accepts only the exact recovery carrier partial then atomically promotes its encrypted result reference", async () => {
+    const fixture = createRestartableTestStore();
+    const objects = createMemoryObjectStore();
+    const inventory = Object.freeze({
+      kind: "conformance" as const,
+      async listLiveKids() { return Object.freeze(["c39-c2-key"]); },
+    });
+    const keys = new ConformanceProtectedObjectKeyProvider(
+      "c39-c2-key", new Map([["c39-c2-key", Buffer.alloc(32, 7)]]), inventory,
+    );
+    let created!: GatewayBridgeSessionAuthority;
+    const resources = new GatewayResourceAuthority({
+      protocolStore: fixture.store, objectStore: objects,
+      protectedObjectStore: new EncryptedProtectedObjectStore(objects, keys),
+      reauthorizeRecoveryScope: async (owner) =>
+        await created.resolveCurrentRecoveryAuthoritySnapshot(owner),
+    });
+    created = new GatewayBridgeSessionAuthority(
+      fixture.store,
+      identity({ connectionCapabilities: ["chunked_results"] }),
+      { resourceAuthority: resources },
+    );
+    await created.open();
+    try {
+      const offered = hello();
+      offered.payload.capabilities = ["chunked_results"];
+      const openedChannel = channel();
+      const opened = await created.openConnection({
+        deviceToken: DEVICE_TOKEN, binding: "wss", hello: offered, channel: openedChannel,
+      });
+      await created.receive(opened.connectionId, registration("c39-c2-ingress"));
+      const session = registeredFrame(openedChannel);
+      await created.receive(opened.connectionId, contextUpdate({
+        rsid: session.payload.rsid, seq: 1, activeDocument: "document-carrier",
+        documents: [document("document-carrier", true)],
+      }));
+
+      const originInvocationId = id();
+      const originDigest = `sha256:${"a".repeat(64)}` as const;
+      const origin = created.createExecutor().execute(
+        bridgeRequest(session.payload.rsid, originInvocationId),
+      );
+      const originInvoke = await emittedInvokeFor(openedChannel, originInvocationId);
+      await created.receive(opened.connectionId, {
+        v: 1, type: "result", id: id(), rsid: session.payload.rsid, seq: 2,
+        ack: originInvoke.seq, ts: new Date().toISOString(), payload: {
+          kind: "invocation", invocation_id: originInvocationId, status: "completed",
+          replayed: true, payload_omitted: true, result_digest: originDigest,
+          metrics: { execute_ms: 1, request_bytes: 1, response_bytes: 0, framing: "length-prefixed" },
+        },
+      });
+      await expect(origin).resolves.toMatchObject({ state: "omitted_payload" });
+      const sessionRecord = fixture.snapshot().records.find((row) =>
+        row.namespace === "gateway.rbp-session/v2" && row.key === session.payload.rsid,
+      )?.value as { binding?: { sessionBindingId?: string; sessionVersion?: number } };
+      const binding = sessionRecord.binding;
+      if (binding?.sessionBindingId === undefined || binding.sessionVersion === undefined) {
+        throw new Error("C39 C2 fixture lacks a current owner binding");
+      }
+      const claim = await created.admitOmittedPayloadRecovery({
+        tenantId: TENANT_ID, userId: USER_ID, effectiveMcpSessionId: MCP_SESSION_ID,
+        rsid: session.payload.rsid, sessionBindingId: binding.sessionBindingId,
+        sessionVersion: binding.sessionVersion, originInvocationId, originResultDigest: originDigest,
+        newCarrierRecoveryInvocationId: id(),
+      });
+      if (claim.kind !== "admitted") throw new Error("C39 C2 claim was not admitted");
+      const recoveryId = claim.record.carrierRecoveryInvocationId;
+      const recovery = created.createExecutor().execute(recoveryBridgeRequest(
+        session.payload.rsid, recoveryId, originInvocationId, originDigest,
+      ));
+      const recoveryInvoke = await emittedInvokeFor(openedChannel, recoveryId);
+      expect(recoveryInvoke.payload).toMatchObject({
+        invocation_id: recoveryId, method: "dispatch_payload_recovery",
+        params: { origin_invocation_id: originInvocationId, expected_result_digest: originDigest },
+      });
+
+      const raw = Buffer.from('{"c39":"recovered"}', "utf8");
+      const partial = {
+        v: 1 as const, type: "partial" as const, id: id(), rsid: session.payload.rsid,
+        seq: 3, ack: recoveryInvoke.seq, ts: new Date().toISOString(), payload: {
+          kind: "chunk" as const, invocation_id: recoveryId, stream_id: "result" as const,
+          chunk_index: 0, encoding: "base64" as const, content_type: "application/json" as const,
+          data: raw.toString("base64"),
+        },
+      };
+      await expect(created.receive(opened.connectionId, {
+        ...partial, payload: { ...partial.payload, invocation_id: id() },
+      })).rejects.toBeDefined();
+      expect(fixture.snapshot().records.filter((row) =>
+        row.namespace === "gateway.recovery-chunk/v1" || row.namespace === "gateway.carrier-ack/v1",
+      )).toEqual([]);
+      await expect(created.receive(opened.connectionId, partial)).resolves.toBeUndefined();
+      const afterPartial = fixture.snapshot().records;
+      expect(afterPartial.find((row) => row.namespace === "gateway.recovery-chunk/v1")?.value)
+        .toMatchObject({ state: "active", bridgeSequence: 3, chunkIndex: 0 });
+      expect(afterPartial.find((row) => row.namespace === "gateway.carrier-ack/v1")?.value)
+        .toMatchObject({ state: "chunk_durable", seq: 3, invocationId: recoveryId });
+      expect(objects.keys()).toHaveLength(1);
+
+      const sha256 = `sha256:${createHash("sha256").update(raw).digest("hex")}`;
+      await created.receive(opened.connectionId, {
+        v: 1, type: "result", id: id(), rsid: session.payload.rsid, seq: 4,
+        ack: recoveryInvoke.seq, ts: new Date().toISOString(), payload: {
+          kind: "invocation", invocation_id: recoveryId, status: "completed", replayed: false,
+          chunked: true, stream_id: "result", content_type: "application/json", total_chunks: 1,
+          total_size: raw.byteLength, sha256,
+          metrics: { execute_ms: 1, request_bytes: 1, response_bytes: raw.byteLength, framing: "length-prefixed" },
+        },
+      });
+      await expect(recovery).resolves.toMatchObject({ state: "completed", result: { kind: "result_ref" } });
+      const final = fixture.snapshot().records;
+      expect(final.find((row) => row.namespace === "gateway.recovery-completion/v1")?.value)
+        .toMatchObject({ state: "active" });
+      expect(final.find((row) => row.namespace === "gateway_resource_v1")?.value)
+        .toMatchObject({ kind: "result_ref", lifecycle: "active" });
+      expect(final.filter((row) => row.namespace === "gateway.carrier-ack/v1")
+        .some((row) => (row.value as { state?: string; seq?: number }).state === "terminal_accepted" &&
+          (row.value as { seq?: number }).seq === 4)).toBe(true);
     } finally {
       await created.close().catch(() => undefined);
     }
