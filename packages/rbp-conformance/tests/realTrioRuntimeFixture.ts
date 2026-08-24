@@ -161,7 +161,22 @@ interface RealTrioDocumentContextCorrelation {
   readonly sendRecordedAt: string | null;
 }
 
-interface RealTrioGatewayAuditBaseline {
+/**
+ * The route selector deliberately consumes the one redacted Gateway audit
+ * response rather than combining a session listing with a later audit read.
+ * Those independently consistent responses can describe different durable
+ * session versions.
+ */
+export interface RealTrioCurrentRouteSelectorInput {
+  readonly rows: readonly RealTrioDocumentContextCursorRow[];
+  readonly generation: number;
+  readonly controlCursor: string;
+  readonly precedingProbe: RealTrioDocumentContextCursorRow | null;
+  readonly audit: unknown;
+  readonly baseline: RealTrioGatewayAuditBaseline;
+}
+
+export interface RealTrioGatewayAuditBaseline {
   readonly processEpoch: string;
   readonly observationOrdinal: number;
 }
@@ -599,6 +614,163 @@ export function correlatedDocumentContextSendFromCursor(
   return null;
 }
 
+interface StrictDocumentContextCandidate extends RealTrioDocumentContextCorrelation {
+  readonly routeDigest: `sha256:${string}`;
+}
+
+/**
+ * Parse the complete retained post-control transcript as cycles, rather than
+ * stopping at its first send.  This makes a newer authoritative route select
+ * its own lifecycle (for example sequence 2), never an earlier sequence 1.
+ *
+ * A route digest is intentionally required on the trusted send observation.
+ * The current real C# transcript does not yet emit one; returning null is the
+ * explicit evidence blocker, not permission to correlate by sequence alone.
+ */
+function strictDocumentContextCandidates(input: {
+  readonly rows: readonly RealTrioDocumentContextCursorRow[];
+  readonly generation: number;
+  readonly controlCursor: string;
+  readonly precedingProbe: RealTrioDocumentContextCursorRow | null;
+}): readonly StrictDocumentContextCandidate[] | null {
+  if (!Number.isSafeInteger(input.generation) || input.generation < 1 ||
+      !/^(?:0|[1-9][0-9]*)$/u.test(input.controlCursor)) return null;
+  const control = BigInt(input.controlCursor);
+  let previous = control;
+  for (const row of input.rows) {
+    if (!/^[1-9][0-9]*$/u.test(row.cursor) || BigInt(row.cursor) !== previous + 1n ||
+        documentObservation(row) === null) return null;
+    previous = BigInt(row.cursor);
+  }
+  const prefix = input.precedingProbe === null ? null : documentObservation(input.precedingProbe);
+  if (prefix !== null &&
+      (BigInt(input.precedingProbe!.cursor) !== control || prefix.stage !== "probe" ||
+        prefix.outcome !== "started" || !isSha256(prefix.rsidHash) ||
+        !(prefix.sequence === null || (Number.isSafeInteger(prefix.sequence) && Number(prefix.sequence) >= 1)))) return null;
+
+  const candidates: StrictDocumentContextCandidate[] = [];
+  let index = 0;
+  let usePrefix = prefix !== null;
+  while (index < input.rows.length) {
+    const expected = usePrefix
+      ? [["snapshot", "ready"], ["queue", "durably_queued"], ["send", "sent"]] as const
+      : [["probe", "started"], ["snapshot", "ready"], ["queue", "durably_queued"], ["send", "sent"]] as const;
+    let hash: `sha256:${string}` | null = usePrefix ? prefix!.rsidHash as `sha256:${string}` : null;
+    let sequence: number | null = usePrefix && prefix!.sequence !== null ? Number(prefix!.sequence) : null;
+    let send: RealTrioDocumentContextCursorRow | null = null;
+    for (const [stage, outcome] of expected) {
+      const row = input.rows[index++];
+      const value = row === undefined ? null : documentObservation(row);
+      if (value === null || value.stage !== stage || value.outcome !== outcome ||
+          !isSha256(value.rsidHash) ||
+          !(value.sequence === null || (Number.isSafeInteger(value.sequence) && Number(value.sequence) >= 1))) return null;
+      if (hash === null) hash = value.rsidHash;
+      else if (hash !== value.rsidHash) return null;
+      const valueSequence = value.sequence === null ? null : Number(value.sequence);
+      if (valueSequence !== null) {
+        if (sequence === null) sequence = valueSequence;
+        else if (sequence !== valueSequence) return null;
+      }
+      if ((stage === "queue" || stage === "send") && valueSequence === null) return null;
+      if (stage === "send") send = row!;
+    }
+    if (hash === null || sequence === null || send === null) return null;
+    const sent = documentObservation(send)!;
+    // There is no permitted synthetic digest. A trusted send-side field is
+    // the only local source eligible to bind the immutable route audit.
+    const routeDigest = isSha256(sent.routeDigest) ? sent.routeDigest :
+      isSha256(sent.fixtureRouteDigest) ? sent.fixtureRouteDigest : null;
+    if (routeDigest === null) return null;
+    candidates.push(Object.freeze({
+      rsidHash: hash,
+      sequence,
+      sendCursor: send.cursor,
+      generation: input.generation,
+      sendTranscriptIndex: index - 1,
+      sendRecordedAt: send.at.length === 0 ? null : send.at,
+      routeDigest,
+    }));
+    usePrefix = false;
+    // ACK proves only the already selected send; it never begins or selects a
+    // lifecycle. It is admitted here solely so a fast ACK cannot corrupt the
+    // next complete candidate.
+    if (index < input.rows.length) {
+      const next = documentObservation(input.rows[index]!);
+      if (next?.stage === "ack") {
+        if (next.outcome !== "durably_acknowledged" || next.rsidHash !== hash ||
+            next.sequence !== sequence) return null;
+        index += 1;
+      }
+    }
+  }
+  return Object.freeze(candidates);
+}
+
+interface CurrentRouteAuditIdentity {
+  readonly rsidHash: `sha256:${string}`;
+  readonly sequence: number;
+  readonly routeDigest: `sha256:${string}`;
+  readonly sessionRecordVersion: number;
+}
+
+function currentRouteAuditIdentity(audit: unknown, baseline: RealTrioGatewayAuditBaseline): CurrentRouteAuditIdentity | null {
+  if (!isObject(audit) || audit.documentContextEpochSchema !== "revagent.wp12-document-context-epoch/v1" ||
+      audit.documentContextProcessEpoch !== baseline.processEpoch || !isProcessEpoch(audit.documentContextProcessEpoch) ||
+      !Number.isSafeInteger(audit.documentContextObservationHighWaterOrdinal) ||
+      Number(audit.documentContextObservationHighWaterOrdinal) < baseline.observationOrdinal ||
+      !isObject(audit.documentContextCurrentRoute)) return null;
+  const route = audit.documentContextCurrentRoute;
+  if (route.processEpoch !== baseline.processEpoch || !isSha256(route.rsidHash) ||
+      !Number.isSafeInteger(route.observedSequence) || Number(route.observedSequence) < 1 ||
+      !isSha256(route.routeDigest) || !Number.isSafeInteger(route.sessionRecordVersion) ||
+      Number(route.sessionRecordVersion) < 1) return null;
+  return Object.freeze({
+    rsidHash: route.rsidHash,
+    sequence: Number(route.observedSequence),
+    routeDigest: route.routeDigest,
+    sessionRecordVersion: Number(route.sessionRecordVersion),
+  });
+}
+
+function hasOneCurrentAcceptedObservation(
+  audit: unknown,
+  current: CurrentRouteAuditIdentity,
+  baseline: RealTrioGatewayAuditBaseline,
+): boolean {
+  if (!isObject(audit) || !Array.isArray(audit.documentContextUpdates)) return false;
+  const matches = audit.documentContextUpdates.filter((value) => isObject(value) &&
+    value.contractVersion === "revagent.wp12-document-context-audit/v1" &&
+    value.event === "gateway.doc_context_update_observation" && value.stage === "accepted" &&
+    value.processEpoch === baseline.processEpoch && value.rsidHash === current.rsidHash &&
+    value.observedSequence === current.sequence && value.routeDigest === current.routeDigest &&
+    value.sessionRecordVersion === current.sessionRecordVersion &&
+    Number.isSafeInteger(value.observationOrdinal) && Number(value.observationOrdinal) > baseline.observationOrdinal &&
+    Number.isSafeInteger(audit.documentContextObservationHighWaterOrdinal) &&
+    Number(value.observationOrdinal) <= Number(audit.documentContextObservationHighWaterOrdinal));
+  return matches.length === 1;
+}
+
+/**
+ * Select exactly one complete lifecycle for the single authoritative current
+ * route represented in one audit snapshot. Any missing coherent-route field,
+ * cursor gap/expiry, generation change, duplicate accepted audit observation,
+ * or zero/multiple candidate fails closed.
+ */
+export function selectCurrentDocumentContextSendFromCursor(
+  input: RealTrioCurrentRouteSelectorInput,
+): StrictDocumentContextCandidate | null {
+  if (!isObject(input.audit) || input.audit.documentContextGeneration !== input.generation) return null;
+  const candidates = strictDocumentContextCandidates(input);
+  const current = currentRouteAuditIdentity(input.audit, input.baseline);
+  if (candidates === null || current === null || !hasOneCurrentAcceptedObservation(input.audit, current, input.baseline)) {
+    return null;
+  }
+  const selected = candidates.filter((candidate) => candidate.rsidHash === current.rsidHash &&
+    candidate.sequence === current.sequence && candidate.routeDigest === current.routeDigest);
+  if (selected.length !== 1) return null;
+  return selected[0]!;
+}
+
 function cursorSinceOrThrow(input: {
   readonly supervisor: RealTrioSupervisorResult;
   readonly cursor: string;
@@ -624,21 +796,29 @@ async function waitForDocumentContextSend(input: {
   readonly controlCursor: string;
   readonly generation: number;
   readonly precedingProbe: RealTrioDocumentContextCursorRow | null;
+  readonly gatewayBaseline: RealTrioGatewayAuditBaseline;
   readonly timeoutMs?: number;
-}): Promise<RealTrioDocumentContextCorrelation> {
+}): Promise<StrictDocumentContextCandidate> {
   const deadline = Date.now() + (input.timeoutMs ?? DOCUMENT_CONTEXT_WATCHER_TIMEOUT_MS);
   for (;;) {
     if (input.supervisor.readDocumentContextFailureState().childExited) {
       throw new Error("real trio child exited before document-context send");
     }
-    const expected = correlatedDocumentContextSendFromCursor(
-      cursorSinceOrThrow({ supervisor: input.supervisor, cursor: input.controlCursor, generation: input.generation }),
-      input.generation,
-      input.precedingProbe,
-    );
+    const rows = cursorSinceOrThrow({ supervisor: input.supervisor, cursor: input.controlCursor, generation: input.generation });
+    // One audit call is the route/acceptance authority for this iteration.
+    // Do not pair rows with a separate session snapshot: a route advance can
+    // otherwise select a stale lifecycle from the preceding record version.
+    const expected = selectCurrentDocumentContextSendFromCursor({
+      rows,
+      generation: input.generation,
+      controlCursor: input.controlCursor,
+      precedingProbe: input.precedingProbe,
+      audit: await input.supervisor.readRealCaseAudit(),
+      baseline: input.gatewayBaseline,
+    });
     if (expected !== null) return expected;
     if (Date.now() >= deadline) {
-      throw new Error("real trio document-context stages were not ordered through send");
+      throw new Error("real trio document-context current-route proof was not coherent through send");
     }
     await new Promise<void>((resolve) => setTimeout(resolve, 100));
   }
@@ -692,16 +872,22 @@ export function hasGatewayAcceptedDocumentContextRoute(
   expected: RealTrioDocumentContextCorrelation,
   baseline: RealTrioGatewayAuditBaseline,
 ): boolean {
+  const current = currentRouteAuditIdentity(audit, baseline);
+  const routeDigest = (expected as Partial<StrictDocumentContextCandidate>).routeDigest;
   if (!isObject(audit) || !Array.isArray(audit.documentContextUpdates) ||
       audit.documentContextEpochSchema !== "revagent.wp12-document-context-epoch/v1" ||
       audit.documentContextProcessEpoch !== baseline.processEpoch || !isProcessEpoch(audit.documentContextProcessEpoch) ||
       !Number.isSafeInteger(audit.documentContextObservationHighWaterOrdinal) ||
       Number(audit.documentContextObservationHighWaterOrdinal) < baseline.observationOrdinal ||
-      !isCanonicalUtc(expected.sendRecordedAt)) return false;
+      !isCanonicalUtc(expected.sendRecordedAt) || current === null || !isSha256(routeDigest) ||
+      current.rsidHash !== expected.rsidHash || current.sequence !== expected.sequence ||
+      current.routeDigest !== routeDigest) return false;
   const candidates = audit.documentContextUpdates.filter((value) => isObject(value) &&
     value.contractVersion === "revagent.wp12-document-context-audit/v1" &&
     value.event === "gateway.doc_context_update_observation" && value.stage === "accepted" &&
     value.rsidHash === expected.rsidHash && value.observedSequence === expected.sequence &&
+    value.processEpoch === baseline.processEpoch && value.routeDigest === current.routeDigest &&
+    value.sessionRecordVersion === current.sessionRecordVersion &&
     isSha256(value.rsidHash) && Number.isSafeInteger(value.observedSequence) && Number(value.observedSequence) >= 1 &&
     Number.isSafeInteger(value.observationOrdinal) && Number(value.observationOrdinal) > baseline.observationOrdinal &&
     Number(value.observationOrdinal) <= Number(audit.documentContextObservationHighWaterOrdinal) &&
@@ -933,6 +1119,7 @@ export async function startRealTrioRuntimeFixture(
       controlCursor: controlAckSnapshot.highWaterCursor,
       generation: controlAckSnapshot.generation,
       precedingProbe,
+      gatewayBaseline,
       timeoutMs: options.documentContextTimeoutMs,
     });
     timeline.push("document_sent");
@@ -943,16 +1130,9 @@ export async function startRealTrioRuntimeFixture(
     );
     documentContextAudit = Object.freeze({ ...controlAudit, ...counts });
     timeline.push("fixture_probe");
-    failureReason = "route_timeout";
-    await waitForLiveDocumentRoute({
-      endpoint,
-      controlToken,
-      certificateSha256,
-      supervisor,
-      expected,
-      gatewayBaseline,
-      timeoutMs: options.documentContextTimeoutMs,
-    });
+    // `waitForDocumentContextSend` has already selected this exact candidate
+    // against one coherent current-route/accepted-observation audit snapshot.
+    // A separate snapshot_audit read would reintroduce a record-version race.
     timeline.push("gateway_route");
     failureReason = "ack_failure";
     await waitForPostRouteDocumentContextHeartbeatAck({

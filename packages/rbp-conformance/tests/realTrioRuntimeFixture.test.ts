@@ -18,6 +18,7 @@ import {
   probeRealTrioFixtureDocumentContext,
   realTrioWorkerBuildPlan,
   realTrioFixtureDocumentContextEvent,
+  selectCurrentDocumentContextSendFromCursor,
   writeRealTrioDocumentContextFailure,
   writeRealTrioRuntimeFailure,
   unmatchedDocumentContextProbe,
@@ -66,6 +67,66 @@ describe("WP-12 real-trio fixture document route gate", () => {
     expect(correlatedDocumentContextSendFromCursor([
       flow[0]!, flow[1]!, flow[2]!, flow[2]!, flow[3]!,
     ], 1, null)).toBeNull();
+  });
+
+  it("selects only the current coherent route lifecycle when seq1 advances to seq2", () => {
+    const hash = `sha256:${"a".repeat(64)}`;
+    const digest1 = `sha256:${"b".repeat(64)}`;
+    const digest2 = `sha256:${"c".repeat(64)}`;
+    const epoch = "123e4567-e89b-42d3-a456-426614174000";
+    const row = (cursor: number, stage: string, sequence: number, routeDigest: string) => cursorRow(
+      String(cursor), stage, stage === "probe" ? "started" : stage === "snapshot" ? "ready" :
+        stage === "queue" ? "durably_queued" : "sent", sequence, hash,
+    ).line;
+    const lifecycle = (start: number, sequence: number, routeDigest: string) => ["probe", "snapshot", "queue", "send"].map((stage, offset) => ({
+      cursor: String(start + offset), at: "2026-08-24T00:00:01.000Z", line: JSON.stringify({
+        ...JSON.parse(row(start + offset, stage, sequence, routeDigest)),
+        ...(stage === "send" ? { routeDigest } : {}),
+      }),
+    }));
+    const audit = (sequence: number, routeDigest: string, version = 3) => ({
+      documentContextEpochSchema: "revagent.wp12-document-context-epoch/v1",
+      documentContextProcessEpoch: epoch,
+      documentContextGeneration: 1,
+      documentContextObservationHighWaterOrdinal: 9,
+      documentContextCurrentRoute: { processEpoch: epoch, rsidHash: hash, observedSequence: sequence, routeDigest, sessionRecordVersion: version },
+      documentContextUpdates: [{
+        contractVersion: "revagent.wp12-document-context-audit/v1", event: "gateway.doc_context_update_observation", stage: "accepted",
+        processEpoch: epoch, rsidHash: hash, observedSequence: sequence, routeDigest, sessionRecordVersion: version, observationOrdinal: 9,
+      }],
+    });
+    const select = (rows: readonly ReturnType<typeof lifecycle>[number][], value: unknown) => selectCurrentDocumentContextSendFromCursor({
+      rows, generation: 1, controlCursor: "0", precedingProbe: null, audit: value,
+      baseline: { processEpoch: epoch, observationOrdinal: 4 },
+    });
+    const both = [...lifecycle(1, 1, digest1), ...lifecycle(5, 2, digest2)];
+    expect(select(both, audit(2, digest2))).toMatchObject({ sequence: 2, sendCursor: "8", routeDigest: digest2 });
+    expect(select(lifecycle(1, 1, digest1), audit(2, digest2))).toBeNull();
+    expect(select(both, audit(2, `sha256:${"d".repeat(64)}`))).toBeNull();
+    expect(select(both, { ...audit(2, digest2), documentContextGeneration: 2 })).toBeNull();
+    expect(select([{ ...both[0]!, cursor: "2" }, ...both.slice(1)], audit(2, digest2))).toBeNull();
+  });
+
+  it("fails closed on duplicate lifecycle, ambiguous audit, ACK-before-send, and record-version race", () => {
+    const hash = `sha256:${"a".repeat(64)}`;
+    const digest = `sha256:${"b".repeat(64)}`;
+    const epoch = "123e4567-e89b-42d3-a456-426614174000";
+    const event = (cursor: number, stage: string, outcome: string, sequence: number) => ({ cursor: String(cursor), at: "2026-08-24T00:00:01.000Z", line: JSON.stringify({
+      event: "bridge.document_context_observation", stage, outcome, rsidHash: hash, sequence,
+      ...(stage === "send" ? { routeDigest: digest } : {}),
+    }) });
+    const flow = [event(1, "probe", "started", 2), event(2, "snapshot", "ready", 2), event(3, "queue", "durably_queued", 2), event(4, "send", "sent", 2)];
+    const current = { processEpoch: epoch, rsidHash: hash, observedSequence: 2, routeDigest: digest, sessionRecordVersion: 4 };
+    const audit = (updates: readonly unknown[] = [{ contractVersion: "revagent.wp12-document-context-audit/v1", event: "gateway.doc_context_update_observation", stage: "accepted", ...current, observationOrdinal: 5 }]) => ({
+      documentContextEpochSchema: "revagent.wp12-document-context-epoch/v1", documentContextProcessEpoch: epoch,
+      documentContextGeneration: 1, documentContextObservationHighWaterOrdinal: 5, documentContextCurrentRoute: current,
+      documentContextUpdates: updates,
+    });
+    const select = (rows: readonly typeof flow[number][], value: unknown) => selectCurrentDocumentContextSendFromCursor({ rows, generation: 1, controlCursor: "0", precedingProbe: null, audit: value, baseline: { processEpoch: epoch, observationOrdinal: 4 } });
+    expect(select([event(1, "ack", "durably_acknowledged", 2), ...flow], audit())).toBeNull();
+    expect(select([flow[0]!, flow[1]!, flow[1]!, flow[2]!, flow[3]!], audit())).toBeNull();
+    expect(select(flow, audit([{ contractVersion: "revagent.wp12-document-context-audit/v1", event: "gateway.doc_context_update_observation", stage: "accepted", ...current, observationOrdinal: 5 }, { contractVersion: "revagent.wp12-document-context-audit/v1", event: "gateway.doc_context_update_observation", stage: "accepted", ...current, observationOrdinal: 5 }]))).toBeNull();
+    expect(select(flow, audit([{ contractVersion: "revagent.wp12-document-context-audit/v1", event: "gateway.doc_context_update_observation", stage: "accepted", ...current, sessionRecordVersion: 3, observationOrdinal: 5 }]))).toBeNull();
   });
 
   it("uses only a final unmatched probe from the atomic pre-control snapshot", () => {
@@ -155,14 +216,17 @@ describe("WP-12 real-trio fixture document route gate", () => {
 
   it("requires Gateway accepted-route correlation with the intended send", () => {
     const expected = { rsidHash: `sha256:${"a".repeat(64)}` as const, sequence: 7,
+      routeDigest: `sha256:${"b".repeat(64)}` as const,
       sendTranscriptIndex: 3, sendRecordedAt: "2026-08-24T00:00:01.000Z" };
     const epoch = "123e4567-e89b-42d3-a456-426614174000";
     const baseline = gatewayAuditBaseline({ documentContextEpochSchema: "revagent.wp12-document-context-epoch/v1",
       documentContextProcessEpoch: epoch, documentContextObservationHighWaterOrdinal: 4 })!;
     const audit = (rsidHash: string, observedSequence: number, observationOrdinal = 5,
-      observedAtUtc = "2026-08-24T00:00:01.000Z", highWater = observationOrdinal, processEpoch = epoch) => ({ documentContextEpochSchema: "revagent.wp12-document-context-epoch/v1", documentContextProcessEpoch: processEpoch, documentContextObservationHighWaterOrdinal: highWater, documentContextUpdates: [{
+      observedAtUtc = "2026-08-24T00:00:01.000Z", highWater = observationOrdinal, processEpoch = epoch,
+      sessionRecordVersion = 4, routeDigest = expected.routeDigest) => ({ documentContextEpochSchema: "revagent.wp12-document-context-epoch/v1", documentContextProcessEpoch: processEpoch, documentContextGeneration: 1, documentContextObservationHighWaterOrdinal: highWater,
+      documentContextCurrentRoute: { processEpoch, rsidHash, observedSequence, routeDigest, sessionRecordVersion }, documentContextUpdates: [{
       contractVersion: "revagent.wp12-document-context-audit/v1",
-      event: "gateway.doc_context_update_observation", stage: "accepted", rsidHash, observedSequence, observationOrdinal, observedAtUtc,
+      event: "gateway.doc_context_update_observation", stage: "accepted", processEpoch, rsidHash, observedSequence, routeDigest, sessionRecordVersion, observationOrdinal, observedAtUtc,
     }] });
     expect(hasGatewayAcceptedDocumentContextRoute(audit(expected.rsidHash, expected.sequence), expected, baseline)).toBe(true);
     expect(hasGatewayAcceptedDocumentContextRoute(audit(expected.rsidHash, 6), expected, baseline)).toBe(false);
@@ -176,7 +240,7 @@ describe("WP-12 real-trio fixture document route gate", () => {
     const duplicate = audit(expected.rsidHash, 7);
     duplicate.documentContextUpdates.push(duplicate.documentContextUpdates[0]!);
     expect(hasGatewayAcceptedDocumentContextRoute(duplicate, expected, baseline)).toBe(false);
-    expect(hasGatewayAcceptedDocumentContextRoute({ documentContextEpochSchema: "revagent.wp12-document-context-epoch/v1", documentContextProcessEpoch: epoch, documentContextObservationHighWaterOrdinal: 6, documentContextUpdates: [] }, expected, baseline)).toBe(false);
+    expect(hasGatewayAcceptedDocumentContextRoute({ documentContextEpochSchema: "revagent.wp12-document-context-epoch/v1", documentContextProcessEpoch: epoch, documentContextGeneration: 1, documentContextObservationHighWaterOrdinal: 6, documentContextUpdates: [] }, expected, baseline)).toBe(false);
   });
 
   it("selects only the controlled post-ACK send and permits its one-record active probe prefix", () => {
