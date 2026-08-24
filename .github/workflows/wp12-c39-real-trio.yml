@@ -1,0 +1,111 @@
+name: WP-12 C39 real trio
+
+on:
+  workflow_dispatch:
+    inputs:
+      runner_labels_json:
+        description: 'Exact self-hosted Windows runner labels as a JSON array.'
+        required: true
+        type: string
+        default: '["self-hosted","Windows","revagent-ci"]'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wp12-c39-real-trio-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  linux-preflight:
+    name: C39 Linux protected-object preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout exact candidate head
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Setup Node 24.14.1
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: 24.14.1
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - name: Install locked workspace without lifecycle scripts
+        run: npm ci --ignore-scripts
+      - name: Rebuild the native SQLite dependency
+        run: npm rebuild better-sqlite3
+      - name: Build protocol, fixture, and Gateway
+        run: |
+          npm run build --workspace @revagent/protocol
+          npm run build --workspace @revagent/addin-loopback-fixture
+          npm run build --workspace @revagent/gateway
+      - name: Run protected-object and resource authority tests
+        run: |
+          npx vitest run packages/gateway/src/protectedObjectKeyProvider.test.ts packages/gateway/src/protectedObjectStore.test.ts packages/gateway/src/recoveryResourceAuthority.test.ts packages/gateway/src/northResourceConformance.test.ts
+      - name: Run Linux fixture and Gateway conformance tests
+        run: |
+          npm test --workspace @revagent/addin-loopback-fixture
+          npx vitest run packages/gateway/src/productionConformanceHost.test.ts packages/gateway/src/productionConformanceHostCli.test.ts packages/gateway/src/productionConformanceTools.test.ts
+
+  windows-real-trio:
+    name: C39 Windows real trio (${{ matrix.binding }})
+    needs: linux-preflight
+    runs-on: ${{ fromJSON(inputs.runner_labels_json) }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        binding: [wss, streamable_http_sse]
+    steps:
+      - name: Checkout exact candidate head
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Setup Node 24.14.1
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: 24.14.1
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - name: Install and build workspace
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          npm ci
+          npm run build --workspace @revagent/protocol
+          npm run build --workspace @revagent/addin-loopback-fixture
+          npm run build --workspace @revagent/gateway
+      - name: Restore, build, and publish the real C# worker
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $project = 'packages/bridge/tests/RevAgent.Bridge.RealWorkerHost/RevAgent.Bridge.RealWorkerHost.csproj'
+          $artifacts = Join-Path $env:RUNNER_TEMP 'wp12-c39-real-trio-dotnet'
+          dotnet restore $project --locked-mode --runtime win-x64 --artifacts-path $artifacts
+          dotnet build $project --configuration Release --runtime win-x64 --no-restore --artifacts-path $artifacts
+          dotnet publish $project --configuration Release --runtime win-x64 --self-contained false -p:UseAppHost=true --no-restore --artifacts-path $artifacts --output (Join-Path $artifacts 'publish')
+      - name: Run C39 ${{ matrix.binding }} real trio
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $artifactRoot = '.orchestration/artifacts/WP-12/C39/e-real-trio/${{ matrix.binding }}'
+          New-Item -ItemType Directory -Force -Path $artifactRoot | Out-Null
+          $log = Join-Path $artifactRoot 'real-trio.log'
+          npx vitest run --config packages/rbp-conformance/vitest.real-trio.config.ts -t "C39.*${{ matrix.binding }}" 2>&1 | Tee-Object -FilePath $log
+          if ($LASTEXITCODE -ne 0) { throw "C39 ${{ matrix.binding }} real trio failed with exit code $LASTEXITCODE" }
+          $summaryPath = Join-Path $artifactRoot 'summary.json'
+          if (!(Test-Path -LiteralPath $summaryPath)) { throw 'C39 did not emit its bounded success summary.' }
+          $summary = Get-Content -Raw -LiteralPath $summaryPath | ConvertFrom-Json
+          if ($summary.schemaVersion -ne 'revagent.wp12-c39-real-trio-success/v2' -or $summary.binding -ne '${{ matrix.binding }}') { throw 'C39 summary identity is invalid.' }
+          foreach ($name in @('normalOriginSuppressed', 'omittedReplayObserved', 'exactCarrierAckOrder', 'oneCarrierIdentity', 'restartResendExact', 'encryptedResultReferenceOwnerRead', 'samePrincipalOtherSessionDenied', 'foreignPrincipalDenied', 'bindingDriftDenied')) {
+            if ($summary.assertions.$name -ne $true) { throw "C39 summary assertion failed: $name" }
+          }
+          if ($summary.counts.originExecutionCount -ne 1 -or $summary.counts.partialCount -lt 1 -or $summary.counts.workerEventCount -lt 1) { throw 'C39 summary counts are invalid.' }
+          $summaryHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $summaryPath).Hash.ToLowerInvariant()
+          Get-Content -Raw -LiteralPath $summaryPath | Write-Host
+          "summary_sha256=$summaryHash" | Write-Host
+          @("## C39 ${{ matrix.binding }} success summary", '```json', (Get-Content -Raw -LiteralPath $summaryPath).Trim(), '```', "summary_sha256=$summaryHash") | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY

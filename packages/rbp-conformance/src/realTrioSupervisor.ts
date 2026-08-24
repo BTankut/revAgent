@@ -29,6 +29,7 @@ export const REAL_TRIO_FAILURE_DIAGNOSTICS_SCHEMA =
   "rbp-real-trio-failure-diagnostics/v1" as const;
 const MAX_REAL_TRIO_DIAGNOSTIC_RECORDS = 16;
 const MAX_REAL_TRIO_READINESS_TRACE = 64;
+const MAX_REAL_TRIO_RECOVERY_CARRIER_OBSERVATIONS = 64;
 /**
  * The cursor journal is deliberately smaller than the child transcript.  It
  * retains only admitted, redacted document-context observations, never raw
@@ -89,6 +90,8 @@ export interface RealTrioSupervisorResult {
   readonly readRealCaseAudit: () => Promise<JsonObject>;
   /** Same audit call with a bounded value-free result for failure evidence. */
   readonly readRealCaseAuditOutcome: () => Promise<RealTrioAuditControlOutcome>;
+  /** Fixed C39 worker IPC projection; no raw transcript or generic control. */
+  readonly readRecoveryCarrierObservations: () => Promise<readonly RealTrioRecoveryCarrierObservation[]>;
   /** Value-free C# document-context lifecycle observations only. */
   readonly readDocumentContextDiagnostics: () => readonly ProcessTranscriptRecord[];
   /** Fixed document-context stage sequence for failure artifacts only. */
@@ -108,6 +111,14 @@ export interface RealTrioSupervisorResult {
   /** Terminates the actual worker process, then relaunches its exact command/journal configuration. */
   readonly restartBridge: () => Promise<RealTrioSessionReadiness>;
   readonly stop: () => Promise<void>;
+}
+
+export interface RealTrioRecoveryCarrierObservation {
+  readonly phase: "materialized" | "write" | "restart_resend" | "ack";
+  readonly hashedRecoveryId: `sha256:${string}`;
+  readonly sequence: number;
+  readonly outerDigest: `sha256:${string}`;
+  readonly ordinal: number;
 }
 
 export type RealTrioAuditControlErrorKind =
@@ -827,6 +838,34 @@ function isObject(value: unknown): value is JsonObject {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+function recoveryCarrierObservations(value: JsonValue): readonly RealTrioRecoveryCarrierObservation[] {
+  if (!isObject(value) || !Array.isArray(value.observations) ||
+      value.observations.length > MAX_REAL_TRIO_RECOVERY_CARRIER_OBSERVATIONS) {
+    throw new Error("real worker recovery observation IPC is malformed");
+  }
+  const rows: RealTrioRecoveryCarrierObservation[] = [];
+  for (const row of value.observations) {
+    if (!isObject(row) ||
+        (row.phase !== "materialized" && row.phase !== "write" &&
+          row.phase !== "restart_resend" && row.phase !== "ack") ||
+        typeof row.hashedRecoveryId !== "string" || !SHA256.test(row.hashedRecoveryId) ||
+        typeof row.outerDigest !== "string" || !SHA256.test(row.outerDigest) ||
+        typeof row.sequence !== "number" || !Number.isSafeInteger(row.sequence) || row.sequence < 1 ||
+        typeof row.ordinal !== "number" || !Number.isSafeInteger(row.ordinal) || row.ordinal < 1 ||
+        Object.keys(row).length !== 5) {
+      throw new Error("real worker recovery observation IPC is invalid");
+    }
+    rows.push(Object.freeze({
+      phase: row.phase,
+      hashedRecoveryId: row.hashedRecoveryId as `sha256:${string}`,
+      sequence: row.sequence,
+      outerDigest: row.outerDigest as `sha256:${string}`,
+      ordinal: row.ordinal,
+    }));
+  }
+  return Object.freeze(rows);
+}
+
 /**
  * Reads only normalized v2 session rows from the conformance audit.  Older
  * top-level capability shapes are deliberately not tolerated: the durable
@@ -1117,7 +1156,7 @@ export async function startRealTrioSupervisor(input: RealTrioSupervisorLaunch): 
             device_proof: credential.deviceProof,
           }),
           expectedReadinessFields: input.bridgeExpected,
-          requiredActions: ["shutdown"],
+          requiredActions: ["read_recovery_observations", "shutdown"],
         });
         const documentContextJournal = new RealTrioDocumentContextCursorJournal();
         let sessionReadiness: RealTrioSessionReadiness;
@@ -1159,7 +1198,7 @@ export async function startRealTrioSupervisor(input: RealTrioSupervisorLaunch): 
               device_proof: credential.deviceProof,
             }),
             expectedReadinessFields: input.bridgeExpected,
-            requiredActions: ["shutdown"],
+            requiredActions: ["read_recovery_observations", "shutdown"],
           });
           sessionReadiness = await pollRbpSessionV2Readiness({
             expectedBinding: persistedBindingForReadiness(binding),
@@ -1195,6 +1234,8 @@ export async function startRealTrioSupervisor(input: RealTrioSupervisorLaunch): 
           if (outcome.outcome === "success") return outcome.audit;
           throw new Error("real trio public audit control unavailable");
         };
+        const readRecoveryCarrierObservations = async (): Promise<readonly RealTrioRecoveryCarrierObservation[]> =>
+          recoveryCarrierObservations(await bridge.request("read_recovery_observations"));
         let stopped = false;
         const stop = async (): Promise<void> => {
           if (stopped) return;
@@ -1223,6 +1264,7 @@ export async function startRealTrioSupervisor(input: RealTrioSupervisorLaunch): 
         fixtureControl,
         readRealCaseAudit,
         readRealCaseAuditOutcome,
+        readRecoveryCarrierObservations,
         readDocumentContextSnapshot: () => documentContextJournal.snapshot(bridge.transcript),
         readDocumentContextSince: (cursor: string, generation: number) =>
           documentContextJournal.since(cursor, generation, bridge.transcript),
