@@ -495,8 +495,14 @@ class HttpSseChannel implements BridgeConnectionChannel {
     let rejectCompletion!: (error: Error) => void;
     const started = new Promise<void>((resolve, reject) => { resolveStarted = resolve; rejectStarted = reject; });
     const completion = new Promise<void>((resolve, reject) => { resolveCompletion = resolve; rejectCompletion = reject; });
+    // Install sinks before returning the pair: a caller that times out after
+    // observing only `started` cannot turn a later attach/close failure into
+    // an unhandled rejection.
+    void started.catch(() => undefined);
+    void completion.catch(() => undefined);
     let startedAtInvocation = false;
     let cancelled = false;
+    let queued: (typeof this.#pending)[number] | null = null;
     try {
       if (this.#closed) throw new Error("SSE stream is closed");
       const response = this.#response;
@@ -504,7 +510,8 @@ class HttpSseChannel implements BridgeConnectionChannel {
         const nextBytes = this.#pendingBytes + Buffer.byteLength(serialized);
         if (nextBytes > MAX_PENDING_TRANSPORT_BYTES) throw new Error("SSE attach backlog exceeds the bounded transport window");
         this.#pendingBytes = nextBytes;
-        this.#pending.push({ serialized, revalidate, resolveStarted, rejectStarted, resolveCompletion, rejectCompletion, cancelled: () => cancelled });
+        queued = { serialized, revalidate, resolveStarted, rejectStarted, resolveCompletion, rejectCompletion, cancelled: () => cancelled };
+        this.#pending.push(queued);
         this.#observe("queued");
       } else {
         if (response.destroyed || response.writableEnded) throw new Error("SSE stream is closed");
@@ -526,6 +533,14 @@ class HttpSseChannel implements BridgeConnectionChannel {
       cancel(): boolean {
         if (startedAtInvocation) return false;
         cancelled = true;
+        if (queued !== null) {
+          const index = this.#pending.indexOf(queued);
+          if (index >= 0) {
+            this.#pending.splice(index, 1);
+            this.#pendingBytes -= Buffer.byteLength(serialized);
+            queued = null;
+          }
+        }
         const failure = new Error("SSE dispatch queue cancelled before invocation");
         rejectStarted(failure);
         rejectCompletion(failure);
