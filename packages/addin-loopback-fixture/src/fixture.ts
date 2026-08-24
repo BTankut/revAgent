@@ -610,7 +610,7 @@ export class AddinLoopbackFixture {
   #documentContextPollRequestCount = 0;
   #lastDocumentContextMonotonicMs = -1;
   #lastDocumentContextControlAcknowledgementHash: string | null = null;
-  readonly #cacheIncarnationDigest: string;
+  #cacheIncarnationDigest: string;
   readonly #documentContextEvidenceTimeline: DocumentContextEvidenceEvent[] = [];
   #crashed = false;
 
@@ -791,6 +791,9 @@ export class AddinLoopbackFixture {
     };
     this.#validateDocumentContext(candidate);
     this.#documentContext = candidate;
+    this.#cacheIncarnationDigest = "sha256:" + createHash("sha256")
+      .update(`${this.#cacheIncarnationDigest}\0${candidate.revision}`, "utf8")
+      .digest("hex");
     this.#documentContextCacheUpdateCount += 1;
     this.#recordDocumentContextEvidence("application_event_cache_update");
     return structuredClone(candidate);

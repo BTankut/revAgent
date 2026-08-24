@@ -61,7 +61,7 @@ internal static class Program
                 contract = "wp12-real-worker-host/v1",
                 controlVersion = 1,
                 maxControlLineBytes = MaxControlLineBytes,
-                actions = new[] { "read_recovery_observations", "shutdown" },
+                actions = new[] { "read_recovery_observations", "poll_document_context", "shutdown" },
                 c39Profile = options.TestC39D0PostWriteFault
                     ? "d0_postwrite_once" : "none",
                 pid = Environment.ProcessId,
@@ -102,6 +102,22 @@ internal static class Program
                             observations = recoveryObservations.Snapshot(),
                             reconnectWatchObservations = reconnectObservations.Snapshot(),
                         },
+                    })).ConfigureAwait(false);
+                    continue;
+                }
+                if (action.GetString() == "poll_document_context" &&
+                    root.EnumerateObject().Count() == 3)
+                {
+                    IReadOnlyList<string> rsids = runtime.Coordinator
+                        .GetSnapshot().ActiveRsids;
+                    if (rsids.Count != 1 || !runtime.Coordinator
+                            .RequestImmediateDocumentContextPoll(rsids[0]))
+                        throw new InvalidOperationException(
+                            "current attested D2 document-context watch is unavailable");
+                    await Console.Out.WriteLineAsync(JsonSerializer.Serialize(new
+                    {
+                        controlVersion = 1, id = id.GetString(), ok = true,
+                        result = new { queued = true },
                     })).ConfigureAwait(false);
                     continue;
                 }

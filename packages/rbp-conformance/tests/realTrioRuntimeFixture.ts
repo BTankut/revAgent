@@ -1952,6 +1952,8 @@ export async function startRealTrioRuntimeFixture(
       throw new Error("real trio document-context generation changed across control");
     }
     timeline.push("control_ack");
+    await supervisor.pollDocumentContext();
+    timeline.push("poll_requested");
     // This probe is value-free and must succeed before any public Gateway
     // route can qualify. The regular 15 s C# watcher is the only forwarder.
     failureReason = "stage_timeout";

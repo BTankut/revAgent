@@ -92,6 +92,7 @@ export interface RealTrioSupervisorResult {
   readonly readRealCaseAuditOutcome: () => Promise<RealTrioAuditControlOutcome>;
   /** Fixed C39 worker IPC projection; no raw transcript or generic control. */
   readonly readRecoveryCarrierObservations: () => Promise<readonly RealTrioRecoveryCarrierObservation[]>;
+  readonly pollDocumentContext: () => Promise<void>;
   /** Fixed C39 reconnect readiness projection; no raw worker control/transcript. */
   readonly readReconnectWatchObservations: () => Promise<readonly RealTrioReconnectWatchObservation[]>;
   /** Value-free C# document-context lifecycle observations only. */
@@ -1195,7 +1196,7 @@ export async function startRealTrioSupervisor(input: RealTrioSupervisorLaunch): 
             device_proof: credential.deviceProof,
           }),
           expectedReadinessFields: input.bridgeExpected,
-          requiredActions: ["read_recovery_observations", "shutdown"],
+          requiredActions: ["read_recovery_observations", "poll_document_context", "shutdown"],
         });
         const documentContextJournal = new RealTrioDocumentContextCursorJournal();
         let sessionReadiness: RealTrioSessionReadiness;
@@ -1237,7 +1238,7 @@ export async function startRealTrioSupervisor(input: RealTrioSupervisorLaunch): 
               device_proof: credential.deviceProof,
             }),
             expectedReadinessFields: input.bridgeExpected,
-            requiredActions: ["read_recovery_observations", "shutdown"],
+            requiredActions: ["read_recovery_observations", "poll_document_context", "shutdown"],
           });
           sessionReadiness = await pollRbpSessionV2Readiness({
             expectedBinding: persistedBindingForReadiness(binding),
@@ -1275,6 +1276,12 @@ export async function startRealTrioSupervisor(input: RealTrioSupervisorLaunch): 
         };
         const readRecoveryCarrierObservations = async (): Promise<readonly RealTrioRecoveryCarrierObservation[]> =>
           recoveryCarrierObservations(await bridge.request("read_recovery_observations"));
+        const pollDocumentContext = async (): Promise<void> => {
+          const result = await bridge.request("poll_document_context");
+          if (!isObject(result) || result.queued !== true || Object.keys(result).length !== 1) {
+            throw new Error("real worker document-context poll control is invalid");
+          }
+        };
         const readReconnectWatchObservations = async (): Promise<readonly RealTrioReconnectWatchObservation[]> =>
           reconnectWatchObservations(await bridge.request("read_recovery_observations"));
         let stopped = false;
@@ -1306,6 +1313,7 @@ export async function startRealTrioSupervisor(input: RealTrioSupervisorLaunch): 
         readRealCaseAudit,
         readRealCaseAuditOutcome,
         readRecoveryCarrierObservations,
+        pollDocumentContext,
         readReconnectWatchObservations,
         readDocumentContextSnapshot: () => documentContextJournal.snapshot(bridge.transcript),
         readDocumentContextSince: (cursor: string, generation: number) =>

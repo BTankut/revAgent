@@ -6,6 +6,9 @@ namespace RevAgent.Bridge.Gateway.Connection;
 
 internal sealed partial class RbpConnectionCoordinator
 {
+    /// <summary>Test-host caller may signal an already-attested eligible watch only.</summary>
+    internal bool RequestImmediateDocumentContextPoll(string rsid) =>
+        _docContextWatcher?.RequestImmediatePoll(rsid) == true;
     /// <summary>
     /// The optional P3-T7 document-context watcher. When absent the
     /// coordinator behaves exactly as before: nothing polls
