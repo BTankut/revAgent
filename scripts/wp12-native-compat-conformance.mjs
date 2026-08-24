@@ -29,6 +29,7 @@ let trustedNpm = null;
 const results = {
   schemaVersion: "wp12-native-compat-conformance/v1",
   nodeMajor: Number.parseInt(process.versions.node.split(".")[0], 10),
+  expectedNodeMajor: null,
   platform: process.platform,
   betterSqlite3: BETTER_SQLITE3.version,
   lock: false,
@@ -116,6 +117,18 @@ function assertNativeTrustSelfTests() {
   assertModuleVersion(BETTER_SQLITE3.version, BETTER_SQLITE3.version, "valid workspace owner");
   assertModuleVersion(LEGACY.version, LEGACY.version, "valid temporary owner");
   expectRejected(() => assertModuleVersion("12.9.0", BETTER_SQLITE3.version, "better-sqlite3"), "version mismatch");
+  expectRejected(() => parseExpectedNodeMajor("23"), "unsupported Node major");
+  const lockKey = "packages/gateway/node_modules/better-sqlite3";
+  const validLock = { packages: { [lockKey]: {
+    version: BETTER_SQLITE3.version,
+    integrity: BETTER_SQLITE3.integrity,
+    resolved: `https://registry.npmjs.org/better-sqlite3/-/better-sqlite3-${BETTER_SQLITE3.version}.tgz`,
+  } } };
+  assertLockRecord(validLock, lockKey, BETTER_SQLITE3, "valid root lock proven hoist");
+  expectRejected(() => assertLockRecord(validLock, "node_modules/better-sqlite3", BETTER_SQLITE3, "unlisted repo-local hoist"), "unlisted repo-local hoist");
+  expectRejected(() => assertLockRecord({ packages: { [lockKey]: { ...validLock.packages[lockKey], version: LEGACY.version } } }, lockKey, BETTER_SQLITE3, "wrong lock version"), "wrong lock version");
+  expectRejected(() => assertLockRecord({ packages: { [lockKey]: { ...validLock.packages[lockKey], integrity: LEGACY.integrity } } }, lockKey, BETTER_SQLITE3, "wrong lock integrity"), "wrong lock integrity");
+  expectRejected(() => assertLockRecord({ packages: { [lockKey]: { ...validLock.packages[lockKey], resolved: "https://invalid.example/better-sqlite3.tgz" } } }, lockKey, BETTER_SQLITE3, "wrong lock path"), "wrong lock path");
 }
 
 function isContained(path, container) {
@@ -141,6 +154,34 @@ function assertCanonicalPath(input, canonical, label) {
 
 function assertModuleVersion(value, expected, label) {
   if (value !== expected) fail(`${label} version mismatch`);
+}
+
+function parseExpectedNodeMajor(value) {
+  if (value !== "22" && value !== "24") fail("REVAGENT_EXPECT_NODE_MAJOR must be exactly 22 or 24");
+  return Number(value);
+}
+
+function normalizeLockKey(lockRoot, moduleRoot) {
+  const candidate = relative(lockRoot, moduleRoot);
+  if (candidate === "" || candidate === ".." || candidate.startsWith(`..${sep}`) || isAbsolute(candidate)) {
+    fail("native module root cannot be represented by a trusted lock key");
+  }
+  return candidate.split(sep).join("/");
+}
+
+function assertLockRecord(lock, lockKey, expected, label) {
+  const record = lock.packages?.[lockKey];
+  assertPackage(record, expected, label);
+  if (record.resolved !== `https://registry.npmjs.org/better-sqlite3/-/better-sqlite3-${expected.version}.tgz`) {
+    fail(`${label} resolved outside the approved npm artifact`);
+  }
+  return record;
+}
+
+function assertOwnerDependency(ownerManifest, expectedVersion, label) {
+  if (ownerManifest.dependencies?.["better-sqlite3"] !== expectedVersion) {
+    fail(`${label} does not declare the approved exact better-sqlite3 dependency`);
+  }
 }
 
 async function resolveTrustedNpmContext() {
@@ -189,22 +230,42 @@ function run(command, args, options = {}) {
   return completed.stdout;
 }
 
-async function resolveInstalledModule(ownerPackageJson, ownerRoot, expectedVersion, expectedModuleRoot = undefined) {
-  const ownerRootReal = await realpath(ownerRoot);
+async function resolveInstalledModule({ ownerPackageJson, ownerDir, lockFile, lockRoot, expectedLockKey, policy, expectedVersion }) {
+  const ownerRootReal = await realpath(ownerDir);
   const owner = await realpath(ownerPackageJson);
+  const lockFileReal = await realpath(lockFile);
+  const lockRootReal = await realpath(lockRoot);
   assertCanonicalPath(ownerPackageJson, owner, "native owner package.json");
+  assertCanonicalPath(lockFile, lockFileReal, "native lock file");
   assertContained(owner, ownerRootReal, "native owner package.json");
+  if (dirname(owner) !== ownerRootReal) fail("native owner package.json is not directly inside its declared owner directory");
   const entry = await realpath(createRequire(owner).resolve("better-sqlite3"));
   const packageRoot = await realpath(dirname(dirname(entry)));
   assertContained(packageRoot, ownerRootReal, "better-sqlite3 package");
-  if (expectedModuleRoot !== undefined && packageRoot !== expectedModuleRoot) {
-    fail("better-sqlite3 package resolved outside its approved native owner");
-  }
+  const lockKey = normalizeLockKey(lockRootReal, packageRoot);
+  if (lockKey !== expectedLockKey) fail("better-sqlite3 resolved through an unlisted or unexpected lock key");
+  const lock = await readJson(lockFileReal);
+  const record = assertLockRecord(lock, lockKey, BETTER_SQLITE3.version === expectedVersion ? BETTER_SQLITE3 : LEGACY, "resolved better-sqlite3 lock entry");
   const packageJson = await realpath(join(packageRoot, "package.json"));
   assertContained(packageJson, packageRoot, "better-sqlite3 package.json");
   const manifest = await readJson(packageJson);
   assertModuleVersion(manifest.version, expectedVersion, "installed better-sqlite3");
-  return Object.freeze({ ownerPackageJson: owner, ownerRoot: ownerRootReal, entry, packageRoot, packageJson });
+  const ownerManifest = await readJson(owner);
+  assertOwnerDependency(ownerManifest, expectedVersion, "native owner package");
+  return Object.freeze({
+    ownerPackageJson: owner,
+    ownerRoot: ownerRootReal,
+    entry,
+    packageRoot,
+    packageJson,
+    lockFile: lockFileReal,
+    lockRoot: lockRootReal,
+    lockKey,
+    policy,
+    expectedVersion,
+    lockIntegrity: record.integrity,
+    lockResolved: record.resolved,
+  });
 }
 
 function verifyNativeLoad(native) {
@@ -219,6 +280,13 @@ function childNativeEnvironment(native, extra = {}) {
     REVAGENT_SQLITE_ENTRY: native.entry,
     REVAGENT_SQLITE_OWNER_ROOT: native.ownerRoot,
     REVAGENT_SQLITE_MODULE_ROOT: native.packageRoot,
+    REVAGENT_SQLITE_LOCK_FILE: native.lockFile,
+    REVAGENT_SQLITE_LOCK_ROOT: native.lockRoot,
+    REVAGENT_SQLITE_LOCK_KEY: native.lockKey,
+    REVAGENT_SQLITE_LOCK_POLICY: native.policy,
+    REVAGENT_SQLITE_EXPECTED_VERSION: native.expectedVersion,
+    REVAGENT_SQLITE_LOCK_INTEGRITY: native.lockIntegrity,
+    REVAGENT_SQLITE_LOCK_RESOLVED: native.lockResolved,
     ...extra,
   };
   delete environment.NODE_PATH;
@@ -278,8 +346,27 @@ async function validateProvenance() {
   }
   results.lock = true;
 
-  const gateway = await resolveInstalledModule(gatewayOwnerPackageJson, repoRoot, BETTER_SQLITE3.version);
-  const bridge = await resolveInstalledModule(join(root, "packages", "bridge-simulator", "package.json"), repoRoot, BETTER_SQLITE3.version);
+  const gatewayOwnerDir = join(repoRoot, "packages", "gateway");
+  const bridgeOwnerDir = join(repoRoot, "packages", "bridge-simulator");
+  const rootLockFile = join(repoRoot, "package-lock.json");
+  const gateway = await resolveInstalledModule({
+    ownerPackageJson: join(gatewayOwnerDir, "package.json"),
+    ownerDir: gatewayOwnerDir,
+    lockFile: rootLockFile,
+    lockRoot: repoRoot,
+    expectedLockKey: normalizeLockKey(repoRoot, join(gatewayOwnerDir, "node_modules", "better-sqlite3")),
+    policy: "workspace_exact_lock",
+    expectedVersion: BETTER_SQLITE3.version,
+  });
+  const bridge = await resolveInstalledModule({
+    ownerPackageJson: join(bridgeOwnerDir, "package.json"),
+    ownerDir: bridgeOwnerDir,
+    lockFile: rootLockFile,
+    lockRoot: repoRoot,
+    expectedLockKey: normalizeLockKey(repoRoot, join(bridgeOwnerDir, "node_modules", "better-sqlite3")),
+    policy: "workspace_exact_lock",
+    expectedVersion: BETTER_SQLITE3.version,
+  });
   const gatewayPackage = await readJson(gateway.packageJson);
   const bridgePackage = await readJson(bridge.packageJson);
   for (const installed of [gatewayPackage, bridgePackage]) {
@@ -313,13 +400,15 @@ async function createLegacySandbox() {
     env: { npm_config_build_from_source: "true" },
   });
   const sandboxRoot = await realpath(sandbox);
-  const expectedModuleRoot = await realpath(join(sandboxRoot, "node_modules", "better-sqlite3"));
-  const owner = await resolveInstalledModule(
-    join(sandboxRoot, "package.json"),
-    sandboxRoot,
-    LEGACY.version,
-    expectedModuleRoot,
-  );
+  const owner = await resolveInstalledModule({
+    ownerPackageJson: join(sandboxRoot, "package.json"),
+    ownerDir: sandboxRoot,
+    lockFile: join(sandboxRoot, "package-lock.json"),
+    lockRoot: sandboxRoot,
+    expectedLockKey: "node_modules/better-sqlite3",
+    policy: "legacy_owner_node_modules",
+    expectedVersion: LEGACY.version,
+  });
   verifyNativeLoad(owner);
   return { sandbox: sandboxRoot, native: owner };
 }
@@ -335,10 +424,22 @@ function childNativeLoaderSource() {
     const ownerRoot = fs.realpathSync(process.env.REVAGENT_SQLITE_OWNER_ROOT);
     const expectedEntry = fs.realpathSync(process.env.REVAGENT_SQLITE_ENTRY);
     const expectedModuleRoot = fs.realpathSync(process.env.REVAGENT_SQLITE_MODULE_ROOT);
+    const lockRoot = fs.realpathSync(process.env.REVAGENT_SQLITE_LOCK_ROOT);
+    const lockFile = fs.realpathSync(process.env.REVAGENT_SQLITE_LOCK_FILE);
+    const expectedLockKey = process.env.REVAGENT_SQLITE_LOCK_KEY;
+    const policy = process.env.REVAGENT_SQLITE_LOCK_POLICY;
+    const expectedVersion = process.env.REVAGENT_SQLITE_EXPECTED_VERSION;
     if (!contained(owner, ownerRoot)) throw new Error("native owner escaped trusted root");
     const resolvedEntry = fs.realpathSync(createRequire(owner).resolve("better-sqlite3"));
     const moduleRoot = fs.realpathSync(path.dirname(path.dirname(resolvedEntry)));
     if (resolvedEntry !== expectedEntry || moduleRoot !== expectedModuleRoot || !contained(moduleRoot, ownerRoot)) throw new Error("native child trusted entry mismatch");
+    const lockKey = path.relative(lockRoot, moduleRoot).split(path.sep).join("/");
+    if ((policy !== "workspace_exact_lock" && policy !== "legacy_owner_node_modules") || lockKey !== expectedLockKey || lockKey.startsWith("../") || lockKey === "..") throw new Error("native child lock policy mismatch");
+    const lock = JSON.parse(fs.readFileSync(lockFile, "utf8"));
+    const record = lock.packages?.[lockKey];
+    const moduleManifest = JSON.parse(fs.readFileSync(path.join(moduleRoot, "package.json"), "utf8"));
+    const ownerManifest = JSON.parse(fs.readFileSync(owner, "utf8"));
+    if (!record || record.version !== expectedVersion || record.integrity !== process.env.REVAGENT_SQLITE_LOCK_INTEGRITY || record.resolved !== process.env.REVAGENT_SQLITE_LOCK_RESOLVED || moduleManifest.version !== expectedVersion || ownerManifest.dependencies?.["better-sqlite3"] !== expectedVersion) throw new Error("native child lock provenance mismatch");
     const Database = createRequire(owner)("better-sqlite3");
   `;
 }
@@ -486,6 +587,8 @@ async function runLifecycleStress(native) {
 
 async function main() {
   if (!Number.isInteger(results.nodeMajor) || results.nodeMajor < 22) fail("Node 22 or newer is required");
+  results.expectedNodeMajor = parseExpectedNodeMajor(process.env.REVAGENT_EXPECT_NODE_MAJOR);
+  if (results.nodeMajor !== results.expectedNodeMajor) fail("process Node major does not match REVAGENT_EXPECT_NODE_MAJOR");
   assertDiagnosticRedaction();
   assertNativeTrustSelfTests();
   trustedNpm = await resolveTrustedNpmContext();
