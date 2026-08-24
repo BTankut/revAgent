@@ -78,6 +78,7 @@ internal sealed partial class RbpConnectionCoordinator
         new(StringComparer.Ordinal);
     private readonly object _recoveryCarrierClaimSync = new();
     private readonly HashSet<RecoveryCarrierCycleKey> _recoveryCarrierClaims = new();
+    private readonly HashSet<RecoveryTerminalCycleKey> _recoveryTerminalClaims = new();
 
     internal RbpConnectionCoordinator(
         IRbpConnectionCycleFactory cycleFactory,
@@ -384,6 +385,8 @@ internal sealed partial class RbpConnectionCoordinator
             await FlushPendingRetransmitAsync(context)
                 .ConfigureAwait(false);
             await ScheduleActiveRecoveryCarriersAsync(context)
+                .ConfigureAwait(false);
+            await ScheduleActiveRecoveryTerminalsAsync(context)
                 .ConfigureAwait(false);
 
             Task completed = await Task.WhenAny(

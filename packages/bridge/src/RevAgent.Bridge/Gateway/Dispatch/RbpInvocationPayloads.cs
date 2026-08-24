@@ -189,6 +189,86 @@ internal static class RbpInvocationPayloads
         return Materialize(buffer);
     }
 
+    /// <summary>
+    /// C39's final chunked recovery result.  This is deliberately a distinct
+    /// builder instead of an object rewrite: the frozen schema forbids the
+    /// <c>payload_omitted</c> member entirely on a chunked terminal, including
+    /// when its value would otherwise be false.
+    /// </summary>
+    internal static JsonElement ChunkedRecoveryTerminal(
+        string invocationId,
+        int totalChunks,
+        int totalSize,
+        string resultDigest)
+    {
+        if (totalChunks < 1) throw new ArgumentOutOfRangeException(nameof(totalChunks));
+        if (totalSize < 1) throw new ArgumentOutOfRangeException(nameof(totalSize));
+        if (string.IsNullOrWhiteSpace(resultDigest) ||
+            !resultDigest.StartsWith("sha256:", StringComparison.Ordinal))
+        {
+            throw new ArgumentException("A SHA-256 result digest is required.",
+                nameof(resultDigest));
+        }
+
+        using var buffer = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(buffer))
+        {
+            writer.WriteStartObject();
+            writer.WriteString("kind", "invocation");
+            writer.WriteString("invocation_id", invocationId);
+            writer.WriteString("status", "completed");
+            writer.WriteBoolean("replayed", false);
+            writer.WriteBoolean("late_after_indeterminate", false);
+            writer.WriteString("result_digest", resultDigest);
+            WriteMetrics(writer, new RbpInvocationMetrics(0, 0, 0));
+            writer.WriteBoolean("chunked", true);
+            writer.WriteString("stream_id", "result");
+            writer.WriteString("content_type", "application/json");
+            writer.WriteNumber("total_chunks", totalChunks);
+            writer.WriteNumber("total_size", totalSize);
+            writer.WriteString("sha256", resultDigest);
+            writer.WriteEndObject();
+        }
+
+        return Materialize(buffer);
+    }
+
+    /// <summary>
+    /// Rehydrates C39's already durable terminal answer without changing its
+    /// wire shape.  The terminal plan is the authority; this adapter merely
+    /// rejects malformed or substituted plan material before the connection
+    /// can frame it.
+    /// </summary>
+    internal static RbpInvocationAnswer RecoveryTerminalDraft(
+        RbpRecoveryTerminalPlan plan)
+    {
+        ArgumentNullException.ThrowIfNull(plan);
+        JsonElement payload = plan.TerminalPayload;
+        if (payload.ValueKind != JsonValueKind.Object ||
+            !payload.TryGetProperty("kind", out JsonElement kind) ||
+            !string.Equals(kind.GetString(), "invocation", StringComparison.Ordinal) ||
+            !payload.TryGetProperty("invocation_id", out JsonElement invocationId) ||
+            !string.Equals(invocationId.GetString(), plan.RecoveryInvocationId,
+                StringComparison.Ordinal) ||
+            !payload.TryGetProperty("status", out JsonElement status) ||
+            !string.Equals(status.GetString(), "completed", StringComparison.Ordinal) ||
+            !payload.TryGetProperty("chunked", out JsonElement chunked) ||
+            chunked.ValueKind is not JsonValueKind.True ||
+            payload.TryGetProperty("payload_omitted", out _) ||
+            !payload.TryGetProperty("result_digest", out JsonElement digest) ||
+            digest.ValueKind != JsonValueKind.String ||
+            !digest.GetString()!.StartsWith("sha256:", StringComparison.Ordinal) ||
+            !string.Equals(Rfc8785Json.Sha256Digest(payload), plan.TerminalDigest,
+                StringComparison.Ordinal))
+        {
+            throw new RbpDispatchException(
+                RbpDispatchErrorCode.Environment,
+                "The durable C39 terminal plan is invalid.");
+        }
+
+        return RbpInvocationAnswer.Result(payload);
+    }
+
     private static JsonElement OverrideReplayFlags(
         JsonElement storedOutcome,
         bool replayed,

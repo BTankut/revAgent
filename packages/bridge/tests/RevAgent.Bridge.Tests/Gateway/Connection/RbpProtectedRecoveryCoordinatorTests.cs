@@ -251,6 +251,120 @@ public sealed partial class RbpConnectionCoordinatorTests
     }
 
     [Fact]
+    public async Task C39C1dFinalPartialReceiptReservesAndSendsOneDirectTerminalThenEqualReceiptReleasesIt()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        var clock = new ManualCoordinatorClock();
+        await using RbpJournalStore store = RbpJournalStore.Open(
+            directory.JournalPath,
+            new TestResumeTokenProtector(),
+            RbpJournalTestData.Options(), new TestRecoveryPayloadProtector());
+        var responder = new ScriptedGatewayResponder(clock);
+        var cycle = new FakeConnectionCycle(envelope =>
+            envelope.Type == "heartbeat" ? null : responder.Respond(envelope));
+        RbpRecoveryCarrierReservation reservation =
+            await PrepareRecoveryReservationAsync(store);
+        var coordinator = Coordinator(
+            new FakeConnectionCycleFactory(cycle), store,
+            new MutableSessionCatalog(LocalSession(8080, 1000)), clock,
+            new RecordingInboundJournal(),
+            invocationDispatcher: new RecoveryDispatcher(reservation));
+        using var stop = new CancellationTokenSource();
+
+        Task run = coordinator.RunAsync(stop.Token);
+        await EventuallyAsync(() => coordinator.GetSnapshot().ActiveRsids.Count == 1);
+        RbpEnvelope partial = await EventuallySentAsync(cycle, item =>
+            item.Type == "partial" && item.Id == reservation.RecoveryInvocationId);
+        Assert.Equal(reservation.CurrentReservedSequence, partial.Sequence);
+
+        clock.Advance(TimeSpan.FromSeconds(15));
+        await EventuallyAsync(() => cycle.Sent.Any(item => item.Type == "heartbeat"));
+        cycle.Deliver(HeartbeatAck(clock, Id(9734), reservation.Rsid,
+            reservation.CurrentReservedSequence));
+        await EventuallyAsync(async () =>
+            (await store.ListActiveRecoveryTerminalPlansAsync()).Count == 1);
+        RbpEnvelope terminal = await EventuallySentAsync(cycle, item =>
+            item.Type == "result" && item.Id == reservation.RecoveryInvocationId);
+        Assert.Equal(reservation.CurrentReservedSequence + 1, terminal.Sequence);
+        Assert.Equal(reservation.CurrentReservedSequence, terminal.Acknowledgement);
+        Assert.True(terminal.Payload.GetProperty("chunked").GetBoolean());
+        Assert.False(terminal.Payload.TryGetProperty("payload_omitted", out _));
+        Assert.Empty((await store.LoadSequenceAsync(reservation.Rsid)).Outbox);
+
+        clock.Advance(TimeSpan.FromSeconds(15));
+        await EventuallyAsync(() => cycle.Sent.Count(item => item.Type == "heartbeat") >= 2);
+        cycle.Deliver(HeartbeatAck(clock, Id(9735), reservation.Rsid,
+            terminal.Sequence!.Value));
+        await EventuallyAsync(async () =>
+            !(await store.ListActiveRecoveryTerminalPlansAsync()).Any());
+        Assert.Null(await store.GetCorrelatedRecoveryPayloadAsync(
+            reservation.Rsid, reservation.OriginInvocationId,
+            reservation.ResultDigest));
+        _ = Assert.Single(cycle.Sent, item => item.Type == "result" &&
+            item.Id == reservation.RecoveryInvocationId);
+
+        stop.Cancel();
+        await run.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    [Fact]
+    public async Task C39C1dLostTerminalReceiptReconnectsOneExactDirectTerminalWithoutOutbox()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        var clock = new ManualCoordinatorClock();
+        await using RbpJournalStore store = RbpJournalStore.Open(
+            directory.JournalPath,
+            new TestResumeTokenProtector(),
+            RbpJournalTestData.Options(), new TestRecoveryPayloadProtector());
+        var responder = new ScriptedGatewayResponder(clock);
+        var first = new FakeConnectionCycle(envelope =>
+            envelope.Type == "heartbeat" ? null : responder.Respond(envelope));
+        RbpRecoveryCarrierReservation reservation =
+            await PrepareRecoveryReservationAsync(store);
+        var second = new FakeConnectionCycle(envelope =>
+            envelope.Type == "session_resume"
+                ? RecoveryResumeAck(clock, envelope, reservation.CurrentReservedSequence)
+                : envelope.Type == "heartbeat" ? null : responder.Respond(envelope));
+        var coordinator = Coordinator(
+            new FakeConnectionCycleFactory(first, second), store,
+            new MutableSessionCatalog(LocalSession(8080, 1000)), clock,
+            new RecordingInboundJournal(),
+            invocationDispatcher: new RecoveryDispatcher(reservation));
+        using var stop = new CancellationTokenSource();
+
+        Task run = coordinator.RunAsync(stop.Token);
+        await EventuallyAsync(() => coordinator.GetSnapshot().ActiveRsids.Count == 1);
+        _ = await EventuallySentAsync(first, item => item.Type == "partial" &&
+            item.Id == reservation.RecoveryInvocationId);
+        clock.Advance(TimeSpan.FromSeconds(15));
+        await EventuallyAsync(() => first.Sent.Any(item => item.Type == "heartbeat"));
+        first.Deliver(HeartbeatAck(clock, Id(9736), reservation.Rsid,
+            reservation.CurrentReservedSequence));
+        RbpEnvelope initial = await EventuallySentAsync(first, item =>
+            item.Type == "result" && item.Id == reservation.RecoveryInvocationId);
+        byte[] initialBytes = RbpEnvelopeCodec.Encode(initial);
+        Assert.Empty((await store.LoadSequenceAsync(reservation.Rsid)).Outbox);
+
+        first.Fail(new IOException("C39 terminal acknowledgement lost"));
+        await EventuallyAsync(() => coordinator.GetSnapshot().ConnectionGeneration == 2);
+        await EventuallyAsync(() => coordinator.GetSnapshot().ActiveRsids.Count == 1);
+        await EventuallyAsync(async () =>
+            (await store.ListActiveRecoveryTerminalPlansAsync()).Count == 1);
+        RbpEnvelope replay = await EventuallySentAsync(second, item =>
+            item.Type == "result" && item.Id == reservation.RecoveryInvocationId);
+        Assert.Equal(initial.Sequence, replay.Sequence);
+        Assert.Equal(initialBytes, RbpEnvelopeCodec.Encode(replay));
+        _ = Assert.Single(first.Sent, item => item.Type == "result" &&
+            item.Id == reservation.RecoveryInvocationId);
+        _ = Assert.Single(second.Sent, item => item.Type == "result" &&
+            item.Id == reservation.RecoveryInvocationId);
+        Assert.Empty((await store.LoadSequenceAsync(reservation.Rsid)).Outbox);
+
+        stop.Cancel();
+        await run.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    [Fact]
     public async Task C39C1cCrashAfterFinalConfirmationBeforeWriteReconnectsOneExactReservedFrame()
     {
         using var directory = new RbpJournalTestDirectory();
@@ -356,6 +470,31 @@ public sealed partial class RbpConnectionCoordinatorTests
             {
                 server_time = clock.UtcNow.ToString("O"),
                 acks = new[] { new { rsid, seq = sequence } },
+            }),
+            RbpEnvelopeScope.Control,
+            Rsid: null,
+            Sequence: null,
+            Acknowledgement: null,
+            Hello: null,
+            HelloAck: null,
+            RbpEnvelopeDisposition.Known,
+            RbpEnvelope.FreezeAdditionalProperties(
+                new Dictionary<string, JsonElement>()));
+
+    private static RbpEnvelope RecoveryResumeAck(
+        ManualCoordinatorClock clock,
+        RbpEnvelope request,
+        long lastReceivedSequence) =>
+        new(
+            1,
+            "resume_ack",
+            Id(9737),
+            clock.UtcNow.ToString("O"),
+            JsonSerializer.SerializeToElement(new
+            {
+                rsid = request.Payload.GetProperty("rsid").GetString(),
+                last_rx_seq = lastReceivedSequence,
+                resume_expires_at = "2026-07-27T10:00:00.000Z",
             }),
             RbpEnvelopeScope.Control,
             Rsid: null,

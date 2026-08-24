@@ -423,6 +423,10 @@ internal sealed partial class RbpConnectionCoordinator
                     context,
                     acknowledgements)
                 .ConfigureAwait(false);
+            await ApplyRecoveryTerminalAcknowledgementsAsync(
+                    context,
+                    acknowledgements)
+                .ConfigureAwait(false);
             RbpHeartbeatFence fence = flight.Fence with
             {
                 Acknowledgements = acknowledgements,
@@ -458,6 +462,8 @@ internal sealed partial class RbpConnectionCoordinator
             }
 
             await ScheduleActiveRecoveryCarriersAsync(context)
+                .ConfigureAwait(false);
+            await ScheduleActiveRecoveryTerminalsAsync(context)
                 .ConfigureAwait(false);
 
             context.CompleteHeartbeatFlight(flight);

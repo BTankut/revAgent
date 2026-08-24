@@ -141,6 +141,48 @@ internal sealed partial class RbpConnectionCoordinator
                 ReleaseRecoveryCarrierClaims(context, acknowledgement.Rsid,
                     applied.RecoveryInvocationId, acknowledgement.Sequence);
             }
+            if (applied?.Phase == RbpRecoveryCarrierPhase.Completed)
+            {
+                // The final partial receipt opens exactly one v9 terminal
+                // plan. Reservation is idempotent, so a duplicate heartbeat
+                // cannot allocate a second terminal sequence.
+                _ = await _journal.ReserveRecoveryTerminalAsync(
+                        applied.RecoveryInvocationId, applied.Rsid,
+                        context.Token)
+                    .ConfigureAwait(false);
+            }
+        }
+    }
+
+    private async Task ApplyRecoveryTerminalAcknowledgementsAsync(
+        ConnectionCycleContext context,
+        IReadOnlyList<RbpSessionAcknowledgement> acknowledgements)
+    {
+        foreach (RbpSessionAcknowledgement acknowledgement in acknowledgements
+                     .OrderBy(value => value.Rsid, StringComparer.Ordinal))
+        {
+            // A heartbeat acknowledgement is the Gateway delivery receipt for
+            // this direct, no-outbox terminal frame. No replay/admin surface
+            // can supply either of these authority facts.
+            RbpRecoveryTerminalPlan? applied = await _journal
+                .ApplyRecoveryTerminalAcknowledgementAsync(
+                    acknowledgement.Rsid, acknowledgement.Sequence,
+                    gatewayDeliveryReceiptRecorded: true,
+                    sourceReleaseEligible: true, context.Token)
+                .ConfigureAwait(false);
+            if (applied?.State == "tombstoned")
+            {
+                ReleaseRecoveryTerminalClaims(context, acknowledgement.Rsid,
+                    applied.RecoveryInvocationId, long.MaxValue);
+                throw new RbpCoordinatorException(
+                    RbpCoordinatorErrorCode.UnexpectedControl,
+                    "Recovery terminal acknowledgement violated its durable fence.");
+            }
+            if (applied?.State == "confirmed")
+            {
+                ReleaseRecoveryTerminalClaims(context, acknowledgement.Rsid,
+                    applied.RecoveryInvocationId, acknowledgement.Sequence);
+            }
         }
     }
 
@@ -165,6 +207,101 @@ internal sealed partial class RbpConnectionCoordinator
             finally
             {
                 context.OutboundGate.Release();
+            }
+        }
+    }
+
+    private async Task ScheduleActiveRecoveryTerminalsAsync(
+        ConnectionCycleContext context)
+    {
+        IReadOnlyList<RbpRecoveryTerminalPlan> active = await _journal
+            .ListActiveRecoveryTerminalPlansAsync(context.Token)
+            .ConfigureAwait(false);
+        foreach (RbpRecoveryTerminalPlan plan in active
+                     .OrderBy(value => value.Rsid, StringComparer.Ordinal)
+                     .ThenBy(value => value.FinalSequence))
+        {
+            if (!context.IsDispatchAllowed(plan.Rsid)) continue;
+            await context.OutboundGate.WaitAsync(context.Token)
+                .ConfigureAwait(false);
+            try
+            {
+                await SendRecoveryTerminalAsync(context, plan)
+                    .ConfigureAwait(false);
+            }
+            finally
+            {
+                context.OutboundGate.Release();
+            }
+        }
+    }
+
+    private async Task SendRecoveryTerminalAsync(
+        ConnectionCycleContext context,
+        RbpRecoveryTerminalPlan plan)
+    {
+        if (!context.IsDispatchAllowed(plan.Rsid)) return;
+        var claim = new RecoveryTerminalCycleKey(context,
+            plan.RecoveryInvocationId, plan.FinalSequence, plan.PlanVersion);
+        if (!TryAcquireRecoveryTerminalClaim(claim)) return;
+        bool retainClaim = false;
+        try
+        {
+            RbpRecoveryTerminalMaterializedFrame? materialized = await
+                _recoveryCarrierMaterializer.MaterializeTerminalAsync(
+                    plan, context.Token).ConfigureAwait(false);
+            if (materialized is null ||
+                materialized.ReservedSequence != plan.FinalSequence ||
+                materialized.PlanVersion != plan.PlanVersion ||
+                !string.Equals(materialized.PayloadCommitment,
+                    plan.PayloadCommitment, StringComparison.Ordinal) ||
+                !string.Equals(materialized.PayloadDigest, plan.TerminalDigest,
+                    StringComparison.Ordinal)) return;
+
+            var snapshot = new RbpDataEnvelopeSnapshot(
+                Type: materialized.Answer.Type,
+                Id: plan.RecoveryInvocationId,
+                Rsid: plan.Rsid,
+                Sequence: materialized.ReservedSequence,
+                Payload: materialized.Answer.Payload,
+                Acknowledgement: plan.AcknowledgementBaseline,
+                Timestamp: DateTimeOffset
+                    .FromUnixTimeMilliseconds(plan.CreatedAtMilliseconds)
+                    .ToString("O", CultureInfo.InvariantCulture));
+            RbpEnvelope envelope = CreateDataEnvelope(snapshot);
+            byte[] outerBytes = RbpEnvelopeCodec.Encode(envelope);
+            try
+            {
+                // This digest stays volatile. Persisting it would create a
+                // second replay authority beside the v9 terminal commitment.
+                string outerDigest = "sha256:" + Convert.ToHexString(
+                    SHA256.HashData(outerBytes)).ToLowerInvariant();
+                if (!string.Equals(Rfc8785Json.Sha256Digest(
+                        materialized.Answer.Payload), plan.TerminalDigest,
+                        StringComparison.Ordinal) ||
+                    string.IsNullOrEmpty(outerDigest) ||
+                    !await _journal.ConfirmRecoveryTerminalMaterializationAsync(
+                        plan.RecoveryInvocationId, plan.Rsid,
+                        materialized.PlanVersion,
+                        materialized.ReservedSequence,
+                        materialized.PayloadCommitment, context.Token)
+                        .ConfigureAwait(false) ||
+                    !context.IsDispatchAllowed(plan.Rsid)) return;
+
+                retainClaim = true;
+                await context.Cycle.SendAsync(envelope, context.Token)
+                    .ConfigureAwait(false);
+            }
+            finally
+            {
+                CryptographicOperations.ZeroMemory(outerBytes);
+            }
+        }
+        finally
+        {
+            if (!retainClaim)
+            {
+                ReleaseRecoveryTerminalClaim(claim);
             }
         }
     }
@@ -207,10 +344,50 @@ internal sealed partial class RbpConnectionCoordinator
         {
             _recoveryCarrierClaims.RemoveWhere(claim =>
                 ReferenceEquals(claim.Context, context));
+            _recoveryTerminalClaims.RemoveWhere(claim =>
+                ReferenceEquals(claim.Context, context));
+        }
+    }
+
+    private bool TryAcquireRecoveryTerminalClaim(RecoveryTerminalCycleKey claim)
+    {
+        lock (_recoveryCarrierClaimSync)
+        {
+            return _recoveryTerminalClaims.Add(claim);
+        }
+    }
+
+    private void ReleaseRecoveryTerminalClaim(RecoveryTerminalCycleKey claim)
+    {
+        lock (_recoveryCarrierClaimSync)
+        {
+            _recoveryTerminalClaims.Remove(claim);
+        }
+    }
+
+    private void ReleaseRecoveryTerminalClaims(
+        ConnectionCycleContext context,
+        string rsid,
+        string recoveryInvocationId,
+        long throughSequence)
+    {
+        lock (_recoveryCarrierClaimSync)
+        {
+            _recoveryTerminalClaims.RemoveWhere(claim =>
+                ReferenceEquals(claim.Context, context) &&
+                string.Equals(claim.RecoveryInvocationId, recoveryInvocationId,
+                    StringComparison.Ordinal) &&
+                claim.ReservedSequence <= throughSequence);
         }
     }
 
     private sealed record RecoveryCarrierCycleKey(
+        ConnectionCycleContext Context,
+        string RecoveryInvocationId,
+        long ReservedSequence,
+        int PlanVersion);
+
+    private sealed record RecoveryTerminalCycleKey(
         ConnectionCycleContext Context,
         string RecoveryInvocationId,
         long ReservedSequence,

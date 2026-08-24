@@ -98,6 +98,50 @@ internal sealed class RbpProtectedRecoveryCarrierMaterializer
         finally { CryptographicOperations.ZeroMemory(raw); }
     }
 
+    /// <summary>
+    /// Materializes the v9 terminal from its typed durable plan.  Unlike the
+    /// partial carrier path this never reads the protected payload, base64, or
+    /// recovery source; it only revalidates the terminal commitment twice.
+    /// </summary>
+    internal async Task<RbpRecoveryTerminalMaterializedFrame?>
+        MaterializeTerminalAsync(
+            RbpRecoveryTerminalPlan candidate,
+            CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(candidate);
+        RbpRecoveryTerminalPlan? plan = await _journal
+            .ReadRecoveryTerminalPlanForMaterializationAsync(
+                candidate.RecoveryInvocationId, candidate.Rsid,
+                candidate.PlanVersion, candidate.FinalSequence,
+                candidate.PayloadCommitment, cancellationToken)
+            .ConfigureAwait(false);
+        if (plan is null) return null;
+
+        Func<CancellationToken, Task>? interlock =
+            TestBeforePostSnapshotRecheck ?? _beforeFinalAuthorityCheck;
+        if (interlock is not null)
+        {
+            await interlock(cancellationToken).ConfigureAwait(false);
+        }
+
+        RbpRecoveryTerminalPlan? fresh = await _journal
+            .ReadRecoveryTerminalPlanForMaterializationAsync(
+                plan.RecoveryInvocationId, plan.Rsid, plan.PlanVersion,
+                plan.FinalSequence, plan.PayloadCommitment, cancellationToken)
+            .ConfigureAwait(false);
+        if (fresh is null ||
+            !string.Equals(fresh.PayloadCommitment, plan.PayloadCommitment,
+                StringComparison.Ordinal) ||
+            !string.Equals(fresh.TerminalDigest, plan.TerminalDigest,
+                StringComparison.Ordinal)) return null;
+
+        RbpInvocationAnswer answer = RbpInvocationPayloads
+            .RecoveryTerminalDraft(fresh);
+        return new RbpRecoveryTerminalMaterializedFrame(
+            answer, fresh.FinalSequence, fresh.PlanVersion,
+            fresh.PayloadCommitment, fresh.TerminalDigest);
+    }
+
     private static JsonElement Chunk(RbpRecoveryCarrierReservation reservation, byte[] bytes)
     {
         using var buffer = new MemoryStream();
@@ -118,3 +162,8 @@ internal sealed class RbpProtectedRecoveryCarrierMaterializer
 internal sealed record RbpRecoveryCarrierMaterializedFrame(
     RbpInvocationAnswer Answer, long ReservedSequence, int PlanVersion,
     string PayloadDigest);
+
+/// <summary>Typed v9 terminal draft; no raw recovery bytes cross this seam.</summary>
+internal sealed record RbpRecoveryTerminalMaterializedFrame(
+    RbpInvocationAnswer Answer, long ReservedSequence, int PlanVersion,
+    string PayloadCommitment, string PayloadDigest);

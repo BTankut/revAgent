@@ -253,7 +253,7 @@ public sealed class RbpRecoveryCarrierPlanTests
             Assert.Equal("reserved", reserved.State);
             Assert.Equal("completed", reserved.TerminalPayload.GetProperty("status").GetString());
             Assert.True(reserved.TerminalPayload.GetProperty("chunked").GetBoolean());
-            Assert.False(reserved.TerminalPayload.GetProperty("payload_omitted").GetBoolean());
+            Assert.False(reserved.TerminalPayload.TryGetProperty("payload_omitted", out _));
             Assert.Equal(digest, reserved.TerminalPayload.GetProperty("result_digest").GetString());
             Assert.Equal(Rfc8785Json.Sha256Digest(reserved.TerminalPayload), reserved.TerminalDigest);
             Assert.Empty((await store.LoadSequenceAsync(origin.Rsid)).Outbox);
@@ -287,6 +287,49 @@ public sealed class RbpRecoveryCarrierPlanTests
         Assert.Null(await reopened.GetCorrelatedRecoveryPayloadAsync(
             request.Rsid, request.OriginInvocationId, request.ResultDigest));
         Assert.Equal(2, (await reopened.LoadSequenceAsync(request.Rsid)).LastPeerAcknowledgement);
+    }
+
+    [Fact]
+    public async Task V9TerminalPlanMaterializesAsTheExistingResultBodyWithoutProtectedPayloadRead()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        await using RbpJournalStore store = OpenStore(directory);
+        (RbpInvocationIdentity origin, byte[] raw, string digest) =
+            await PersistRecoverableTerminalAsync(store,
+                "0197a3c2-0000-7000-8000-0000000000de");
+        var request = new RbpRecoveryCarrierReservationRequest(
+            origin.Rsid, "0197a3c2-0000-7000-8000-0000000000df",
+            origin.InvocationId, digest, raw.Length,
+            new RbpRecoveryCarrierHeader("application/json", "base64"),
+            "sha256:" + new string('e', 64), RbpJournalTestData.Now.AddHours(1));
+        await EnsureRecoveryExecutingAsync(store, request);
+        _ = await store.PersistProtectedRecoveryTerminalAndReserveAsync(request);
+        _ = await store.MarkRecoveryCarrierSendStartedAsync(request.RecoveryInvocationId);
+        _ = await store.ApplyRecoveryCarrierFenceAcknowledgementAsync(
+            request.Rsid, 1);
+        RbpRecoveryTerminalPlan plan = await store.ReserveRecoveryTerminalAsync(
+            request.RecoveryInvocationId, request.Rsid);
+
+        var materializer = new RevAgent.Bridge.Gateway.Dispatch
+            .RbpProtectedRecoveryCarrierMaterializer(store);
+        RevAgent.Bridge.Gateway.Dispatch.RbpRecoveryTerminalMaterializedFrame?
+            materialized = await materializer.MaterializeTerminalAsync(
+                plan, CancellationToken.None);
+        RevAgent.Bridge.Gateway.Dispatch.RbpRecoveryTerminalMaterializedFrame
+            frame = Assert.IsType<
+                RevAgent.Bridge.Gateway.Dispatch.RbpRecoveryTerminalMaterializedFrame>(materialized);
+        Assert.Equal("result", frame.Answer.Type);
+        Assert.Equal(plan.TerminalDigest,
+            Rfc8785Json.Sha256Digest(frame.Answer.Payload));
+        Assert.Equal(plan.FinalSequence, frame.ReservedSequence);
+        var envelope = new RbpEnvelope(1, frame.Answer.Type,
+            plan.RecoveryInvocationId, RbpJournalTestData.Now.ToString("O"),
+            frame.Answer.Payload, RbpEnvelopeScope.Data, plan.Rsid,
+            plan.FinalSequence, plan.AcknowledgementBaseline, null, null,
+            RbpEnvelopeDisposition.Known,
+            RbpEnvelope.FreezeAdditionalProperties(
+                new Dictionary<string, JsonElement>(StringComparer.Ordinal)));
+        Assert.NotEmpty(RbpEnvelopeCodec.Encode(envelope));
     }
 
     [Fact]

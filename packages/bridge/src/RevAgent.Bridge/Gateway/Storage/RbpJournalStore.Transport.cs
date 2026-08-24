@@ -386,6 +386,38 @@ internal sealed partial class RbpJournalStore
         }, cancellationToken);
 
     /// <summary>
+    /// Lists the durable v9 terminal plans that still require a single direct
+    /// transport write.  These plans contain the already-public terminal
+    /// result body only; the protected recovery bytes remain unavailable to
+    /// this scheduling surface.
+    /// </summary>
+    internal Task<IReadOnlyList<RbpRecoveryTerminalPlan>>
+        ListActiveRecoveryTerminalPlansAsync(
+            CancellationToken cancellationToken = default) =>
+        ReadAsync(connection =>
+        {
+            using SqliteCommand command = CreateCommand(connection, """
+                SELECT recovery_invocation_id,rsid,plan_version,final_sequence,
+                       acknowledgement_baseline,terminal_jcs,terminal_digest,
+                       payload_commitment,state,created_at_ms,expires_at_ms,
+                       confirmed_at_ms
+                FROM rbp_recovery_terminal_plans
+                WHERE state='reserved'
+                ORDER BY rsid,final_sequence,recovery_invocation_id;
+                """);
+            command.CommandTimeout = _commandTimeoutSeconds;
+            using SqliteDataReader reader = command.ExecuteReader();
+            var values = new List<RbpRecoveryTerminalPlan>();
+            while (reader.Read())
+            {
+                values.Add(MaterializeRecoveryTerminalPlan(reader));
+            }
+
+            return (IReadOnlyList<RbpRecoveryTerminalPlan>)
+                values.AsReadOnly();
+        }, cancellationToken);
+
+    /// <summary>
     /// Revalidates the full durable fence after the coordinator has built the
     /// exact outer frame and before its only socket write.  Digest values are
     /// validation inputs only; no outer frame, base64, or payload bytes are
@@ -1414,15 +1446,9 @@ internal sealed partial class RbpJournalStore
     }
 
     private static JsonElement BuildRecoveryTerminalPayload(RbpRecoveryCarrierReservation reservation)
-    {
-        using JsonDocument empty = JsonDocument.Parse("{}");
-        JsonElement c38Terminal = RbpInvocationPayloads.InvocationResult(
-            reservation.RecoveryInvocationId, "completed", empty.RootElement,
-            guardedReason: null, reservation.ResultDigest,
-            new RbpInvocationMetrics(0, 0, 0));
-        return RbpArtifactCarrierProducer.ReplaceChunkedResultTerminal(c38Terminal,
-            reservation.ChunkCount, reservation.PlaintextLength, reservation.ResultDigest);
-    }
+        => RbpInvocationPayloads.ChunkedRecoveryTerminal(
+            reservation.RecoveryInvocationId, reservation.ChunkCount,
+            reservation.PlaintextLength, reservation.ResultDigest);
 
     private bool IsCurrentTerminalMaterializationPlan(
         SqliteConnection connection, RbpRecoveryTerminalPlan plan, string rsid,
