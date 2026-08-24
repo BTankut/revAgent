@@ -160,7 +160,79 @@ internal sealed record RbpInvocationTerminal(
     RbpInvocationState State,
     JsonElement Outcome,
     string? ResultDigest,
-    RbpCarrierPlan? CarrierPlan = null);
+    RbpCarrierPlan? CarrierPlan = null,
+    RbpRecoveryPayload? RecoveryPayload = null);
+
+/// <summary>
+/// Exact prefix-excluded add-in response material eligible for the narrowly
+/// correlated C39 recovery path.  The payload is deliberately bytes, never a
+/// reserialized <see cref="JsonElement"/>: the frozen wire digest domain is
+/// SHA-256 over the strict UTF-8 JSON-RPC response bytes.
+/// </summary>
+internal sealed class RbpRecoveryPayload
+{
+    private readonly byte[] _rawResponseBytes;
+
+    internal RbpRecoveryPayload(string resultDigest, ReadOnlySpan<byte> rawResponseBytes)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(resultDigest);
+        if (rawResponseBytes.IsEmpty)
+        {
+            throw new ArgumentException("Recovery payload must not be empty.", nameof(rawResponseBytes));
+        }
+
+        ResultDigest = resultDigest;
+        _rawResponseBytes = rawResponseBytes.ToArray();
+    }
+
+    internal string ResultDigest { get; }
+
+    internal ReadOnlyMemory<byte> RawResponseBytes => _rawResponseBytes;
+
+    internal byte[] CopyRawResponseBytes() => _rawResponseBytes.ToArray();
+
+    internal void Clear() => System.Security.Cryptography.CryptographicOperations.ZeroMemory(_rawResponseBytes);
+
+    public override string ToString() => "[recovery payload]";
+}
+
+/// <summary>
+/// Returned only by the typed, owner-RSID-scoped recovery read.  Null is the
+/// opaque answer for absent, pruned, corrupt, foreign, non-terminal, or
+/// protection-unavailable material; callers must not turn it into a replay.
+/// </summary>
+internal sealed class RbpRecoveredPayload : IDisposable
+{
+    private byte[]? _rawResponseBytes;
+
+    internal RbpRecoveredPayload(string resultDigest, ReadOnlySpan<byte> rawResponseBytes)
+    {
+        ResultDigest = resultDigest;
+        _rawResponseBytes = rawResponseBytes.ToArray();
+    }
+
+    internal string ResultDigest { get; }
+    /// <summary>
+    /// A leased view over the decrypted raw response. It is valid only until
+    /// <see cref="Dispose"/>; callers must not retain it across that boundary.
+    /// </summary>
+    internal ReadOnlyMemory<byte> RawResponseBytes => _rawResponseBytes ?? ReadOnlyMemory<byte>.Empty;
+
+    /// <summary>Transfers the sole owned buffer to the caller.</summary>
+    internal byte[] TakeRawResponseBytes() =>
+        Interlocked.Exchange(ref _rawResponseBytes, Array.Empty<byte>()) ??
+        Array.Empty<byte>();
+
+    public void Dispose()
+    {
+        byte[]? bytes = Interlocked.Exchange(ref _rawResponseBytes, Array.Empty<byte>());
+        if (bytes is { Length: > 0 })
+        {
+            System.Security.Cryptography.CryptographicOperations.ZeroMemory(bytes);
+        }
+    }
+    public override string ToString() => "[recovered payload]";
+}
 
 /// <summary>
 /// Immutable delivery material for a chunk/artifact carrier.  The journal owns

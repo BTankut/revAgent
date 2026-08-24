@@ -682,7 +682,10 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
                     digest,
                     carrierKey is null
                         ? null
-                        : CreateCarrierPlan(carrierKey, prefixes, body)),
+                        : CreateCarrierPlan(carrierKey, prefixes, body),
+                    IsOmittedPayload(body)
+                        ? new RbpRecoveryPayload(digest, outcome.RawResponsePayload)
+                        : null),
                 DurableDecisionToken)
             .ConfigureAwait(false);
 
@@ -911,6 +914,11 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
         "sha256:" +
         Convert.ToHexString(SHA256.HashData(rawResponsePayload))
             .ToLowerInvariant();
+
+    private static bool IsOmittedPayload(JsonElement body) =>
+        body.ValueKind == JsonValueKind.Object &&
+        body.TryGetProperty("payload_omitted", out JsonElement omitted) &&
+        omitted.ValueKind is JsonValueKind.True;
 
     private static JsonElement RequireOutcome(string? json, string what)
     {

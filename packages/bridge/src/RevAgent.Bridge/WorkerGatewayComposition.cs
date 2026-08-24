@@ -7,6 +7,7 @@ using RevAgent.Bridge.Gateway.Connection;
 using RevAgent.Bridge.Gateway.Dispatch;
 using RevAgent.Bridge.Gateway.Protocol;
 using RevAgent.Bridge.Gateway.Storage;
+using RevAgent.Bridge.Runtime;
 
 namespace RevAgent.Bridge;
 
@@ -85,7 +86,8 @@ internal static class WorkerGatewayComposition
         return RbpJournalStore.Open(
             layout.JournalPath,
             resumeTokenProtector,
-            options);
+            options,
+            WorkerRecoveryPayloadProtector.CreateProduction());
     }
 
     /// <summary>

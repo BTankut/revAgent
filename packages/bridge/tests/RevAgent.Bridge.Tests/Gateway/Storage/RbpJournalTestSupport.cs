@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using Microsoft.Data.Sqlite;
 using RevAgent.Bridge.Gateway.Protocol;
 using RevAgent.Bridge.Gateway.Storage;
 
@@ -86,6 +87,59 @@ internal sealed class RejectingResumeTokenProtector :
 
     public string Unprotect(RbpProtectedResumeToken protectedToken) =>
         throw new InvalidOperationException("unprotection unavailable");
+}
+
+internal sealed class TestRecoveryPayloadProtector : IRbpRecoveryPayloadProtector
+{
+    private const byte Mask = 0x5C;
+
+    public RbpProtectedRecoveryPayload Protect(ReadOnlySpan<byte> plaintext)
+    {
+        byte[] bytes = plaintext.ToArray();
+        for (int index = 0; index < bytes.Length; index++) bytes[index] ^= Mask;
+        return new RbpProtectedRecoveryPayload("test-recovery-v7", bytes);
+    }
+
+    public byte[] Unprotect(RbpProtectedRecoveryPayload protectedPayload)
+    {
+        if (!string.Equals(protectedPayload.ProtectionScheme, "test-recovery-v7", StringComparison.Ordinal))
+            throw new InvalidOperationException("Unexpected recovery scheme.");
+        byte[] bytes = protectedPayload.CopyCiphertext();
+        for (int index = 0; index < bytes.Length; index++) bytes[index] ^= Mask;
+        return bytes;
+    }
+}
+
+internal sealed class RejectingRecoveryPayloadProtector : IRbpRecoveryPayloadProtector
+{
+    public RbpProtectedRecoveryPayload Protect(ReadOnlySpan<byte> plaintext) =>
+        throw new System.Security.Cryptography.CryptographicException("unavailable");
+
+    public byte[] Unprotect(RbpProtectedRecoveryPayload protectedPayload) =>
+        throw new System.Security.Cryptography.CryptographicException("unavailable");
+}
+
+internal sealed class TestRollbackBackupSeam : IRbpJournalRollbackBackupSeam
+{
+    internal int PublishCount { get; private set; }
+    public bool RequiresProtectedAcl => false;
+    public void CreateTemporary(string path) => File.WriteAllBytes(path, []);
+    public void ProtectTemporary(string path) { }
+    public void CopyConsistently(SqliteConnection source, string temporaryPath)
+    {
+        using var target = new SqliteConnection($"Data Source={temporaryPath};Pooling=False");
+        target.Open();
+        source.BackupDatabase(target);
+    }
+    public void PublishNoOverwrite(string temporaryPath, string backupPath)
+    {
+        PublishCount++;
+        File.Move(temporaryPath, backupPath, overwrite: false);
+    }
+    public void CleanupTemporary(string temporaryPath)
+    {
+        if (File.Exists(temporaryPath)) File.Delete(temporaryPath);
+    }
 }
 
 internal sealed class ArmedJournalFaultInjector :

@@ -1,4 +1,7 @@
 using System.Globalization;
+using System.Runtime.Versioning;
+using System.Security.AccessControl;
+using System.Security.Principal;
 using Microsoft.Data.Sqlite;
 
 namespace RevAgent.Bridge.Gateway.Storage;
@@ -14,6 +17,7 @@ internal sealed partial class RbpJournalStore : IAsyncDisposable
     private readonly SqliteConnection _connection;
     private readonly RbpJournalWriterLease _writerLease;
     private readonly IRbpResumeTokenProtector _resumeTokenProtector;
+    private readonly IRbpRecoveryPayloadProtector _recoveryPayloadProtector;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly Func<long> _nowMilliseconds;
     private readonly IRbpJournalFaultInjector? _faultInjector;
@@ -27,6 +31,7 @@ internal sealed partial class RbpJournalStore : IAsyncDisposable
         SqliteConnection connection,
         RbpJournalWriterLease writerLease,
         IRbpResumeTokenProtector resumeTokenProtector,
+        IRbpRecoveryPayloadProtector recoveryPayloadProtector,
         RbpJournalOpenOptions options,
         RbpJournalDurabilityProfile durabilityProfile,
         int schemaVersion)
@@ -35,6 +40,7 @@ internal sealed partial class RbpJournalStore : IAsyncDisposable
         _connection = connection;
         _writerLease = writerLease;
         _resumeTokenProtector = resumeTokenProtector;
+        _recoveryPayloadProtector = recoveryPayloadProtector;
         _nowMilliseconds =
             options.NowMilliseconds ??
             (() => DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
@@ -55,10 +61,14 @@ internal sealed partial class RbpJournalStore : IAsyncDisposable
     internal static RbpJournalStore Open(
         string databasePath,
         IRbpResumeTokenProtector resumeTokenProtector,
-        RbpJournalOpenOptions? options = null)
+        RbpJournalOpenOptions? options = null,
+        IRbpRecoveryPayloadProtector? recoveryPayloadProtector = null,
+        IRbpJournalRollbackBackupSeam? rollbackBackupSeam = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(databasePath);
         ArgumentNullException.ThrowIfNull(resumeTokenProtector);
+        recoveryPayloadProtector ??= UnavailableRbpRecoveryPayloadProtector.Instance;
+        rollbackBackupSeam ??= SystemRbpJournalRollbackBackupSeam.Instance;
         options ??= new RbpJournalOpenOptions();
         ValidateOpenOptions(options);
 
@@ -99,6 +109,7 @@ internal sealed partial class RbpJournalStore : IAsyncDisposable
             IReadOnlyList<RbpJournalMigration> migrations =
                 RbpJournalSchema.BuildMigrationChain(
                     options.AdditionalMigrations);
+            EnsurePreV7RollbackBackup(connection, fullPath, migrations, rollbackBackupSeam);
             int schemaVersion = EnsureSchema(
                 connection,
                 migrations,
@@ -113,6 +124,7 @@ internal sealed partial class RbpJournalStore : IAsyncDisposable
                 connection,
                 lease,
                 resumeTokenProtector,
+                recoveryPayloadProtector,
                 options,
                 durabilityProfile,
                 schemaVersion);
@@ -125,6 +137,138 @@ internal sealed partial class RbpJournalStore : IAsyncDisposable
             connection?.Dispose();
             lease?.Dispose();
             throw;
+        }
+    }
+
+    private static void EnsurePreV7RollbackBackup(
+        SqliteConnection connection,
+        string databasePath,
+        IReadOnlyList<RbpJournalMigration> migrations,
+        IRbpJournalRollbackBackupSeam seam)
+    {
+        // Version seven adds opaque protected material whose v6 executable
+        // must not attempt to interpret. Before crossing that one-way local
+        // format boundary, make an SQLite-consistent offline rollback image.
+        // Existing images are retained rather than overwritten.
+        if (!TableExists(connection, "journal_meta") ||
+            migrations.Count < RbpJournalSchema.CurrentVersion)
+        {
+            return;
+        }
+        (_, int current) = ReadJournalMeta(connection);
+        if (current != RbpJournalSchema.CurrentVersion - 1)
+        {
+            return;
+        }
+
+        string backupPath = databasePath + ".v6.rollback";
+        if (File.Exists(backupPath))
+        {
+            VerifyRollbackBackup(backupPath, expectedVersion: current, seam.RequiresProtectedAcl);
+            return;
+        }
+        string temporaryPath = backupPath + ".tmp-" + Guid.NewGuid().ToString("N");
+        try
+        {
+            // Create and ACL the empty file before SQLite can copy a byte into
+            // it. The service is LocalSystem, so service and LocalSystem are
+            // the one permitted SID; no administrator/users ACE is granted.
+            seam.CreateTemporary(temporaryPath);
+            seam.ProtectTemporary(temporaryPath);
+            seam.CopyConsistently(connection, temporaryPath);
+            VerifyRollbackBackup(temporaryPath, expectedVersion: current, seam.RequiresProtectedAcl);
+            try
+            {
+                seam.PublishNoOverwrite(temporaryPath, backupPath);
+            }
+            catch (IOException) when (File.Exists(backupPath))
+            {
+                // A concurrent opener won the single publish. Verify it
+                // instead of overwriting its offline rollback image.
+                VerifyRollbackBackup(backupPath, expectedVersion: current, seam.RequiresProtectedAcl);
+            }
+        }
+        finally
+        {
+            seam.CleanupTemporary(temporaryPath);
+        }
+    }
+
+    [SupportedOSPlatform("windows")]
+    internal static void ProtectRollbackBackup(string path)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+        SecurityIdentifier localSystem = new(
+            WellKnownSidType.LocalSystemSid, domainSid: null);
+        new FileInfo(path).SetAccessControl(BuildRollbackBackupSecurity(localSystem));
+    }
+
+    [SupportedOSPlatform("windows")]
+    internal static FileSecurity BuildRollbackBackupSecurity(
+        SecurityIdentifier localSystem)
+    {
+        ArgumentNullException.ThrowIfNull(localSystem);
+        var security = new FileSecurity();
+        security.SetOwner(localSystem);
+        security.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
+        security.AddAccessRule(new FileSystemAccessRule(
+            localSystem,
+            FileSystemRights.FullControl,
+            InheritanceFlags.None,
+            PropagationFlags.None,
+            AccessControlType.Allow));
+        return security;
+    }
+
+    private static void VerifyRollbackBackup(string path, int expectedVersion, bool requireProtectedAcl)
+    {
+        if (requireProtectedAcl && OperatingSystem.IsWindows())
+        {
+            VerifyRollbackBackupAcl(path);
+        }
+        var builder = new SqliteConnectionStringBuilder
+        {
+            DataSource = path,
+            Mode = SqliteOpenMode.ReadOnly,
+            Cache = SqliteCacheMode.Private,
+            Pooling = false,
+        };
+        using var backup = new SqliteConnection(builder.ToString());
+        backup.Open();
+        (_, int version) = ReadJournalMeta(backup);
+        if (version != expectedVersion)
+        {
+            throw new RbpJournalException(
+                RbpJournalErrorCode.UnsupportedSchema,
+                "The pre-v7 rollback backup does not have the expected schema.");
+        }
+    }
+
+    [SupportedOSPlatform("windows")]
+    private static void VerifyRollbackBackupAcl(string path)
+    {
+        var file = new FileInfo(path);
+        FileSecurity security = file.GetAccessControl(AccessControlSections.Access | AccessControlSections.Owner);
+        SecurityIdentifier localSystem = new(WellKnownSidType.LocalSystemSid, domainSid: null);
+        FileSystemAccessRule[] rules = security.GetAccessRules(
+                includeExplicit: true,
+                includeInherited: true,
+                typeof(SecurityIdentifier))
+            .Cast<FileSystemAccessRule>()
+            .ToArray();
+        if (!security.AreAccessRulesProtected ||
+            !Equals(security.GetOwner(typeof(SecurityIdentifier)), localSystem) ||
+            rules.Length != 1 ||
+            rules[0].AccessControlType != AccessControlType.Allow ||
+            !Equals(rules[0].IdentityReference, localSystem) ||
+            (rules[0].FileSystemRights & FileSystemRights.FullControl) != FileSystemRights.FullControl)
+        {
+            throw new RbpJournalException(
+                RbpJournalErrorCode.UnsupportedSchema,
+                "The pre-v7 rollback backup ACL is not protected.");
         }
     }
 
@@ -923,4 +1067,44 @@ internal sealed partial class RbpJournalStore : IAsyncDisposable
         string Owner,
         string Name,
         string Digest);
+}
+
+internal interface IRbpJournalRollbackBackupSeam
+{
+    bool RequiresProtectedAcl { get; }
+    void CreateTemporary(string path);
+    void ProtectTemporary(string path);
+    void CopyConsistently(SqliteConnection source, string temporaryPath);
+    void PublishNoOverwrite(string temporaryPath, string backupPath);
+    void CleanupTemporary(string temporaryPath);
+}
+
+internal sealed class SystemRbpJournalRollbackBackupSeam : IRbpJournalRollbackBackupSeam
+{
+    internal static readonly SystemRbpJournalRollbackBackupSeam Instance = new();
+    public bool RequiresProtectedAcl => OperatingSystem.IsWindows();
+    public void CreateTemporary(string path)
+    {
+        using FileStream _ = new(path, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None);
+    }
+    public void ProtectTemporary(string path)
+    {
+        if (OperatingSystem.IsWindows()) RbpJournalStore.ProtectRollbackBackup(path);
+    }
+    public void CopyConsistently(SqliteConnection source, string temporaryPath)
+    {
+        using var target = new SqliteConnection(new SqliteConnectionStringBuilder
+        {
+            DataSource = temporaryPath, Mode = SqliteOpenMode.ReadWriteCreate,
+            Cache = SqliteCacheMode.Private, Pooling = false,
+        }.ToString());
+        target.Open();
+        source.BackupDatabase(target);
+    }
+    public void PublishNoOverwrite(string temporaryPath, string backupPath) =>
+        File.Move(temporaryPath, backupPath, overwrite: false);
+    public void CleanupTemporary(string temporaryPath)
+    {
+        if (File.Exists(temporaryPath)) File.Delete(temporaryPath);
+    }
 }

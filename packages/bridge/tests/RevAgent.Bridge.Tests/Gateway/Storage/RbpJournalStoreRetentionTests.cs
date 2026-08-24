@@ -88,6 +88,28 @@ public sealed class RbpJournalStoreRetentionTests
     }
 
     [Fact]
+    public async Task ParentRetentionPruneRemovesItsRecoveryChildWithoutExtendingParent()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        await using RbpJournalStore store = OpenStore(directory);
+        _ = await store.PersistRegisteredSessionAsync(RbpJournalTestData.Registration(expiresInHours: 24 * 365));
+        RbpInvocationIdentity identity = ReadIdentity("0197a3c2-0000-7000-8000-0000000000f1");
+        _ = await store.AdmitInvocationAsync(identity);
+        await store.MarkInvocationExecutingAsync(identity.IdempotencyKey);
+        byte[] raw = System.Text.Encoding.UTF8.GetBytes("{\"retained\":true}");
+        string digest = "sha256:" + Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(raw)).ToLowerInvariant();
+        using JsonDocument body = JsonDocument.Parse("{\"ok\":true}");
+        _ = await store.PersistInvocationTerminalAsync(identity.IdempotencyKey,
+            new RbpInvocationTerminal(RbpInvocationState.Completed, body.RootElement.Clone(), digest,
+                RecoveryPayload: new RbpRecoveryPayload(digest, raw)));
+        Assert.NotNull(await store.GetCorrelatedRecoveryPayloadAsync(identity.Rsid, identity.InvocationId, digest));
+        AdvanceDays(15);
+        _ = await store.ApplyRetentionAsync();
+        Assert.Null(await store.GetInvocationAsync(identity.IdempotencyKey));
+        Assert.Null(await store.GetCorrelatedRecoveryPayloadAsync(identity.Rsid, identity.InvocationId, digest));
+    }
+
+    [Fact]
     public async Task UnacknowledgedCarrierDoesNotBlockPairedOrOrdinaryRetention()
     {
         using var directory = new RbpJournalTestDirectory();
@@ -338,7 +360,8 @@ public sealed class RbpJournalStoreRetentionTests
             directory.JournalPath,
             new TestResumeTokenProtector(),
             RbpJournalTestData.Options(
-                nowMilliseconds: () => _nowMilliseconds));
+                nowMilliseconds: () => _nowMilliseconds),
+            new TestRecoveryPayloadProtector());
 
     private void AdvanceDays(double days) =>
         _nowMilliseconds +=

@@ -5,7 +5,7 @@ namespace RevAgent.Bridge.Gateway.Storage;
 
 internal static class RbpJournalSchema
 {
-    internal const int CurrentVersion = 6;
+    internal const int CurrentVersion = 7;
     internal const string StoreFormat = "revagent-rbp-journal";
 
     private const string TransportLifecycleSchema = """
@@ -469,10 +469,44 @@ internal static class RbpJournalSchema
         """;
 
     internal static RbpJournalMigration CarrierPlanSpoolReleaseMigration { get; } = new(
-        CurrentVersion,
+        6,
         "WP-12",
         "rbp_carrier_plan_spool_release_v1",
         CarrierPlanSpoolReleaseSchema);
+
+    // C39 deliberately keeps the frozen RBP wire schema unchanged. This is a
+    // local, protected companion relation only: its FK makes a raw response
+    // inseparable from the exact terminal invocation that produced it.
+    private const string RecoveryPayloadSchema = """
+        CREATE TABLE rbp_recovery_payloads(
+          idempotency_key TEXT PRIMARY KEY
+            REFERENCES rbp_invocations(idempotency_key) ON DELETE RESTRICT,
+          rsid TEXT NOT NULL REFERENCES rbp_sessions(rsid) ON DELETE RESTRICT,
+          invocation_id TEXT NOT NULL,
+          result_digest TEXT NOT NULL,
+          protection_scheme TEXT NOT NULL,
+          protected_envelope BLOB NOT NULL,
+          plaintext_length INTEGER NOT NULL,
+          created_at_ms INTEGER NOT NULL CHECK(created_at_ms >= 0),
+          retention_expires_at_ms INTEGER NOT NULL CHECK(retention_expires_at_ms >= created_at_ms),
+          CHECK(length(invocation_id) BETWEEN 1 AND 128),
+          CHECK(length(result_digest)=71 AND substr(result_digest,1,7)='sha256:' AND
+                substr(result_digest,8) NOT GLOB '*[^0-9a-f]*'),
+          CHECK(length(protection_scheme) BETWEEN 1 AND 128),
+          CHECK(length(protected_envelope)>0),
+          CHECK(plaintext_length BETWEEN 1 AND 33554432)
+        ) STRICT;
+        CREATE UNIQUE INDEX ux_rbp_recovery_payload_origin_digest
+          ON rbp_recovery_payloads(rsid,invocation_id,result_digest);
+        CREATE INDEX ix_rbp_recovery_payload_rsid_bytes
+          ON rbp_recovery_payloads(rsid,plaintext_length);
+        """;
+
+    internal static RbpJournalMigration RecoveryPayloadMigration { get; } = new(
+        CurrentVersion,
+        "WP-12",
+        "rbp_correlated_recovery_payload_v7",
+        RecoveryPayloadSchema);
 
     internal static IReadOnlyList<RbpJournalMigration> BuildMigrationChain(
         IReadOnlyList<RbpJournalMigration>? additional)
@@ -485,6 +519,7 @@ internal static class RbpJournalSchema
             CarrierPlanFenceMigration,
             CarrierPlanAcknowledgementMigration,
             CarrierPlanSpoolReleaseMigration,
+            RecoveryPayloadMigration,
         };
         if (additional is not null)
         {

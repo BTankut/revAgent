@@ -88,6 +88,7 @@ internal sealed partial class RbpJournalStore
         return ExecuteImmediateAsync(
             context =>
             {
+                PruneRecoveryPayloadsWithParents(context, cutoff, now);
                 (IReadOnlyList<RbpReleasedCarrier> releasedCarriers,
                  int carrierInvocations) =
                     PruneExpiredCarrierPlans(context, cutoff);
@@ -127,6 +128,45 @@ internal sealed partial class RbpJournalStore
                         releasedCarriers);
             },
             cancellationToken);
+    }
+
+    private static void PruneRecoveryPayloadsWithParents(
+        RbpJournalWriteContext context,
+        long cutoff,
+        long now)
+    {
+        // v7 recovery material has the same parent lifetime as the terminal
+        // invocation.  Delete the child first, in this retention transaction,
+        // only where the parent is itself eligible; this is a coupled prune,
+        // never an early byte-cap eviction.
+        using SqliteCommand delete = context.CreateCommand("""
+            DELETE FROM rbp_recovery_payloads
+            WHERE retention_expires_at_ms<=$now
+               OR idempotency_key IN (
+              SELECT invocation.idempotency_key
+              FROM rbp_invocations AS invocation
+              WHERE invocation.state IN ('completed','failed','guarded','cancelled','indeterminate')
+                AND invocation.finished_at_ms<=$cutoff
+                AND invocation.carrier_plan_id IS NULL
+                AND NOT EXISTS(
+                  SELECT 1 FROM rbp_verification_holds AS holds
+                  WHERE holds.state<>'cleared' AND (
+                    holds.verification_hold_id=invocation.verification_hold_id OR
+                    (holds.rsid=invocation.rsid AND holds.verification_invocation_id=invocation.invocation_id) OR
+                    EXISTS(SELECT 1 FROM json_each(holds.ordered_origin_idempotency_keys_json) AS origin
+                           WHERE origin.value=invocation.idempotency_key)
+                  )
+                )
+                AND (invocation.batch_id IS NULL OR NOT EXISTS(
+                  SELECT 1 FROM rbp_batches AS batches
+                  WHERE batches.rsid=invocation.rsid AND batches.batch_id=invocation.batch_id
+                    AND batches.state<>'terminal'
+                ))
+            );
+            """);
+        delete.Parameters.AddWithValue("$cutoff", cutoff);
+        delete.Parameters.AddWithValue("$now", now);
+        _ = delete.ExecuteNonQuery();
     }
 
     private static (IReadOnlyList<RbpReleasedCarrier> ReleasedCarriers,

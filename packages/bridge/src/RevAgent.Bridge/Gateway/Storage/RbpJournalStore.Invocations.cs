@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using Microsoft.Data.Sqlite;
 using RevAgent.Bridge.Gateway.Protocol;
@@ -270,6 +272,21 @@ internal sealed partial class RbpJournalStore
         {
             ValidateCarrierPlan(terminal.CarrierPlan);
         }
+        if (terminal.RecoveryPayload is not null)
+        {
+            RequireSha256(terminal.RecoveryPayload.ResultDigest, nameof(terminal));
+            if (!string.Equals(terminal.RecoveryPayload.ResultDigest, terminal.ResultDigest,
+                    StringComparison.Ordinal) ||
+                !string.Equals(
+                    RawResponseDigest(terminal.RecoveryPayload.RawResponseBytes.Span),
+                    terminal.ResultDigest,
+                    StringComparison.Ordinal))
+            {
+                throw new RbpJournalException(
+                    RbpJournalErrorCode.IntegrityCheckFailed,
+                    "Recovery material must match the terminal raw-response digest.");
+            }
+        }
 
         // An indeterminate mutation carries no caller-supplied body: the store
         // mints it below, together with the hold it must reference.
@@ -383,10 +400,105 @@ internal sealed partial class RbpJournalStore
                         "the terminal outcome could be persisted.");
                 }
 
+                // Payload protection is intentionally best-effort *after* the
+                // normal terminal update in the same transaction. A DPAPI or
+                // capacity failure cannot strand a completed invocation;
+                // recovery simply remains unavailable and no sensitive byte is
+                // logged or retained in a fallback form.
+                if (terminal.RecoveryPayload is not null &&
+                    terminal.State is RbpInvocationState.Completed or RbpInvocationState.Guarded)
+                {
+                    TryInsertRecoveryPayload(
+                        context,
+                        existing.Identity,
+                        terminal.RecoveryPayload,
+                        now);
+                }
+
                 return holdId;
             },
             cancellationToken);
     }
+
+    private void TryInsertRecoveryPayload(
+        RbpJournalWriteContext context,
+        RbpInvocationIdentity identity,
+        RbpRecoveryPayload payload,
+        long now)
+    {
+        byte[]? envelope = null;
+        RbpProtectedRecoveryPayload protectedPayload;
+        try
+        {
+            envelope = RbpRecoveryPayloadEnvelope.Create(
+                identity.Rsid,
+                identity.InvocationId,
+                identity.IdempotencyKey,
+                payload.ResultDigest,
+                now,
+                checked(now + (long)DefaultRetentionPeriod.TotalMilliseconds),
+                payload.RawResponseBytes.Span);
+            protectedPayload = _recoveryPayloadProtector.Protect(envelope);
+        }
+        catch (Exception)
+        {
+            if (envelope is not null)
+            {
+                CryptographicOperations.ZeroMemory(envelope);
+            }
+            payload.Clear();
+            return;
+        }
+
+        try
+        {
+            using SqliteCommand capacity = context.CreateCommand(
+                "SELECT COALESCE(SUM(plaintext_length),0) FROM rbp_recovery_payloads WHERE rsid=$rsid;");
+            capacity.Parameters.AddWithValue("$rsid", identity.Rsid);
+            long used = Convert.ToInt64(capacity.ExecuteScalar() ?? 0L);
+            if (used > RbpRecoveryPayloadEnvelope.MaxBytes - payload.RawResponseBytes.Length)
+            {
+                return; // no eviction: oldest recovery material is immutable.
+            }
+
+            using SqliteCommand insert = context.CreateCommand(
+                """
+                INSERT INTO rbp_recovery_payloads(
+                  idempotency_key,rsid,invocation_id,result_digest,
+                  protection_scheme,protected_envelope,plaintext_length,created_at_ms,
+                  retention_expires_at_ms)
+                VALUES($key,$rsid,$invocation,$digest,$scheme,$envelope,$length,$now,$retention);
+                """);
+            insert.Parameters.AddWithValue("$key", identity.IdempotencyKey);
+            insert.Parameters.AddWithValue("$rsid", identity.Rsid);
+            insert.Parameters.AddWithValue("$invocation", identity.InvocationId);
+            insert.Parameters.AddWithValue("$digest", payload.ResultDigest);
+            insert.Parameters.AddWithValue("$scheme", protectedPayload.ProtectionScheme);
+            insert.Parameters.AddWithValue("$envelope", protectedPayload.CopyCiphertext());
+            insert.Parameters.AddWithValue("$length", payload.RawResponseBytes.Length);
+            insert.Parameters.AddWithValue("$now", now);
+            insert.Parameters.AddWithValue(
+                "$retention",
+                checked(now + (long)DefaultRetentionPeriod.TotalMilliseconds));
+            _ = insert.ExecuteNonQuery();
+        }
+        catch (SqliteException)
+        {
+            // Capacity/collision/constraint failure deliberately means no
+            // recovery row. The terminal transition remains durable.
+        }
+        finally
+        {
+            if (envelope is not null)
+            {
+                CryptographicOperations.ZeroMemory(envelope);
+            }
+            payload.Clear();
+        }
+    }
+
+    private static string RawResponseDigest(ReadOnlySpan<byte> bytes) =>
+        "sha256:" + Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
 
     private static void ValidateCarrierPlan(RbpCarrierPlan plan)
     {
@@ -471,6 +583,115 @@ internal sealed partial class RbpJournalStore
         return ReadAsync(
             connection => ReadInvocation(connection, idempotencyKey),
             cancellationToken);
+    }
+
+    /// <summary>
+    /// Narrow C39 capability: an exact owner-RSID, UUIDv7 origin and digest
+    /// tuple can read the protected raw response bytes once the caller's own
+    /// principal/session authority has passed. This is not a generic journal
+    /// lookup and it never replays, parses, or mutates an invocation.
+    /// </summary>
+    internal Task<RbpRecoveredPayload?> GetCorrelatedRecoveryPayloadAsync(
+        string rsid,
+        string originInvocationId,
+        string expectedResultDigest,
+        CancellationToken cancellationToken = default)
+    {
+        ValidateIdentifier(rsid, nameof(rsid), 256);
+        if (!RbpRecoveryClearance.IsUuidV7(originInvocationId))
+        {
+            throw new ArgumentException("Origin invocation id must be a UUIDv7.", nameof(originInvocationId));
+        }
+        RequireSha256(expectedResultDigest, nameof(expectedResultDigest));
+        return ReadAsync(
+            connection => ReadCorrelatedRecoveryPayload(
+                connection,
+                rsid,
+                originInvocationId,
+                expectedResultDigest),
+            cancellationToken);
+    }
+
+    private RbpRecoveredPayload? ReadCorrelatedRecoveryPayload(
+        SqliteConnection connection,
+        string rsid,
+        string originInvocationId,
+        string expectedResultDigest)
+    {
+        try
+        {
+            using SqliteCommand command = CreateCommand(connection, """
+                SELECT payload.protection_scheme,payload.protected_envelope,
+                       payload.plaintext_length,payload.created_at_ms,
+                       payload.retention_expires_at_ms,payload.idempotency_key
+                FROM rbp_recovery_payloads AS payload
+                JOIN rbp_invocations AS invocation
+                  ON invocation.idempotency_key=payload.idempotency_key
+                WHERE payload.rsid=$rsid
+                  AND payload.invocation_id=$invocation
+                  AND payload.result_digest=$digest
+                  AND invocation.rsid=$rsid
+                  AND invocation.invocation_id=$invocation
+                  AND invocation.result_digest=$digest
+                  AND invocation.state IN ('completed','guarded')
+                LIMIT 1;
+                """);
+            command.CommandTimeout = _commandTimeoutSeconds;
+            command.Parameters.AddWithValue("$rsid", rsid);
+            command.Parameters.AddWithValue("$invocation", originInvocationId);
+            command.Parameters.AddWithValue("$digest", expectedResultDigest);
+            using SqliteDataReader reader = command.ExecuteReader();
+            if (!reader.Read())
+            {
+                return null;
+            }
+            string scheme = reader.GetString(0);
+            byte[] ciphertext = (byte[])reader.GetValue(1);
+            int length = reader.GetInt32(2);
+            long createdAt = reader.GetInt64(3);
+            long retentionExpiresAt = reader.GetInt64(4);
+            string idempotencyKey = reader.GetString(5);
+            if (length is <= 0 or > RbpRecoveryPayloadEnvelope.MaxBytes ||
+                retentionExpiresAt <= NowMilliseconds())
+            {
+                return null;
+            }
+            byte[] envelope = _recoveryPayloadProtector.Unprotect(
+                new RbpProtectedRecoveryPayload(scheme, ciphertext));
+            try
+            {
+                byte[] raw = RbpRecoveryPayloadEnvelope.Read(
+                    rsid, originInvocationId, idempotencyKey,
+                    expectedResultDigest, createdAt, retentionExpiresAt, envelope);
+                if (raw.Length != length || !string.Equals(
+                        RawResponseDigest(raw), expectedResultDigest,
+                        StringComparison.Ordinal))
+                {
+                    CryptographicOperations.ZeroMemory(raw);
+                    return null;
+                }
+                try
+                {
+                    return new RbpRecoveredPayload(expectedResultDigest, raw);
+                }
+                finally
+                {
+                    CryptographicOperations.ZeroMemory(raw);
+                }
+            }
+            finally
+            {
+                CryptographicOperations.ZeroMemory(envelope);
+            }
+        }
+        catch (Exception exception) when (
+            exception is CryptographicException or ArgumentException or
+            FormatException or InvalidOperationException or SqliteException)
+        {
+            // Opaque denial preserves the absence/corruption/protection
+            // boundary and contains no payload, JSON, path, or secret detail.
+            return null;
+        }
     }
 
     /// <summary>
