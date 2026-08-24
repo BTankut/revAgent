@@ -204,7 +204,7 @@ function request(
       mutating,
       executor: "bridge",
       documentIdentity: { kind: "live", session_document_id: "doc-gw12" },
-      paramsDigest: makeParamsDigest(args),
+      paramsDigest: makeParamsDigest(args as unknown as Parameters<typeof makeParamsDigest>[0]),
       mutationScope: mutating ? { kind: "session" } : null,
       startedAtMs: Date.now(),
     },
