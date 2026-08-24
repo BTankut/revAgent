@@ -315,13 +315,26 @@ export interface GatewayBridgeNoSendReceipt {
   readonly schema: "gateway.dispatch-no-send/v1";
   readonly tenantId: string;
   readonly rsid: string;
+  readonly effectiveMcpSessionId: string;
+  readonly principalKey: string;
+  readonly effectiveScopeDigest: `sha256:${string}`;
+  readonly sessionBindingId: string;
+  readonly acceptedConnectionId: string;
+  readonly durableSessionVersion: number;
   readonly invocationId: string;
   readonly correlationId: string;
   readonly envelopeDigest: `sha256:${string}`;
+  readonly gatewaySequence: number;
+  readonly durableSequenceVersion: number;
+  readonly egressEpoch: number;
   readonly leaseVersion: 1;
   readonly leaseTicket: number;
+  readonly leaseHolderInstanceId: string;
   readonly proofDigest: `sha256:${string}`;
   readonly routeSnapshotDigest: `sha256:${string}`;
+  readonly intentDigest: `sha256:${string}`;
+  readonly transportStarted: false;
+  readonly cumulativeAck: null;
   readonly recordedAtMs: number;
 }
 
@@ -1406,11 +1419,28 @@ function assertObservationIntegrity(
       noSend.invocationId !== derived.correlationId ||
       noSend.correlationId !== derived.correlationId ||
       noSend.envelopeDigest !== pending.envelopeDigest ||
+      noSend.sessionBindingId !== pending.sessionBindingId ||
+      noSend.acceptedConnectionId !== pending.preparedConnectionId ||
+      noSend.durableSessionVersion !== pending.authorizedSessionVersion ||
+      noSend.gatewaySequence !== pending.gatewaySequence ||
+      noSend.durableSequenceVersion !== pending.authorizedSessionVersion ||
       noSend.leaseVersion !== 1 ||
       !Number.isSafeInteger(noSend.leaseTicket) ||
       noSend.leaseTicket < 1 ||
+      !Number.isSafeInteger(noSend.egressEpoch) ||
+      noSend.egressEpoch < 0 ||
+      typeof noSend.leaseHolderInstanceId !== "string" ||
+      noSend.leaseHolderInstanceId.length === 0 ||
+      typeof noSend.effectiveMcpSessionId !== "string" ||
+      noSend.effectiveMcpSessionId.length === 0 ||
+      typeof noSend.principalKey !== "string" ||
+      noSend.principalKey.length === 0 ||
+      !digestPattern.test(noSend.effectiveScopeDigest) ||
       !digestPattern.test(noSend.proofDigest) ||
       !digestPattern.test(noSend.routeSnapshotDigest) ||
+      !digestPattern.test(noSend.intentDigest) ||
+      noSend.transportStarted !== false ||
+      noSend.cumulativeAck !== null ||
       !Number.isSafeInteger(noSend.recordedAtMs) ||
       noSend.recordedAtMs < 0 ||
       observation.acceptance !== null ||

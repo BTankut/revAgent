@@ -2517,35 +2517,73 @@ function terminalJournalRecords(
   return records;
 }
 
-function noSendReceipt(
-  tenantId: string,
-  rsid: string,
-  pending: DurablePendingDispatch,
-  lease: DurableEgressLease,
-  recordedAtMs: number,
-): DurableNoSendReceipt {
+function noSendReceipt(input: {
+  readonly record: DurableRbpSession;
+  readonly fence: DurableEgressFence;
+  readonly lease: DurableEgressLease;
+  readonly recordedAtMs: number;
+}): DurableNoSendReceipt {
+  const pending = input.record.pending;
+  const receipt = pending?.dispatchReceipt ?? null;
   if (
-    lease.operation !== "dispatch" ||
-    lease.proofDigest === undefined ||
-    lease.proofDigest === null ||
-    lease.routeSnapshotDigest === undefined ||
-    lease.routeSnapshotDigest === null ||
-    pending.envelopeDigest !== lease.envelopeDigest
+    pending === null ||
+    receipt === null ||
+    input.fence.lease === null ||
+    !sameJson(input.fence.lease, input.lease) ||
+    input.lease.operation !== "dispatch" ||
+    input.lease.phase !== "reserved" ||
+    input.lease.proofDigest === undefined ||
+    input.lease.proofDigest === null ||
+    input.lease.routeSnapshotDigest === undefined ||
+    input.lease.routeSnapshotDigest === null ||
+    pending.envelopeDigest !== input.lease.envelopeDigest ||
+    receipt.version !== 1 ||
+    receipt.tenantId !== input.record.tenantId ||
+    receipt.invocationId !== pending.invocationId ||
+    receipt.correlationId !== pending.invocationId ||
+    receipt.proofDigest !== input.lease.proofDigest ||
+    receipt.routeSnapshotDigest !== input.lease.routeSnapshotDigest ||
+    receipt.egressEpoch !== input.fence.epoch ||
+    receipt.leaseTicket !== input.lease.ticket ||
+    receipt.intent !== "dispatch" ||
+    pending.effectiveMcpRequestScope === undefined
   ) {
     throw new Error("no-send receipt lacks exact dispatch lease authority");
   }
+  const scope = pending.effectiveMcpRequestScope;
+  const effectiveScopeDigest = digest(canonicalizeJson(scope as unknown as JsonValue));
+  const intentDigest = digest(canonicalizeJson({
+    correlationId: pending.invocationId,
+    envelopeDigest: pending.envelopeDigest,
+    intent: receipt.intent,
+    invocationId: pending.invocationId,
+    scopeDigest: effectiveScopeDigest,
+  }));
   return Object.freeze({
     schema: "gateway.dispatch-no-send/v1",
-    tenantId,
-    rsid,
+    tenantId: input.record.tenantId,
+    rsid: input.record.rsid,
+    effectiveMcpSessionId: scope.effectiveMcpSessionId,
+    principalKey: scope.principalKey,
+    effectiveScopeDigest,
+    sessionBindingId: input.record.sessionBindingId,
+    acceptedConnectionId: input.record.connectionId,
+    durableSessionVersion: input.record.sessionVersion,
     invocationId: pending.invocationId,
     correlationId: pending.invocationId,
     envelopeDigest: pending.envelopeDigest,
+    gatewaySequence: pending.gatewaySequence,
+    durableSequenceVersion: input.record.sessionVersion,
+    egressEpoch: input.fence.epoch,
     leaseVersion: 1,
-    leaseTicket: lease.ticket,
-    proofDigest: lease.proofDigest,
-    routeSnapshotDigest: lease.routeSnapshotDigest,
-    recordedAtMs,
+    leaseTicket: input.lease.ticket,
+    leaseHolderInstanceId: input.lease.holderInstanceId,
+    proofDigest: input.lease.proofDigest,
+    routeSnapshotDigest: input.lease.routeSnapshotDigest,
+    intentDigest,
+    transportStarted: false,
+    cumulativeAck: null,
+    recordedAtMs: input.recordedAtMs,
   });
 }
 
@@ -2592,13 +2630,12 @@ function orphanReservedNoSendEvidence(input: {
       recordedAtMs: input.nowMs,
     },
     terminalTruth: existing?.terminalTruth ?? null,
-    noSendReceipt: noSendReceipt(
-      input.tenantId,
-      input.record.rsid,
-      pending,
-      input.lease,
-      input.nowMs,
-    ),
+    noSendReceipt: noSendReceipt({
+      record: input.record,
+      fence: sessionEgressFence(input.record),
+      lease: input.lease,
+      recordedAtMs: input.nowMs,
+    }),
   };
 }
 
@@ -7186,13 +7223,12 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
                             recordedAtMs: nowMs,
                           },
                     terminalTruth: existing?.terminalTruth ?? null,
-                    noSendReceipt: noSendReceipt(
-                      reservation.tenantId,
-                      reservation.rsid,
-                      cancelledPending,
-                      reservation.lease,
-                      nowMs,
-                    ),
+                    noSendReceipt: noSendReceipt({
+                      record,
+                      fence,
+                      lease: reservation.lease,
+                      recordedAtMs: nowMs,
+                    }),
                   };
                 })();
           const next = nextSessionRecord(
@@ -8346,13 +8382,12 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
                   durableJournalVersion: record.sessionVersion,
                   recordedAtMs: nowMs,
                 },
-                noSendReceipt: noSendReceipt(
-                  tenantId,
-                  record.rsid,
-                  pendingBeforeRevocation,
-                  cancellationLease,
-                  nowMs,
-                ),
+                noSendReceipt: noSendReceipt({
+                  record,
+                  fence,
+                  lease: cancellationLease,
+                  recordedAtMs: nowMs,
+                }),
               },
             ];
           }

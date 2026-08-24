@@ -137,6 +137,7 @@ class TestBridgeEvidence implements GatewayDurableBridgeEvidencePort {
       readonly batchTerminal?: GatewayDurableBatchTerminal | null;
       readonly durableJournalVersion?: number;
       readonly recordedAtMs?: number;
+      readonly noSend?: GatewayDurableDispatchObservation["noSend"];
     },
   ): void {
     const journal: GatewayVerifiedBridgeJournalEvidence | null =
@@ -155,6 +156,7 @@ class TestBridgeEvidence implements GatewayDurableBridgeEvidencePort {
     const observation: GatewayDurableDispatchObservation = {
       acceptance: structuredClone(input.acceptance ?? null),
       journal,
+      ...(input.noSend === undefined ? {} : { noSend: structuredClone(input.noSend) }),
     };
     this.#lookups.set(pending.envelopeDigest, {
       kind: "found",
@@ -565,6 +567,40 @@ function receiptFor(
   };
 }
 
+function noSendFor(
+  pending: GatewayRecoveryPendingDispatch,
+): NonNullable<GatewayDurableDispatchObservation["noSend"]> {
+  const correlationId = pending.envelope.type === "invoke"
+    ? pending.envelope.payload.invocation_id
+    : pending.envelope.payload.batch_id;
+  return {
+    schema: "gateway.dispatch-no-send/v1",
+    tenantId: TENANT_A,
+    rsid: pending.envelope.rsid,
+    effectiveMcpSessionId: "mcp-no-send",
+    principalKey: "tenant-a:user-a",
+    effectiveScopeDigest: `sha256:${"c".repeat(64)}`,
+    sessionBindingId: pending.sessionBindingId,
+    acceptedConnectionId: pending.preparedConnectionId,
+    durableSessionVersion: pending.authorizedSessionVersion,
+    invocationId: correlationId,
+    correlationId,
+    envelopeDigest: pending.envelopeDigest,
+    gatewaySequence: pending.gatewaySequence,
+    durableSequenceVersion: pending.authorizedSessionVersion,
+    egressEpoch: 1,
+    leaseVersion: 1,
+    leaseTicket: 1,
+    leaseHolderInstanceId: "gateway-instance-no-send",
+    proofDigest: `sha256:${"a".repeat(64)}`,
+    routeSnapshotDigest: `sha256:${"b".repeat(64)}`,
+    intentDigest: `sha256:${"d".repeat(64)}`,
+    transportStarted: false,
+    cumulativeAck: null,
+    recordedAtMs: 1_775_000_000_700,
+  };
+}
+
 function completedJournal(
   record: InvocationJournalRecord,
   proof: string,
@@ -795,6 +831,67 @@ async function twoEvidenceRecordedHolds(
 }
 
 describe("GatewayRecoveryAuthority durable safety", () => {
+  it("requires every versioned no-send coordinate before terminalizing a pending dispatch", async () => {
+    const harness = await createHarness();
+    const pending = requirePending(await prepareMutation(harness.authority, {
+      tenantId: TENANT_A,
+      sessionBindingId: SESSION_BINDING,
+      connectionId: CONNECTION,
+      envelope: mutationEnvelope({
+        seq: 701,
+        invocationId: uuid7(701_000),
+        scope: DOC_A,
+      }),
+    }));
+    const journal = completedJournal(pending.journalRecords[0]!, "no-send");
+    const valid = noSendFor(pending);
+    const invalid = [
+      { ...valid, tenantId: TENANT_B },
+      { ...valid, rsid: RSID_B },
+      { ...valid, sessionBindingId: "foreign-binding" },
+      { ...valid, acceptedConnectionId: "foreign-connection" },
+      { ...valid, durableSessionVersion: valid.durableSessionVersion + 1 },
+      { ...valid, gatewaySequence: valid.gatewaySequence + 1 },
+      { ...valid, durableSequenceVersion: valid.durableSequenceVersion + 1 },
+      { ...valid, leaseVersion: 2 as never },
+      { ...valid, leaseTicket: 0 },
+      { ...valid, effectiveMcpSessionId: "" },
+      { ...valid, principalKey: "" },
+      { ...valid, effectiveScopeDigest: "sha256:not-a-digest" as never },
+      { ...valid, proofDigest: "sha256:not-a-digest" as never },
+      { ...valid, routeSnapshotDigest: "sha256:not-a-digest" as never },
+      { ...valid, intentDigest: "sha256:not-a-digest" as never },
+      { ...valid, transportStarted: true as never },
+      { ...valid, cumulativeAck: 701 as never },
+    ];
+    for (const receipt of invalid) {
+      harness.bridgeEvidence.observe(pending, {
+        journalKind: "known_terminal",
+        journalRecords: [journal],
+        noSend: receipt,
+      });
+      await expect(harness.authority.reconcilePendingDispatch({
+        tenantId: TENANT_A,
+        rsid: RSID_A,
+        envelopeDigest: pending.envelopeDigest,
+      })).resolves.toMatchObject({ kind: "protocol_fault" });
+      expect(requireRecord(await harness.authority.snapshot({
+        tenantId: TENANT_A,
+        rsid: RSID_A,
+      })).pendingDispatch?.envelopeDigest).toBe(pending.envelopeDigest);
+    }
+    harness.bridgeEvidence.observe(pending, {
+      journalKind: "known_terminal",
+      journalRecords: [journal],
+      noSend: valid,
+    });
+    await expect(harness.authority.reconcilePendingDispatch({
+      tenantId: TENANT_A,
+      rsid: RSID_A,
+      envelopeDigest: pending.envelopeDigest,
+    })).resolves.toMatchObject({ kind: "terminal_recorded" });
+  });
+
   it("persists one invocation window across restart and acquires the same attempt idempotently", async () => {
     const harness = await createHarness();
     const attemptId = uuid7(900_001);
