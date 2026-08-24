@@ -500,7 +500,19 @@ interface DurableRbpSession {
   readonly egressFence?: DurableEgressFence;
   /** Optional only for pre-WP-02 legacy rows. */
   readonly normalizedConflictIndex?: DurableNormalizedConflictIndex;
+  /** D2 is sealed-null until a same-process conformance resend wins its CAS. */
+  readonly d2ConformanceOriginResend?: DurableD2ConformanceOriginResend | null;
   readonly updatedAtMs: number;
+}
+
+interface DurableD2ConformanceOriginResend {
+  readonly version: 1;
+  readonly state: "claimed";
+  readonly originInvocationId: string;
+  readonly originEnvelopeDigest: `sha256:${string}`;
+  readonly originOuterSequence: number;
+  readonly resendEnvelopeDigest: `sha256:${string}`;
+  readonly claimedAtMs: number;
 }
 
 interface DurableRbpSessionV2 {
@@ -513,7 +525,7 @@ interface DurableRbpSessionV2 {
   readonly identity: Pick<DurableRbpSession, "userId" | "deviceId" | "seatId" | "identityAuthority">;
   readonly binding: Pick<DurableRbpSession, "sessionBindingId" | "sessionVersion" | "connectionId" | "binding" | "resumeTokenDigest" | "resumeExpiresAtMs" | "grantedCapabilities">;
   readonly lifecycle: Pick<DurableRbpSession, "connectionLifecycle" | "sessionLifecycle" | "lastHeartbeatAtMs" | "liveDocumentRoute" | "createdAtMs" | "updatedAtMs" | "recordVersion">;
-  readonly sequence: Pick<DurableRbpSession, "sequence" | "pending">;
+  readonly sequence: Pick<DurableRbpSession, "sequence" | "pending" | "d2ConformanceOriginResend">;
   readonly migration: {
     readonly sourceVersionDigest: `sha256:${string}`;
     readonly legacyDigest: `sha256:${string}`;
@@ -568,7 +580,28 @@ interface DurableSessionV2ConflictIndexChild {
 type DurableEgressOperation =
   | "dispatch"
   | "resume_ack"
-  | "resume_retransmit";
+  | "resume_retransmit"
+  /** Internal-only D2 carrier operation; never a registry/executor method. */
+  | "conformance_origin_resend";
+
+interface D2ConformanceOriginPayload {
+  readonly tenantId: string;
+  readonly userId: string;
+  readonly principalKey: string;
+  readonly effectiveMcpSessionId: string;
+  readonly rsid: string;
+  readonly sessionBindingId: string;
+  readonly connectionId: string;
+  readonly originInvocationId: string;
+  readonly originIdempotencyKey: string;
+  readonly originEnvelopeDigest: `sha256:${string}`;
+  readonly originOuterSequence: number;
+  readonly method: "fixture_multi_file_output";
+  readonly toolName: "conformance.fixture.c39_multifile";
+  readonly toolVersion: "1.0.0";
+  readonly innerPayloadBytes: Buffer;
+  readonly innerPayloadDigest: `sha256:${string}`;
+}
 
 interface DurableEgressLease {
   readonly leaseId: string;
@@ -1216,7 +1249,8 @@ function parseEgressLease(value: unknown): DurableEgressLease {
     !isBoundedNonEmptyString(value.connectionId) ||
     (value.operation !== "dispatch" &&
       value.operation !== "resume_ack" &&
-      value.operation !== "resume_retransmit") ||
+      value.operation !== "resume_retransmit" &&
+      value.operation !== "conformance_origin_resend") ||
     typeof value.envelopeDigest !== "string" ||
     !DIGEST_PATTERN.test(value.envelopeDigest) ||
     (Object.hasOwn(value, "proofDigest") &&
@@ -1435,6 +1469,17 @@ function parseStoredSession(
   parseSessionIdentityAuthority(candidate.identityAuthority);
   sessionEgressFence(candidate);
   sessionConflictIndex(candidate);
+  if (candidate.d2ConformanceOriginResend !== undefined && candidate.d2ConformanceOriginResend !== null) {
+    const d2 = candidate.d2ConformanceOriginResend;
+    if (
+      d2.version !== 1 || d2.state !== "claimed" ||
+      !isGatewayUuidV7(d2.originInvocationId) ||
+      !DIGEST_PATTERN.test(d2.originEnvelopeDigest) ||
+      !isSafePositiveInteger(d2.originOuterSequence) ||
+      !DIGEST_PATTERN.test(d2.resendEnvelopeDigest) ||
+      !isSafeNonNegativeInteger(d2.claimedAtMs)
+    ) throw new Error("malformed D2 conformance resend state");
+  }
   return candidate;
 }
 
@@ -2480,6 +2525,13 @@ function invocationPayload(request: GatewayExecutorRequest): InvokeEnvelope["pay
   } as InvokeEnvelope["payload"];
 }
 
+function isExactC39FixtureParams(value: unknown): boolean {
+  return isRecord(value) && hasExactKeys(value, ["bytesPerFile", "contentType", "fileCount", "scenario"]) &&
+    value.scenario === "valid_multifile" && value.contentType === "application/octet-stream" &&
+    typeof value.fileCount === "number" && Number.isSafeInteger(value.fileCount) && value.fileCount >= 1 && value.fileCount <= 16 &&
+    typeof value.bytesPerFile === "number" && Number.isSafeInteger(value.bytesPerFile) && value.bytesPerFile >= 1 && value.bytesPerFile <= 1_048_576;
+}
+
 function atomicBatchPayload(
   request: GatewayAtomicBatchExecutorRequest,
 ): InvokeBatchEnvelope["payload"] {
@@ -3287,7 +3339,7 @@ class SessionAggregateRepository {
       identity: { userId: record.userId, deviceId: record.deviceId, seatId: record.seatId, identityAuthority: record.identityAuthority },
       binding: { sessionBindingId: record.sessionBindingId, sessionVersion: record.sessionVersion, connectionId: record.connectionId, binding: record.binding, resumeTokenDigest: record.resumeTokenDigest, resumeExpiresAtMs: record.resumeExpiresAtMs, grantedCapabilities: record.grantedCapabilities },
       lifecycle: { connectionLifecycle: record.connectionLifecycle, sessionLifecycle: record.sessionLifecycle, lastHeartbeatAtMs: record.lastHeartbeatAtMs, liveDocumentRoute: record.liveDocumentRoute, recordVersion: record.recordVersion, createdAtMs: record.createdAtMs, updatedAtMs: record.updatedAtMs },
-      sequence: { sequence: record.sequence, pending: record.pending }, migration, childRefs,
+      sequence: { sequence: record.sequence, pending: record.pending, ...(record.d2ConformanceOriginResend === undefined ? {} : { d2ConformanceOriginResend: record.d2ConformanceOriginResend }) }, migration, childRefs,
       childrenDigest: digest(canonicalizeJson(childRefs as unknown as JsonValue)),
     };
   }
@@ -3385,6 +3437,8 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
   readonly #connections = new Map<string, LiveConnection>();
   readonly #active = new Map<string, ActiveSession>();
   readonly #waiters = new Map<string, PendingWaiter>();
+  /** Never durable: loss on restart turns a D2 claim into cleanup-only state. */
+  readonly #d2ConformancePayloads = new Map<string, D2ConformanceOriginPayload>();
   readonly #receiveTails = new Map<string, Promise<void>>();
   readonly #rsidCarrierReceiveTailBytes = new Map<string, number>();
   readonly #carrierReceiveTailObserver: CarrierReceiveTailObserver | undefined;
@@ -3798,6 +3852,8 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       waiter.resolve(this.#indeterminateOutcome(waiter.mutating));
     }
     this.#waiters.clear();
+    for (const payload of this.#d2ConformancePayloads.values()) payload.innerPayloadBytes.fill(0);
+    this.#d2ConformancePayloads.clear();
     const drained = await Promise.allSettled(
       connections.map(async (connection) => {
         try {
@@ -7583,6 +7639,14 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
           });
         },
       );
+      // D2 has no public capability yet.  Its strictly fixture-shaped memory
+      // candidate is captured only after the concrete carrier send completed
+      // and the normal durable reservation was reconciled.
+      this.#captureD2ConformanceOriginAfterSend({
+        request: input.dispatchContext,
+        envelope,
+        reservation,
+      });
       } catch {
         if (outcome.current === null) {
           await this.#settleLocalFinalTombstoneIfPresent(
@@ -7614,6 +7678,123 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       }
       return await outcome.current;
     } };
+  }
+
+  #captureD2ConformanceOriginAfterSend(input: {
+    readonly request: GatewayExecutorRequest["context"];
+    readonly envelope: InvokeEnvelope | InvokeBatchEnvelope;
+    readonly reservation: DurableEgressReservation;
+  }): void {
+    if (
+      input.envelope.type !== "invoke" ||
+      input.envelope.payload.method !== "fixture_multi_file_output" ||
+      input.envelope.payload.mutating ||
+      input.request.mutating ||
+      input.request.toolName !== "conformance.fixture.c39_multifile" ||
+      input.request.toolVersion !== "1.0.0" ||
+      !isExactC39FixtureParams(input.envelope.payload.params) ||
+      input.reservation.lease.operation !== "dispatch" ||
+      input.envelope.payload.invocation_id !== input.request.invocationId ||
+      input.request.effectiveMcpRequestScope === undefined
+    ) return;
+    const bytes = Buffer.from(JSON.stringify(input.envelope.payload), "utf8");
+    if (bytes.byteLength === 0 || bytes.byteLength > 8 * 1024) { bytes.fill(0); return; }
+    const record = input.reservation.record;
+    const candidate: D2ConformanceOriginPayload = Object.freeze({
+      tenantId: record.tenantId,
+      userId: record.userId,
+      principalKey: input.request.effectiveMcpRequestScope.principalKey,
+      effectiveMcpSessionId: input.request.effectiveMcpRequestScope.effectiveMcpSessionId,
+      rsid: record.rsid,
+      sessionBindingId: record.sessionBindingId,
+      connectionId: record.connectionId,
+      originInvocationId: input.request.invocationId,
+      originIdempotencyKey: input.request.idempotencyKey,
+      originEnvelopeDigest: input.reservation.lease.envelopeDigest,
+      originOuterSequence: input.envelope.seq,
+      method: "fixture_multi_file_output",
+      toolName: "conformance.fixture.c39_multifile",
+      toolVersion: "1.0.0",
+      innerPayloadBytes: bytes,
+      innerPayloadDigest: digest(bytes.toString("utf8")),
+    });
+    const key = `${candidate.rsid}/${candidate.originInvocationId}`;
+    const prior = this.#d2ConformancePayloads.get(key);
+    prior?.innerPayloadBytes.fill(0);
+    this.#d2ConformancePayloads.set(key, candidate);
+  }
+
+  /**
+   * Internal D2a transition.  It is not registered as a tool/route and D2b
+   * must gate it with a capability.  The caller cannot provide payload bytes;
+   * only an after-send memory capture can supply the exact inner invoke.
+   */
+  public async resumeCapturedConformanceOrigin(input: {
+    readonly tenantId: string;
+    readonly userId: string;
+    readonly principalKey: string;
+    readonly effectiveMcpSessionId: string;
+    readonly rsid: string;
+    readonly sessionBindingId: string;
+    readonly originInvocationId: string;
+    readonly originIdempotencyKey: string;
+    readonly method: "fixture_multi_file_output";
+  }): Promise<boolean> {
+    const key = `${input.rsid}/${input.originInvocationId}`;
+    const captured = this.#d2ConformancePayloads.get(key);
+    if (captured === undefined ||
+      captured.tenantId !== input.tenantId || captured.userId !== input.userId ||
+      captured.principalKey !== input.principalKey ||
+      captured.effectiveMcpSessionId !== input.effectiveMcpSessionId ||
+      captured.rsid !== input.rsid || captured.sessionBindingId !== input.sessionBindingId ||
+      captured.originInvocationId !== input.originInvocationId ||
+      captured.originIdempotencyKey !== input.originIdempotencyKey ||
+      captured.method !== input.method) return false;
+    const active = this.#active.get(input.rsid);
+    const connection = active === undefined ? undefined : this.#connections.get(active.record.connectionId);
+    if (connection === undefined || active === undefined || active.tenantId !== input.tenantId) return false;
+    let ticket: TenantAuthorityTicket;
+    try { ticket = await this.#acquireConnectionAuthorityTicket(connection); } catch { return false; }
+    const leaseId = gatewayUuidV7(this.#clock());
+    const outerId = gatewayUuidV7(this.#clock());
+    const ts = nowIso(this.#clock());
+    let reserved: DurableEgressReservation | null = null;
+    let serialized = "";
+    try {
+      const claimed = await this.#withSessionAuthorization(input.rsid, async () => await this.#sessionRepository.transact({ tenantId: input.tenantId }, async (tx) => {
+        const tombstone = await tx.read<GatewayJsonValue>(GATEWAY_RBP_UNREGISTER_NAMESPACE, input.rsid);
+        if (tombstone !== null) return { kind: "blocked" as const };
+        const stored = await tx.read<GatewayJsonValue>(GATEWAY_RBP_SESSION_NAMESPACE, input.rsid);
+        if (stored === null) return { kind: "blocked" as const };
+        const record = parseStoredSession(stored, input.tenantId, input.rsid);
+        this.#assertAuthorityTicket(ticket, connection, { session: record });
+        const fence = sessionEgressFence(record);
+        if (
+          record.d2ConformanceOriginResend !== null && record.d2ConformanceOriginResend !== undefined ||
+          record.userId !== captured.userId || record.sessionBindingId !== captured.sessionBindingId ||
+          record.connectionId !== captured.connectionId || record.connectionId !== connection.connectionId ||
+          record.pending === null || record.pending.invocationId !== captured.originInvocationId ||
+          record.pending.envelopeDigest !== captured.originEnvelopeDigest ||
+          record.sequence.outbox.some((entry) => entry.envelope.seq === captured.originOuterSequence) ||
+          record.evidence.some((entry) => entry.envelopeDigest === captured.originEnvelopeDigest && (entry.acceptance !== null || entry.terminalTruth !== undefined && entry.terminalTruth !== null)) ||
+          fence.state !== "open" || fence.revocation !== null || fence.lease !== null ||
+          !record.sessionLifecycle.dispatchAllowed || record.liveDocumentRoute === null
+        ) return { kind: "blocked" as const };
+        let payload: unknown; try { payload = JSON.parse(captured.innerPayloadBytes.toString("utf8")); } catch { return { kind: "blocked" as const }; }
+        const queued = queueOutboundData(record.sequence, { type: "invoke", id: outerId, ack: record.sequence.lastRxSeq, ts, payload: payload as JsonValue });
+        if (queued.kind !== "queued" || !Buffer.from(JSON.stringify((queued.envelope as InvokeEnvelope).payload), "utf8").equals(captured.innerPayloadBytes)) return { kind: "blocked" as const };
+        serialized = JSON.stringify(queued.envelope);
+        const lease: DurableEgressLease = { leaseId, ticket: fence.nextTicket, holderInstanceId: this.#instanceId, connectionId: record.connectionId, operation: "conformance_origin_resend", envelopeDigest: digest(serialized), phase: "reserved", reservedAtMs: this.#clock(), reserveExpiresAtMs: this.#clock() + SEND_RESERVATION_TTL_MS, startedAtMs: null };
+        const next = nextSessionRecord(stored, record, { ...record, sequence: queued.state, d2ConformanceOriginResend: { version: 1, state: "claimed", originInvocationId: captured.originInvocationId, originEnvelopeDigest: captured.originEnvelopeDigest, originOuterSequence: captured.originOuterSequence, resendEnvelopeDigest: lease.envelopeDigest, claimedAtMs: this.#clock() }, egressFence: { version: 1, state: "open", epoch: fence.epoch + 1, nextTicket: fence.nextTicket + 1, lease, revocation: null, cancellation: null } }, this.#clock());
+        tx.stage({ namespace: GATEWAY_RBP_SESSION_NAMESPACE, key: input.rsid, value: asJson(next), expect: { kind: "version", version: stored.version } });
+        return { kind: "reserved" as const, record: next, lease };
+      }));
+      if (!claimed.ok || claimed.value.kind !== "reserved") return false;
+      reserved = { tenantId: input.tenantId, rsid: input.rsid, record: claimed.value.record, lease: claimed.value.lease };
+      await this.#sendWithDurableReservation(connection, reserved, serialized, ticket);
+      captured.innerPayloadBytes.fill(0); this.#d2ConformancePayloads.delete(key);
+      return true;
+    } catch { return false; }
   }
 
   async #promoteEgressReservation(
@@ -8427,6 +8608,29 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         let recovered = record;
         let fence = initialFence;
 
+        // A persisted D2 op without its process-local payload cannot replay.
+        // Normal resume may only tombstone/clear that exact expired-orphaned
+        // lease; it never reconstructs an invoke from durable state.
+        if (
+          initialFence.lease?.operation === "conformance_origin_resend" &&
+          !this.#d2ConformancePayloads.has(
+            `${record.rsid}/${record.d2ConformanceOriginResend?.originInvocationId ?? ""}`,
+          )
+        ) {
+          recovered = {
+            ...record,
+            d2ConformanceOriginResend: null,
+            egressFence: {
+              ...initialFence,
+              state: "open",
+              epoch: initialFence.epoch + 1,
+              lease: null,
+              cancellation: null,
+            },
+          };
+          fence = sessionEgressFence(recovered);
+        }
+
         if (
           initialFence.lease?.operation === "dispatch" &&
           initialFence.lease.phase === "reserved"
@@ -9075,6 +9279,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       evidence: [],
       egressFence: openEgressFence(),
       normalizedConflictIndex: emptyNormalizedConflictIndex(),
+      d2ConformanceOriginResend: null,
       updatedAtMs: nowMs,
     };
     const saved = await this.#sessionRepository.transact(
