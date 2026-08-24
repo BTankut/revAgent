@@ -2070,11 +2070,19 @@ export async function startRealTrioRuntimeFixture(
           lastSuccessfulAudit: null, lastControlOutcome: null,
           preControlBaseline: null, preControlAudit: null, lastSelectorReason: null,
         };
-        const preControl = await capturePreControlDocumentContextBundle({
-          supervisor,
-          readGatewayAuditOutcome: () => readCapturedRealCaseAuditOutcome(supervisor, refreshAuditCapture),
-          timeoutMs: options.documentContextTimeoutMs,
-        });
+        const firstAudit = await readCapturedRealCaseAudit(supervisor, refreshAuditCapture);
+        const firstSnapshot = supervisor.readDocumentContextSnapshot();
+        const secondAudit = await readCapturedRealCaseAudit(supervisor, refreshAuditCapture);
+        const secondSnapshot = supervisor.readDocumentContextSnapshot();
+        const refreshBaseline = gatewayAuditBaseline(firstAudit);
+        if (refreshBaseline === null || firstSnapshot.generation !== secondSnapshot.generation ||
+            firstSnapshot.highWaterCursor !== secondSnapshot.highWaterCursor ||
+            !isObject(firstAudit) || !isObject(secondAudit) ||
+            firstAudit.documentContextCurrentRoute !== null || secondAudit.documentContextCurrentRoute !== null ||
+            !Array.isArray(firstAudit.documentContextUpdates) || firstAudit.documentContextUpdates.length !== 0 ||
+            !Array.isArray(secondAudit.documentContextUpdates) || secondAudit.documentContextUpdates.length !== 0) {
+          throw new Error("real trio route-null resume baseline is not stable");
+        }
         const control = documentContextControlAudit(await supervisor.fixtureControl("apply_document_context", {
           event: realTrioFixtureDocumentContextEvent(),
         }));
@@ -2084,11 +2092,11 @@ export async function startRealTrioRuntimeFixture(
         if (typeof supervisor.pollDocumentContext === "function") await supervisor.pollDocumentContext();
         const candidate = await waitForDocumentContextSend({
           supervisor,
-          controlCursor: preControl.snapshot.highWaterCursor,
-          generation: preControl.snapshot.generation,
+          controlCursor: firstSnapshot.highWaterCursor,
+          generation: firstSnapshot.generation,
           precedingProbe: null,
-          precedingSeed: preControl.seed,
-          gatewayBaseline: preControl.baseline,
+          precedingSeed: null,
+          gatewayBaseline: refreshBaseline,
           control,
           auditCapture: refreshAuditCapture,
           timeoutMs: options.documentContextTimeoutMs,
@@ -2100,7 +2108,7 @@ export async function startRealTrioRuntimeFixture(
         if (hasGatewayAcceptedDocumentContextRoute(audit, verifiedExpected, verifiedGatewayBaseline)) {
           throw new Error("real trio stale revision proof remained accepted after route refresh");
         }
-        const next = verifiedRealTrioDocumentContextState(candidate, preControl.baseline);
+        const next = verifiedRealTrioDocumentContextState(candidate, refreshBaseline);
         verifiedExpected = next.expected;
         verifiedGatewayBaseline = next.gatewayBaseline;
         return Object.freeze({
