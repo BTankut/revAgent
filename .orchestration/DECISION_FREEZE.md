@@ -29,3 +29,11 @@ Architecture review: PASS_PLAN required/recorded for this freeze. Security revie
 ## Append-only C39 scope amendment
 
 Amendment base and rollback: `252234c321ddc395da6dae356f0dda32070c9f86`. C38 is green WSS+HTTP; C39 is required and not yet green. C29/C28 remain locked, WP-12 is not accepted, and M4 is never accepted.
+
+## C39-C raw-carrier clarification
+
+C39-C uses a distinct internal recovery-carrier terminal/activation path and never calls the existing C38 inline-JSON activation. Existing RBP partial/chunk/terminal schema remains unchanged, including the existing allowed `application/json` content type; no enum, value, or schema addition is permitted. Reachability exists only for a durable pre-admitted recovery invocation internally bound to the exact owner tuple, origin UUID, and expected digest.
+
+C# is a raw-only owned-byte producer: exact UTF-8 response bytes, at most 32 MiB total and 1 MiB per chunk, with origin digest verification before chunking. It must not parse, base64-wrap the whole payload, log, touch the add-in, or execute/replay the origin. The carrier plan, terminal, and resume cursor are durably journaled before any chunk ACK; each ACK remains Bridge+resource durable, and restart resends only the recovery stream.
+
+Gateway private staging enforces ordered unique indexes with no gap/duplicate, exact length/digest/terminal checks, and maps recovery invocation to origin without new wire fields. It rechecks scope/binding after the stream and mints only a scoped `result_ref` with distinct reference digest and bounded TTL; no partial or reference leakage. The C38 path is unchanged. Required gates: WSS, HTTP/SSE, restart, backpressure, adversarial recovery, and C38 regression.
