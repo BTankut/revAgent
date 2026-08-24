@@ -1013,12 +1013,17 @@ export function preControlWatcherSeedFromSnapshot(
   const parsed = parseDocumentContextGrammar({ rows: snapshot.rows, generation: snapshot.generation,
     controlCursor: "0", precedingProbe: null });
   if (parsed === null || parsed.currentWatcher === null || parsed.currentWatcher.watcherOrdinal < 1) return null;
-  // The complete grammar has already rejected malformed/failure facts and an
-  // unfinished cycle. A last send without its durable ACK is intentionally
-  // surfaced to the bounded capture loop rather than silently seeded.
-  if (parsed.currentWatcher.lastSentSequence !== null &&
-      (parsed.currentWatcher.lastAckSequence === null ||
-       parsed.currentWatcher.lastAckSequence < parsed.currentWatcher.lastSentSequence)) return null;
+  // A seed is valid only after every retained watcher history has settled.
+  // In particular, a later empty probe cannot erase an unacknowledged send in
+  // an earlier watcher. `parseDocumentContextGrammar` binds ACKs to their
+  // watcher and rejects wrong/backward/duplicate ACKs; this pass requires one
+  // exact post-send ACK for every completed cycle through high water.
+  for (const candidate of parsed.candidates) {
+    const acknowledgedAt = parsed.acknowledgements.get(
+      candidateKey(candidate.watcherOrdinal, candidate.rsidHash, candidate.sequence),
+    );
+    if (acknowledgedAt === undefined || acknowledgedAt <= candidate.sendTranscriptIndex) return null;
+  }
   return parsed.currentWatcher;
 }
 

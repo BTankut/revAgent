@@ -508,6 +508,26 @@ describe("WP-12 real-trio fixture document route gate", () => {
       ...settled.rows, row(6, "probe", "started", null, other),
     ]))).toEqual({ generation: 3, watcherOrdinal: 2, rsidHash: other,
       lastSentSequence: null, lastAckSequence: null });
+    // The seed validates every retained watcher, not just the latest one. A
+    // new empty probe cannot hide a prior unacknowledged send.
+    expect(preControlWatcherSeedFromSnapshot(snapshot([
+      ...settled.rows.slice(0, -1), row(5, "probe", "started", null, other),
+    ]))).toBeNull();
+    expect(preControlWatcherSeedFromSnapshot(snapshot([
+      ...settled.rows, row(6, "probe", "started", null, other),
+    ]))).toMatchObject({ watcherOrdinal: 2, rsidHash: other, lastSentSequence: null, lastAckSequence: null });
+    expect(preControlWatcherSeedFromSnapshot(snapshot([
+      ...settled.rows,
+      row(6, "probe", "started", null, other), row(7, "snapshot", "ready", null, other),
+      row(8, "queue", "durably_queued", 1, other), row(9, "send", "sent", 1, other),
+      row(10, "ack", "durably_acknowledged", 1, other), row(11, "probe", "started", null, hash),
+    ]))).toMatchObject({ watcherOrdinal: 3, rsidHash: hash, lastSentSequence: null, lastAckSequence: null });
+    expect(preControlWatcherSeedFromSnapshot(snapshot([
+      ...settled.rows, row(6, "ack", "durably_acknowledged", 1),
+    ]))).toBeNull();
+    expect(preControlWatcherSeedFromSnapshot(snapshot([
+      ...settled.rows.slice(0, -1), row(5, "ack", "durably_acknowledged", 2),
+    ]))).toBeNull();
     // Missing opening probe/ring eviction, gaps, malformed retained facts,
     // mixed watcher rsids, and an outstanding send all fail closed.
     expect(preControlWatcherSeedFromSnapshot(snapshot(settled.rows, "2"))).toBeNull();
