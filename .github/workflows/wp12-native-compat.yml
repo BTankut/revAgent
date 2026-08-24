@@ -65,7 +65,7 @@ jobs:
           # the older root smoke is not importable from this workspace root.
 
       - name: Run Node ${{ matrix.node }} native compatibility conformance
-        run: node scripts/wp12-native-compat-conformance.mjs
+        run: npm exec -- node scripts/wp12-native-compat-conformance.mjs
 
       - name: Run Node 22 bridge-simulator determinism
         if: matrix.node == 22

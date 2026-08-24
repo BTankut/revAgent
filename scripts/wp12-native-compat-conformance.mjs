@@ -1,9 +1,9 @@
 import { createRequire } from "node:module";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, delimiter, dirname, join, resolve } from "node:path";
+import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // This is intentionally a standalone, fail-closed compatibility probe.  It is
@@ -24,8 +24,8 @@ const NODE_ADDON_API = Object.freeze({
 });
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const gatewayOwnerPackageJson = join(root, "packages", "gateway", "package.json");
-const bridgeRequire = createRequire(join(root, "packages", "bridge-simulator", "package.json"));
 const cleanupRoots = [];
+let trustedNpm = null;
 const results = {
   schemaVersion: "wp12-native-compat-conformance/v1",
   nodeMajor: Number.parseInt(process.versions.node.split(".")[0], 10),
@@ -65,6 +65,7 @@ function normalizeChildDiagnostic(value, redactValues = []) {
 
 function classifyChildFailure(stderr, error) {
   const diagnostic = `${stderr ?? ""}\n${error?.message ?? ""}`;
+  if (diagnostic.includes("NODE_MODULE_VERSION") || diagnostic.includes("ERR_DLOPEN_FAILED")) return "node-abi-mismatch";
   if (diagnostic.includes("Could not locate the bindings file")) return "native-binding-unavailable";
   if (diagnostic.includes("Cannot find module")) return "module-resolution";
   if (diagnostic.includes("ELIFECYCLE")) return "lifecycle";
@@ -91,20 +92,91 @@ function assertDiagnosticRedaction() {
   }
 }
 
-function run(command, args, options = {}) {
-  const npmCli = command === "npm" ? process.env.REVAGENT_NPM_CLI : undefined;
-  if (npmCli !== undefined && !npmCli.startsWith("/") && !/^[A-Za-z]:\\/u.test(npmCli)) {
-    fail("REVAGENT_NPM_CLI must be an absolute npm-cli.js path when set");
+function expectRejected(operation, label) {
+  try {
+    operation();
+  } catch {
+    return;
   }
-  const useWindowsCommandProcessor = npmCli === undefined && process.platform === "win32" && command === "npm";
-  const executable = npmCli === undefined ?
-    (useWindowsCommandProcessor ? (process.env.ComSpec ?? "cmd.exe") : command) : process.execPath;
-  const commandArgs = npmCli === undefined ?
-    (useWindowsCommandProcessor ? ["/d", "/s", "/c", "npm.cmd", ...args] : args) : [npmCli, ...args];
+  fail(`native trust self-test accepted ${label}`);
+}
+
+function assertNativeTrustSelfTests() {
+  const trustedRoot = process.platform === "win32" ? "C:\\trusted" : "/trusted";
+  const foreignRoot = process.platform === "win32" ? "C:\\foreign" : "/foreign";
+  const separator = process.platform === "win32" ? "\\" : "/";
+  assertNoNpmOverride(undefined);
+  expectRejected(() => assertNoNpmOverride(`${foreignRoot}${separator}npm-cli.js`), "REVAGENT_NPM_CLI override");
+  assertNoNodePath(undefined);
+  expectRejected(() => assertNoNodePath(`${foreignRoot}${separator}node_modules`), "NODE_PATH override");
+  assertContained(`${trustedRoot}${separator}npm${separator}bin${separator}npm-cli.js`, trustedRoot, "valid npm context");
+  expectRejected(() => assertContained(`${foreignRoot}${separator}npm-cli.js`, trustedRoot, "foreign npm context"), "foreign npm context");
+  expectRejected(() => assertCanonicalPath(`${trustedRoot}${separator}link${separator}npm-cli.js`, `${trustedRoot}${separator}real${separator}npm-cli.js`, "npm_execpath"), "npm symlink");
+  expectRejected(() => assertContained(`${foreignRoot}${separator}package.json`, `${trustedRoot}${separator}repo`, "native owner package.json"), "foreign owner");
+  assertModuleVersion(BETTER_SQLITE3.version, BETTER_SQLITE3.version, "valid workspace owner");
+  assertModuleVersion(LEGACY.version, LEGACY.version, "valid temporary owner");
+  expectRejected(() => assertModuleVersion("12.9.0", BETTER_SQLITE3.version, "better-sqlite3"), "version mismatch");
+}
+
+function isContained(path, container) {
+  const difference = relative(container, path);
+  return difference === "" || (!difference.startsWith(`..${sep}`) && difference !== ".." && !isAbsolute(difference));
+}
+
+function assertContained(path, container, label) {
+  if (!isContained(path, container)) fail(`${label} escapes its trusted container`);
+}
+
+function assertNoNodePath(value) {
+  if (typeof value === "string" && value.length > 0) fail("NODE_PATH is forbidden for native module conformance");
+}
+
+function assertNoNpmOverride(value) {
+  if (value !== undefined) fail("REVAGENT_NPM_CLI is forbidden; invoke through the paired trusted npm executable");
+}
+
+function assertCanonicalPath(input, canonical, label) {
+  if (resolve(input) !== canonical) fail(`${label} must not be a symlink or alternate path`);
+}
+
+function assertModuleVersion(value, expected, label) {
+  if (value !== expected) fail(`${label} version mismatch`);
+}
+
+async function resolveTrustedNpmContext() {
+  assertNoNpmOverride(process.env.REVAGENT_NPM_CLI);
+  assertNoNodePath(process.env.NODE_PATH);
+  const npmExecPath = process.env.npm_execpath;
+  if (typeof npmExecPath !== "string" || npmExecPath.length === 0) {
+    fail("trusted npm context is required; invoke via the paired npm executable (npm exec -- node scripts/wp12-native-compat-conformance.mjs)");
+  }
+  const nodeExecutable = await realpath(process.execPath);
+  const npmExecutable = await realpath(npmExecPath);
+  assertCanonicalPath(npmExecPath, npmExecutable, "npm_execpath");
+  if (basename(npmExecutable) !== "npm-cli.js") fail("npm_execpath is not npm-cli.js");
+  const nodeDirectory = dirname(nodeExecutable);
+  const distributionRoot = basename(nodeDirectory).toLowerCase() === "bin" ? dirname(nodeDirectory) : nodeDirectory;
+  assertContained(npmExecutable, distributionRoot, "npm_execpath");
+  const npmPackageJson = join(dirname(dirname(npmExecutable)), "package.json");
+  const npmPackageJsonReal = await realpath(npmPackageJson);
+  assertCanonicalPath(npmPackageJson, npmPackageJsonReal, "npm package.json");
+  assertContained(npmPackageJsonReal, distributionRoot, "npm package.json");
+  const npmPackage = await readJson(npmPackageJsonReal);
+  if (npmPackage.name !== "npm" || typeof npmPackage.version !== "string" || npmPackage.version.length === 0) {
+    fail("npm_execpath package identity is invalid");
+  }
+  return Object.freeze({ executable: npmExecutable, packageJson: npmPackageJsonReal, distributionRoot });
+}
+
+function run(command, args, options = {}) {
+  const isNpm = command === "npm";
+  if (isNpm && trustedNpm === null) fail("trusted npm context was not established before npm invocation");
+  const executable = isNpm ? process.execPath : command;
+  const commandArgs = isNpm ? [trustedNpm.executable, ...args] : args;
   const pathKey = Object.keys(process.env).find((key) => key.toLowerCase() === "path") ?? "PATH";
-  const pairedNodePath = npmCli === undefined ? {} : {
+  const pairedNodePath = isNpm ? {
     [pathKey]: `${dirname(process.execPath)}${delimiter}${process.env[pathKey] ?? ""}`,
-  };
+  } : {};
   const completed = spawnSync(executable, commandArgs, {
     cwd: options.cwd,
     env: { ...process.env, ...pairedNodePath, ...options.env },
@@ -117,10 +189,57 @@ function run(command, args, options = {}) {
   return completed.stdout;
 }
 
-function resolveInstalledModule(ownerPackageJson) {
-  const owner = resolve(ownerPackageJson);
-  const entry = createRequire(owner).resolve("better-sqlite3");
-  return { ownerPackageJson: owner, entry };
+async function resolveInstalledModule(ownerPackageJson, ownerRoot, expectedVersion, expectedModuleRoot = undefined) {
+  const ownerRootReal = await realpath(ownerRoot);
+  const owner = await realpath(ownerPackageJson);
+  assertCanonicalPath(ownerPackageJson, owner, "native owner package.json");
+  assertContained(owner, ownerRootReal, "native owner package.json");
+  const entry = await realpath(createRequire(owner).resolve("better-sqlite3"));
+  const packageRoot = await realpath(dirname(dirname(entry)));
+  assertContained(packageRoot, ownerRootReal, "better-sqlite3 package");
+  if (expectedModuleRoot !== undefined && packageRoot !== expectedModuleRoot) {
+    fail("better-sqlite3 package resolved outside its approved native owner");
+  }
+  const packageJson = await realpath(join(packageRoot, "package.json"));
+  assertContained(packageJson, packageRoot, "better-sqlite3 package.json");
+  const manifest = await readJson(packageJson);
+  assertModuleVersion(manifest.version, expectedVersion, "installed better-sqlite3");
+  return Object.freeze({ ownerPackageJson: owner, ownerRoot: ownerRootReal, entry, packageRoot, packageJson });
+}
+
+function verifyNativeLoad(native) {
+  const code = `${childNativeLoaderSource()} const db = new Database(':memory:'); try { if (db.prepare('SELECT 1 AS value').get()?.value !== 1) process.exitCode = 24; } finally { db.close(); }`;
+  run(process.execPath, ["-e", code], { env: childNativeEnvironment(native) });
+}
+
+function childNativeEnvironment(native, extra = {}) {
+  const environment = {
+    ...process.env,
+    REVAGENT_SQLITE_OWNER_PACKAGE_JSON: native.ownerPackageJson,
+    REVAGENT_SQLITE_ENTRY: native.entry,
+    REVAGENT_SQLITE_OWNER_ROOT: native.ownerRoot,
+    REVAGENT_SQLITE_MODULE_ROOT: native.packageRoot,
+    ...extra,
+  };
+  delete environment.NODE_PATH;
+  return environment;
+}
+
+async function cleanupArtifacts() {
+  for (const path of cleanupRoots) {
+    let lastError;
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      try {
+        await rm(path, { recursive: true, force: true, maxRetries: 0 });
+        lastError = undefined;
+        break;
+      } catch (error) {
+        lastError = error;
+        await new Promise((resolvePromise) => setTimeout(resolvePromise, 100 * (attempt + 1)));
+      }
+    }
+    if (lastError !== undefined) fail("bounded temporary native artifact cleanup failed");
+  }
 }
 
 function assertPackage(record, expected, label) {
@@ -134,6 +253,8 @@ async function readJson(path) {
 }
 
 async function validateProvenance() {
+  const repoRoot = await realpath(root);
+  assertCanonicalPath(root, repoRoot, "repository root");
   const lock = await readJson(join(root, "package-lock.json"));
   const packagePaths = [
     "packages/gateway/node_modules/better-sqlite3",
@@ -157,11 +278,10 @@ async function validateProvenance() {
   }
   results.lock = true;
 
-  const gateway = resolveInstalledModule(gatewayOwnerPackageJson);
-  const gatewayEntry = gateway.entry;
-  const bridgeEntry = bridgeRequire.resolve("better-sqlite3");
-  const gatewayPackage = await readJson(join(dirname(dirname(gatewayEntry)), "package.json"));
-  const bridgePackage = await readJson(join(dirname(dirname(bridgeEntry)), "package.json"));
+  const gateway = await resolveInstalledModule(gatewayOwnerPackageJson, repoRoot, BETTER_SQLITE3.version);
+  const bridge = await resolveInstalledModule(join(root, "packages", "bridge-simulator", "package.json"), repoRoot, BETTER_SQLITE3.version);
+  const gatewayPackage = await readJson(gateway.packageJson);
+  const bridgePackage = await readJson(bridge.packageJson);
   for (const installed of [gatewayPackage, bridgePackage]) {
     if (installed.version !== BETTER_SQLITE3.version || installed.dependencies?.["node-addon-api"] !== "^8.0.0") {
       fail("installed better-sqlite3 package differs from the approved closure");
@@ -171,7 +291,7 @@ async function validateProvenance() {
     }
   }
   results.installed = true;
-  return gateway;
+  return Object.freeze({ ...gateway, repoRoot });
 }
 
 async function createLegacySandbox() {
@@ -192,14 +312,40 @@ async function createLegacySandbox() {
     cwd: sandbox,
     env: { npm_config_build_from_source: "true" },
   });
-  const owner = resolveInstalledModule(join(sandbox, "package.json"));
-  return { sandbox, ownerPackageJson: owner.ownerPackageJson };
+  const sandboxRoot = await realpath(sandbox);
+  const expectedModuleRoot = await realpath(join(sandboxRoot, "node_modules", "better-sqlite3"));
+  const owner = await resolveInstalledModule(
+    join(sandboxRoot, "package.json"),
+    sandboxRoot,
+    LEGACY.version,
+    expectedModuleRoot,
+  );
+  verifyNativeLoad(owner);
+  return { sandbox: sandboxRoot, native: owner };
 }
 
-function runDatabaseChild(ownerPackageJson, databasePath, mode) {
-  const code = String.raw`
+function childNativeLoaderSource() {
+  return String.raw`
+    const fs = require("node:fs");
+    const path = require("node:path");
     const { createRequire } = require("node:module");
-    const Database = createRequire(process.env.REVAGENT_SQLITE_OWNER_PACKAGE_JSON)("better-sqlite3");
+    if (process.env.NODE_PATH) throw new Error("NODE_PATH forbidden in native child");
+    const contained = (candidate, container) => { const difference = path.relative(container, candidate); return difference === "" || (!difference.startsWith(".." + path.sep) && difference !== ".." && !path.isAbsolute(difference)); };
+    const owner = fs.realpathSync(process.env.REVAGENT_SQLITE_OWNER_PACKAGE_JSON);
+    const ownerRoot = fs.realpathSync(process.env.REVAGENT_SQLITE_OWNER_ROOT);
+    const expectedEntry = fs.realpathSync(process.env.REVAGENT_SQLITE_ENTRY);
+    const expectedModuleRoot = fs.realpathSync(process.env.REVAGENT_SQLITE_MODULE_ROOT);
+    if (!contained(owner, ownerRoot)) throw new Error("native owner escaped trusted root");
+    const resolvedEntry = fs.realpathSync(createRequire(owner).resolve("better-sqlite3"));
+    const moduleRoot = fs.realpathSync(path.dirname(path.dirname(resolvedEntry)));
+    if (resolvedEntry !== expectedEntry || moduleRoot !== expectedModuleRoot || !contained(moduleRoot, ownerRoot)) throw new Error("native child trusted entry mismatch");
+    const Database = createRequire(owner)("better-sqlite3");
+  `;
+}
+
+function runDatabaseChild(native, databasePath, mode) {
+  const code = String.raw`
+    ${childNativeLoaderSource()}
     const db = new Database(process.env.REVAGENT_SQLITE_DB);
     try {
       if (process.env.REVAGENT_SQLITE_MODE === "seed") {
@@ -213,18 +359,16 @@ function runDatabaseChild(ownerPackageJson, databasePath, mode) {
     } finally { db.close(); }
   `;
   run(process.execPath, ["-e", code], {
-    env: {
-      REVAGENT_SQLITE_OWNER_PACKAGE_JSON: ownerPackageJson,
+    env: childNativeEnvironment(native, {
       REVAGENT_SQLITE_DB: databasePath,
       REVAGENT_SQLITE_MODE: mode,
-    },
+    }),
   });
 }
 
-function runConcurrentLeaseRound(ownerPackageJson, databasePath, round) {
+function runConcurrentLeaseRound(native, databasePath, round) {
   const code = String.raw`
-    const { createRequire } = require("node:module");
-    const Database = createRequire(process.env.REVAGENT_SQLITE_OWNER_PACKAGE_JSON)("better-sqlite3");
+    ${childNativeLoaderSource()}
     const db = new Database(process.env.REVAGENT_SQLITE_DB);
     let winner = false;
     try {
@@ -238,8 +382,7 @@ function runConcurrentLeaseRound(ownerPackageJson, databasePath, round) {
   return new Promise((resolvePromise, rejectPromise) => {
     const child = spawn(process.execPath, ["-e", code], {
       env: {
-        ...process.env,
-        REVAGENT_SQLITE_OWNER_PACKAGE_JSON: ownerPackageJson,
+        ...childNativeEnvironment(native),
         REVAGENT_SQLITE_DB: databasePath,
         REVAGENT_HOLDER: `round-${round}-${Math.random().toString(16).slice(2)}`,
         REVAGENT_EPOCH: String(round),
@@ -252,26 +395,26 @@ function runConcurrentLeaseRound(ownerPackageJson, databasePath, round) {
     child.stderr.on("data", (value) => { stderr += String(value); });
     child.once("error", (error) => rejectPromise(new Error(normalizeChildDiagnostic(
       `lease contender spawn failed (category=${classifyChildFailure(stderr, error)}; stdout=${stdout}; stderr=${stderr})`,
-      [ownerPackageJson, databasePath],
+      [native.ownerPackageJson, native.entry, databasePath],
     ))));
     child.once("exit", (codeValue, signal) => {
       if (codeValue === 0 && signal === null && (stdout === "winner" || stdout === "loser")) resolvePromise(stdout);
       else rejectPromise(new Error(normalizeChildDiagnostic(
         `lease contender failed (exit=${codeValue ?? "none"}; signal=${signal ?? "none"}; category=${classifyChildFailure(stderr)}; stdout=${stdout}; stderr=${stderr})`,
-        [ownerPackageJson, databasePath],
+        [native.ownerPackageJson, native.entry, databasePath],
       )));
     });
   });
 }
 
-async function runDatabaseCompatibility(currentOwnerPackageJson) {
+async function runDatabaseCompatibility(current) {
   const stateRoot = await mkdtemp(join(tmpdir(), "revagent-wp12-sqlite-state-"));
   cleanupRoots.push(stateRoot);
   const databasePath = join(stateRoot, "compat.db");
   const legacy = await createLegacySandbox();
-  runDatabaseChild(legacy.ownerPackageJson, databasePath, "seed");
+  runDatabaseChild(legacy.native, databasePath, "seed");
 
-  const Database = createRequire(currentOwnerPackageJson)("better-sqlite3");
+  const Database = createRequire(current.ownerPackageJson)("better-sqlite3");
   const db = new Database(databasePath);
   try {
     db.pragma("journal_mode = WAL", { simple: true });
@@ -292,27 +435,27 @@ async function runDatabaseCompatibility(currentOwnerPackageJson) {
   } finally {
     db.close();
   }
-  runDatabaseChild(legacy.ownerPackageJson, databasePath, "verify");
+  runDatabaseChild(legacy.native, databasePath, "verify");
   results.legacyReopen = true;
   results.walFullCas = true;
 
   for (let round = 0; round < 8; round += 1) {
-    const contenders = await Promise.all(Array.from({ length: 4 }, () => runConcurrentLeaseRound(currentOwnerPackageJson, databasePath, round)));
+    const contenders = await Promise.all(Array.from({ length: 4 }, () => runConcurrentLeaseRound(current, databasePath, round)));
     if (contenders.filter((value) => value === "winner").length !== 1) fail("BEGIN IMMEDIATE lease CAS admitted an invalid winner count");
     results.competingLeaseRounds += 1;
   }
 }
 
-async function runLifecycleStress(ownerPackageJson) {
-  const childCode = "const {createRequire}=require('node:module'); const D=createRequire(process.env.REVAGENT_SQLITE_OWNER_PACKAGE_JSON)('better-sqlite3'); const db=new D(':memory:'); db.prepare('SELECT 1').get(); db.close();";
+async function runLifecycleStress(native) {
+  const childCode = `${childNativeLoaderSource()} const db=new Database(':memory:'); db.prepare('SELECT 1').get(); db.close();`;
   for (let index = 0; index < 100; index += 1) {
-    run(process.execPath, ["-e", childCode], { env: { REVAGENT_SQLITE_OWNER_PACKAGE_JSON: ownerPackageJson } });
+    run(process.execPath, ["-e", childCode], { env: childNativeEnvironment(native) });
     results.childExits += 1;
   }
   const workerCode = String.raw`
     const { parentPort } = require("node:worker_threads");
-    const { createRequire } = require("node:module");
-    const D = createRequire(process.env.REVAGENT_SQLITE_OWNER_PACKAGE_JSON)("better-sqlite3"); const db = new D(":memory:");
+    ${childNativeLoaderSource()}
+    const db = new Database(":memory:");
     db.prepare("SELECT 1").get(); db.close(); parentPort.postMessage("ready"); setInterval(() => {}, 1000);
   `;
   const workerFileRoot = await mkdtemp(join(tmpdir(), "revagent-wp12-sqlite-workers-"));
@@ -322,7 +465,7 @@ async function runLifecycleStress(ownerPackageJson) {
   const { Worker } = await import("node:worker_threads");
   for (let batch = 0; batch < 10; batch += 1) {
     const workers = await Promise.all(Array.from({ length: 10 }, async () => {
-      const worker = new Worker(workerFile, { env: { ...process.env, REVAGENT_SQLITE_OWNER_PACKAGE_JSON: ownerPackageJson } });
+      const worker = new Worker(workerFile, { env: childNativeEnvironment(native) });
       await new Promise((resolvePromise, rejectPromise) => {
         worker.once("message", (value) => value === "ready" ? resolvePromise() : rejectPromise(new Error("worker readiness drift")));
         worker.once("error", rejectPromise);
@@ -332,7 +475,7 @@ async function runLifecycleStress(ownerPackageJson) {
     }));
     await Promise.all(workers);
   }
-  const Database = createRequire(ownerPackageJson)("better-sqlite3");
+  const Database = createRequire(native.ownerPackageJson)("better-sqlite3");
   for (let index = 0; index < 100; index += 1) {
     const db = new Database(":memory:");
     db.prepare("SELECT 1").get();
@@ -344,7 +487,10 @@ async function runLifecycleStress(ownerPackageJson) {
 async function main() {
   if (!Number.isInteger(results.nodeMajor) || results.nodeMajor < 22) fail("Node 22 or newer is required");
   assertDiagnosticRedaction();
+  assertNativeTrustSelfTests();
+  trustedNpm = await resolveTrustedNpmContext();
   const current = await validateProvenance();
+  verifyNativeLoad(current);
   const packageRoot = dirname(dirname(current.entry));
   const Database = createRequire(current.ownerPackageJson)("better-sqlite3");
   const smoke = new Database(":memory:");
@@ -357,13 +503,17 @@ async function main() {
     results.linuxSourceRebuild = true;
   }
   results.nativeSmoke = true;
-  await runDatabaseCompatibility(current.ownerPackageJson);
-  await runLifecycleStress(current.ownerPackageJson);
-  process.stdout.write(`${JSON.stringify(results)}\n`);
+  await runDatabaseCompatibility(current);
+  await runLifecycleStress(current);
 }
 
+let completed = false;
 try {
   await main();
+  completed = true;
 } finally {
-  await Promise.all(cleanupRoots.map((path) => rm(path, { recursive: true, force: true })));
+  await cleanupArtifacts();
+}
+if (completed) {
+  process.stdout.write(`${JSON.stringify(results)}\n`);
 }
