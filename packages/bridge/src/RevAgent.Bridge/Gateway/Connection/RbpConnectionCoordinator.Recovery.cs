@@ -78,12 +78,20 @@ internal sealed partial class RbpConnectionCoordinator
                         context.Token)
                     .ConfigureAwait(false);
                 if (!confirmed || !context.IsDispatchAllowed(started.Rsid)) return;
+                // Test-only crash seam.  Production composition leaves this
+                // null.  Once final confirmation succeeded, retain the claim
+                // until this cycle closes even if the seam aborts before any
+                // socket byte can be emitted.
+                retainClaim = true;
+                if (_beforeRecoveryCarrierWrite is { } beforeWrite)
+                {
+                    await beforeWrite(context.Token).ConfigureAwait(false);
+                }
 
                 // The only recovery-carrier socket write.  Do not route through
                 // QueueOutboundDataAsync, generic outbox/spool, or diagnostics.
                 await context.Cycle.SendAsync(envelope, context.Token)
                     .ConfigureAwait(false);
-                retainClaim = true;
             }
             finally
             {

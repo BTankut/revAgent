@@ -49,6 +49,7 @@ internal sealed partial class RbpConnectionCoordinator
     private readonly RbpArtifactCarrierProducer? _carrierProducer;
     private readonly RbpProtectedRecoveryCarrierMaterializer
         _recoveryCarrierMaterializer;
+    private readonly Func<CancellationToken, Task>? _beforeRecoveryCarrierWrite;
 
     /// <summary>
     /// Bounded, non-secret dispatch trace. The batch path has several silent
@@ -98,7 +99,8 @@ internal sealed partial class RbpConnectionCoordinator
         Func<RbpDocumentContextObservation, ValueTask>?
             onDocumentContextObservation = null,
         RbpProtectedRecoveryCarrierMaterializer?
-            recoveryCarrierMaterializer = null)
+            recoveryCarrierMaterializer = null,
+        Func<CancellationToken, Task>? beforeRecoveryCarrierWrite = null)
     {
         _batchCoordinator = batchCoordinator;
         _carrierProducer = carrierProducer;
@@ -113,6 +115,7 @@ internal sealed partial class RbpConnectionCoordinator
         _journal = journal ?? throw new ArgumentNullException(nameof(journal));
         _recoveryCarrierMaterializer = recoveryCarrierMaterializer ??
             new RbpProtectedRecoveryCarrierMaterializer(_journal);
+        _beforeRecoveryCarrierWrite = beforeRecoveryCarrierWrite;
         _catalog = catalog ?? throw new ArgumentNullException(nameof(catalog));
         _options = options ??
             throw new ArgumentNullException(nameof(options));

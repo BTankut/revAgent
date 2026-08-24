@@ -249,14 +249,14 @@ public sealed partial class RbpConnectionCoordinatorTests
     }
 
     [Fact]
-    public void C39C1cRequiresPostConfirmationPreSendCrashHook()
+    public void C39C1cExposesPostConfirmationPreSendCrashHook()
     {
-        // The only current fault seam is RecoverySendStarted, before recovery
-        // materialization/final confirmation. The C1c invariant needs a
-        // deterministic process-abort seam after ConfirmRecoveryCarrierMaterializationAsync
-        // succeeds and before the first low-level IRbpConnectionCycle.SendAsync.
-        Assert.Fail(
-            "MISSING HOOK: RbpConnectionCoordinator recovery post-confirmation/pre-SendAsync crash seam.");
+        Assert.Contains(typeof(RbpConnectionCoordinator).GetConstructors(
+            System.Reflection.BindingFlags.Instance |
+            System.Reflection.BindingFlags.NonPublic), constructor =>
+            constructor.GetParameters().Any(parameter =>
+                parameter.Name == "beforeRecoveryCarrierWrite" &&
+                parameter.ParameterType == typeof(Func<CancellationToken, Task>)));
     }
 
     private static RbpEnvelope HeartbeatAck(
