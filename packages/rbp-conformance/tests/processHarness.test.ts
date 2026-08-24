@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
-import { mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 
 import { ControlResponseError, StrictJsonlProcess, StrictReadyProcess } from "../src/processHarness.js";
@@ -11,6 +11,7 @@ import type { ProcessCommandDescriptor } from "../src/types.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const fixture = path.join(here, "fixtures", "jsonl-component.mjs");
+const readyIpcFixture = path.join(here, "fixtures", "ready-ipc-shutdown-child.mjs");
 
 function command(mode = "good"): ProcessCommandDescriptor {
   return {
@@ -23,7 +24,56 @@ function command(mode = "good"): ProcessCommandDescriptor {
   };
 }
 
+function readyIpcCommand(mode: string, marker?: string): ProcessCommandDescriptor {
+  return {
+    executable: process.execPath,
+    args: [readyIpcFixture, mode, ...(marker === undefined ? [] : [marker])],
+    workingDirectory: "packages/rbp-conformance",
+    environmentKeys: [],
+    readiness: { kind: "stdout_pattern", value: "ready", timeoutMs: 5_000 },
+    shutdown: { signal: "SIGTERM", timeoutMs: 5_000 },
+  };
+}
+
+async function startReadyIpc(mode: string, marker?: string): Promise<StrictReadyProcess> {
+  return await StrictReadyProcess.start({
+    componentId: "addin_loopback_fixture",
+    command: readyIpcCommand(mode, marker),
+    absoluteWorkingDirectory: here,
+    useTestSignalProxy: true,
+    validateReadiness(value) { expect(value).toMatchObject({ ready: true, component: "fixture-test" }); },
+  });
+}
+
 describe("strict JSONL process control", () => {
+  it("uses one opaque STOP generation, accepts only its exact ack, then parent-disconnects", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "wp12-ready-stop-"));
+    const marker = path.join(root, "child-stop.json");
+    const child = await startReadyIpc("wrong-then-right", marker);
+    const first = child.stop("SIGTERM", 2_000);
+    const second = child.stop("SIGTERM", 2_000);
+    expect(second).toBe(first);
+    await expect(first).resolves.toMatchObject({ exitCode: 0, killEscalated: false });
+    expect(JSON.parse(readFileSync(marker, "utf8"))).toEqual({ stopCount: 1 });
+  });
+
+  it("cleans the exact child tree when a STOP acknowledgement is absent", async () => {
+    const child = await startReadyIpc("missing-ack");
+    await expect(child.stop("SIGTERM", 50)).resolves.toMatchObject({
+      killEscalated: true,
+      exitCode: expect.any(Number),
+    });
+    expect(child.process.exitCode).not.toBeNull();
+  });
+
+  it("leaves no IPC-held child after parent disconnect", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "wp12-ready-disconnect-"));
+    const marker = path.join(root, "child-disconnect.json");
+    const child = await startReadyIpc("normal", marker);
+    await expect(child.stop()).resolves.toMatchObject({ exitCode: 0, killEscalated: false });
+    expect(existsSync(marker)).toBe(true);
+  });
+
   it("uses the canonical sanitized environment and rejects resolution overrides", async () => {
     const hostileEnvironment = {
       NODE_OPTIONS: "--no-warnings",

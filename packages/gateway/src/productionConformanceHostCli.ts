@@ -331,10 +331,11 @@ export async function runProductionConformanceHostCli(args: readonly string[]): 
     return storeClose;
   };
   const releaseIpc = (): void => {
-    // An IPC channel is supplied only by the Windows supervision harness. It
-    // keeps Node's event loop alive after an otherwise clean app close unless
-    // it is explicitly released. Do not release it before SQLite has settled.
-    if (process.connected) process.disconnect();
+    // The parent owns its end of the supervision IPC channel. A child must
+    // never close that endpoint itself: doing so races Node's native teardown
+    // with the last SQLite handles.  This no-op keeps the ordered shutdown
+    // primitive usable for non-IPC callers while the parent's exact STOP ack
+    // controls IPC release.
   };
   // The carrier and the host ports must use one exact durable pair.  This is
   // deliberately composed before ingress so carrier capability grants cannot
@@ -612,15 +613,55 @@ export async function runProductionConformanceHostCli(args: readonly string[]): 
       closeStore: closeProtocolStore,
       releaseIpc,
     });
-    const stopped = new Promise<void>((resolve, reject) => {
-      const stop = (): void => { void close().then(resolve, reject); };
-      process.once("SIGTERM", stop);
-      process.once("SIGINT", stop);
-      if (process.send !== undefined) process.on("message", (message: unknown) => {
-        const action = (message as { action?: unknown })?.action;
-        if (action === "STOP" || action === "emit_test_signal") stop();
+    type ShutdownAckStatus = "closed" | "failed";
+    let terminal: Promise<void> | null = null;
+    let terminalStatus: ShutdownAckStatus = "closed";
+    const runTerminal = (): Promise<void> => {
+      if (terminal !== null) return terminal;
+      terminal = close().then(
+        () => { process.exitCode = 0; },
+        (error: unknown) => {
+          terminalStatus = "failed";
+          process.exitCode = 70;
+          process.stderr.write(`production-conformance-host shutdown failed: ${error instanceof Error ? error.message : String(error)}\n`);
+        },
+      );
+      return terminal;
+    };
+    const isStopMessage = (message: unknown): message is { readonly action: "STOP"; readonly nonce: string } => {
+      if (message === null || typeof message !== "object" || Array.isArray(message)) return false;
+      const candidate = message as { readonly action?: unknown; readonly nonce?: unknown };
+      // Opaque UUIDs are issued by the parent. Requiring the canonical shape
+      // makes stale/malformed controls inert before shutdown state changes.
+      return candidate.action === "STOP" && typeof candidate.nonce === "string" &&
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(candidate.nonce);
+    };
+    let resolveStopped: (() => void) | null = null;
+    const stopped = new Promise<void>((resolve) => { resolveStopped = resolve; });
+    const finishWithoutAck = (): void => {
+      void runTerminal().finally(() => { resolveStopped?.(); });
+    };
+    process.once("SIGTERM", finishWithoutAck);
+    process.once("SIGINT", finishWithoutAck);
+    if (process.send !== undefined) {
+      process.on("disconnect", finishWithoutAck);
+      process.on("message", (message: unknown) => {
+        if (isStopMessage(message)) {
+          void runTerminal().then(() => {
+            // This acknowledgement is deliberately narrow: it contains only
+            // the parent nonce and a fixed status enum, never route/store data.
+            if (process.connected && process.send !== undefined) {
+              process.send({ action: "shutdown_complete", nonce: message.nonce, status: terminalStatus });
+            }
+            resolveStopped?.();
+          });
+          return;
+        }
+        // Test-only signal injection follows the signal path: it is silent and
+        // does not create a STOP acknowledgement authority.
+        if ((message as { readonly action?: unknown } | null)?.action === "emit_test_signal") finishWithoutAck();
       });
-    });
+    }
     // Register STOP before publishing READY: a parent which stops immediately
     // after the ready line must still observe a normal close rather than a
     // signal-terminated child.

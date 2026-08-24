@@ -1,5 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { appendFileSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { TextDecoder } from "node:util";
@@ -672,6 +672,8 @@ export class StrictReadyProcess {
   readonly process: ProcessEvidence;
   readonly pid: number;
   #exit: Promise<{ code: number; at: string }>;
+  #stopPromise: Promise<{ stoppedAt: string; exitCode: number; killEscalated: boolean }> | null = null;
+  #pendingStop: { readonly nonce: string; readonly settle: (status: "closed" | "failed") => void } | null = null;
 
   private constructor(
     readonly componentId: ComponentId,
@@ -696,6 +698,18 @@ export class StrictReadyProcess {
         this.process.exitCode = normalized;
         resolve({ code: normalized, at });
       });
+    });
+    child.on("message", (message: unknown) => {
+      const pending = this.#pendingStop;
+      if (pending === null || message === null || typeof message !== "object" || Array.isArray(message)) return;
+      const candidate = message as { readonly action?: unknown; readonly nonce?: unknown; readonly status?: unknown };
+      // Only an acknowledgement for the currently pending opaque generation
+      // has authority to release the parent end of IPC. Old, forged, or noisy
+      // child messages are intentionally ignored.
+      if (candidate.action !== "shutdown_complete" || candidate.nonce !== pending.nonce ||
+          (candidate.status !== "closed" && candidate.status !== "failed") ||
+          Object.keys(candidate).length !== 3) return;
+      pending.settle(candidate.status);
     });
   }
 
@@ -808,35 +822,109 @@ export class StrictReadyProcess {
     );
   }
 
-  async stop(
-    signal: NodeJS.Signals = "SIGTERM",
+  stop(
+    _signal: NodeJS.Signals = "SIGTERM",
     timeoutMs = 10_000,
   ): Promise<{ stoppedAt: string; exitCode: number; killEscalated: boolean }> {
-    let killEscalated = false;
-    if (this.process.exitCode === null) {
-      let signalled = false;
-      if (
-        process.platform === "win32" &&
-        this.useTestSignalProxy &&
-        this.child.connected &&
-        this.child.send !== undefined
-      ) {
-        try {
-          signalled = this.child.send({ action: "emit_test_signal", signal });
-        } catch {
-          signalled = false;
-        }
-      }
-      if (!signalled) this.child.kill(signal);
-    }
-    const timer = setTimeout(() => {
-      killEscalated = true;
-      this.child.kill("SIGKILL");
-    }, timeoutMs);
-    const exit = await this.#exit;
-    clearTimeout(timer);
-    return { stoppedAt: exit.at, exitCode: exit.code, killEscalated };
+    if (this.#stopPromise !== null) return this.#stopPromise;
+    this.#stopPromise = this.#stopWithHandshake(timeoutMs);
+    return this.#stopPromise;
   }
+
+  async #stopWithHandshake(timeoutMs: number): Promise<{ stoppedAt: string; exitCode: number; killEscalated: boolean }> {
+    if (this.process.exitCode !== null) {
+      return { stoppedAt: this.process.stoppedAt ?? new Date().toISOString(), exitCode: this.process.exitCode, killEscalated: false };
+    }
+    const boundedTimeout = Math.max(1, timeoutMs);
+    let killEscalated = false;
+    const killTree = async (): Promise<void> => {
+      killEscalated = true;
+      await terminateExactChildTree(this.child);
+    };
+    try {
+      if (!this.useTestSignalProxy || !this.child.connected || this.child.send === undefined) {
+        await killTree();
+      } else {
+        const nonce = randomUUID();
+        const acknowledged = await new Promise<"closed" | "failed">((resolve, reject) => {
+          const timer = setTimeout(() => reject(new Error(`${this.componentId} STOP acknowledgement timed out`)), boundedTimeout);
+          this.#pendingStop = {
+            nonce,
+            settle: (status) => {
+              clearTimeout(timer);
+              this.#pendingStop = null;
+              resolve(status);
+            },
+          };
+          try {
+            const accepted = this.child.send({ action: "STOP", nonce }, (error) => {
+              if (error == null || this.#pendingStop === null) return;
+              clearTimeout(timer);
+              this.#pendingStop = null;
+              reject(error);
+            });
+            if (!accepted) throw new Error(`${this.componentId} STOP IPC was not accepted`);
+          } catch (error) {
+            clearTimeout(timer);
+            this.#pendingStop = null;
+            reject(error instanceof Error ? error : new Error(String(error)));
+          }
+        });
+        if (acknowledged !== "closed") throw new Error(`${this.componentId} STOP reported failed shutdown`);
+        // Only the parent releases IPC, after it has matched the exact ack.
+        if (this.child.connected) this.child.disconnect();
+      }
+      const exit = await awaitExitWithin(this.#exit, boundedTimeout);
+      if (exit === null) {
+        await killTree();
+        const forcedExit = await this.#exit;
+        return { stoppedAt: forcedExit.at, exitCode: forcedExit.code, killEscalated };
+      }
+      return { stoppedAt: exit.at, exitCode: exit.code, killEscalated };
+    } catch {
+      this.#pendingStop = null;
+      if (this.process.exitCode === null) await killTree();
+      const exit = await this.#exit;
+      return { stoppedAt: exit.at, exitCode: exit.code, killEscalated };
+    }
+  }
+}
+
+async function awaitExitWithin(
+  exit: Promise<{ code: number; at: string }>,
+  timeoutMs: number,
+): Promise<{ code: number; at: string } | null> {
+  return await Promise.race([
+    exit,
+    new Promise<null>((resolve) => setTimeout(() => resolve(null), timeoutMs)),
+  ]);
+}
+
+/** Terminate only the supervised child (and, on Windows, only its exact tree). */
+async function terminateExactChildTree(child: ChildProcessWithoutNullStreams): Promise<void> {
+  const pid = child.pid;
+  if (pid === undefined || child.exitCode !== null) return;
+  if (process.platform !== "win32") {
+    try { child.kill("SIGKILL"); } catch { /* already exited */ }
+    return;
+  }
+  const systemRoot = process.env.SystemRoot ?? process.env.WINDIR;
+  if (systemRoot === undefined) {
+    try { child.kill("SIGKILL"); } catch { /* already exited */ }
+    return;
+  }
+  const taskkill = spawn(path.join(systemRoot, "System32", "taskkill.exe"), ["/pid", String(pid), "/T", "/F"], {
+    shell: false,
+    stdio: "ignore",
+    windowsHide: true,
+  });
+  await new Promise<void>((resolve) => {
+    taskkill.once("error", () => {
+      try { child.kill("SIGKILL"); } catch { /* already exited */ }
+      resolve();
+    });
+    taskkill.once("close", () => resolve());
+  });
 }
 
 export async function strictHttpControl(
