@@ -624,14 +624,25 @@ async function waitForC39Recovery(
       // evidence can be durable before its matching heartbeat acknowledgement
       // reaches the strict fence; retry that same fence under this deadline.
       await runtime.verifyNorthDispatchFence();
-      const result = await client.recoverOmittedPayload({
-        carrier,
-        advertisedTool: { name: carrier.recovery_tool, version: carrier.recovery_tool_version },
-        requestId: `wp12-c39-recovery-${binding}`,
-      });
-      if (result.content.state === "completed") return result;
-    } catch { /* D2 fence or C2 admission is not coherent yet. */ }
+      break;
+    } catch { /* D2 fence is not coherent yet. */ }
     if (Date.now() >= deadline) throw new Error("real C39 public recovery did not complete");
+    await new Promise<void>((resolve) => setTimeout(resolve, 200));
+  }
+  const recovery = client.recoverOmittedPayload({
+    carrier,
+    advertisedTool: { name: carrier.recovery_tool, version: carrier.recovery_tool_version },
+    requestId: `wp12-c39-recovery-${binding}`,
+  });
+  for (;;) {
+    const audit = object(await runtime.supervisor.readRealCaseAudit());
+    const worker = await runtime.supervisor.readRecoveryCarrierObservations();
+    if (object(audit?.c39Recovery)?.status === "joined" && worker.length > 0) {
+      const result = await recovery;
+      if (result.content.state === "completed") return result;
+      throw new Error("real C39 one-shot recovery did not complete");
+    }
+    if (Date.now() >= deadline) throw new Error("real C39 recovery evidence did not become coherent");
     await new Promise<void>((resolve) => setTimeout(resolve, 200));
   }
 }
