@@ -134,9 +134,7 @@ describe.sequential("WP-12 direct real trio runtime fixture", () => {
             },
             requestId: `wp12-c39-origin-${binding}`,
           });
-          const initialProvenance = readC39OriginProvenance(await runtime.supervisor.fixtureControl("read_c39_origin_provenance"));
-          expect(initialProvenance.count).toBe(1);
-          expect(initialProvenance.ready).toBe(true);
+          const initialProvenance = await waitForC39OriginProvenance(runtime, 45_000);
           let originSettledBeforeRouteEdge = false;
           void originPromise.then(
             () => { originSettledBeforeRouteEdge = true; },
@@ -540,6 +538,22 @@ function assertC39OriginProvenance(
   if (provenance.count !== expectedCount || provenance.ready !== (expectedCount === 1) ||
       provenance.latestDigest !== expectedDigest || provenance.domainHash !== expectedDomainHash) {
     throw new Error("C39 fixture origin provenance did not match the strict public coordinate carrier");
+  }
+}
+
+async function waitForC39OriginProvenance(
+  runtime: Awaited<ReturnType<typeof startRealTrioRuntimeFixture>>,
+  timeoutMs: number,
+): Promise<C39FixtureProvenance> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const provenance = readC39OriginProvenance(
+      await runtime.supervisor.fixtureControl("read_c39_origin_provenance"),
+    );
+    if (provenance.count === 1 && provenance.ready && provenance.latestDigest !== null) return provenance;
+    if (provenance.count > 1) throw new Error("C39 fixture origin provenance exceeded one execution before route edge");
+    if (Date.now() >= deadline) throw new Error("C39 fixture origin provenance did not reach one execution before route edge");
+    await new Promise<void>((resolve) => setTimeout(resolve, 100));
   }
 }
 
