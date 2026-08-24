@@ -276,6 +276,12 @@ function auditInvocationEvent(): GatewayEventEnvelope {
 }
 
 describe("M4 pre-production serving composition", () => {
+  it("does not register C39 from a key-file setting without a durable inventory", async () => {
+    await expect(preparePreProductionServing({
+      ...options(),
+      environment: { ...options().environment, C39_PROTECTED_OBJECT_KEY_FILE: "/run/revagent/c39-key.json" },
+    })).rejects.toMatchObject({ reason: "c39_protected_object_unavailable" });
+  });
   it("loads one credential and builds one inspectable identity/store/Bridge/north graph", async () => {
     const fixture = dependencies();
     const prepared = await preparePreProductionServing(

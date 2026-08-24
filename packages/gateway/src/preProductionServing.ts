@@ -46,7 +46,8 @@ export type PreProductionServingErrorReason =
   | "invalid_gateway_configuration"
   | "invalid_registry_seed"
   | "runtime_adapter_unavailable"
-  | "enrollment_issue_refused";
+  | "enrollment_issue_refused"
+  | "c39_protected_object_unavailable";
 
 export class PreProductionServingError extends Error {
   readonly code = "preproduction_serving_refused" as const;
@@ -184,6 +185,11 @@ export async function preparePreProductionServing(
   const loadedConfig = loadGatewayConfig(options.environment);
   if (!loadedConfig.ok || loadedConfig.value.nodeEnv !== "preproduction") {
     refused("invalid_gateway_configuration");
+  }
+  if (loadedConfig.value.objectStore.protectedObjectKeyFile != null) {
+    // The serving simulator owns no durable C39 receipt inventory and cannot
+    // turn a key path into a fixture/provider selection.
+    refused("c39_protected_object_unavailable");
   }
 
   let credential: PreProductionCredentialMaterial;

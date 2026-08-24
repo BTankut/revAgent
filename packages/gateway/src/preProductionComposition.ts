@@ -40,7 +40,8 @@ export type PreProductionCompositionErrorCode =
   | "production_mode_refused"
   | "unavailable_protocol_store"
   | "startup_coordinator_unavailable"
-  | "invalid_north_authority";
+  | "invalid_north_authority"
+  | "c39_protected_object_unavailable";
 
 export class PreProductionCompositionError extends Error {
   public constructor(
@@ -265,6 +266,16 @@ export function createPreProductionLanTestComposition(
     fail(
       "production_mode_refused",
       "the LAN/test pre-production composition is unavailable in production",
+    );
+  }
+  // This LAN/test graph has no durable receipt inventory.  It must never
+  // register C39 merely because a key-file path was supplied; the production
+  // composition added by C2b must provide both durable inventory and a passed
+  // startup self-test before it can wire the protected-object port.
+  if (config.objectStore.protectedObjectKeyFile != null) {
+    fail(
+      "c39_protected_object_unavailable",
+      "C39 protected objects require a durable inventory and startup self-test",
     );
   }
   if (options.protocolStore.kind === "unavailable") {

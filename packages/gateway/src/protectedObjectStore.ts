@@ -9,6 +9,7 @@ const VERSION = 1;
 const NONCE_BYTES = 12;
 const TAG_BYTES = 16;
 const MAX_ENVELOPE_BYTES = 32 * 1024 * 1024;
+export const C39_MAX_PLAINTEXT_BYTES = 32 * 1024 * 1024;
 const DIGEST = /^sha256:[0-9a-f]{64}$/u;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const TOKEN = /^[A-Za-z0-9._:-]{1,256}$/u;
@@ -60,9 +61,11 @@ export class EncryptedProtectedObjectStore implements ProtectedObjectStorePort {
   readonly kind: "fs" | "conformance" | "unavailable";
   readonly #inner: ObjectStorePort;
   readonly #keys: ProtectedObjectKeyProvider;
-  public constructor(inner: ObjectStorePort, keys: ProtectedObjectKeyProvider) {
+  readonly #randomBytes: (size: number) => Buffer;
+  public constructor(inner: ObjectStorePort, keys: ProtectedObjectKeyProvider, crypto: { readonly randomBytes?: (size: number) => Buffer } = {}) {
     this.#inner = inner;
     this.#keys = keys;
+    this.#randomBytes = crypto.randomBytes ?? randomBytes;
     this.kind = this.#keys.kind;
   }
   get readiness(): { readonly ready: boolean; readonly reason: ProtectedObjectKeyReadiness } {
@@ -70,22 +73,25 @@ export class EncryptedProtectedObjectStore implements ProtectedObjectStorePort {
     // verified.  Call `checkReadiness` during composition/startup.
     return Object.freeze({ ready: false, reason: "key_unavailable" as const });
   }
-  async checkReadiness(liveKids: ReadonlySet<string> = new Set()): Promise<{ readonly ready: boolean; readonly reason: ProtectedObjectKeyReadiness }> {
+  async checkReadiness(): Promise<{ readonly ready: boolean; readonly reason: ProtectedObjectKeyReadiness }> {
     const reason = await this.#keys.readiness();
-    return Object.freeze({ ready: reason === "ready" && await this.#keys.selfTest(liveKids), reason: reason === "ready" ? "ready" : reason });
+    return Object.freeze({ ready: reason === "ready" && await this.#keys.selfTest(), reason: reason === "ready" ? "ready" : reason });
   }
   async putProtected(input: { readonly storageKey: string; readonly contentType: string; readonly bytes: Uint8Array; readonly binding: ProtectedObjectBinding }): Promise<GatewayPortResult<{ readonly storageKey: string }>> {
     let plain: Buffer | null = null; let key: Uint8Array | null = null; let aadBytes: Buffer | null = null; let nonce: Buffer | null = null; let ciphertext: Buffer | null = null; let tag: Buffer | null = null; let envelope: Buffer | null = null;
     try {
-      if (input.contentType.length === 0 || input.contentType.length > 256 || input.bytes.byteLength !== input.binding.plainLength || digest(input.bytes) !== input.binding.plainDigest) return refuse();
+      // Size and claimed AAD length are checked before hashing/copying or any
+      // crypto allocation.  The object store is never reached for oversize input.
+      if (input.bytes.byteLength > C39_MAX_PLAINTEXT_BYTES || input.contentType.length === 0 || input.contentType.length > 256 || input.bytes.byteLength !== input.binding.plainLength) return refuse();
       aadBytes = aad(input.storageKey, input.binding);
       if (aadBytes === null) return refuse();
+      if (digest(input.bytes) !== input.binding.plainDigest) return refuse();
       const snapshot = await this.#keys.snapshot();
       if (snapshot === null) return refuse();
       key = snapshot.keyFor(snapshot.activeKid);
       if (key === null) return refuse();
       plain = Buffer.from(input.bytes);
-      nonce = randomBytes(NONCE_BYTES);
+      nonce = this.#randomBytes(NONCE_BYTES);
       const cipher = createCipheriv("aes-256-gcm", key, nonce, { authTagLength: TAG_BYTES });
       cipher.setAAD(aadBytes, { plaintextLength: plain.byteLength });
       ciphertext = Buffer.concat([cipher.update(plain), cipher.final()]);
@@ -106,7 +112,7 @@ export class EncryptedProtectedObjectStore implements ProtectedObjectStorePort {
       if (!stored.ok || stored.value.contentType !== C39_PROTECTED_OBJECT_CONTENT_TYPE) return refuse();
       decoded = decode(stored.value.bytes);
       if (decoded === null) return refuse();
-      const snapshot = await this.#keys.snapshot(new Set([decoded.kid]));
+      const snapshot = await this.#keys.snapshot();
       key = snapshot?.keyFor(decoded.kid) ?? null;
       if (key === null) return refuse();
       const decipher = createDecipheriv("aes-256-gcm", key, decoded.nonce, { authTagLength: TAG_BYTES });

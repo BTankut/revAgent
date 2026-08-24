@@ -122,6 +122,18 @@ function request(authorization: string): IncomingMessage {
 }
 
 describe("M4-02 pre-production LAN/test composition", () => {
+  it("refuses C39 key configuration because this graph has no durable key inventory", () => {
+    const configured = loadGatewayConfig({
+      NODE_ENV: "test",
+      LOG_LEVEL: "fatal",
+      GATEWAY_BIND_HOST: "127.0.0.1",
+      GATEWAY_PUBLIC_URL: "https://gateway.lan.test",
+      C39_PROTECTED_OBJECT_KEY_FILE: "/run/revagent/c39-key.json",
+    });
+    expect(() => createPreProductionLanTestComposition(options({ config: configured }))).toThrowError(
+      expect.objectContaining({ code: "c39_protected_object_unavailable" }) as PreProductionCompositionError,
+    );
+  });
   it("refuses invalid or production Gateway configuration before store/ingress side effects", () => {
     expect(() =>
       createPreProductionLanTestComposition(
