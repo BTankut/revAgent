@@ -817,9 +817,13 @@ internal sealed partial class RbpJournalStore : IAsyncDisposable
                 ("tombstoned_at_ms", "INTEGER"), ("reason_code", "TEXT"),
                 ("sequence_high_water", "INTEGER") });
         RequireIndex(connection, "rbp_recovery_carrier_reservations",
-            "ux_rbp_recovery_carrier_one_fence", unique: true, partial: true);
+            "ux_rbp_recovery_carrier_one_fence", unique: true, partial: true,
+            new[] { "rsid" },
+            "CREATE UNIQUE INDEX ux_rbp_recovery_carrier_one_fence ON rbp_recovery_carrier_reservations(rsid) WHERE phase IN ('reserved','send_started','awaiting_ack','tombstoned')");
         RequireIndex(connection, "rbp_recovery_carrier_reservations",
-            "ix_rbp_recovery_carrier_recovery", unique: false, partial: false);
+            "ix_rbp_recovery_carrier_recovery", unique: false, partial: false,
+            new[] { "recovery_invocation_id", "phase" },
+            "CREATE INDEX ix_rbp_recovery_carrier_recovery ON rbp_recovery_carrier_reservations(recovery_invocation_id,phase)");
         RequireForeignKey(connection, "rbp_recovery_carrier_reservations", "rsid", "rbp_sessions");
         RequireForeignKey(connection, "rbp_recovery_sequence_tombstones", "rsid", "rbp_sessions");
     }
@@ -837,18 +841,51 @@ internal sealed partial class RbpJournalStore : IAsyncDisposable
     }
 
     private static void RequireIndex(SqliteConnection connection, string table,
-        string expectedName, bool unique, bool partial)
+        string expectedName, bool unique, bool partial,
+        IReadOnlyList<string> expectedColumns, string expectedSql)
     {
+        bool found = false;
         using SqliteCommand command = CreateCommand(connection, "PRAGMA index_list(" + table + ");");
         using SqliteDataReader reader = command.ExecuteReader();
         while (reader.Read())
         {
             if (string.Equals(reader.GetString(1), expectedName, StringComparison.Ordinal) &&
-                reader.GetInt32(2) == (unique ? 1 : 0) && reader.GetInt32(4) == (partial ? 1 : 0)) return;
+                reader.GetInt32(2) == (unique ? 1 : 0) && reader.GetInt32(4) == (partial ? 1 : 0))
+            {
+                found = true;
+                break;
+            }
         }
-        throw new RbpJournalException(RbpJournalErrorCode.MigrationMismatch,
-            "The C39 recovery schema index is invalid.");
+        if (!found) throw InvalidRecoveryIndex();
+
+        using (SqliteCommand keys = CreateCommand(connection, "PRAGMA index_xinfo(" + expectedName + ");"))
+        using (SqliteDataReader keyRows = keys.ExecuteReader())
+        {
+            var actual = new List<(int Sequence, string Name, int Descending, string Collation)>();
+            while (keyRows.Read() && !keyRows.IsDBNull(2))
+            {
+                if (keyRows.GetInt32(5) == 1)
+                    actual.Add((keyRows.GetInt32(0), keyRows.GetString(2), keyRows.GetInt32(3), keyRows.GetString(4)));
+            }
+            if (actual.Count != expectedColumns.Count || actual.OrderBy(value => value.Sequence)
+                    .Select(value => value.Name).SequenceEqual(expectedColumns) == false ||
+                actual.Any(value => value.Descending != 0 || !string.Equals(value.Collation, "BINARY", StringComparison.Ordinal)))
+                throw InvalidRecoveryIndex();
+        }
+        using SqliteCommand sql = CreateCommand(connection,
+            "SELECT sql FROM sqlite_master WHERE type='index' AND name=$name;");
+        sql.Parameters.AddWithValue("$name", expectedName);
+        if (sql.ExecuteScalar() is not string actualSql ||
+            !string.Equals(NormalizeSchemaSql(actualSql), NormalizeSchemaSql(expectedSql), StringComparison.Ordinal))
+            throw InvalidRecoveryIndex();
     }
+
+    private static RbpJournalException InvalidRecoveryIndex() => new(
+        RbpJournalErrorCode.MigrationMismatch,
+        "The C39 recovery schema index is invalid.");
+
+    private static string NormalizeSchemaSql(string sql) => string.Concat(
+        sql.Where(character => !char.IsWhiteSpace(character))).ToLowerInvariant();
 
     private static void RequireForeignKey(SqliteConnection connection, string table,
         string from, string target)
