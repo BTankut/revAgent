@@ -26,6 +26,28 @@ namespace RevAgent.Bridge.Tests.Gateway.Storage;
 [Collection(RbpJournalPowerCutCollection.Name)]
 public sealed class RbpJournalPowerCutTests
 {
+    /// <summary>
+    /// C39 has seven distinct durability boundaries.  The generic transaction
+    /// hooks are not enough evidence: a kill test must be able to arm every
+    /// irreversible boundary separately, then reopen through the production
+    /// store and establish an old-or-new (never partial/unblocked/raw-leak)
+    /// result.  Keep these names as the harness contract so a future refactor
+    /// cannot silently collapse the required injection points.
+    /// </summary>
+    [Theory]
+    [InlineData("RecoveryValidatedRaw")]
+    [InlineData("RecoveryPlanInserted")]
+    [InlineData("RecoverySequenceReserved")]
+    [InlineData("RecoverySendStarted")]
+    [InlineData("RecoveryEqualAcknowledgement")]
+    [InlineData("RecoveryTombstoneRawDeleted")]
+    [InlineData("RecoveryMinimalTombstonePersisted")]
+    [InlineData("RecoveryDetailedAuditPruned")]
+    public void C39CarrierPowerCutBoundariesRemainIndividuallyAddressable(string expectedFaultPoint)
+    {
+        Assert.Contains(expectedFaultPoint, Enum.GetNames<RbpJournalFaultPoint>());
+    }
+
     private static readonly TimeSpan RecoveryOpenTimeout =
         TimeSpan.FromSeconds(5);
 
