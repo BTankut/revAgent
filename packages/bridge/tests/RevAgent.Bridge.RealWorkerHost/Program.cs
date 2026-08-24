@@ -110,14 +110,26 @@ internal static class Program
                 {
                     IReadOnlyList<string> rsids = runtime.Coordinator
                         .GetSnapshot().ActiveRsids;
-                    if (rsids.Count != 1 || !runtime.Coordinator
-                            .RequestImmediateDocumentContextPoll(rsids[0]))
+                    Task<RbpImmediatePollOutcome>? poll = rsids.Count == 1
+                        ? runtime.Coordinator.RequestImmediateDocumentContextPollAsync(rsids[0])
+                        : null;
+                    if (poll is null)
                         throw new InvalidOperationException(
                             "current attested D2 document-context watch is unavailable");
+                    RbpImmediatePollOutcome outcome = await poll.WaitAsync(
+                        TimeSpan.FromSeconds(10)).ConfigureAwait(false);
+                    string state = outcome switch
+                    {
+                        RbpImmediatePollOutcome.Emitted => "emitted",
+                        RbpImmediatePollOutcome.NoSend => "no_send",
+                        RbpImmediatePollOutcome.Cancelled => "cancelled",
+                        RbpImmediatePollOutcome.Fault => "fault",
+                        _ => throw new InvalidOperationException("invalid immediate poll outcome"),
+                    };
                     await Console.Out.WriteLineAsync(JsonSerializer.Serialize(new
                     {
                         controlVersion = 1, id = id.GetString(), ok = true,
-                        result = new { queued = true },
+                        result = new { state },
                     })).ConfigureAwait(false);
                     continue;
                 }

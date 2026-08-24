@@ -92,7 +92,7 @@ export interface RealTrioSupervisorResult {
   readonly readRealCaseAuditOutcome: () => Promise<RealTrioAuditControlOutcome>;
   /** Fixed C39 worker IPC projection; no raw transcript or generic control. */
   readonly readRecoveryCarrierObservations: () => Promise<readonly RealTrioRecoveryCarrierObservation[]>;
-  readonly pollDocumentContext: () => Promise<void>;
+  readonly pollDocumentContext: () => Promise<"emitted" | "no_send" | "cancelled" | "fault">;
   /** Fixed C39 reconnect readiness projection; no raw worker control/transcript. */
   readonly readReconnectWatchObservations: () => Promise<readonly RealTrioReconnectWatchObservation[]>;
   /** Value-free C# document-context lifecycle observations only. */
@@ -1292,11 +1292,14 @@ export async function startRealTrioSupervisor(input: RealTrioSupervisorLaunch): 
         };
         const readRecoveryCarrierObservations = async (): Promise<readonly RealTrioRecoveryCarrierObservation[]> =>
           recoveryCarrierObservations(await bridge.request("read_recovery_observations"));
-        const pollDocumentContext = async (): Promise<void> => {
+        const pollDocumentContext = async (): Promise<"emitted" | "no_send" | "cancelled" | "fault"> => {
           const result = await bridge.request("poll_document_context");
-          if (!isObject(result) || result.queued !== true || Object.keys(result).length !== 1) {
+          if (!isObject(result) || typeof result.state !== "string" ||
+              !["emitted", "no_send", "cancelled", "fault"].includes(result.state) ||
+              Object.keys(result).length !== 1) {
             throw new Error("real worker document-context poll control is invalid");
           }
+          return result.state as "emitted" | "no_send" | "cancelled" | "fault";
         };
         const readReconnectWatchObservations = async (): Promise<readonly RealTrioReconnectWatchObservation[]> =>
           reconnectWatchObservations(await bridge.request("read_recovery_observations"));
