@@ -384,7 +384,7 @@ export function createConformanceRbpIngressHost(
 class HttpSseChannel implements BridgeConnectionChannel {
   readonly #pending: Array<{
     readonly serialized: string;
-    readonly revalidate: (() => void) | null;
+    readonly revalidate: (() => Promise<void>) | null;
     readonly resolveStarted: (() => void) | null;
     readonly rejectStarted: ((error: Error) => void) | null;
     readonly resolveCompletion: (() => void) | null;
@@ -443,19 +443,31 @@ class HttpSseChannel implements BridgeConnectionChannel {
     if (response.destroyed || response.writableEnded) {
       this.#fail(new Error("SSE stream is closed"));
     }
+    const attachedPending = this.#pending.splice(0);
     try {
-      for (const pending of this.#pending.splice(0)) {
+      for (let index = 0; index < attachedPending.length; index += 1) {
+        const pending = attachedPending[index]!;
+        this.#pendingBytes -= Buffer.byteLength(pending.serialized);
         try {
           if (pending.cancelled()) throw new Error("SSE dispatch queue cancelled before invocation");
           // Queue entries retain only an opaque closure, never proof bytes.
-          pending.revalidate?.();
+          if (pending.revalidate !== null) await pending.revalidate();
+          if (pending.cancelled()) throw new Error("SSE dispatch queue cancelled before invocation");
+          // #writeFrame crosses response.write synchronously before returning
+          // its completion promise, so resolve started only after the actual
+          // transport invocation has occurred.
+          const write = this.#writeFrame(response, pending.serialized);
           pending.resolveStarted?.();
-          await this.#writeFrame(response, pending.serialized);
+          await write;
           pending.resolveCompletion?.();
         } catch (error) {
           const failure = error instanceof Error ? error : new Error(String(error));
           pending.rejectStarted?.(failure);
           pending.rejectCompletion?.(failure);
+          for (const remainder of attachedPending.slice(index + 1)) {
+            remainder.rejectStarted?.(failure);
+            remainder.rejectCompletion?.(failure);
+          }
           throw failure;
         }
       }
@@ -487,7 +499,7 @@ class HttpSseChannel implements BridgeConnectionChannel {
 
   public sendDispatchStarted(
     serialized: string,
-    revalidate: () => void,
+    revalidate: () => Promise<void>,
   ): { readonly started: Promise<void>; readonly completion: Promise<void>; cancel(): boolean } {
     let resolveStarted!: () => void;
     let rejectStarted!: (error: Error) => void;
@@ -502,7 +514,15 @@ class HttpSseChannel implements BridgeConnectionChannel {
     void completion.catch(() => undefined);
     let startedAtInvocation = false;
     let cancelled = false;
-    let queued: (typeof this.#pending)[number] | null = null;
+    let queued: {
+      readonly serialized: string;
+      readonly revalidate: (() => Promise<void>) | null;
+      readonly resolveStarted: (() => void) | null;
+      readonly rejectStarted: ((error: Error) => void) | null;
+      readonly resolveCompletion: (() => void) | null;
+      readonly rejectCompletion: ((error: Error) => void) | null;
+      readonly cancelled: () => boolean;
+    } | null = null;
     try {
       if (this.#closed) throw new Error("SSE stream is closed");
       const response = this.#response;
@@ -515,38 +535,48 @@ class HttpSseChannel implements BridgeConnectionChannel {
         this.#observe("queued");
       } else {
         if (response.destroyed || response.writableEnded) throw new Error("SSE stream is closed");
-        // #writeFrame invokes response.write synchronously before it returns.
-        revalidate();
-        const write = this.#writeFrame(response, serialized);
-        startedAtInvocation = true;
-        resolveStarted();
-        void write.then(resolveCompletion, rejectCompletion);
+        void (async () => {
+          try {
+            await revalidate();
+            if (cancelled) throw new Error("SSE dispatch queue cancelled before invocation");
+            // #writeFrame invokes response.write synchronously before it
+            // returns.  Keep this directly after the authoritative async
+            // revalidation: no intervening await may widen the revocation
+            // window.
+            const write = this.#writeFrame(response, serialized);
+            startedAtInvocation = true;
+            resolveStarted();
+            await write;
+            resolveCompletion();
+          } catch (error) {
+            const failure = error instanceof Error ? error : new Error(String(error));
+            rejectStarted(failure);
+            rejectCompletion(failure);
+          }
+        })();
       }
     } catch (error) {
       const failure = error instanceof Error ? error : new Error(String(error));
       rejectStarted(failure);
       rejectCompletion(failure);
     }
-    return {
-      started,
-      completion,
-      cancel(): boolean {
-        if (startedAtInvocation) return false;
-        cancelled = true;
-        if (queued !== null) {
-          const index = this.#pending.indexOf(queued);
-          if (index >= 0) {
-            this.#pending.splice(index, 1);
-            this.#pendingBytes -= Buffer.byteLength(serialized);
-            queued = null;
-          }
+    const cancel = (): boolean => {
+      if (startedAtInvocation) return false;
+      cancelled = true;
+      if (queued !== null) {
+        const index = this.#pending.indexOf(queued);
+        if (index >= 0) {
+          this.#pending.splice(index, 1);
+          this.#pendingBytes -= Buffer.byteLength(serialized);
+          queued = null;
         }
-        const failure = new Error("SSE dispatch queue cancelled before invocation");
-        rejectStarted(failure);
-        rejectCompletion(failure);
-        return true;
-      },
+      }
+      const failure = new Error("SSE dispatch queue cancelled before invocation");
+      rejectStarted(failure);
+      rejectCompletion(failure);
+      return true;
     };
+    return { started, completion, cancel };
   }
 
   /**
@@ -1393,7 +1423,7 @@ export function createProductionRbpIngressHost(
 
           const sendDispatchStarted = (
             serialized: string,
-            revalidate: () => void,
+            revalidate: () => Promise<void>,
           ): { readonly started: Promise<void>; readonly completion: Promise<void>; cancel(): boolean } => {
             let resolveStarted!: () => void;
             let rejectStarted!: (error: Error) => void;
@@ -1402,20 +1432,41 @@ export function createProductionRbpIngressHost(
               resolveStarted = resolve;
               rejectStarted = reject;
             });
+            // Callers may stop waiting after the bounded-start race; retain
+            // both rejection observers here so a later close/error cannot
+            // become a process-level unhandled rejection.
+            void started.catch(() => undefined);
             let cancelled = false;
             const rejectStart = (error: unknown): void => {
               if (startedSettled) return;
               startedSettled = true;
               rejectStarted(error instanceof Error ? error : new Error(String(error)));
             };
+            const serializedBytes = Buffer.byteLength(serialized);
+            const nextFrames = applicationEgressFrames + 1;
+            const nextBytes = applicationEgressBytes + serializedBytes;
+            if (
+              nextFrames > egressQueuedFrameLimit ||
+              nextBytes > egressQueuedByteLimit
+            ) {
+              egressOverload();
+              const overloadError = new Error("WSS application egress queue overloaded");
+              rejectStart(overloadError);
+              const completion = Promise.reject<void>(overloadError);
+              void completion.catch(() => undefined);
+              return { started, completion, cancel: () => true };
+            }
+            applicationEgressFrames = nextFrames;
+            applicationEgressBytes = nextBytes;
             const completion = appendEgress(async () => {
               if (cancelled) throw new Error("WSS dispatch queue cancelled before invocation");
               if (terminalEgressClaimed || state === "closing" || state === "faulted" || state === "closed") {
                 throw new Error("WSS dispatch egress is closed");
               }
-              // No await is permitted between the opaque proof check and the
-              // actual websocket.send call below.
-              revalidate();
+              // The authoritative durable proof/lease/route check is async.
+              // No await follows it before websocket.send below.
+              await revalidate();
+              if (cancelled) throw new Error("WSS dispatch queue cancelled before invocation");
               if (websocket.readyState !== WebSocket.OPEN) throw new Error("WSS transport is not open");
               await new Promise<void>((resolve, reject) => {
                 let settled = false;
@@ -1438,8 +1489,12 @@ export function createProductionRbpIngressHost(
                   finish(error);
                 }
               });
+            }).finally(() => {
+              applicationEgressFrames -= 1;
+              applicationEgressBytes -= serializedBytes;
             });
             void completion.catch((error: unknown) => rejectStart(error));
+            void completion.catch(() => undefined);
             return {
               started,
               completion,
