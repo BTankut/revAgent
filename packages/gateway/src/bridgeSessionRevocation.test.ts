@@ -3202,6 +3202,8 @@ describe("WP-06 Gateway identity composition and active revocation", () => {
         errorCode: null,
         payloadRetained: true,
       },
+      terminalDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u),
+      terminalCarrierDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u),
     });
     expect(root.childRefs).toEqual(
       expect.arrayContaining([

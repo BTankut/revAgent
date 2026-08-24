@@ -114,6 +114,14 @@ const GATEWAY_RBP_SESSION_V2_EGRESS_NAMESPACE =
 const GATEWAY_RBP_SESSION_V2_CONFLICT_INDEX_NAMESPACE =
   "gateway.rbp-session-conflict-index/v2" as const;
 export const GATEWAY_MUTATION_RESOLUTION_NAMESPACE = "gateway.mutation-resolution/v1" as const;
+/**
+ * Terminal carriers that arrive after durable unregister authority are kept in
+ * this append-only, digest-only lane.  It is deliberately outside the normal
+ * session aggregate: revocation must never be "re-opened" merely to record a
+ * late carrier observation.
+ */
+const GATEWAY_RBP_LATE_TERMINAL_NAMESPACE =
+  "gateway.rbp-late-terminal/v1" as const;
 /** Test-only observer for prequeue carrier-admission ordering. */
 export const TEST_RSID_CARRIER_RECEIVE_TAIL_OBSERVER = Symbol(
   "revagent.gateway.test.rsid-carrier-receive-tail-observer",
@@ -337,6 +345,9 @@ interface DurableDispatchEvidence {
   readonly journal: GatewayVerifiedBridgeJournalEvidence | null;
   /** Terminal truth is retained even when identity revocation suppresses delivery. */
   readonly terminalTruth?: DurableTerminalTruth | null;
+  /** Domain-separated terminal admission digest for exact CAS replay proof. */
+  readonly terminalDigest?: `sha256:${string}` | null;
+  readonly terminalCarrierDigest?: `sha256:${string}` | null;
   /**
    * Gateway-authored proof that a particular reserved dispatch was cancelled
    * before the carrier invocation boundary.  This deliberately contains
@@ -354,6 +365,36 @@ interface DurableTerminalTruth {
   readonly resultDigest: `sha256:${string}` | null;
   readonly errorCode: string | null;
   readonly payloadRetained: boolean;
+}
+
+interface DurableLateTerminalEvidence {
+  readonly schema: typeof GATEWAY_RBP_LATE_TERMINAL_NAMESPACE;
+  readonly tenantId: string;
+  readonly rsid: string;
+  readonly sessionBindingId: string;
+  readonly connectionId: string;
+  readonly correlationId: string;
+  readonly terminalSequence: number;
+  readonly terminalCarrierDigest: `sha256:${string}`;
+  readonly terminalDigest: `sha256:${string}`;
+  readonly dispatchReceiptDigest: `sha256:${string}`;
+  readonly terminalTruth: DurableTerminalTruth;
+  readonly recordedAtMs: number;
+}
+
+interface TerminalAdmission {
+  readonly tenantId: string;
+  readonly rsid: string;
+  readonly sessionBindingId: string;
+  readonly connectionId: string;
+  readonly correlationId: string;
+  readonly terminalSequence: number;
+  readonly pendingEnvelopeDigest: `sha256:${string}`;
+  readonly pendingGatewaySequence: number;
+  readonly dispatchReceiptDigest: `sha256:${string}`;
+  readonly terminalCarrierDigest: `sha256:${string}`;
+  readonly terminalDigest: `sha256:${string}`;
+  readonly terminalTruth: DurableTerminalTruth;
 }
 
 interface DurableLiveDocumentRoute {
@@ -2482,6 +2523,89 @@ function durableTerminalTruth(
       envelope.payload.payload_omitted !== true &&
       envelope.payload.chunked !== true,
   });
+}
+
+function terminalCorrelationId(
+  envelope: Extract<RbpEnvelope, { type: "result" | "error" }>,
+): string | null {
+  if (envelope.type === "error") return envelope.payload.invocation_id ?? null;
+  return envelope.payload.kind === "invocation"
+    ? envelope.payload.invocation_id
+    : envelope.payload.batch_id;
+}
+
+/** A terminal identity is never inferred from mutable route or pending state. */
+function terminalAdmissionFor(
+  record: DurableRbpSession,
+  connectionId: string,
+  envelope: Extract<RbpEnvelope, { type: "result" | "error" }>,
+): TerminalAdmission {
+  const pending = record.pending;
+  const correlationId = terminalCorrelationId(envelope);
+  const receipt = pending?.dispatchReceipt ?? null;
+  if (
+    pending === null ||
+    correlationId === null ||
+    pending.invocationId !== correlationId ||
+    record.connectionId !== connectionId ||
+    receipt === null ||
+    receipt.version !== 1 ||
+    receipt.tenantId !== record.tenantId ||
+    receipt.invocationId !== pending.invocationId ||
+    receipt.correlationId !== pending.invocationId ||
+    receipt.intent !== "dispatch" ||
+    !DIGEST_PATTERN.test(receipt.proofDigest) ||
+    !DIGEST_PATTERN.test(receipt.routeSnapshotDigest) ||
+    !Number.isSafeInteger(receipt.egressEpoch) || receipt.egressEpoch < 0 ||
+    !Number.isSafeInteger(receipt.leaseTicket) || receipt.leaseTicket < 1
+  ) {
+    throw new Error("carrier terminal lacks an exact original dispatch admission");
+  }
+  const terminalCarrierDigest = immutableEnvelopeDigest(envelope);
+  const dispatchReceiptDigest = digest(canonicalizeJson({
+    domain: "revagent.gateway.dispatch-receipt/v1",
+    tenantId: receipt.tenantId,
+    invocationId: receipt.invocationId,
+    correlationId: receipt.correlationId,
+    proofDigest: receipt.proofDigest,
+    routeSnapshotDigest: receipt.routeSnapshotDigest,
+    egressEpoch: receipt.egressEpoch,
+    leaseTicket: receipt.leaseTicket,
+    intent: receipt.intent,
+  } as unknown as JsonValue));
+  const terminalTruth = durableTerminalTruth(envelope);
+  const terminalDigest = digest(canonicalizeJson({
+    domain: "revagent.gateway.terminal-persistence/v1",
+    tenantId: record.tenantId,
+    rsid: record.rsid,
+    sessionBindingId: record.sessionBindingId,
+    connectionId,
+    correlationId,
+    terminalSequence: envelope.seq,
+    pendingEnvelopeDigest: pending.envelopeDigest,
+    pendingGatewaySequence: pending.gatewaySequence,
+    dispatchReceiptDigest,
+    terminalCarrierDigest,
+    terminalTruth,
+  } as unknown as JsonValue));
+  return Object.freeze({
+    tenantId: record.tenantId,
+    rsid: record.rsid,
+    sessionBindingId: record.sessionBindingId,
+    connectionId,
+    correlationId,
+    terminalSequence: envelope.seq,
+    pendingEnvelopeDigest: pending.envelopeDigest,
+    pendingGatewaySequence: pending.gatewaySequence,
+    dispatchReceiptDigest,
+    terminalCarrierDigest,
+    terminalDigest,
+    terminalTruth,
+  });
+}
+
+function lateTerminalKey(admission: TerminalAdmission): string {
+  return `${admission.rsid}:${admission.terminalDigest.slice("sha256:".length)}`;
 }
 
 function terminalJournalRecords(
@@ -9358,6 +9482,234 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     );
   }
 
+  /**
+   * Terminal persistence is a separate CAS domain from delivery.  In
+   * particular, unregister may win after the carrier was admitted but before
+   * its terminal CAS.  Retrying only a version conflict is safe; all other
+   * uncertainty remains fail-closed.
+   */
+  async #commitTerminalWithRevocationCas(
+    active: ActiveSession,
+    connection: LiveConnection,
+    envelope: Extract<RbpEnvelope, { rsid: string; type: "result" | "error" }>,
+    authorityTicket: TenantAuthorityTicket,
+  ): Promise<
+    | { readonly kind: "committed"; readonly record: DurableRbpSession; readonly completion: GatewayExecutorOutcome }
+    | { readonly kind: "suppressed" }
+  > {
+    const terminalCarrierDigest = immutableEnvelopeDigest(envelope);
+    if (active.record.pending === null) {
+      const accepted = acceptInboundData(active.record.sequence, envelope as DataEnvelopeSnapshot);
+      const replay = active.record.evidence.some((entry) =>
+        entry.terminalCarrierDigest === terminalCarrierDigest &&
+        sameJson(entry.terminalTruth ?? null, durableTerminalTruth(envelope)),
+      );
+      if (replay && accepted.kind === "duplicate") {
+        return { kind: "committed", record: active.record, completion: terminalOutcome(envelope) };
+      }
+      throw new GatewayRbpFault("auth", "terminal admission has no active exact dispatch", 403, 4403);
+    }
+    const original = terminalAdmissionFor(active.record, connection.connectionId, envelope);
+    for (let attempt = 0; attempt < MAX_AUTHORIZATION_CAS_ATTEMPTS; attempt += 1) {
+      const attempted: { current: { readonly prior: StoredRecord<GatewayJsonValue>; readonly next: DurableRbpSession } | null } = { current: null };
+      const persisted = await this.#sessionRepository.transact({ tenantId: original.tenantId }, async (tx) => {
+        const tombstone = await tx.read<GatewayJsonValue>(GATEWAY_RBP_UNREGISTER_NAMESPACE, original.rsid);
+        if (tombstone !== null) {
+          const parsed = parseUnregisterTombstone(tombstone.value, {
+            tenantId: original.tenantId, rsid: original.rsid, stored: tombstone,
+          });
+          if (
+            parsed.sessionBindingId !== original.sessionBindingId ||
+            parsed.acceptedConnectionId !== original.connectionId
+          ) return { kind: "rejected" as const };
+          return { kind: "revoked" as const };
+        }
+        const stored = await tx.read<GatewayJsonValue>(GATEWAY_RBP_SESSION_NAMESPACE, original.rsid);
+        if (stored === null) return { kind: "rejected" as const };
+        const record = parseStoredSession(stored, original.tenantId, original.rsid);
+        const fence = sessionEgressFence(record);
+        if (fence.state === "revocation_pending") {
+          if (
+            record.sessionBindingId !== original.sessionBindingId ||
+            record.connectionId !== original.connectionId
+          ) return { kind: "rejected" as const };
+          return { kind: "revoked" as const };
+        }
+        if (fence.state !== "open") return { kind: "rejected" as const };
+        if (record.pending === null) {
+          const accepted = acceptInboundData(record.sequence, envelope as DataEnvelopeSnapshot);
+          const replay = record.evidence.some((entry) =>
+            entry.terminalCarrierDigest === terminalCarrierDigest &&
+            sameJson(entry.terminalTruth ?? null, original.terminalTruth),
+          );
+          return replay && accepted.kind === "duplicate"
+            ? { kind: "committed" as const, record }
+            : { kind: "rejected" as const };
+        }
+        const admission = terminalAdmissionFor(record, connection.connectionId, envelope);
+        if (!sameJson(admission, original)) return { kind: "rejected" as const };
+        this.#assertAuthorityTicket(authorityTicket, connection, { session: record });
+        const accepted = acceptInboundData(record.sequence, envelope as DataEnvelopeSnapshot);
+        if (accepted.kind === "protocol_fault" || accepted.kind === "gap") {
+          return { kind: "rejected" as const };
+        }
+        if (accepted.kind === "duplicate") {
+          return { kind: "rejected" as const };
+        }
+        const existing = record.evidence.find((candidate) => candidate.envelopeDigest === record.pending!.envelopeDigest);
+        const receipt = record.pending!.dispatchReceipt!;
+        const acceptance = envelope.ack !== undefined && envelope.ack >= record.pending!.gatewaySequence
+          ? {
+              source: "durable_rbp_sequence" as const,
+              receiptVersion: 1 as const,
+              tenantId: receipt.tenantId,
+              rsid: record.rsid,
+              sessionBindingId: record.sessionBindingId,
+              acceptedConnectionId: record.connectionId,
+              authorizedSessionVersion: record.sessionVersion,
+              invocationId: receipt.invocationId,
+              correlationId: receipt.correlationId,
+              proofDigest: receipt.proofDigest,
+              routeSnapshotDigest: receipt.routeSnapshotDigest,
+              egressEpoch: receipt.egressEpoch,
+              leaseTicket: receipt.leaseTicket,
+              intent: "dispatch" as const,
+              gatewaySequence: record.pending!.gatewaySequence,
+              cumulativeAck: envelope.ack,
+              envelopeDigest: record.pending!.envelopeDigest,
+              durableSequenceVersion: record.sessionVersion,
+              acceptedAtMs: this.#clock(),
+            }
+          : existing?.acceptance ?? null;
+        const journals = terminalJournalRecords(record.pending!.journalRecords, envelope);
+        const batchTerminal = envelope.type === "result" && envelope.payload.kind === "batch"
+          ? { result: structuredClone(envelope.payload) as BatchResult, resultDigest: makeParamsDigest(envelope.payload as unknown as JsonValue) }
+          : null;
+        const journal: GatewayVerifiedBridgeJournalEvidence | null = journals.length === 0 ? null : {
+          kind: "known_terminal", rsid: record.rsid, sessionBindingId: record.sessionBindingId,
+          envelopeDigest: record.pending!.envelopeDigest, journalRecords: journals, batchTerminal,
+          durableJournalVersion: record.sessionVersion, recordedAtMs: this.#clock(),
+        };
+        const next = nextSessionRecord(stored, record, {
+          ...record,
+          sequence: accepted.state,
+          pending: null,
+          evidence: [
+            ...record.evidence.filter((candidate) => candidate.envelopeDigest !== record.pending!.envelopeDigest),
+            {
+              envelopeDigest: record.pending!.envelopeDigest,
+              acceptance,
+              journal,
+              terminalTruth: original.terminalTruth,
+              terminalDigest: original.terminalDigest,
+              terminalCarrierDigest: original.terminalCarrierDigest,
+            },
+          ],
+        }, this.#clock());
+        attempted.current = { prior: stored, next };
+        tx.stage({
+          namespace: GATEWAY_RBP_SESSION_NAMESPACE, key: original.rsid, value: asJson(next),
+          expect: { kind: "version", version: stored.version },
+        });
+        return { kind: "committed" as const, record: next };
+      });
+      if (persisted.ok) {
+        if (persisted.value.kind === "committed") {
+          return { kind: "committed", record: persisted.value.record, completion: terminalOutcome(envelope) };
+        }
+        if (persisted.value.kind === "revoked") {
+          await this.#persistLateTerminalEvidence(original);
+          return { kind: "suppressed" };
+        }
+        throw new GatewayRbpFault("auth", "terminal admission no longer matches its original dispatch", 403, 4403);
+      }
+      if (persisted.code === "conflict") continue;
+      if (persisted.code === "durability_uncertain" && attempted.current !== null) {
+        const readBack = await this.#readStoredSession(original.tenantId, original.rsid);
+        if (readBack !== null) {
+          const record = parseStoredSession(readBack, original.tenantId, original.rsid);
+          const exact = record.evidence.some((entry) =>
+            entry.envelopeDigest === original.pendingEnvelopeDigest &&
+            entry.terminalDigest === original.terminalDigest &&
+            sameJson(entry.terminalTruth ?? null, original.terminalTruth),
+          );
+          if (exact && record.pending === null) {
+            return { kind: "committed", record, completion: terminalOutcome(envelope) };
+          }
+          if (sessionEgressFence(record).state === "revocation_pending") {
+            await this.#persistLateTerminalEvidence(original);
+            return { kind: "suppressed" };
+          }
+        }
+      }
+      throw new GatewayRbpFault("unavailable", persisted.message, 503, 1011);
+    }
+    throw new GatewayRbpFault("unavailable", "terminal persistence CAS retry bound was exhausted", 503, 1011);
+  }
+
+  async #persistLateTerminalEvidence(admission: TerminalAdmission): Promise<void> {
+    const value: DurableLateTerminalEvidence = Object.freeze({
+      schema: GATEWAY_RBP_LATE_TERMINAL_NAMESPACE,
+      tenantId: admission.tenantId,
+      rsid: admission.rsid,
+      sessionBindingId: admission.sessionBindingId,
+      connectionId: admission.connectionId,
+      correlationId: admission.correlationId,
+      terminalSequence: admission.terminalSequence,
+      terminalCarrierDigest: admission.terminalCarrierDigest,
+      terminalDigest: admission.terminalDigest,
+      dispatchReceiptDigest: admission.dispatchReceiptDigest,
+      terminalTruth: admission.terminalTruth,
+      recordedAtMs: this.#clock(),
+    });
+    const key = lateTerminalKey(admission);
+    for (let attempt = 0; attempt < MAX_AUTHORIZATION_CAS_ATTEMPTS; attempt += 1) {
+      const persisted = await this.#sessionRepository.transact({ tenantId: admission.tenantId }, async (tx) => {
+        const tombstoneStored = await tx.read<GatewayJsonValue>(GATEWAY_RBP_UNREGISTER_NAMESPACE, admission.rsid);
+        const sessionStored = await tx.read<GatewayJsonValue>(GATEWAY_RBP_SESSION_NAMESPACE, admission.rsid);
+        if (sessionStored === null) return "rejected" as const;
+        const session = parseStoredSession(sessionStored, admission.tenantId, admission.rsid);
+        const tombstone = tombstoneStored === null ? null : parseUnregisterTombstone(tombstoneStored.value, {
+          tenantId: admission.tenantId, rsid: admission.rsid, stored: tombstoneStored,
+        });
+        if (
+          (tombstone === null && sessionEgressFence(session).state !== "revocation_pending") ||
+          session.sessionBindingId !== admission.sessionBindingId ||
+          session.connectionId !== admission.connectionId ||
+          (tombstone !== null &&
+            (tombstone.sessionBindingId !== admission.sessionBindingId ||
+              tombstone.acceptedConnectionId !== admission.connectionId))
+        ) return "rejected" as const;
+        const prior = await tx.read<GatewayJsonValue>(GATEWAY_RBP_LATE_TERMINAL_NAMESPACE, key);
+        if (prior !== null) {
+          const existing = prior.value as unknown as Partial<DurableLateTerminalEvidence>;
+          return (
+            existing.schema === value.schema &&
+            existing.tenantId === value.tenantId &&
+            existing.rsid === value.rsid &&
+            existing.sessionBindingId === value.sessionBindingId &&
+            existing.connectionId === value.connectionId &&
+            existing.correlationId === value.correlationId &&
+            existing.terminalSequence === value.terminalSequence &&
+            existing.terminalCarrierDigest === value.terminalCarrierDigest &&
+            existing.terminalDigest === value.terminalDigest &&
+            existing.dispatchReceiptDigest === value.dispatchReceiptDigest &&
+            sameJson(existing.terminalTruth ?? null, value.terminalTruth)
+          ) ? "replay" as const : "rejected" as const;
+        }
+        tx.stage({ namespace: GATEWAY_RBP_LATE_TERMINAL_NAMESPACE, key, value: asJson(value), expect: { kind: "absent" } });
+        return "created" as const;
+      });
+      if (persisted.ok && (persisted.value === "created" || persisted.value === "replay")) return;
+      if (persisted.ok) {
+        throw new GatewayRbpFault("auth", "late terminal no longer matches revoked session authority", 403, 4403);
+      }
+      if (persisted.code === "conflict") continue;
+      throw new GatewayRbpFault("unavailable", persisted.message, 503, 1011);
+    }
+    throw new GatewayRbpFault("unavailable", "late terminal persistence CAS retry bound was exhausted", 503, 1011);
+  }
+
   async #acceptData(
     connection: LiveConnection,
     envelope: Extract<RbpEnvelope, { rsid: string }>,
@@ -9458,6 +9810,38 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         clearTimeout(waiter.timer);
         this.#waiters.delete(envelope.payload.invocation_id);
         waiter.resolve(completion.current);
+      }
+      return;
+    }
+    if (
+      (envelope.type === "error" || envelope.type === "result") &&
+      !(envelope.type === "result" && envelope.payload.kind === "invocation" && envelope.payload.chunked === true)
+    ) {
+      const terminal = await this.#commitTerminalWithRevocationCas(
+        active,
+        connection,
+        envelope,
+        authorityTicket,
+      );
+      if (terminal.kind === "suppressed") return;
+      active.record = terminal.record;
+      let deliveryAuthorized = true;
+      try {
+        this.#assertAuthorityTicket(authorityTicket, connection, { session: terminal.record });
+      } catch {
+        deliveryAuthorized = false;
+      }
+      if (!deliveryAuthorized && this.#ticketScopeIsRevokedOrBlocked(authorityTicket)) {
+        await this.#revokeStaleAuthorizedSession(connection, envelope.rsid);
+      }
+      const terminalWaiterId = terminalCorrelationId(envelope) ?? "";
+      const waiter = this.#waiters.get(terminalWaiterId);
+      if (waiter !== undefined) {
+        clearTimeout(waiter.timer);
+        this.#waiters.delete(terminalWaiterId);
+        waiter.resolve(deliveryAuthorized
+          ? terminal.completion
+          : { state: "failed", error: { code: "executor_unavailable", message: "identity revocation suppressed terminal delivery" } });
       }
       return;
     }
