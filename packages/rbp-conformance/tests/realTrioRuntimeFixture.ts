@@ -196,6 +196,30 @@ export interface RealTrioGatewayAuditBaseline {
   readonly currentIdentity?: `sha256:${string}`;
 }
 
+/**
+ * Fixed, value-free explanation for why the strict selector did not admit a
+ * lifecycle.  This is diagnostics-only: callers may proceed only on
+ * `selected` and still receive the original candidate/null contract.
+ */
+export type RealTrioCurrentRouteSelectorReason =
+  | "selected"
+  | "baseline_missing"
+  | "grammar_invalid"
+  | "source_pair_missing"
+  | "source_pair_mismatch"
+  | "audit_join_missing"
+  | "audit_epoch_mismatch"
+  | "accepted_ordinal_not_fresh"
+  | "route_identity_mismatch"
+  | "no_candidate"
+  | "multiple_candidates"
+  | "generation_changed"
+  | "cursor_expired";
+
+type RealTrioCurrentRouteSelectorResult =
+  | Readonly<{ readonly reason: "selected"; readonly candidate: StrictDocumentContextCandidate }>
+  | Readonly<{ readonly reason: Exclude<RealTrioCurrentRouteSelectorReason, "selected"> }>;
+
 export interface RealTrioRuntimeFixtureOptions {
   /** Mandatory caller-owned directory; no production evidence path is inferred. */
   readonly evidenceDirectory: string;
@@ -232,7 +256,21 @@ export interface RealTrioDocumentContextFailure {
     readonly sequence: number | null;
     readonly rsidHashPresent: boolean;
     readonly payloadHashPresent: boolean;
+    /** Presence only; cache incarnation values never enter failure evidence. */
+    readonly sourcePairPresent: boolean;
+    /** Optional only for a valid, positive source pair. */
+    readonly sourceRevision?: number;
   }> [];
+  /** Immutable pre-control baseline shape, deliberately value-free. */
+  readonly preControlBaselinePresent: boolean;
+  readonly preControlBaseline: Readonly<{
+    readonly processEpochPresent: boolean;
+    readonly observationOrdinalPresent: boolean;
+    readonly highWaterOrdinalPresent: boolean;
+    readonly acceptedObservationCount: number | null;
+  }>;
+  /** Last fixed selector result, retained independently from post-failure audit control. */
+  readonly selectorReason: RealTrioCurrentRouteSelectorReason | null;
   readonly fixtureSnapshot: Readonly<{
     readonly cacheReadCount: number | null;
     readonly pollRequestCount: number | null;
@@ -312,12 +350,15 @@ function documentContextStages(
           value.contractVersion !== "revagent.rbp-document-context-observation/v1" ||
           value.event !== "bridge.document_context_observation" ||
           typeof value.stage !== "string" || typeof value.outcome !== "string") continue;
+      const source = sourcePair(value);
       retained.push(Object.freeze({
         stage: value.stage,
         outcome: value.outcome,
         sequence: Number.isSafeInteger(value.sequence) ? Number(value.sequence) : null,
         rsidHashPresent: value.rsidHashPresent === true || isSha256(value.rsidHash),
         payloadHashPresent: value.payloadHashPresent === true || isSha256(value.payloadHash),
+        sourcePairPresent: source !== null,
+        ...(source === null ? {} : { sourceRevision: source.sourceRevision }),
       }));
     } catch {
       // Unstructured child output is deliberately not persisted.
@@ -387,9 +428,29 @@ function gatewayAuditControl(outcome: RealTrioAuditControlOutcome | null): RealT
     okKeyPresent: outcome.okKeyPresent, actionKeyPresent: outcome.actionKeyPresent });
 }
 
+function preControlBaselineEvidence(
+  baseline: RealTrioGatewayAuditBaseline | null,
+  audit: unknown,
+): RealTrioDocumentContextFailure["preControlBaseline"] {
+  const updateCount = isObject(audit) && Array.isArray(audit.documentContextUpdates)
+    ? Math.min(audit.documentContextUpdates.length, MAX_DOCUMENT_CONTEXT_FAILURE_AUDITS)
+    : null;
+  return Object.freeze({
+    processEpochPresent: baseline !== null && isProcessEpoch(baseline.processEpoch),
+    observationOrdinalPresent: baseline !== null && Number.isSafeInteger(baseline.observationOrdinal) &&
+      baseline.observationOrdinal >= 0,
+    highWaterOrdinalPresent: isObject(audit) && Number.isSafeInteger(audit.documentContextObservationHighWaterOrdinal) &&
+      Number(audit.documentContextObservationHighWaterOrdinal) >= 0,
+    acceptedObservationCount: updateCount,
+  });
+}
+
 interface GatewayAuditCapture {
   lastSuccessfulAudit: unknown | null;
   lastControlOutcome: RealTrioAuditControlOutcome | null;
+  preControlBaseline: RealTrioGatewayAuditBaseline | null;
+  preControlAudit: unknown | null;
+  lastSelectorReason: RealTrioCurrentRouteSelectorReason | null;
 }
 
 async function readCapturedRealCaseAudit(
@@ -419,6 +480,9 @@ export function createRealTrioDocumentContextFailure(input: {
   readonly gatewayAudit: unknown;
   readonly coherentAudit: unknown;
   readonly coherentAuditControl: RealTrioAuditControlOutcome | null;
+  readonly preControlBaseline?: RealTrioGatewayAuditBaseline | null;
+  readonly preControlAudit?: unknown;
+  readonly selectorReason?: RealTrioCurrentRouteSelectorReason | null;
   readonly childState: RealTrioDocumentContextFailureState;
 }): RealTrioDocumentContextFailure {
   return Object.freeze({
@@ -427,6 +491,9 @@ export function createRealTrioDocumentContextFailure(input: {
     binding: input.binding,
     timeline: Object.freeze([...input.timeline]),
     documentStages: documentContextStages(input.transcript),
+    preControlBaselinePresent: input.preControlBaseline !== undefined && input.preControlBaseline !== null,
+    preControlBaseline: preControlBaselineEvidence(input.preControlBaseline ?? null, input.preControlAudit),
+    selectorReason: input.selectorReason ?? null,
     fixtureSnapshot: fixtureSnapshot(input.fixtureEvidence),
     gatewayRouteAudits: gatewayRouteAudits(input.gatewayAudit),
     gatewayCoherentAudit: gatewayCoherentAudit(input.coherentAudit),
@@ -916,24 +983,65 @@ function currentRouteAuditIdentity(audit: unknown, baseline: RealTrioGatewayAudi
   });
 }
 
-function hasOneCurrentAcceptedObservation(
+function currentAcceptedObservationState(
   audit: unknown,
   current: CurrentRouteAuditIdentity,
   baseline: RealTrioGatewayAuditBaseline,
-): boolean {
-  if (!isObject(audit) || !Array.isArray(audit.documentContextUpdates)) return false;
-  const matches = audit.documentContextUpdates.filter((value) => isObject(value) &&
+): "one" | "missing" | "not_fresh" | "multiple" {
+  if (!isObject(audit) || !Array.isArray(audit.documentContextUpdates) ||
+      !Number.isSafeInteger(audit.documentContextObservationHighWaterOrdinal)) return "missing";
+  const matching = audit.documentContextUpdates.filter((value) => isObject(value) &&
     value.contractVersion === "revagent.wp12-document-context-audit/v1" &&
     value.event === "gateway.doc_context_update_observation" && value.stage === "accepted" &&
     value.processEpoch === baseline.processEpoch && value.rsidHash === current.rsidHash &&
     value.observedSequence === current.sequence && value.contextDigest === current.contextDigest &&
     value.routeDigest === current.routeDigest && value.recordDigest === current.recordDigest &&
     value.sessionBindingDigest === current.sessionBindingDigest && value.connectionDigest === current.connectionDigest &&
-    value.sessionRecordVersion === current.sessionRecordVersion &&
-    Number.isSafeInteger(value.observationOrdinal) && Number(value.observationOrdinal) > baseline.observationOrdinal &&
-    Number.isSafeInteger(audit.documentContextObservationHighWaterOrdinal) &&
-    Number(value.observationOrdinal) <= Number(audit.documentContextObservationHighWaterOrdinal));
-  return matches.length === 1;
+    value.sessionRecordVersion === current.sessionRecordVersion);
+  if (matching.length === 0) return "missing";
+  const highWater = Number(audit.documentContextObservationHighWaterOrdinal);
+  const fresh = matching.filter((value) => Number.isSafeInteger(value.observationOrdinal) &&
+    Number(value.observationOrdinal) > baseline.observationOrdinal && Number(value.observationOrdinal) <= highWater);
+  if (fresh.length === 1) return "one";
+  if (fresh.length > 1) return "multiple";
+  return "not_fresh";
+}
+
+function hasOneCurrentAcceptedObservation(
+  audit: unknown,
+  current: CurrentRouteAuditIdentity,
+  baseline: RealTrioGatewayAuditBaseline,
+): boolean {
+  return currentAcceptedObservationState(audit, current, baseline) === "one";
+}
+
+function cursorState(input: RealTrioCurrentRouteSelectorInput): "ok" | "expired" | "invalid" {
+  if (input.rows.length === 0) return "ok";
+  const first = input.rows[0];
+  if (first === undefined || !/^[1-9][0-9]*$/u.test(first.cursor) ||
+      !/^(?:0|[1-9][0-9]*)$/u.test(input.controlCursor)) return "invalid";
+  const expected = BigInt(input.controlCursor) + 1n;
+  const actual = BigInt(first.cursor);
+  return actual > expected ? "expired" : actual === expected ? "ok" : "invalid";
+}
+
+function isPayloadBearingDocumentContextStage(stage: unknown, outcome: unknown): boolean {
+  return (stage === "snapshot" && outcome === "ready") ||
+    (stage === "queue" && outcome === "durably_queued") ||
+    (stage === "send" && outcome === "sent");
+}
+
+function hasMissingSourcePair(input: RealTrioCurrentRouteSelectorInput): boolean {
+  for (const row of input.rows) {
+    try {
+      const value = JSON.parse(row.line) as unknown;
+      if (!isObject(value) || !isPayloadBearingDocumentContextStage(value.stage, value.outcome)) continue;
+      if (sourcePair(value) === null) return true;
+    } catch {
+      // Grammar owns malformed JSON/non-document rows; do not relabel it.
+    }
+  }
+  return false;
 }
 
 /**
@@ -945,20 +1053,51 @@ function hasOneCurrentAcceptedObservation(
 export function selectCurrentDocumentContextSendFromCursor(
   input: RealTrioCurrentRouteSelectorInput,
 ): StrictDocumentContextCandidate | null {
-  if (!isObject(input.audit) || input.audit.documentContextGeneration !== input.generation) return null;
+  const result = selectCurrentDocumentContextSendReason(input);
+  return result.reason === "selected" ? result.candidate : null;
+}
+
+/** Internal fixed-reason selector; acceptance remains the wrapper above. */
+export function selectCurrentDocumentContextSendReason(
+  input: RealTrioCurrentRouteSelectorInput,
+): RealTrioCurrentRouteSelectorResult {
+  if (!isProcessEpoch(input.baseline.processEpoch) || !Number.isSafeInteger(input.baseline.observationOrdinal) ||
+      input.baseline.observationOrdinal < 0) return Object.freeze({ reason: "baseline_missing" });
+  if (!isObject(input.audit)) return Object.freeze({ reason: "audit_join_missing" });
+  if (!Number.isSafeInteger(input.audit.documentContextGeneration)) return Object.freeze({ reason: "audit_join_missing" });
+  if (input.audit.documentContextGeneration !== input.generation) return Object.freeze({ reason: "generation_changed" });
+  if (input.audit.documentContextProcessEpoch !== input.baseline.processEpoch) {
+    return Object.freeze({ reason: "audit_epoch_mismatch" });
+  }
+  if (!Number.isSafeInteger(input.audit.documentContextObservationHighWaterOrdinal) ||
+      Number(input.audit.documentContextObservationHighWaterOrdinal) < input.baseline.observationOrdinal) {
+    return Object.freeze({ reason: "accepted_ordinal_not_fresh" });
+  }
+  const cursor = cursorState(input);
+  if (cursor === "expired") return Object.freeze({ reason: "cursor_expired" });
+  if (cursor === "invalid") return Object.freeze({ reason: "grammar_invalid" });
+  if (hasMissingSourcePair(input)) return Object.freeze({ reason: "source_pair_missing" });
   const parsed = parseDocumentContextGrammar(input);
   const current = currentRouteAuditIdentity(input.audit, input.baseline);
-  if (parsed === null || current === null || !hasOneCurrentAcceptedObservation(input.audit, current, input.baseline)) {
-    return null;
-  }
-  const selected = parsed.candidates.filter((candidate) => candidate.watcherOrdinal === parsed.currentWatcherOrdinal &&
+  if (parsed === null) return Object.freeze({ reason: "grammar_invalid" });
+  if (current === null) return Object.freeze({ reason: "audit_join_missing" });
+  const acceptance = currentAcceptedObservationState(input.audit, current, input.baseline);
+  if (acceptance === "not_fresh") return Object.freeze({ reason: "accepted_ordinal_not_fresh" });
+  if (acceptance === "multiple") return Object.freeze({ reason: "multiple_candidates" });
+  if (acceptance !== "one") return Object.freeze({ reason: "audit_join_missing" });
+  const watcherCandidates = parsed.candidates.filter((candidate) => candidate.watcherOrdinal === parsed.currentWatcherOrdinal);
+  if (watcherCandidates.length === 0) return Object.freeze({ reason: "no_candidate" });
+  const routeCandidates = watcherCandidates.filter((candidate) =>
     candidate.rsidHash === current.rsidHash && candidate.sequence === current.sequence &&
-    candidate.contextDigest === current.contextDigest &&
+    candidate.contextDigest === current.contextDigest);
+  if (routeCandidates.length === 0) return Object.freeze({ reason: "route_identity_mismatch" });
+  const selected = routeCandidates.filter((candidate) =>
     candidate.source.sourceRevision === input.control.revision &&
     candidate.source.cacheIncarnationDigest === input.control.cacheIncarnationDigest);
-  if (selected.length !== 1) return null;
-  return Object.freeze({ ...selected[0]!, routeDigest: current.routeDigest,
-    controlCursor: input.controlCursor, precedingProbe: input.precedingProbe });
+  if (selected.length === 0) return Object.freeze({ reason: "source_pair_mismatch" });
+  if (selected.length !== 1) return Object.freeze({ reason: "multiple_candidates" });
+  return Object.freeze({ reason: "selected", candidate: Object.freeze({ ...selected[0]!, routeDigest: current.routeDigest,
+    controlCursor: input.controlCursor, precedingProbe: input.precedingProbe }) });
 }
 
 function cursorSinceOrThrow(input: {
@@ -1000,7 +1139,7 @@ async function waitForDocumentContextSend(input: {
     // One audit call is the route/acceptance authority for this iteration.
     // Do not pair rows with a separate session snapshot: a route advance can
     // otherwise select a stale lifecycle from the preceding record version.
-    const expected = selectCurrentDocumentContextSendFromCursor({
+    const selection = selectCurrentDocumentContextSendReason({
       rows,
       generation: input.generation,
       controlCursor: input.controlCursor,
@@ -1009,7 +1148,8 @@ async function waitForDocumentContextSend(input: {
       baseline: input.gatewayBaseline,
       control: input.control,
     });
-    if (expected !== null) return expected;
+    input.auditCapture.lastSelectorReason = selection.reason;
+    if (selection.reason === "selected") return selection.candidate;
     if (Date.now() >= deadline) {
       throw new Error("real trio document-context current-route proof was not coherent through send");
     }
@@ -1247,6 +1387,9 @@ async function documentContextFailureError(input: {
     gatewayAudit,
     coherentAudit: input.auditCapture.lastSuccessfulAudit,
     coherentAuditControl: input.auditCapture.lastControlOutcome,
+    preControlBaseline: input.auditCapture.preControlBaseline,
+    preControlAudit: input.auditCapture.preControlAudit,
+    selectorReason: input.auditCapture.lastSelectorReason,
     childState,
   });
   try {
@@ -1316,7 +1459,8 @@ export async function startRealTrioRuntimeFixture(
   }
   const evidenceFile = path.join(options.evidenceDirectory, `${binding}.document-context-failure.json`);
   const timeline: Array<RealTrioDocumentContextFailure["timeline"][number]> = [];
-  const auditCapture: GatewayAuditCapture = { lastSuccessfulAudit: null, lastControlOutcome: null };
+  const auditCapture: GatewayAuditCapture = { lastSuccessfulAudit: null, lastControlOutcome: null,
+    preControlBaseline: null, preControlAudit: null, lastSelectorReason: null };
   let failureReason: RealTrioDocumentContextFailure["reason"] = "ack_failure";
   let documentContextAudit: RealTrioDocumentContextAudit;
   try {
@@ -1327,7 +1471,10 @@ export async function startRealTrioRuntimeFixture(
     // causal floor.  A post-control audit is never allowed to become a new
     // baseline: that would permit the control's own historical route to win.
     const preControlSnapshot = supervisor.readDocumentContextSnapshot();
-    const gatewayBaseline = gatewayAuditBaseline(await readCapturedRealCaseAudit(supervisor, auditCapture));
+    const preControlAudit = await readCapturedRealCaseAudit(supervisor, auditCapture);
+    const gatewayBaseline = gatewayAuditBaseline(preControlAudit);
+    auditCapture.preControlAudit = preControlAudit;
+    auditCapture.preControlBaseline = gatewayBaseline;
     if (gatewayBaseline === null || gatewayBaseline.acceptedObservationOrdinal === undefined ||
         gatewayBaseline.currentIdentity === undefined) {
       throw new Error("real trio Gateway pre-control audit baseline lacks one current accepted identity");

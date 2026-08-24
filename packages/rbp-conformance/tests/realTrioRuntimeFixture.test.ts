@@ -24,6 +24,7 @@ import {
   realTrioWorkerBuildPlan,
   realTrioFixtureDocumentContextEvent,
   selectCurrentDocumentContextSendFromCursor,
+  selectCurrentDocumentContextSendReason,
   writeRealTrioDocumentContextFailure,
   writeRealTrioRuntimeFailure,
   unmatchedDocumentContextProbe,
@@ -162,6 +163,52 @@ describe("WP-12 real-trio fixture document route gate", () => {
       expect(redactedInvalid).toHaveLength(1);
       expect(select(lifecycle(invalidDigest))).toBeNull();
     }
+  });
+
+  it("reports each fixed current-route selector reason without changing selected admission", () => {
+    const rsidHash = `sha256:${"a".repeat(64)}`;
+    const epoch = "123e4567-e89b-42d3-a456-426614174000";
+    const contextDigest = "b".repeat(64);
+    const pair = { sourceRevision: 2, cacheIncarnationDigest: `sha256:${"c".repeat(64)}` } as const;
+    const routeDigest = `sha256:${"d".repeat(64)}`;
+    const current = { processEpoch: epoch, rsidHash, observedSequence: 7, contextDigest, routeDigest,
+      recordDigest: `sha256:${"e".repeat(64)}`, sessionBindingDigest: `sha256:${"f".repeat(64)}`,
+      connectionDigest: `sha256:${"1".repeat(64)}`, sessionRecordVersion: 2 };
+    const accepted = { contractVersion: "revagent.wp12-document-context-audit/v1", event: "gateway.doc_context_update_observation",
+      stage: "accepted", ...current, observationOrdinal: 5 };
+    const audit = (overrides: Record<string, unknown> = {}) => ({
+      documentContextEpochSchema: "revagent.wp12-document-context-epoch/v1", documentContextProcessEpoch: epoch,
+      documentContextGeneration: 1, documentContextObservationHighWaterOrdinal: 5,
+      documentContextCurrentRoute: current, documentContextUpdates: [accepted], ...overrides,
+    });
+    const row = (cursor: number, stage: string, outcome: string, sequence: number | null,
+      source: typeof pair | null = pair) => ({ cursor: String(cursor), at: "", line: JSON.stringify({
+      event: "bridge.document_context_observation", stage, outcome, rsidHash, sequence,
+      ...(["snapshot", "queue", "send"].includes(stage) ? { contextDigest, ...(source === null ? {} : source) } : {}),
+    }) });
+    const rows = () => [row(1, "probe", "started", null), row(2, "snapshot", "ready", null),
+      row(3, "queue", "durably_queued", 7), row(4, "send", "sent", 7)];
+    const control = { revision: pair.sourceRevision, cacheIncarnationDigest: pair.cacheIncarnationDigest } as const;
+    const input = (overrides: Record<string, unknown> = {}) => ({ rows: rows(), generation: 1, controlCursor: "0",
+      precedingProbe: null, audit: audit(), baseline: { processEpoch: epoch, observationOrdinal: 4 }, control, ...overrides });
+    const reason = (overrides: Record<string, unknown> = {}) => selectCurrentDocumentContextSendReason(input(overrides) as never).reason;
+
+    expect(reason()).toBe("selected");
+    expect(selectCurrentDocumentContextSendFromCursor(input() as never)).toMatchObject({ sendCursor: "4" });
+    expect(reason({ baseline: { processEpoch: "bad", observationOrdinal: -1 } })).toBe("baseline_missing");
+    expect(reason({ rows: [{ ...rows()[0]!, cursor: "x" }] })).toBe("grammar_invalid");
+    expect(reason({ rows: [row(1, "probe", "started", null), row(2, "snapshot", "ready", null, null)] })).toBe("source_pair_missing");
+    expect(reason({ control: { ...control, revision: 3 } })).toBe("source_pair_mismatch");
+    expect(reason({ audit: {} })).toBe("audit_join_missing");
+    expect(reason({ audit: audit({ documentContextProcessEpoch: "123e4567-e89b-42d3-a456-426614174001" }) })).toBe("audit_epoch_mismatch");
+    expect(reason({ audit: audit({ documentContextObservationHighWaterOrdinal: 4 }) })).toBe("accepted_ordinal_not_fresh");
+    const advancedCurrent = { ...current, observedSequence: 8 };
+    expect(reason({ audit: audit({ documentContextCurrentRoute: advancedCurrent,
+      documentContextUpdates: [{ ...accepted, ...advancedCurrent }] }) })).toBe("route_identity_mismatch");
+    expect(reason({ rows: [row(1, "probe", "started", null)] })).toBe("no_candidate");
+    expect(reason({ audit: audit({ documentContextUpdates: [accepted, accepted] }) })).toBe("multiple_candidates");
+    expect(reason({ audit: audit({ documentContextGeneration: 2 }) })).toBe("generation_changed");
+    expect(reason({ rows: rows().map((value) => ({ ...value, cursor: String(Number(value.cursor) + 1) })) })).toBe("cursor_expired");
   });
 
   it("uses cursor rows for strict control lifecycle and later ACK, never transcript indices", () => {
@@ -674,6 +721,10 @@ describe("WP-12 real-trio fixture document route gate", () => {
         secret: "must-not-persist",
       },
       coherentAuditControl: { outcome: "success", audit: {} },
+      preControlBaseline: { processEpoch: "123e4567-e89b-42d3-a456-426614174000", observationOrdinal: 1,
+        acceptedObservationOrdinal: 1, currentIdentity: `sha256:${"f".repeat(64)}` },
+      preControlAudit: { documentContextObservationHighWaterOrdinal: 1, documentContextUpdates: [{ secret: "must-not-persist" }] },
+      selectorReason: "source_pair_missing",
       childState: { childExited: false, processDiagnostics: [] },
     });
     const artifact = path.join(mkdtempSync(path.join(tmpdir(), "wp12-doc-evidence-")), "failure.json");
@@ -685,6 +736,9 @@ describe("WP-12 real-trio fixture document route gate", () => {
       fixtureSnapshot: { cacheReadCount: 3, pollRequestCount: 2, cachedContextHashPresent: true },
       gatewayCoherentAudit: { status: "retry_exhausted", lastAttemptStatus: "observation_churn", attemptCount: 3, observationCount: 1, highWaterOrdinal: 2 },
       gatewayAuditControl: { outcome: "success", error: null },
+      preControlBaselinePresent: true,
+      preControlBaseline: { processEpochPresent: true, observationOrdinalPresent: true, highWaterOrdinalPresent: true, acceptedObservationCount: 1 },
+      selectorReason: "source_pair_missing",
     });
     expect(failure.documentStages).toHaveLength(64);
     expect(failure.gatewayRouteAudits).toHaveLength(32);
