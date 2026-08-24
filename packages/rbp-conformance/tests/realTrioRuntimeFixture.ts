@@ -571,47 +571,13 @@ export function correlatedDocumentContextSendFromCursor(
   generation: number,
   precedingProbe: RealTrioDocumentContextCursorRow | null,
 ): RealTrioDocumentContextCorrelation | null {
-  if (!Number.isSafeInteger(generation) || generation < 1) return null;
-  const prefix = precedingProbe === null ? null : documentObservation(precedingProbe);
-  if (prefix !== null && (prefix.stage !== "probe" || prefix.outcome !== "started" ||
-      !isSha256(prefix.rsidHash) ||
-      !(prefix.sequence === null || (Number.isSafeInteger(prefix.sequence) && Number(prefix.sequence) >= 1)))) return null;
-  const expected = prefix === null
-    ? [["probe", "started"], ["snapshot", "ready"], ["queue", "durably_queued"], ["send", "sent"]] as const
-    : [["snapshot", "ready"], ["queue", "durably_queued"], ["send", "sent"]] as const;
-  let canonicalHash: `sha256:${string}` | null = prefix === null ? null : prefix.rsidHash as `sha256:${string}`;
-  let canonicalSequence: number | null = prefix === null || prefix.sequence === null ? null : Number(prefix.sequence);
-  for (let index = 0; index < expected.length; index += 1) {
-    const row = rows[index];
-    if (row === undefined || !/^[1-9][0-9]*$/u.test(row.cursor)) return null;
-    const value = documentObservation(row);
-    const [stage, outcome] = expected[index]!;
-    if (value === null || value.stage !== stage || value.outcome !== outcome ||
-        !isSha256(value.rsidHash) ||
-        !(value.sequence === null || (Number.isSafeInteger(value.sequence) && Number(value.sequence) >= 1))) return null;
-    if (canonicalHash === null) canonicalHash = value.rsidHash;
-    else if (canonicalHash !== value.rsidHash) return null;
-    const sequence = value.sequence === null ? null : Number(value.sequence);
-    if (sequence !== null) {
-      if (canonicalSequence === null) canonicalSequence = sequence;
-      else if (canonicalSequence !== sequence) return null;
-    }
-    if ((stage === "queue" || stage === "send") && sequence === null) return null;
-    if (stage === "send") {
-      if (canonicalHash === null || canonicalSequence === null) return null;
-      return Object.freeze({
-        rsidHash: canonicalHash,
-        sequence: canonicalSequence,
-        sendCursor: row.cursor,
-        generation,
-        // This non-authoritative compatibility field is never used by the
-        // cursor-native runtime path.
-        sendTranscriptIndex: index,
-        sendRecordedAt: row.at.length === 0 ? null : row.at,
-      });
-    }
-  }
-  return null;
+  if (rows.length === 0) return null;
+  const first = rows[0];
+  if (first === undefined || !/^[1-9][0-9]*$/u.test(first.cursor)) return null;
+  const allRows = precedingProbe === null ? rows : [precedingProbe, ...rows];
+  const controlCursor = (BigInt(allRows[0]!.cursor) - 1n).toString();
+  const parsed = parseDocumentContextGrammar({ rows: allRows, generation, controlCursor, precedingProbe: null });
+  return parsed?.candidates.length === 1 ? parsed.candidates[0]! : null;
 }
 
 interface LocalDocumentContextCandidate extends RealTrioDocumentContextCorrelation {
@@ -620,6 +586,176 @@ interface LocalDocumentContextCandidate extends RealTrioDocumentContextCorrelati
 
 interface StrictDocumentContextCandidate extends LocalDocumentContextCandidate {
   readonly routeDigest: `sha256:${string}`;
+}
+
+type StrictDocumentObservation = Readonly<{
+  readonly stage: "probe" | "snapshot" | "queue" | "send" | "ack";
+  readonly rsidHash: `sha256:${string}`;
+  readonly sequence: number | null;
+  readonly contextDigest: string | null;
+}>;
+
+/**
+ * A document observation is an ordered journal fact, not a best-effort log
+ * hint.  Non-document records are intentionally outside this grammar, but an
+ * advertised document observation must be complete and known.
+ */
+function strictDocumentObservation(row: RealTrioDocumentContextCursorRow): StrictDocumentObservation | null | undefined {
+  let value: unknown;
+  try {
+    value = JSON.parse(row.line) as unknown;
+  } catch {
+    return undefined;
+  }
+  if (!isObject(value) || value.event !== "bridge.document_context_observation") return undefined;
+  if (!isSha256(value.rsidHash) || !(value.sequence === null ||
+      (Number.isSafeInteger(value.sequence) && Number(value.sequence) >= 1))) return null;
+  const sequence = value.sequence === null ? null : Number(value.sequence);
+  const context = typeof value.contextDigest === "string" && /^[0-9a-f]{64}$/u.test(value.contextDigest)
+    ? value.contextDigest
+    : null;
+  if (value.stage === "probe" && value.outcome === "started") {
+    return Object.freeze({ stage: "probe", rsidHash: value.rsidHash, sequence, contextDigest: null });
+  }
+  if (value.stage === "ack" && value.outcome === "durably_acknowledged" && sequence !== null) {
+    return Object.freeze({ stage: "ack", rsidHash: value.rsidHash, sequence, contextDigest: null });
+  }
+  if ((value.stage === "snapshot" && value.outcome === "ready") ||
+      (value.stage === "queue" && value.outcome === "durably_queued") ||
+      (value.stage === "send" && value.outcome === "sent")) {
+    if (sequence === null || context === null) return null;
+    return Object.freeze({ stage: value.stage, rsidHash: value.rsidHash, sequence, contextDigest: context });
+  }
+  // `failure`, a malformed stage, and a future/unknown document event are all
+  // terminal for this retained grammar.  They must never be compressed away.
+  return null;
+}
+
+interface ParsedDocumentContextCandidate extends LocalDocumentContextCandidate {
+  readonly startCursor: string;
+  readonly startTranscriptIndex: number;
+}
+
+interface ParsedDocumentContextGrammar {
+  readonly candidates: readonly ParsedDocumentContextCandidate[];
+  readonly acknowledgements: ReadonlyMap<string, number>;
+}
+
+function candidateKey(rsidHash: `sha256:${string}`, sequence: number): string {
+  return `${rsidHash}:${sequence}`;
+}
+
+/**
+ * Parse every retained document fact in ordinal order.  A watcher is opened
+ * only by probe/started.  It may contain many complete cycles; a new probe
+ * starts a new watcher and deliberately makes prior ACK eligibility inert.
+ */
+function parseDocumentContextGrammar(input: {
+  readonly rows: readonly RealTrioDocumentContextCursorRow[];
+  readonly generation: number;
+  readonly controlCursor: string;
+  readonly precedingProbe: RealTrioDocumentContextCursorRow | null;
+}): ParsedDocumentContextGrammar | null {
+  if (!Number.isSafeInteger(input.generation) || input.generation < 1 ||
+      !/^(?:0|[1-9][0-9]*)$/u.test(input.controlCursor)) return null;
+  const control = BigInt(input.controlCursor);
+  let previous = control;
+  for (const row of input.rows) {
+    if (!/^[1-9][0-9]*$/u.test(row.cursor) || BigInt(row.cursor) !== previous + 1n) return null;
+    previous = BigInt(row.cursor);
+  }
+
+  let watcher: {
+    readonly rsidHash: `sha256:${string}`;
+    lastSentSequence: number | null;
+    lastAcknowledgedSequence: number | null;
+    cycle: { readonly sequence: number; readonly contextDigest: string; readonly startCursor: string; readonly startIndex: number; readonly stage: "snapshot" | "queue" } | null;
+    readonly sent: Map<number, ParsedDocumentContextCandidate>;
+  } | null = null;
+  const candidates: ParsedDocumentContextCandidate[] = [];
+  const acknowledgements = new Map<string, number>();
+
+  const openProbe = (observation: StrictDocumentObservation): boolean => {
+    if (observation.stage !== "probe") return false;
+    if (watcher !== null && watcher.cycle !== null) return false;
+    watcher = {
+      rsidHash: observation.rsidHash,
+      lastSentSequence: null,
+      lastAcknowledgedSequence: null,
+      cycle: null,
+      sent: new Map(),
+    };
+    return true;
+  };
+
+  if (input.precedingProbe !== null) {
+    if (input.precedingProbe.cursor !== input.controlCursor) return null;
+    const prefix = strictDocumentObservation(input.precedingProbe);
+    if (prefix === null || prefix === undefined || !openProbe(prefix)) return null;
+  }
+
+  for (let index = 0; index < input.rows.length; index += 1) {
+    const row = input.rows[index]!;
+    const observation = strictDocumentObservation(row);
+    if (observation === undefined) continue; // ordinal retained; non-document output is inert.
+    if (observation === null) return null;
+
+    if (observation.stage === "probe") {
+      if (!openProbe(observation)) return null;
+      continue;
+    }
+    if (watcher === null || watcher.rsidHash !== observation.rsidHash) return null;
+
+    if (observation.stage === "ack") {
+      const sent = watcher.sent.get(observation.sequence!);
+      if (sent === undefined || (watcher.lastAcknowledgedSequence !== null &&
+          observation.sequence! <= watcher.lastAcknowledgedSequence)) return null;
+      watcher.lastAcknowledgedSequence = observation.sequence!;
+      acknowledgements.set(candidateKey(observation.rsidHash, observation.sequence!), index);
+      continue;
+    }
+
+    if (observation.stage === "snapshot") {
+      if (watcher.cycle !== null || (watcher.lastSentSequence !== null &&
+          observation.sequence! <= watcher.lastSentSequence)) return null;
+      watcher.cycle = {
+        sequence: observation.sequence!,
+        contextDigest: observation.contextDigest!,
+        startCursor: row.cursor,
+        startIndex: index,
+        stage: "snapshot",
+      };
+      continue;
+    }
+    if (observation.stage === "queue") {
+      if (watcher.cycle === null || watcher.cycle.stage !== "snapshot" ||
+          watcher.cycle.sequence !== observation.sequence ||
+          watcher.cycle.contextDigest !== observation.contextDigest) return null;
+      watcher.cycle = { ...watcher.cycle, stage: "queue" };
+      continue;
+    }
+    // send/sent completes exactly the snapshot -> queue -> send cycle.
+    if (watcher.cycle === null || watcher.cycle.stage !== "queue" ||
+        watcher.cycle.sequence !== observation.sequence ||
+        watcher.cycle.contextDigest !== observation.contextDigest) return null;
+    const candidate = Object.freeze({
+      rsidHash: watcher.rsidHash,
+      sequence: observation.sequence!,
+      sendCursor: row.cursor,
+      generation: input.generation,
+      sendTranscriptIndex: index,
+      sendRecordedAt: row.at.length === 0 ? null : row.at,
+      contextDigest: observation.contextDigest!,
+      startCursor: watcher.cycle.startCursor,
+      startTranscriptIndex: watcher.cycle.startIndex,
+    });
+    watcher.sent.set(candidate.sequence, candidate);
+    watcher.lastSentSequence = candidate.sequence;
+    watcher.cycle = null;
+    candidates.push(candidate);
+  }
+  if (watcher !== null && watcher.cycle !== null) return null;
+  return Object.freeze({ candidates: Object.freeze(candidates), acknowledgements });
 }
 
 /**
@@ -637,77 +773,8 @@ function strictDocumentContextCandidates(input: {
   readonly controlCursor: string;
   readonly precedingProbe: RealTrioDocumentContextCursorRow | null;
 }): readonly LocalDocumentContextCandidate[] | null {
-  if (!Number.isSafeInteger(input.generation) || input.generation < 1 ||
-      !/^(?:0|[1-9][0-9]*)$/u.test(input.controlCursor)) return null;
-  const control = BigInt(input.controlCursor);
-  let previous = control;
-  for (const row of input.rows) {
-    if (!/^[1-9][0-9]*$/u.test(row.cursor) || BigInt(row.cursor) !== previous + 1n ||
-        documentObservation(row) === null) return null;
-    previous = BigInt(row.cursor);
-  }
-  const prefix = input.precedingProbe === null ? null : documentObservation(input.precedingProbe);
-  if (prefix !== null &&
-      (BigInt(input.precedingProbe!.cursor) !== control || prefix.stage !== "probe" ||
-        prefix.outcome !== "started" || !isSha256(prefix.rsidHash) ||
-        !(prefix.sequence === null || (Number.isSafeInteger(prefix.sequence) && Number(prefix.sequence) >= 1)))) return null;
-
-  const candidates: LocalDocumentContextCandidate[] = [];
-  let index = 0;
-  let usePrefix = prefix !== null;
-  while (index < input.rows.length) {
-    const expected = usePrefix
-      ? [["snapshot", "ready"], ["queue", "durably_queued"], ["send", "sent"]] as const
-      : [["probe", "started"], ["snapshot", "ready"], ["queue", "durably_queued"], ["send", "sent"]] as const;
-    let hash: `sha256:${string}` | null = usePrefix ? prefix!.rsidHash as `sha256:${string}` : null;
-    let sequence: number | null = usePrefix && prefix!.sequence !== null ? Number(prefix!.sequence) : null;
-    let contextDigest: string | null = null;
-    let send: RealTrioDocumentContextCursorRow | null = null;
-    for (const [stage, outcome] of expected) {
-      const row = input.rows[index++];
-      const value = row === undefined ? null : documentObservation(row);
-      if (value === null || value.stage !== stage || value.outcome !== outcome ||
-          !isSha256(value.rsidHash) ||
-          !(value.sequence === null || (Number.isSafeInteger(value.sequence) && Number(value.sequence) >= 1))) return null;
-      if (hash === null) hash = value.rsidHash;
-      else if (hash !== value.rsidHash) return null;
-      const valueSequence = value.sequence === null ? null : Number(value.sequence);
-      if (valueSequence !== null) {
-        if (sequence === null) sequence = valueSequence;
-        else if (sequence !== valueSequence) return null;
-      }
-      if ((stage === "queue" || stage === "send") && valueSequence === null) return null;
-      if (stage === "snapshot" || stage === "queue" || stage === "send") {
-        if (typeof value.contextDigest !== "string" || !/^[0-9a-f]{64}$/u.test(value.contextDigest)) return null;
-        if (contextDigest === null) contextDigest = value.contextDigest;
-        else if (contextDigest !== value.contextDigest) return null;
-      }
-      if (stage === "send") send = row!;
-    }
-    if (hash === null || sequence === null || contextDigest === null || send === null) return null;
-    candidates.push(Object.freeze({
-      rsidHash: hash,
-      sequence,
-      sendCursor: send.cursor,
-      generation: input.generation,
-      sendTranscriptIndex: index - 1,
-      sendRecordedAt: send.at.length === 0 ? null : send.at,
-      contextDigest,
-    }));
-    usePrefix = false;
-    // ACK proves only the already selected send; it never begins or selects a
-    // lifecycle. It is admitted here solely so a fast ACK cannot corrupt the
-    // next complete candidate.
-    if (index < input.rows.length) {
-      const next = documentObservation(input.rows[index]!);
-      if (next?.stage === "ack") {
-        if (next.outcome !== "durably_acknowledged" || next.rsidHash !== hash ||
-            next.sequence !== sequence) return null;
-        index += 1;
-      }
-    }
-  }
-  return Object.freeze(candidates);
+  const parsed = parseDocumentContextGrammar(input);
+  return parsed === null ? null : parsed.candidates;
 }
 
 interface CurrentRouteAuditIdentity {

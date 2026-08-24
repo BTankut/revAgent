@@ -35,7 +35,7 @@ describe("WP-12 real-trio fixture document route gate", () => {
     const hash = `sha256:${"a".repeat(64)}`;
     const probe = cursorRow("4", "probe", "started", null, hash);
     const selected = correlatedDocumentContextSendFromCursor([
-      cursorRow("5", "snapshot", "ready", null, hash),
+      cursorRow("5", "snapshot", "ready", 9, hash),
       cursorRow("6", "queue", "durably_queued", 9, hash),
       cursorRow("7", "send", "sent", 9, hash),
     ], 2, probe);
@@ -53,7 +53,7 @@ describe("WP-12 real-trio fixture document route gate", () => {
     const hash = `sha256:${"a".repeat(64)}`;
     const flow = [
       cursorRow("1", "probe", "started", null, hash),
-      cursorRow("2", "snapshot", "ready", null, hash),
+      cursorRow("2", "snapshot", "ready", 3, hash),
       cursorRow("3", "queue", "durably_queued", 3, hash),
       cursorRow("4", "send", "sent", 3, hash),
     ];
@@ -136,6 +136,85 @@ describe("WP-12 real-trio fixture document route gate", () => {
       expect(select(flow, audit([{ contractVersion: "revagent.wp12-document-context-audit/v1", event: "gateway.doc_context_update_observation", stage: "accepted", ...current, [field]: field === "contextDigest" ? "e".repeat(64) : `sha256:${"9".repeat(64)}`, observationOrdinal: 5 }]))).toBeNull();
       expect(select(flow, { ...audit(), documentContextCurrentRoute: { ...current, [field]: field === "contextDigest" ? "e".repeat(64) : `sha256:${"9".repeat(64)}` } })).toBeNull();
     }
+  });
+
+  it("parses the complete ordinal multipoll grammar and gates only the selected ACK", () => {
+    const hash = `sha256:${"a".repeat(64)}`;
+    const otherHash = `sha256:${"b".repeat(64)}`;
+    const context1 = "c".repeat(64);
+    const context2 = "d".repeat(64);
+    const epoch = "123e4567-e89b-42d3-a456-426614174000";
+    const row = (cursor: number, stage: string, outcome: string, sequence: number | null,
+      contextDigest: string | null = null, rsidHash = hash) => ({
+      cursor: String(cursor), at: "2026-08-24T00:00:01.000Z", line: JSON.stringify({
+        event: "bridge.document_context_observation", stage, outcome, rsidHash, sequence,
+        ...(contextDigest === null ? {} : { contextDigest }),
+      }),
+    });
+    const probe = (cursor: number, rsidHash = hash) => row(cursor, "probe", "started", null, null, rsidHash);
+    const cycle = (start: number, sequence: number, contextDigest: string, rsidHash = hash) => [
+      row(start, "snapshot", "ready", sequence, contextDigest, rsidHash),
+      row(start + 1, "queue", "durably_queued", sequence, contextDigest, rsidHash),
+      row(start + 2, "send", "sent", sequence, contextDigest, rsidHash),
+    ];
+    const audit = (sequence = 2, contextDigest = context2) => ({
+      documentContextEpochSchema: "revagent.wp12-document-context-epoch/v1",
+      documentContextProcessEpoch: epoch,
+      documentContextGeneration: 7,
+      documentContextObservationHighWaterOrdinal: 20,
+      documentContextCurrentRoute: {
+        processEpoch: epoch, rsidHash: hash, observedSequence: sequence, contextDigest,
+        routeDigest: `sha256:${"e".repeat(64)}`, recordDigest: `sha256:${"f".repeat(64)}`,
+        sessionBindingDigest: `sha256:${"1".repeat(64)}`, connectionDigest: `sha256:${"2".repeat(64)}`,
+        sessionRecordVersion: 3,
+      },
+      documentContextUpdates: [{
+        contractVersion: "revagent.wp12-document-context-audit/v1", event: "gateway.doc_context_update_observation",
+        stage: "accepted", processEpoch: epoch, rsidHash: hash, observedSequence: sequence, contextDigest,
+        routeDigest: `sha256:${"e".repeat(64)}`, recordDigest: `sha256:${"f".repeat(64)}`,
+        sessionBindingDigest: `sha256:${"1".repeat(64)}`, connectionDigest: `sha256:${"2".repeat(64)}`,
+        sessionRecordVersion: 3, observationOrdinal: 20,
+      }],
+    });
+    const select = (rows: readonly ReturnType<typeof row>[], value: unknown = audit()) =>
+      selectCurrentDocumentContextSendFromCursor({ rows, generation: 7, controlCursor: "0", precedingProbe: null,
+        audit: value, baseline: { processEpoch: epoch, observationOrdinal: 19 } });
+    const acknowledgement = (cursor: number, sequence: number, rsidHash = hash) =>
+      row(cursor, "ack", "durably_acknowledged", sequence, null, rsidHash);
+
+    // One watcher, two cycles: cycle 2 may begin immediately after send 1.
+    const ordinary = [probe(1), ...cycle(2, 1, context1), ...cycle(5, 2, context2), acknowledgement(8, 2)];
+    expect(select(ordinary)).toMatchObject({ sequence: 2, sendCursor: "7" });
+    // A late ACK for cycle 1 is still evidence, including while cycle 2 is active.
+    expect(select([probe(1), ...cycle(2, 1, context1), acknowledgement(5, 1), ...cycle(6, 2, context2), acknowledgement(9, 2)])).toMatchObject({ sequence: 2 });
+    expect(select([probe(1), ...cycle(2, 1, context1), row(5, "snapshot", "ready", 2, context2),
+      acknowledgement(6, 1), row(7, "queue", "durably_queued", 2, context2),
+      row(8, "send", "sent", 2, context2), acknowledgement(9, 2)])).toMatchObject({ sequence: 2 });
+
+    const selected = select(ordinary)!;
+    expect(hasDurableDocumentContextHeartbeatAckSince(ordinary.map((value) => ({ line: value.line })), 0, selected)).toBe(true);
+    expect(hasDurableDocumentContextHeartbeatAckSince([{ line: acknowledgement(9, 1).line }], 0, selected)).toBe(false);
+    expect(hasDurableDocumentContextHeartbeatAckSince([], 0, selected)).toBe(false);
+    expect(select([...ordinary, acknowledgement(9, 2)])).toBeNull();
+    expect(select([...ordinary.slice(0, -1), acknowledgement(8, 2), acknowledgement(9, 1)])).toBeNull();
+
+    // Non-document output consumes an ordinal but is not a document fact.
+    const nonDocument = { cursor: "5", at: "2026-08-24T00:00:01.000Z", line: JSON.stringify({ event: "child.stdout", message: "inert" }) };
+    const withInertOrdinal = [probe(1), ...cycle(2, 1, context1), nonDocument, ...cycle(6, 2, context2), acknowledgement(9, 2)];
+    expect(select(withInertOrdinal)).toMatchObject({ sequence: 2 });
+    expect(select([{ ...withInertOrdinal[0]!, cursor: "2" }, ...withInertOrdinal.slice(1)])).toBeNull();
+    expect(select([...ordinary, row(9, "failure", "send_failed", 2, null)])).toBeNull();
+    expect(select([...ordinary, row(9, "future_stage", "future_outcome", 2, null)])).toBeNull();
+    expect(select([probe(1), ...cycle(2, 1, context1), row(5, "snapshot", "ready", 2, context2),
+      row(6, "queue", "durably_queued", 2, context1), row(7, "send", "sent", 2, context2)])).toBeNull();
+
+    // A new probe makes previous sends ineligible for ACK; it cannot borrow them.
+    expect(select([probe(1), ...cycle(2, 1, context1), probe(5, otherHash), acknowledgement(6, 1),
+      ...cycle(7, 1, context2, otherHash)])).toBeNull();
+    expect(select([probe(1), ...cycle(2, 2, context1), ...cycle(5, 2, context2)])).toBeNull();
+    expect(select([probe(1), ...cycle(2, 2, context1), ...cycle(5, 1, context2)])).toBeNull();
+    expect(select(ordinary, { ...audit(), documentContextGeneration: 8 })).toBeNull();
+    expect(select(ordinary, audit(1, context1))).toMatchObject({ sequence: 1, sendCursor: "4" });
   });
 
   it("uses only a final unmatched probe from the atomic pre-control snapshot", () => {
