@@ -115,6 +115,7 @@ internal sealed partial class RbpJournalStore : IAsyncDisposable
                 migrations,
                 options.NowMilliseconds?.Invoke() ??
                     DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+            ValidateRecoveryV8Shape(connection, schemaVersion);
             RunQuickCheck(connection);
             ValidateInboundReceiptIntegrity(connection);
             RunTruncateCheckpoint(connection);
@@ -788,6 +789,79 @@ internal sealed partial class RbpJournalStore : IAsyncDisposable
         }
 
         return migrations.Count;
+    }
+
+    private static void ValidateRecoveryV8Shape(
+        SqliteConnection connection,
+        int schemaVersion)
+    {
+        if (schemaVersion < 8) return;
+        RequireExactColumns(connection, "rbp_recovery_carrier_reservations",
+            new[]
+            {
+                ("recovery_invocation_id", "TEXT"), ("rsid", "TEXT"),
+                ("origin_invocation_id", "TEXT"), ("result_digest", "TEXT"),
+                ("raw_idempotency_key", "TEXT"), ("raw_payload_version", "INTEGER"),
+                ("header_jcs", "TEXT"), ("plaintext_length", "INTEGER"),
+                ("chunk_size", "INTEGER"), ("chunk_count", "INTEGER"),
+                ("phase", "TEXT"), ("chunk_index", "INTEGER"),
+                ("current_reserved_seq", "INTEGER"), ("canonical_envelope_digest", "TEXT"),
+                ("send_started_at_ms", "INTEGER"), ("highest_reserved_seq", "INTEGER"),
+                ("acknowledgement_cursor", "INTEGER"), ("plan_version", "INTEGER"),
+                ("created_at_ms", "INTEGER"), ("expires_at_ms", "INTEGER"),
+                ("updated_at_ms", "INTEGER"), ("completed_at_ms", "INTEGER"),
+                ("tombstoned_at_ms", "INTEGER"), ("tombstone_reason", "TEXT"),
+            });
+        RequireExactColumns(connection, "rbp_recovery_sequence_tombstones",
+            new[] { ("rsid", "TEXT"), ("format_version", "INTEGER"),
+                ("tombstoned_at_ms", "INTEGER"), ("reason_code", "TEXT"),
+                ("sequence_high_water", "INTEGER") });
+        RequireIndex(connection, "rbp_recovery_carrier_reservations",
+            "ux_rbp_recovery_carrier_one_fence", unique: true, partial: true);
+        RequireIndex(connection, "rbp_recovery_carrier_reservations",
+            "ix_rbp_recovery_carrier_recovery", unique: false, partial: false);
+        RequireForeignKey(connection, "rbp_recovery_carrier_reservations", "rsid", "rbp_sessions");
+        RequireForeignKey(connection, "rbp_recovery_sequence_tombstones", "rsid", "rbp_sessions");
+    }
+
+    private static void RequireExactColumns(SqliteConnection connection, string table,
+        IReadOnlyList<(string Name, string Type)> expected)
+    {
+        using SqliteCommand command = CreateCommand(connection, "PRAGMA table_info(" + table + ");");
+        using SqliteDataReader reader = command.ExecuteReader();
+        var actual = new List<(string Name, string Type)>();
+        while (reader.Read()) actual.Add((reader.GetString(1), reader.GetString(2)));
+        if (actual.Count != expected.Count || !actual.SequenceEqual(expected))
+            throw new RbpJournalException(RbpJournalErrorCode.MigrationMismatch,
+                "The C39 recovery schema table shape is invalid.");
+    }
+
+    private static void RequireIndex(SqliteConnection connection, string table,
+        string expectedName, bool unique, bool partial)
+    {
+        using SqliteCommand command = CreateCommand(connection, "PRAGMA index_list(" + table + ");");
+        using SqliteDataReader reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            if (string.Equals(reader.GetString(1), expectedName, StringComparison.Ordinal) &&
+                reader.GetInt32(2) == (unique ? 1 : 0) && reader.GetInt32(4) == (partial ? 1 : 0)) return;
+        }
+        throw new RbpJournalException(RbpJournalErrorCode.MigrationMismatch,
+            "The C39 recovery schema index is invalid.");
+    }
+
+    private static void RequireForeignKey(SqliteConnection connection, string table,
+        string from, string target)
+    {
+        using SqliteCommand command = CreateCommand(connection, "PRAGMA foreign_key_list(" + table + ");");
+        using SqliteDataReader reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            if (string.Equals(reader.GetString(2), target, StringComparison.Ordinal) &&
+                string.Equals(reader.GetString(3), from, StringComparison.Ordinal)) return;
+        }
+        throw new RbpJournalException(RbpJournalErrorCode.MigrationMismatch,
+            "The C39 recovery schema foreign key is invalid.");
     }
 
     private static long ClampMigrationTimestamp(
