@@ -50,6 +50,7 @@ internal sealed partial class RbpConnectionCoordinator
     private readonly RbpProtectedRecoveryCarrierMaterializer
         _recoveryCarrierMaterializer;
     private readonly Func<CancellationToken, Task>? _beforeRecoveryCarrierWrite;
+    private readonly Func<CancellationToken, Task>? _afterRecoveryCarrierWriteBeforeAck;
     private readonly RbpConformanceOmittedOriginObservation _omittedOriginObservation;
     private readonly IRbpRecoveryCarrierObservationSink
         _recoveryCarrierObservationSink;
@@ -108,6 +109,7 @@ internal sealed partial class RbpConnectionCoordinator
         RbpProtectedRecoveryCarrierMaterializer?
             recoveryCarrierMaterializer = null,
         Func<CancellationToken, Task>? beforeRecoveryCarrierWrite = null,
+        Func<CancellationToken, Task>? afterRecoveryCarrierWriteBeforeAck = null,
         RbpConformanceOmittedOriginObservation? omittedOriginObservation = null,
         IRbpRecoveryCarrierObservationSink? recoveryCarrierObservationSink = null)
     {
@@ -125,6 +127,7 @@ internal sealed partial class RbpConnectionCoordinator
         _recoveryCarrierMaterializer = recoveryCarrierMaterializer ??
             new RbpProtectedRecoveryCarrierMaterializer(_journal);
         _beforeRecoveryCarrierWrite = beforeRecoveryCarrierWrite;
+        _afterRecoveryCarrierWriteBeforeAck = afterRecoveryCarrierWriteBeforeAck;
         _omittedOriginObservation = omittedOriginObservation ??
             RbpConformanceOmittedOriginObservation.Never;
         _recoveryCarrierObservationSink = recoveryCarrierObservationSink ??

@@ -46,7 +46,8 @@ internal sealed record WorkerGatewayServices(
     Func<RbpDocumentContextObservation, ValueTask>?
         OnDocumentContextObservation = null,
     RbpConformanceOmittedOriginObservation? OmittedOriginObservation = null,
-    IRbpRecoveryCarrierObservationSink? RecoveryCarrierObservationSink = null);
+    IRbpRecoveryCarrierObservationSink? RecoveryCarrierObservationSink = null,
+    Func<CancellationToken, Task>? AfterRecoveryCarrierWriteBeforeAck = null);
 
 /// <summary>
 /// Composes the production RBP data plane inside the worker host: the journal
@@ -196,7 +197,9 @@ internal static class WorkerGatewayComposition
                 onLifecycleTimeoutObservation:
                     services.OnLifecycleTimeoutObservation,
                 recoveryCarrierObservationSink:
-                    services.RecoveryCarrierObservationSink);
+                    services.RecoveryCarrierObservationSink,
+                afterRecoveryCarrierWriteBeforeAck:
+                    services.AfterRecoveryCarrierWriteBeforeAck);
         }
 
         if (services.Options.SessionRouteBindingAuthority is
@@ -263,7 +266,9 @@ internal static class WorkerGatewayComposition
             services.OnDocumentContextObservation,
             omittedOriginObservation: services.OmittedOriginObservation,
             recoveryCarrierObservationSink:
-                services.RecoveryCarrierObservationSink);
+                services.RecoveryCarrierObservationSink,
+            afterRecoveryCarrierWriteBeforeAck:
+                services.AfterRecoveryCarrierWriteBeforeAck);
     }
 
     /// <summary>

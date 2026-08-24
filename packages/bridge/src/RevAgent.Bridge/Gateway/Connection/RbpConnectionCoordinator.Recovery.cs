@@ -102,8 +102,12 @@ internal sealed partial class RbpConnectionCoordinator
 
                 // The only recovery-carrier socket write.  Do not route through
                 // QueueOutboundDataAsync, generic outbox/spool, or diagnostics.
-                await context.Cycle.SendAsync(envelope, context.Token)
-                    .ConfigureAwait(false);
+            await context.Cycle.SendAsync(envelope, context.Token)
+                .ConfigureAwait(false);
+            if (_afterRecoveryCarrierWriteBeforeAck is { } afterWrite)
+            {
+                await afterWrite(context.Token).ConfigureAwait(false);
+            }
             }
             finally
             {
