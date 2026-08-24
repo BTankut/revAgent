@@ -58,11 +58,14 @@ const HTTP_SSE_DELIVERY_OBSERVATION_LIMIT = 256;
 const HTTP_SSE_DEFAULT_QUEUED_FRAMES = 32;
 const HTTP_SSE_MIN_QUEUED_FRAMES = 1;
 const HTTP_SSE_MAX_QUEUED_FRAMES = 256;
+const HTTP_SSE_DEFAULT_TEARDOWN_TIMEOUT_MS = RBP_WSS_DEFAULT_SEND_COMPLETION_TIMEOUT_MS;
 
 async function boundedDispatchRevalidate(
   handoff: DispatchTransportHandoff,
   controller: AbortController,
   timeoutMs = RBP_DISPATCH_REVALIDATION_TIMEOUT_MS,
+  requestCancellation: () => Promise<DispatchPreStartCancellation> = () =>
+    rawDispatchCancellation(handoff),
 ): Promise<void> {
   let timer: ReturnType<typeof setTimeout> | null = null;
   const revalidation = handoff.revalidate(controller.signal);
@@ -84,7 +87,7 @@ async function boundedDispatchRevalidate(
     }
   } catch (error) {
     controller.abort();
-    const settlement = await boundedDispatchCancellation(handoff);
+    const settlement = await observeDispatchCancellation(requestCancellation());
     if (settlement !== "settled_no_send") {
       throw new Error("dispatch cancellation cleanup is uncertain; durable reservation remains frozen");
     }
@@ -94,15 +97,23 @@ async function boundedDispatchRevalidate(
   }
 }
 
-async function boundedDispatchCancellation(
+/** The raw durable task is ownership truth; callers may separately observe it. */
+function rawDispatchCancellation(
   handoff: DispatchTransportHandoff,
 ): Promise<DispatchPreStartCancellation> {
-  return await observeDispatchCancellation(handoff.cancelBeforeStart());
+  const cleanup = handoff.cancelBeforeStart();
+  // Sink the producer immediately. The transformed task below still preserves
+  // the only useful carrier result without promoting a timeout into truth.
+  void cleanup.catch(() => undefined);
+  return cleanup.then(
+    (settled) => settled ? "settled_no_send" : "cancellation_pending",
+    () => "cancellation_pending",
+  );
 }
 
 /** Observe one shared cancellation task without turning a timeout into truth. */
 async function observeDispatchCancellation(
-  cleanup: Promise<boolean>,
+  cleanup: Promise<DispatchPreStartCancellation>,
 ): Promise<DispatchPreStartCancellation> {
   // A late store completion must never create an unhandled rejection after a
   // transport queue has advanced past this cancelled generation.
@@ -111,15 +122,13 @@ async function observeDispatchCancellation(
   try {
     const observed = await Promise.race([
       cleanup,
-      new Promise<boolean>((resolve) => {
+      new Promise<DispatchPreStartCancellation>((resolve) => {
         // This is an observation bound, not a durable outcome. The shared
         // handoff promise continues after connection detach/queue advance.
-        timer = setTimeout(() => resolve(false), RBP_DISPATCH_CLEANUP_TIMEOUT_MS);
+        timer = setTimeout(() => resolve("cancellation_pending"), RBP_DISPATCH_CLEANUP_TIMEOUT_MS);
       }),
     ]);
-    return observed === true
-      ? "settled_no_send"
-      : "cancellation_pending";
+    return observed;
   } catch {
     return "cancellation_pending";
   } finally {
@@ -182,6 +191,8 @@ export interface RbpWssEgressConfig {
 export interface RbpHttpSseEgressConfig {
   readonly queuedFrames?: number;
   readonly queuedBytes?: number;
+  /** Internal carrier teardown watchdog; never wire-visible. */
+  readonly teardownTimeoutMs?: number;
 }
 
 /** Testable clock/scheduler seam; production always retains the frozen values. */
@@ -473,11 +484,15 @@ interface SsePendingDispatchEntry {
     readonly resolveCompletion: (() => void) | null;
     readonly rejectCompletion: ((error: Error) => void) | null;
     readonly cancelled: () => boolean;
+    readonly cancelLocal: () => void;
+    readonly requestCancellation: (() => Promise<DispatchPreStartCancellation>) | null;
 }
 
 class HttpSseChannel implements BridgeConnectionChannel {
   readonly #pending: SsePendingDispatchEntry[] = [];
   readonly #inFlight = new Set<SsePendingDispatchEntry>();
+  /** Raw durable cancellation work, not the 250ms presentation observation. */
+  readonly #rawSettlements = new Set<Promise<DispatchPreStartCancellation>>();
   #response: ServerResponse | null = null;
   #pendingBytes = 0;
   #closed = false;
@@ -493,6 +508,7 @@ class HttpSseChannel implements BridgeConnectionChannel {
     ) => void,
     private readonly maxPendingFrames = HTTP_SSE_DEFAULT_QUEUED_FRAMES,
     private readonly maxPendingBytes = MAX_PENDING_TRANSPORT_BYTES,
+    private readonly teardownTimeoutMs = HTTP_SSE_DEFAULT_TEARDOWN_TIMEOUT_MS,
   ) {}
 
   public bindConnection(connectionId: string): void {
@@ -508,6 +524,32 @@ class HttpSseChannel implements BridgeConnectionChannel {
 
   public get closed(): boolean {
     return this.#closed;
+  }
+
+  #ownCancellation(
+    handoff: DispatchTransportHandoff,
+  ): () => Promise<DispatchPreStartCancellation> {
+    let raw: Promise<DispatchPreStartCancellation> | null = null;
+    return (): Promise<DispatchPreStartCancellation> => {
+      if (raw !== null) return raw;
+      raw = rawDispatchCancellation(handoff);
+      this.#rawSettlements.add(raw);
+      // The set is the ownership boundary. Remove only when the raw durable
+      // task settles; a bounded observer is deliberately not allowed here.
+      void raw.then(() => {
+        this.#rawSettlements.delete(raw!);
+      });
+      return raw;
+    };
+  }
+
+  async #settleRawCancellations(): Promise<void> {
+    for (;;) {
+      const snapshot = [...this.#rawSettlements];
+      if (snapshot.length === 0) return;
+      await Promise.allSettled(snapshot);
+      if (this.#rawSettlements.size === 0) return;
+    }
   }
 
   #fail(error: Error): never {
@@ -543,7 +585,12 @@ class HttpSseChannel implements BridgeConnectionChannel {
           if (pending.cancelled()) throw new Error("SSE dispatch queue cancelled before invocation");
           // Queue entries retain only an opaque closure, never proof bytes.
           if (pending.handoff !== null && pending.controller !== null) {
-            await boundedDispatchRevalidate(pending.handoff, pending.controller);
+            await boundedDispatchRevalidate(
+              pending.handoff,
+              pending.controller,
+              RBP_DISPATCH_REVALIDATION_TIMEOUT_MS,
+              pending.requestCancellation!,
+            );
           }
           if (pending.cancelled()) throw new Error("SSE dispatch queue cancelled before invocation");
           // #writeFrame crosses response.write synchronously before returning
@@ -558,6 +605,8 @@ class HttpSseChannel implements BridgeConnectionChannel {
           pending.rejectStarted?.(failure);
           pending.rejectCompletion?.(failure);
           for (const remainder of attachedPending.slice(index + 1)) {
+            remainder.cancelLocal();
+            void remainder.requestCancellation?.();
             remainder.rejectStarted?.(failure);
             remainder.rejectCompletion?.(failure);
           }
@@ -582,7 +631,7 @@ class HttpSseChannel implements BridgeConnectionChannel {
         this.#fail(new Error("SSE attach backlog exceeds the bounded transport window"));
       }
       this.#pendingBytes = nextBytes;
-      this.#pending.push({ serialized, handoff: null, controller: null, generation: 0, resolveStarted: null, rejectStarted: null, resolveCompletion: null, rejectCompletion: null, cancelled: () => false });
+      this.#pending.push({ serialized, handoff: null, controller: null, generation: 0, resolveStarted: null, rejectStarted: null, resolveCompletion: null, rejectCompletion: null, cancelled: () => false, cancelLocal: () => undefined, requestCancellation: null });
       this.#observe("queued");
       return;
     }
@@ -611,6 +660,11 @@ class HttpSseChannel implements BridgeConnectionChannel {
     let cancelled = false;
     let queued: SsePendingDispatchEntry | null = null;
     let controller: AbortController | null = null;
+    const requestCancellation = this.#ownCancellation(handoff);
+    const cancelLocal = (): void => {
+      cancelled = true;
+      controller?.abort();
+    };
     try {
       if (this.#closed) throw new Error("SSE stream is closed");
       const response = this.#response;
@@ -621,7 +675,7 @@ class HttpSseChannel implements BridgeConnectionChannel {
         }
         this.#pendingBytes = nextBytes;
         controller = new AbortController();
-        queued = { serialized, handoff, controller, generation: ++this.#dispatchGeneration, resolveStarted, rejectStarted, resolveCompletion, rejectCompletion, cancelled: () => cancelled };
+        queued = { serialized, handoff, controller, generation: ++this.#dispatchGeneration, resolveStarted, rejectStarted, resolveCompletion, rejectCompletion, cancelled: () => cancelled, cancelLocal, requestCancellation };
         this.#pending.push(queued);
         this.#observe("queued");
       } else {
@@ -637,11 +691,13 @@ class HttpSseChannel implements BridgeConnectionChannel {
           resolveCompletion,
           rejectCompletion,
           cancelled: () => cancelled,
+          cancelLocal,
+          requestCancellation,
         };
         this.#inFlight.add(inFlight);
         void (async () => {
           try {
-            await boundedDispatchRevalidate(handoff, controller);
+            await boundedDispatchRevalidate(handoff, controller, RBP_DISPATCH_REVALIDATION_TIMEOUT_MS, requestCancellation);
             if (cancelled) throw new Error("SSE dispatch queue cancelled before invocation");
             // #writeFrame invokes response.write synchronously before it
             // returns.  Keep this directly after the authoritative async
@@ -668,8 +724,7 @@ class HttpSseChannel implements BridgeConnectionChannel {
     }
     const cancel = async (): Promise<boolean> => {
       if (startedAtInvocation) return false;
-      cancelled = true;
-      controller?.abort();
+      cancelLocal();
       if (queued !== null) {
         const index = this.#pending.indexOf(queued);
         if (index >= 0) {
@@ -681,7 +736,7 @@ class HttpSseChannel implements BridgeConnectionChannel {
       const failure = new Error("SSE dispatch queue cancelled before invocation");
       rejectStarted(failure);
       rejectCompletion(failure);
-      return (await boundedDispatchCancellation(handoff)) === "settled_no_send";
+      return (await observeDispatchCancellation(requestCancellation())) === "settled_no_send";
     };
     return { started, completion, cancel };
   }
@@ -757,32 +812,48 @@ class HttpSseChannel implements BridgeConnectionChannel {
   public async close(): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
-    let closeError: Error | null = null;
-    if (this.#response !== null && !this.#response.writableEnded) {
-      try {
-        this.#response.end();
-        this.#observe("close");
-      } catch (error) {
-        closeError = error instanceof Error ? error : new Error(String(error));
-        this.#observe("error", "close_failed");
-      }
-    }
-    this.#response = null;
     const cancelled = new Error("SSE dispatch queue cancelled before invocation");
     for (const pending of this.#pending.splice(0)) {
-      pending.controller?.abort();
-      if (pending.handoff !== null) void boundedDispatchCancellation(pending.handoff);
+      pending.cancelLocal();
+      void pending.requestCancellation?.();
       pending.rejectStarted?.(cancelled);
       pending.rejectCompletion?.(cancelled);
     }
     for (const pending of this.#inFlight) {
-      pending.controller?.abort();
-      if (pending.handoff !== null) void boundedDispatchCancellation(pending.handoff);
+      pending.cancelLocal();
+      void pending.requestCancellation?.();
       pending.rejectStarted?.(cancelled);
       pending.rejectCompletion?.(cancelled);
     }
     this.#inFlight.clear();
     this.#pendingBytes = 0;
+    let closeError: Error | null = null;
+    const closeTransport = (): void => {
+      if (this.#response !== null && !this.#response.writableEnded) {
+        try {
+          this.#response.end();
+          this.#observe("close");
+        } catch (error) {
+          closeError = error instanceof Error ? error : new Error(String(error));
+          this.#observe("error", "close_failed");
+        }
+      }
+      this.#response = null;
+    };
+    // Raw settlement is ownership truth. The watchdog is the one bounded
+    // escape: it closes/detaches only after local abort, leaving the durable
+    // reservation/cancellation-pending state for recovery without asserting
+    // a no-send receipt.
+    let watchdogTimer: ReturnType<typeof setTimeout> | null = null;
+    const settled = await Promise.race([
+      this.#settleRawCancellations().then(() => true),
+      new Promise<boolean>((resolve) => {
+        watchdogTimer = setTimeout(() => resolve(false), this.teardownTimeoutMs);
+      }),
+    ]);
+    if (watchdogTimer !== null) clearTimeout(watchdogTimer);
+    if (!settled) this.#observe("error", "close_failed");
+    closeTransport();
     this.onClose();
     if (closeError !== null) throw closeError;
   }
@@ -917,6 +988,12 @@ export function createProductionRbpIngressHost(
     1,
     MAX_PENDING_TRANSPORT_BYTES,
     "httpSseEgress.queuedBytes",
+  );
+  const httpSseTeardownTimeoutMs = boundedInteger(
+    options.httpSseEgress?.teardownTimeoutMs ?? HTTP_SSE_DEFAULT_TEARDOWN_TIMEOUT_MS,
+    RBP_WSS_MIN_SEND_COMPLETION_TIMEOUT_MS,
+    RBP_WSS_MAX_SEND_COMPLETION_TIMEOUT_MS,
+    "httpSseEgress.teardownTimeoutMs",
   );
   const websocketServer = new WebSocketServer({
     noServer: true,
@@ -1227,6 +1304,7 @@ export function createProductionRbpIngressHost(
                 observeHttpSseDelivery,
                 httpSseQueuedFrameLimit,
                 httpSseQueuedByteLimit,
+                httpSseTeardownTimeoutMs,
               );
               try {
                 const opening = await authority.openConnection({
@@ -1436,6 +1514,10 @@ export function createProductionRbpIngressHost(
           let detachTask: Promise<void> | null = null;
           let transportFinalized = false;
           const pendingSendCancellations = new Set<(error: Error) => void>();
+          const pendingDispatchCancellations = new Set<() => Promise<DispatchPreStartCancellation>>();
+          // These are the raw durable tasks. They are intentionally distinct
+          // from the 250ms caller observation used by the dispatch adapter.
+          const rawDispatchSettlements = new Set<Promise<DispatchPreStartCancellation>>();
 
           const internalFault = (error: unknown): GatewayRbpFault =>
             new GatewayRbpFault(
@@ -1483,6 +1565,36 @@ export function createProductionRbpIngressHost(
             for (const cancel of [...pendingSendCancellations]) cancel(error);
           };
 
+          const ownCancellation = (
+            handoff: DispatchTransportHandoff,
+          ): (() => Promise<DispatchPreStartCancellation>) => {
+            let raw: Promise<DispatchPreStartCancellation> | null = null;
+            return (): Promise<DispatchPreStartCancellation> => {
+              if (raw !== null) return raw;
+              raw = rawDispatchCancellation(handoff);
+              rawDispatchSettlements.add(raw);
+              void raw.then(() => {
+                rawDispatchSettlements.delete(raw!);
+              });
+              return raw;
+            };
+          };
+
+          const cancelPendingDispatches = (): void => {
+            for (const requestCancellation of [...pendingDispatchCancellations]) {
+              void requestCancellation();
+            }
+          };
+
+          const settleRawDispatchCancellations = async (): Promise<void> => {
+            for (;;) {
+              const snapshot = [...rawDispatchSettlements];
+              if (snapshot.length === 0) return;
+              await Promise.allSettled(snapshot);
+              if (rawDispatchSettlements.size === 0) return;
+            }
+          };
+
           const sendRaw = async (serialized: string): Promise<void> => {
             if (websocket.readyState !== WebSocket.OPEN) {
               throw new Error("WSS transport is not open");
@@ -1527,12 +1639,6 @@ export function createProductionRbpIngressHost(
               nextFrames > egressQueuedFrameLimit ||
               nextBytes > egressQueuedByteLimit
             ) {
-              // Claim the one durable cancellation task before closing this
-              // transport. Teardown may detach the connection immediately;
-              // it must inherit this task rather than race a stale session
-              // write against phase two.
-              const cleanup = handoff.cancelBeforeStart();
-              void cleanup.catch(() => undefined);
               egressOverload();
               throw new Error("WSS application egress queue overloaded");
             }
@@ -1581,6 +1687,8 @@ export function createProductionRbpIngressHost(
             // until that concrete invocation boundary.
             let transportStarted = false;
             const controller = new AbortController();
+            const requestCancellation = ownCancellation(handoff);
+            pendingDispatchCancellations.add(requestCancellation);
             const rejectStart = (error: unknown): void => {
               if (startedSettled) return;
               startedSettled = true;
@@ -1593,8 +1701,10 @@ export function createProductionRbpIngressHost(
               nextFrames > egressQueuedFrameLimit ||
               nextBytes > egressQueuedByteLimit
             ) {
-              const cleanup = handoff.cancelBeforeStart();
-              void cleanup.catch(() => undefined);
+              // Register the raw durable task before teardown can detach the
+              // connection. The bounded observer below is presentation only.
+              const cancellation = requestCancellation();
+              pendingDispatchCancellations.delete(requestCancellation);
               egressOverload();
               const overloadError = new Error("WSS application egress queue overloaded");
               rejectStart(overloadError);
@@ -1606,10 +1716,8 @@ export function createProductionRbpIngressHost(
               // durable cancellation wins.  The promise is intentionally
               // shared so a started-race cleanup and teardown cannot each
               // invoke a new cancellation against a later lease.
-              let cancellation: Promise<DispatchPreStartCancellation> | null =
-                observeDispatchCancellation(cleanup);
               const cancel = async (): Promise<boolean> => {
-                return (await cancellation) === "settled_no_send";
+                return (await observeDispatchCancellation(cancellation)) === "settled_no_send";
               };
               return { started, completion, cancel };
             }
@@ -1618,12 +1726,18 @@ export function createProductionRbpIngressHost(
             const completion = appendEgress(async () => {
               if (cancelled) throw new Error("WSS dispatch queue cancelled before invocation");
               if (terminalEgressClaimed || state === "closing" || state === "faulted" || state === "closed") {
+                void requestCancellation();
                 throw new Error("WSS dispatch egress is closed");
               }
               // The adapter bounds a stalled producer and observes its late
               // rejection. No await follows successful validation before
               // websocket.send below.
-              await boundedDispatchRevalidate(handoff, controller, sendCompletionTimeoutMs);
+              await boundedDispatchRevalidate(
+                handoff,
+                controller,
+                sendCompletionTimeoutMs,
+                requestCancellation,
+              );
               if (cancelled) throw new Error("WSS dispatch queue cancelled before invocation");
               if (websocket.readyState !== WebSocket.OPEN) throw new Error("WSS transport is not open");
               await new Promise<void>((resolve, reject) => {
@@ -1639,6 +1753,7 @@ export function createProductionRbpIngressHost(
                 pendingSendCancellations.add(cancel);
                 try {
                   transportStarted = true;
+                  pendingDispatchCancellations.delete(requestCancellation);
                   websocket.send(serialized, (error) => finish(error));
                   if (!startedSettled) {
                     startedSettled = true;
@@ -1649,6 +1764,10 @@ export function createProductionRbpIngressHost(
                 }
               });
             }).finally(() => {
+              if (!transportStarted) {
+                void requestCancellation();
+              }
+              pendingDispatchCancellations.delete(requestCancellation);
               applicationEgressFrames -= 1;
               applicationEgressBytes -= serializedBytes;
             });
@@ -1662,7 +1781,7 @@ export function createProductionRbpIngressHost(
                 cancelled = true;
                 controller.abort();
                 rejectStart(new Error("WSS dispatch queue cancelled before invocation"));
-                return (await boundedDispatchCancellation(handoff)) === "settled_no_send";
+                return (await observeDispatchCancellation(requestCancellation())) === "settled_no_send";
               },
             };
           };
@@ -1776,6 +1895,7 @@ export function createProductionRbpIngressHost(
               watchdogTimer = setTimeout(() => {
                 watchdogFired = true;
                 cancelPendingSends(new Error("WSS teardown watchdog expired"));
+                cancelPendingDispatches();
                 observeDiagnostic(
                   "egress",
                   "internal",
@@ -1791,6 +1911,7 @@ export function createProductionRbpIngressHost(
             // This cancellation must happen before the cleanup is appended
             // behind serialTail: processFrame may itself be awaiting this send.
             cancelPendingSends(new Error("WSS send cancelled for teardown"));
+            cancelPendingDispatches();
             if (pendingAtClaim > 0) {
               void claimedEgressTail.then(() => {
                 if (accountingObserved) return;
@@ -1835,6 +1956,12 @@ export function createProductionRbpIngressHost(
                 terminalSerialized,
                 input.closeCode ?? 1011,
               );
+              if (watchdogFired) return;
+              // egressTail is quiescent before this snapshot. A cancellation
+              // created by its final failure path is therefore either present
+              // here or will be picked up by the stable-set loop. Do not close
+              // or detach before the raw durable task settles.
+              await settleRawDispatchCancellations();
               if (watchdogFired) return;
               if (egressResult === "timed_out") {
                 observeDiagnostic(
