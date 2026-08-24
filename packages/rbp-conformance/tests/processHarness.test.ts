@@ -45,6 +45,12 @@ async function startReadyIpc(mode: string, marker?: string): Promise<StrictReady
   });
 }
 
+type TestIpcSend = (message: unknown, callback?: (error: Error | null) => void) => boolean;
+
+function testIpcSend(child: StrictReadyProcess): { send: TestIpcSend } {
+  return (child as unknown as { readonly child: { send: TestIpcSend } }).child;
+}
+
 describe("strict JSONL process control", () => {
   it("uses one opaque STOP generation, accepts only its exact ack, then parent-disconnects", async () => {
     const root = mkdtempSync(path.join(tmpdir(), "wp12-ready-stop-"));
@@ -57,8 +63,39 @@ describe("strict JSONL process control", () => {
     expect(JSON.parse(readFileSync(marker, "utf8"))).toEqual({ stopCount: 1 });
   });
 
-  it("cleans the exact child tree when a STOP acknowledgement is absent", async () => {
+  it("treats a false IPC send return as backpressure while the exact ACK completes naturally", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "wp12-ready-backpressure-"));
+    const marker = path.join(root, "child-backpressure.json");
+    const child = await startReadyIpc("normal", marker);
+    const handle = testIpcSend(child);
+    const original = handle.send.bind(handle) as TestIpcSend;
+    handle.send = ((message, callback) => {
+      original(message, callback);
+      return false;
+    }) as TestIpcSend;
+    await expect(child.stop("SIGTERM", 2_000)).resolves.toMatchObject({ exitCode: 0, killEscalated: false });
+    expect(JSON.parse(readFileSync(marker, "utf8"))).toEqual({ stopCount: 1 });
+  });
+
+  it("escalates exactly once when false-backpressure is followed by an IPC callback error", async () => {
+    const child = await startReadyIpc("normal");
+    const handle = testIpcSend(child);
+    handle.send = ((_message, callback) => {
+      setTimeout(() => callback?.(new Error("planned IPC callback failure")), 1);
+      return false;
+    }) as TestIpcSend;
+    await expect(child.stop("SIGTERM", 2_000)).resolves.toMatchObject({ killEscalated: true });
+    expect(child.process.exitCode).not.toBeNull();
+  });
+
+  it("escalates once when false-backpressure receives no STOP acknowledgement", async () => {
     const child = await startReadyIpc("missing-ack");
+    const handle = testIpcSend(child);
+    const original = handle.send.bind(handle) as TestIpcSend;
+    handle.send = ((message, callback) => {
+      original(message, callback);
+      return false;
+    }) as TestIpcSend;
     await expect(child.stop("SIGTERM", 50)).resolves.toMatchObject({
       killEscalated: true,
       exitCode: expect.any(Number),

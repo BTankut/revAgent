@@ -666,6 +666,12 @@ export interface ReadyProcessOptions extends ProcessEvidenceDirectoryOptions {
   validateReadiness(value: JsonObject): void;
 }
 
+interface PendingReadyProcessStop {
+  readonly nonce: string;
+  readonly settle: (status: "closed" | "failed") => void;
+  readonly fail: (error: Error) => void;
+}
+
 export class StrictReadyProcess {
   readonly transcript: ProcessTranscriptRecord[];
   readonly readiness: JsonObject;
@@ -673,7 +679,7 @@ export class StrictReadyProcess {
   readonly pid: number;
   #exit: Promise<{ code: number; at: string }>;
   #stopPromise: Promise<{ stoppedAt: string; exitCode: number; killEscalated: boolean }> | null = null;
-  #pendingStop: { readonly nonce: string; readonly settle: (status: "closed" | "failed") => void } | null = null;
+  #pendingStop: PendingReadyProcessStop | null = null;
 
   private constructor(
     readonly componentId: ComponentId,
@@ -696,6 +702,7 @@ export class StrictReadyProcess {
         const normalized = code ?? (signal === null ? 1 : 128);
         this.process.stoppedAt = at;
         this.process.exitCode = normalized;
+        this.#pendingStop?.fail(new Error(`${this.componentId} exited before STOP acknowledgement`));
         resolve({ code: normalized, at });
       });
     });
@@ -710,6 +717,9 @@ export class StrictReadyProcess {
           (candidate.status !== "closed" && candidate.status !== "failed") ||
           Object.keys(candidate).length !== 3) return;
       pending.settle(candidate.status);
+    });
+    child.on("disconnect", () => {
+      this.#pendingStop?.fail(new Error(`${this.componentId} IPC disconnected before STOP acknowledgement`));
     });
   }
 
@@ -847,27 +857,31 @@ export class StrictReadyProcess {
       } else {
         const nonce = randomUUID();
         const acknowledged = await new Promise<"closed" | "failed">((resolve, reject) => {
-          const timer = setTimeout(() => reject(new Error(`${this.componentId} STOP acknowledgement timed out`)), boundedTimeout);
-          this.#pendingStop = {
+          const fail = (error: Error): void => {
+            if (this.#pendingStop?.nonce !== nonce) return;
+            clearTimeout(timer);
+            this.#pendingStop = null;
+            reject(error);
+          };
+          const timer = setTimeout(() => fail(new Error(`${this.componentId} STOP acknowledgement timed out`)), boundedTimeout);
+          const pending: PendingReadyProcessStop = {
             nonce,
             settle: (status) => {
+              if (this.#pendingStop !== pending) return;
               clearTimeout(timer);
               this.#pendingStop = null;
               resolve(status);
             },
+            fail,
           };
+          this.#pendingStop = pending;
           try {
-            const accepted = this.child.send({ action: "STOP", nonce }, (error) => {
-              if (error == null || this.#pendingStop === null) return;
-              clearTimeout(timer);
-              this.#pendingStop = null;
-              reject(error);
+            this.child.send({ action: "STOP", nonce }, (error) => {
+              if (error == null) return;
+              pending.fail(error);
             });
-            if (!accepted) throw new Error(`${this.componentId} STOP IPC was not accepted`);
           } catch (error) {
-            clearTimeout(timer);
-            this.#pendingStop = null;
-            reject(error instanceof Error ? error : new Error(String(error)));
+            pending.fail(error instanceof Error ? error : new Error(String(error)));
           }
         });
         if (acknowledged !== "closed") throw new Error(`${this.componentId} STOP reported failed shutdown`);
