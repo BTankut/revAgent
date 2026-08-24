@@ -8,6 +8,7 @@ import {
 import {
   createReceivedJournalRecord,
   dataEnvelopeImmutableDigest,
+  makeParamsDigest,
   RBP_MAX_DECODED_CHUNK_BYTES,
   RBP_MAX_INLINE_RESULT_BYTES,
   RBP_MAX_INVOCATION_PARAMS_BYTES,
@@ -35,6 +36,7 @@ import type {
   GatewayJsonObject,
 } from "./dispatch.js";
 import { gatewayUuidV7 } from "./identifiers.js";
+import { createEffectiveMcpRequestScopeV1 } from "./invocationContext.js";
 import type { GatewayRecoveryPendingDispatch } from "./recoveryAuthority.js";
 import {
   RBP_OPENING_REFUSAL_OBSERVER_CONTRACT,
@@ -169,6 +171,12 @@ function request(
   const method = options.method ?? "get_revit_mcp_status";
   const toolName = options.toolName ?? "core.get_revit_status";
   const mutating = options.mutating ?? false;
+  const effectiveMcpRequestScope = createEffectiveMcpRequestScopeV1({
+    principalKey: "tenant-gw12:user-gw12",
+    transportMcpSessionId: "mcp-session-gw12",
+    identityMcpSessionId: null,
+    nowMs: Date.now(),
+  });
   return {
     toolName,
     toolVersion: "1.0.0",
@@ -184,6 +192,7 @@ function request(
       gatewaySessionId: "gateway-session-gw12",
       oauthClientId: "oauth-client-gw12",
       mcpSessionId: "mcp-session-gw12",
+      effectiveMcpRequestScope,
       rsid,
       toolName,
       toolVersion: "1.0.0",
@@ -195,7 +204,7 @@ function request(
       mutating,
       executor: "bridge",
       documentIdentity: { kind: "live", session_document_id: "doc-gw12" },
-      paramsDigest: `sha256:${"1".repeat(64)}`,
+      paramsDigest: makeParamsDigest(args),
       mutationScope: mutating ? { kind: "session" } : null,
       startedAtMs: Date.now(),
     },
