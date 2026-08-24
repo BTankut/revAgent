@@ -147,6 +147,7 @@ internal sealed partial class RbpJournalStore
                             "The recovery terminal did not transition exactly one executing invocation.");
                 }
                 _faultInjector?.Hit(RbpJournalFaultPoint.RecoverySequenceReserved);
+                RefreshRecoveryCarrierCommitment(context, request.RecoveryInvocationId);
                 return ReadRecoveryCarrierReservation(context, request.RecoveryInvocationId) ??
                     throw RbpJournalSerialization.Corrupt("The recovery carrier reservation disappeared after persistence.");
             }, cancellationToken);
@@ -185,11 +186,8 @@ internal sealed partial class RbpJournalStore
                 !string.Equals(reservation.HeaderJcs,
                     "{\"content_encoding\":\"base64\",\"content_type\":\"application/json\",\"v\":1}", StringComparison.Ordinal) ||
                 !string.Equals(reservation.CanonicalEnvelopeDigest,
-                    Rfc8785Json.Sha256Digest(JsonSerializer.SerializeToElement(new {
-                        invocation_id = reservation.RecoveryInvocationId,
-                        origin_invocation_id = reservation.OriginInvocationId,
-                        expected_result_digest = reservation.ResultDigest,
-                    })), StringComparison.Ordinal)) return null;
+                    RbpRecoveryCarrierCommitment.Compute(reservation, reservation.CurrentReservedSequence + 1),
+                    StringComparison.Ordinal)) return null;
             using SqliteCommand state = CreateCommand(connection, """
                 SELECT sequence.last_peer_ack,sequence.highest_tx_seq,sequence.next_tx_seq
                 FROM rbp_sessions AS session JOIN rbp_session_sequence AS sequence ON sequence.rsid=session.rsid
@@ -244,6 +242,7 @@ internal sealed partial class RbpJournalStore
                 throw new RbpJournalException(RbpJournalErrorCode.ProtocolConflict, "The recovery carrier reservation changed during send-start.");
             }
             _faultInjector?.Hit(RbpJournalFaultPoint.RecoverySendStarted);
+            RefreshRecoveryCarrierCommitment(context, recoveryInvocationId);
             return ReadRecoveryCarrierReservation(context, recoveryInvocationId) ??
                 throw RbpJournalSerialization.Corrupt("The recovery carrier reservation disappeared during send-start.");
         }, cancellationToken);
@@ -305,6 +304,7 @@ internal sealed partial class RbpJournalStore
                 complete.Parameters.AddWithValue("$now", now);
                 complete.Parameters.AddWithValue("$recovery", current.RecoveryInvocationId);
                 if (complete.ExecuteNonQuery() != 1) throw RbpJournalSerialization.Corrupt("The recovery completion CAS failed.");
+                RefreshRecoveryCarrierCommitment(context, current.RecoveryInvocationId);
             }
             else
             {
@@ -330,6 +330,7 @@ internal sealed partial class RbpJournalStore
                 advance.Parameters.AddWithValue("$recovery", current.RecoveryInvocationId);
                 if (advance.ExecuteNonQuery() != 1) throw RbpJournalSerialization.Corrupt("The recovery advance CAS failed.");
                 PersistSequenceState(context, advanced, now);
+                RefreshRecoveryCarrierCommitment(context, current.RecoveryInvocationId);
             }
             return ReadRecoveryCarrierReservation(context, current.RecoveryInvocationId) ??
                 throw RbpJournalSerialization.Corrupt("The recovery carrier reservation disappeared after acknowledgement.");
@@ -1121,12 +1122,29 @@ internal sealed partial class RbpJournalStore
             !string.Equals(existing.OriginInvocationId, request.OriginInvocationId, StringComparison.Ordinal) ||
             !string.Equals(existing.ResultDigest, request.ResultDigest, StringComparison.Ordinal) ||
             !string.Equals(existing.HeaderJcs, CanonicalRecoveryCarrierHeader(request.Header), StringComparison.Ordinal) ||
-            existing.ChunkSize != request.ChunkSize ||
-            !string.Equals(existing.CanonicalEnvelopeDigest, request.CanonicalEnvelopeDigest, StringComparison.Ordinal))
+            existing.ChunkSize != request.ChunkSize)
         {
             throw new RbpJournalException(RbpJournalErrorCode.ProtocolConflict,
                 "The recovery carrier reservation is immutable.");
         }
+    }
+
+    private static void RefreshRecoveryCarrierCommitment(
+        RbpJournalWriteContext context, string recoveryInvocationId)
+    {
+        RbpRecoveryCarrierReservation reservation = ReadRecoveryCarrierReservation(context, recoveryInvocationId) ??
+            throw RbpJournalSerialization.Corrupt("The recovery commitment row is missing.");
+        string commitment = RbpRecoveryCarrierCommitment.Compute(
+            reservation, reservation.CurrentReservedSequence + 1);
+        using SqliteCommand update = context.CreateCommand("""
+            UPDATE rbp_recovery_carrier_reservations
+            SET canonical_envelope_digest=$commitment
+            WHERE recovery_invocation_id=$recovery;
+            """);
+        update.Parameters.AddWithValue("$commitment", commitment);
+        update.Parameters.AddWithValue("$recovery", recoveryInvocationId);
+        if (update.ExecuteNonQuery() != 1)
+            throw RbpJournalSerialization.Corrupt("The recovery commitment update failed.");
     }
 
     private IReadOnlyList<RbpRetainedOutboundData> ReadOutbox(

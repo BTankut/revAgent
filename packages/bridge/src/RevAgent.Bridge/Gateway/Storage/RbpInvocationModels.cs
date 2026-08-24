@@ -1,4 +1,5 @@
 using System.Text.Json;
+using RevAgent.Bridge.Gateway.Protocol;
 
 namespace RevAgent.Bridge.Gateway.Storage;
 
@@ -289,6 +290,36 @@ internal sealed record RbpRecoveryCarrierReservation(
     long? CompletedAtMilliseconds,
     long? TombstonedAtMilliseconds,
     string? TombstoneReason);
+
+/// <summary>Single domain-separated, non-wire commitment for C39 carrier state.</summary>
+internal static class RbpRecoveryCarrierCommitment
+{
+    internal static string Compute(RbpRecoveryCarrierReservation value, long nextSequence) =>
+        Rfc8785Json.Sha256Digest(JsonSerializer.SerializeToElement(new
+        {
+            domain = "revagent/recovery-carrier-commitment/v1",
+            rsid = value.Rsid,
+            recovery_invocation_id = value.RecoveryInvocationId,
+            origin_invocation_id = value.OriginInvocationId,
+            result_digest = value.ResultDigest,
+            raw_id = value.RawIdempotencyKey,
+            raw_version = value.RawPayloadVersion,
+            raw_length = value.PlaintextLength,
+            plan_version = value.PlanVersion,
+            phase = value.Phase.ToString().ToLowerInvariant(),
+            header_jcs = value.HeaderJcs,
+            chunk_size = value.ChunkSize,
+            chunk_count = value.ChunkCount,
+            chunk_index = value.ChunkIndex,
+            total_length = value.PlaintextLength,
+            current_reserved_seq = value.CurrentReservedSequence,
+            predecessor_ack = value.AcknowledgementCursor,
+            high_water = value.HighestReservedSequence,
+            next_sequence = nextSequence,
+            created_at_ms = value.CreatedAtMilliseconds,
+            expires_at_ms = value.ExpiresAtMilliseconds,
+        }));
+}
 
 /// <summary>
 /// Immutable delivery material for a chunk/artifact carrier.  The journal owns

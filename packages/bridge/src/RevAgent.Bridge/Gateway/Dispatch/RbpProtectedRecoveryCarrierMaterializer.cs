@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using RevAgent.Bridge.Gateway.Protocol;
 using RevAgent.Bridge.Gateway.Storage;
 
 namespace RevAgent.Bridge.Gateway.Dispatch;
@@ -82,11 +83,15 @@ internal sealed class RbpProtectedRecoveryCarrierMaterializer
                 using (fresh)
                 {
                     if (fresh is null || fresh.Reservation.PlanVersion != reservation.PlanVersion ||
-                        fresh.Reservation.CurrentReservedSequence != reservation.CurrentReservedSequence) return null;
+                        fresh.Reservation.CurrentReservedSequence != reservation.CurrentReservedSequence ||
+                        !string.Equals(fresh.Reservation.CanonicalEnvelopeDigest,
+                            RbpRecoveryCarrierCommitment.Compute(fresh.Reservation,
+                                fresh.Reservation.CurrentReservedSequence + 1), StringComparison.Ordinal)) return null;
                 }
-                return new RbpRecoveryCarrierMaterializedFrame(
-                    RbpInvocationAnswer.Partial(Chunk(reservation, chunk)),
-                    reservation.CurrentReservedSequence, reservation.PlanVersion);
+                RbpInvocationAnswer answer = RbpInvocationAnswer.Partial(Chunk(reservation, chunk));
+                return new RbpRecoveryCarrierMaterializedFrame(answer,
+                    reservation.CurrentReservedSequence, reservation.PlanVersion,
+                    Rfc8785Json.Sha256Digest(answer.Payload));
             }
             finally { CryptographicOperations.ZeroMemory(chunk); }
         }
@@ -111,4 +116,5 @@ internal sealed class RbpProtectedRecoveryCarrierMaterializer
 
 /// <summary>Internal epoch-tagged draft; C1c must revalidate before any socket write.</summary>
 internal sealed record RbpRecoveryCarrierMaterializedFrame(
-    RbpInvocationAnswer Answer, long ReservedSequence, int PlanVersion);
+    RbpInvocationAnswer Answer, long ReservedSequence, int PlanVersion,
+    string WireEnvelopeDigest);
