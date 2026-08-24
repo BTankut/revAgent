@@ -28,17 +28,19 @@ async function testServer(input: {
   readonly emptyResponseMethod?: "initialize" | "notifications/initialized" | "tools/call";
   readonly emptyResponseStatus?: 200 | 202 | 204;
   readonly notificationResponseStatus?: 200 | 202 | 204;
-} = {}): Promise<{ readonly endpoint: string; readonly certificateSha256: string; readonly requests: RecordedRequest[] }> {
+} = {}): Promise<{ readonly endpoint: string; readonly certificateSha256: string; readonly requests: RecordedRequest[]; readonly toolParams: unknown[] }> {
   const root = mkdtempSync(path.join(tmpdir(), "wp12-mcp-client-"));
   mkdirSync(path.join(root, "tls-root"));
   const tls = createEphemeralLoopbackTlsIdentity(realpathSync(path.join(root, "tls-root")));
   const requests: RecordedRequest[] = [];
+  const toolParams: unknown[] = [];
   const server = createServer({ cert: readFileSync(tls.certificatePath), key: readFileSync(tls.privateKeyPath) }, (request, response) => {
     const chunks: Buffer[] = [];
     request.on("data", (chunk: Buffer) => chunks.push(chunk));
     request.on("end", () => {
       const body = JSON.parse(Buffer.concat(chunks).toString("utf8")) as { method?: unknown; id?: unknown };
       const method = typeof body.method === "string" ? body.method : "";
+      if (method === "tools/call") toolParams.push((body as { params?: unknown }).params);
       requests.push(Object.freeze({ method, authorization: request.headers.authorization,
         session: typeof request.headers["mcp-session-id"] === "string" ? request.headers["mcp-session-id"] : undefined,
         hasId: "id" in body }));
@@ -66,7 +68,7 @@ async function testServer(input: {
   closers.push(async () => await new Promise<void>((resolve, reject) => server.close((error) => error === undefined ? resolve() : reject(error))));
   const address = server.address();
   if (address === null || typeof address === "string") throw new Error("test TLS server did not bind TCP");
-  return Object.freeze({ endpoint: `https://127.0.0.1:${address.port}`, certificateSha256: tls.serverCertificateSha256, requests });
+  return Object.freeze({ endpoint: `https://127.0.0.1:${address.port}`, certificateSha256: tls.serverCertificateSha256, requests, toolParams });
 }
 
 describe("strict real-trio Streamable HTTP MCP client", () => {
@@ -75,19 +77,52 @@ describe("strict real-trio Streamable HTTP MCP client", () => {
       code: "payload_omitted",
       origin_invocation_id: "019f9ac3-ae89-7342-9f6d-b9269e167187",
       expected_result_digest: `sha256:${"a".repeat(64)}`,
-      recovery_tool: "dispatch_payload_recovery",
-      version: 1,
+      recovery_tool: "core.dispatch.payload_recovery",
+      recovery_tool_version: "1.0.0",
+      carrier_version: "c39.omitted-recovery-coordinate/v1",
     };
     expect(parseOmittedPayloadCoordinateCarrier(valid)).toEqual(valid);
     for (const invalid of [
       { ...valid, fixture_id: "forbidden" },
-      { ...valid, version: 2 },
+      { ...valid, carrier_version: "other" },
       { ...valid, recovery_tool: "other" },
+      { ...valid, recovery_tool_version: "2.0.0" },
       { ...valid, origin_invocation_id: "not-a-uuid" },
       { ...valid, expected_result_digest: "sha256:BAD" },
     ]) {
       expect(parseOmittedPayloadCoordinateCarrier(invalid)).toBeNull();
     }
+  });
+
+  it("re-invokes only the advertised public recovery tool with frozen coordinates", async () => {
+    const server = await testServer();
+    const carrier = Object.freeze({
+      code: "payload_omitted" as const,
+      origin_invocation_id: "019f9ac3-ae89-7342-9f6d-b9269e167187",
+      expected_result_digest: `sha256:${"b".repeat(64)}` as const,
+      recovery_tool: "core.dispatch.payload_recovery" as const,
+      recovery_tool_version: "1.0.0" as const,
+      carrier_version: "c39.omitted-recovery-coordinate/v1" as const,
+    });
+    await withRealTrioNorthMcpClient({ ...server, credential }, async (client) => {
+      await client.recoverOmittedPayload({
+        carrier,
+        advertisedTool: { name: "core.dispatch.payload_recovery", version: "1.0.0" },
+        requestId: "recovery-1",
+      });
+      await expect(client.recoverOmittedPayload({
+        carrier,
+        advertisedTool: { name: "core.dispatch.payload_recovery", version: "1.0.1" },
+        requestId: "recovery-2",
+      })).rejects.toThrow(/advertised public tool/u);
+    });
+    expect(server.toolParams).toEqual([{
+      name: "core.dispatch.payload_recovery",
+      arguments: {
+        origin_invocation_id: carrier.origin_invocation_id,
+        expected_result_digest: carrier.expected_result_digest,
+      },
+    }]);
   });
 
   it("uses the actual stateless Streamable HTTP ordering with no MCP session header", async () => {

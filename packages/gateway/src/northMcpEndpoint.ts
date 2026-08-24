@@ -73,9 +73,11 @@ export const NORTH_MODE_A_PINNED_TOOLS = Object.freeze([
 ] as const);
 const DEFAULT_MODE_A_SESSION_TTL_MS = 30 * 60 * 1_000;
 const TEST_EFFECTIVE_SCOPE_OBSERVER = "__revAgentTestObserveEffectiveMcpScope";
-export const OMITTED_PAYLOAD_COORDINATE_CARRIER_VERSION = 1 as const;
+export const OMITTED_PAYLOAD_COORDINATE_CARRIER_VERSION =
+  "c39.omitted-recovery-coordinate/v1" as const;
 export const OMITTED_PAYLOAD_COORDINATE_RECOVERY_TOOL =
-  "dispatch_payload_recovery" as const;
+  "core.dispatch.payload_recovery" as const;
+export const OMITTED_PAYLOAD_COORDINATE_RECOVERY_TOOL_VERSION = "1.0.0" as const;
 const OMITTED_PAYLOAD_COORDINATE_CODE = "payload_omitted" as const;
 const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 const SHA256 = /^sha256:[0-9a-f]{64}$/u;
@@ -85,7 +87,8 @@ export interface OmittedPayloadCoordinateCarrierV1 {
   readonly origin_invocation_id: string;
   readonly expected_result_digest: `sha256:${string}`;
   readonly recovery_tool: typeof OMITTED_PAYLOAD_COORDINATE_RECOVERY_TOOL;
-  readonly version: typeof OMITTED_PAYLOAD_COORDINATE_CARRIER_VERSION;
+  readonly recovery_tool_version: typeof OMITTED_PAYLOAD_COORDINATE_RECOVERY_TOOL_VERSION;
+  readonly carrier_version: typeof OMITTED_PAYLOAD_COORDINATE_CARRIER_VERSION;
 }
 
 /** Strict public parser: near matches never become recovery coordinates. */
@@ -95,13 +98,14 @@ export function parseOmittedPayloadCoordinateCarrier(
   if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
   const record = value as Record<string, unknown>;
   const keys = Object.keys(record).sort();
-  const expected = ["code", "expected_result_digest", "origin_invocation_id", "recovery_tool", "version"];
+  const expected = ["carrier_version", "code", "expected_result_digest", "origin_invocation_id", "recovery_tool", "recovery_tool_version"];
   if (keys.length !== expected.length || keys.some((key, index) => key !== expected[index])) return null;
   return record.code === OMITTED_PAYLOAD_COORDINATE_CODE &&
     typeof record.origin_invocation_id === "string" && UUID_V7.test(record.origin_invocation_id) &&
     typeof record.expected_result_digest === "string" && SHA256.test(record.expected_result_digest) &&
     record.recovery_tool === OMITTED_PAYLOAD_COORDINATE_RECOVERY_TOOL &&
-    record.version === OMITTED_PAYLOAD_COORDINATE_CARRIER_VERSION
+    record.recovery_tool_version === OMITTED_PAYLOAD_COORDINATE_RECOVERY_TOOL_VERSION &&
+    record.carrier_version === OMITTED_PAYLOAD_COORDINATE_CARRIER_VERSION
     ? Object.freeze(record as unknown as OmittedPayloadCoordinateCarrierV1)
     : null;
 }
@@ -1070,7 +1074,8 @@ function createSessionServer(input: {
               origin_invocation_id: outcome.originInvocationId,
               expected_result_digest: outcome.expectedResultDigest,
               recovery_tool: OMITTED_PAYLOAD_COORDINATE_RECOVERY_TOOL,
-              version: OMITTED_PAYLOAD_COORDINATE_CARRIER_VERSION,
+              recovery_tool_version: OMITTED_PAYLOAD_COORDINATE_RECOVERY_TOOL_VERSION,
+              carrier_version: OMITTED_PAYLOAD_COORDINATE_CARRIER_VERSION,
             }));
           } catch {
             return toolResult(Object.freeze({

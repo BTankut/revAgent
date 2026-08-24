@@ -248,6 +248,30 @@ export class RealTrioNorthMcpClient {
     }
   }
 
+  /** Uses only the carrier-advertised public tool after exact version verification. */
+  public async recoverOmittedPayload(input: {
+    readonly carrier: unknown;
+    readonly advertisedTool: { readonly name: string; readonly version: string };
+    readonly requestId: string;
+  }): Promise<{ readonly content: Record<string, unknown>; readonly evidence: RealTrioNorthWireEvidence }> {
+    const carrier = parseOmittedPayloadCoordinateCarrier(input.carrier);
+    if (
+      carrier === null ||
+      input.advertisedTool.name !== carrier.recovery_tool ||
+      input.advertisedTool.version !== carrier.recovery_tool_version
+    ) {
+      throw new Error("C39 omitted-payload carrier does not match the advertised public tool");
+    }
+    return await this.toolCall({
+      name: carrier.recovery_tool,
+      arguments: Object.freeze({
+        origin_invocation_id: carrier.origin_invocation_id,
+        expected_result_digest: carrier.expected_result_digest,
+      }),
+      requestId: input.requestId,
+    });
+  }
+
   public async readResource(input: { readonly uri: string; readonly requestId: string }): Promise<{ readonly response: unknown; readonly evidence: RealTrioNorthWireEvidence }> {
     return await this.request(Object.freeze({ jsonrpc: "2.0", id: input.requestId,
       method: "resources/read", params: Object.freeze({ uri: input.uri }) }));
@@ -334,8 +358,9 @@ export interface RealTrioOmittedPayloadCoordinateCarrier {
   readonly code: "payload_omitted";
   readonly origin_invocation_id: string;
   readonly expected_result_digest: `sha256:${string}`;
-  readonly recovery_tool: "dispatch_payload_recovery";
-  readonly version: 1;
+  readonly recovery_tool: "core.dispatch.payload_recovery";
+  readonly recovery_tool_version: "1.0.0";
+  readonly carrier_version: "c39.omitted-recovery-coordinate/v1";
 }
 
 /** Exact public C39 carrier parser; this never accepts a fixture identifier. */
@@ -345,14 +370,16 @@ export function parseOmittedPayloadCoordinateCarrier(
   const candidate = asStrictObject(value);
   if (candidate === null) return null;
   const keys = Object.keys(candidate).sort();
-  const expected = ["code", "expected_result_digest", "origin_invocation_id", "recovery_tool", "version"];
+  const expected = ["carrier_version", "code", "expected_result_digest", "origin_invocation_id", "recovery_tool", "recovery_tool_version"];
   if (keys.length !== expected.length || keys.some((key, index) => key !== expected[index])) return null;
   return candidate.code === "payload_omitted" &&
     typeof candidate.origin_invocation_id === "string" &&
     /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(candidate.origin_invocation_id) &&
     typeof candidate.expected_result_digest === "string" &&
     /^sha256:[0-9a-f]{64}$/u.test(candidate.expected_result_digest) &&
-    candidate.recovery_tool === "dispatch_payload_recovery" && candidate.version === 1
+    candidate.recovery_tool === "core.dispatch.payload_recovery" &&
+    candidate.recovery_tool_version === "1.0.0" &&
+    candidate.carrier_version === "c39.omitted-recovery-coordinate/v1"
     ? Object.freeze(candidate as unknown as RealTrioOmittedPayloadCoordinateCarrier)
     : null;
 }
