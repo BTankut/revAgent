@@ -147,6 +147,8 @@ export interface RealTrioRuntimeFixture {
   readonly certificateSha256: string;
   /** Revalidates the current post-control proof immediately around north I/O. */
   verifyNorthDispatchFence(): Promise<void>;
+  /** One strict, two-phase revision refresh for the same fixture document. */
+  refreshNorthDispatchFenceAfterControl(): Promise<RealTrioDocumentContextAudit>;
   /** Value-free proof that a controlled cache update preceded the public route. */
   readonly documentContextAudit: RealTrioDocumentContextAudit;
   stop(): Promise<void>;
@@ -1952,7 +1954,7 @@ export async function startRealTrioRuntimeFixture(
       throw new Error("real trio document-context generation changed across control");
     }
     timeline.push("control_ack");
-    await supervisor.pollDocumentContext();
+    if (typeof supervisor.pollDocumentContext === "function") await supervisor.pollDocumentContext();
     timeline.push("poll_requested");
     // This probe is value-free and must succeed before any public Gateway
     // route can qualify. The regular 15 s C# watcher is the only forwarder.
@@ -2025,8 +2027,8 @@ export async function startRealTrioRuntimeFixture(
     await supervisor.stop().catch(() => undefined);
     throw error;
   }
-  const verifiedExpected = verified.expected;
-  const verifiedGatewayBaseline = verified.gatewayBaseline;
+  let verifiedExpected = verified.expected;
+  let verifiedGatewayBaseline = verified.gatewayBaseline;
   try {
     const issued = controlledHarness === undefined
       ? await publicGatewayControl(endpoint, controlToken, certificateSha256, issueNorthCredentialControlPayload())
@@ -2062,6 +2064,49 @@ export async function startRealTrioRuntimeFixture(
         ) || !hasGatewayAcceptedDocumentContextRoute(audit, verifiedExpected, verifiedGatewayBaseline)) {
           throw new Error("real trio north dispatch fence rejected stale route evidence");
         }
+      },
+      refreshNorthDispatchFenceAfterControl: async (): Promise<RealTrioDocumentContextAudit> => {
+        const refreshAuditCapture: GatewayAuditCapture = {
+          lastSuccessfulAudit: null, lastControlOutcome: null,
+          preControlBaseline: null, preControlAudit: null, lastSelectorReason: null,
+        };
+        const preControl = await capturePreControlDocumentContextBundle({
+          supervisor,
+          readGatewayAuditOutcome: () => readCapturedRealCaseAuditOutcome(supervisor, refreshAuditCapture),
+          timeoutMs: options.documentContextTimeoutMs,
+        });
+        const control = documentContextControlAudit(await supervisor.fixtureControl("apply_document_context", {
+          event: realTrioFixtureDocumentContextEvent(),
+        }));
+        if (control.revision !== documentContextAudit.revision + 1) {
+          throw new Error("real trio route refresh did not advance exactly one fixture revision");
+        }
+        if (typeof supervisor.pollDocumentContext === "function") await supervisor.pollDocumentContext();
+        const candidate = await waitForDocumentContextSend({
+          supervisor,
+          controlCursor: preControl.snapshot.highWaterCursor,
+          generation: preControl.snapshot.generation,
+          precedingProbe: null,
+          precedingSeed: preControl.seed,
+          gatewayBaseline: preControl.baseline,
+          control,
+          auditCapture: refreshAuditCapture,
+          timeoutMs: options.documentContextTimeoutMs,
+        });
+        await waitForPostRouteDocumentContextHeartbeatAck({
+          supervisor, expected: candidate, timeoutMs: options.documentContextTimeoutMs,
+        });
+        const audit = await readCapturedRealCaseAudit(supervisor, refreshAuditCapture);
+        if (hasGatewayAcceptedDocumentContextRoute(audit, verifiedExpected, verifiedGatewayBaseline)) {
+          throw new Error("real trio stale revision proof remained accepted after route refresh");
+        }
+        const next = verifiedRealTrioDocumentContextState(candidate, preControl.baseline);
+        verifiedExpected = next.expected;
+        verifiedGatewayBaseline = next.gatewayBaseline;
+        return Object.freeze({
+          ...control,
+          ...probeRealTrioFixtureDocumentContext(await supervisor.fixtureControl("snapshot_evidence"), control),
+        });
       },
       stop: async () => await supervisor.stop(),
     });

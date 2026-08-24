@@ -18,8 +18,6 @@ import {
 import { runRealTrioCli } from "../src/realTrioCli.js";
 import {
   buildRealTrioRuntimeFixture,
-  REAL_TRIO_FIXTURE_DOCUMENT_ID,
-  realTrioFixtureDocumentContextEvent,
   rethrowRealTrioC38Failure,
   startRealTrioRuntimeFixture,
 } from "./realTrioRuntimeFixture.js";
@@ -143,9 +141,7 @@ describe.sequential("WP-12 direct real trio runtime fixture", () => {
           );
           await new Promise<void>((resolve) => setTimeout(resolve, 250));
           expect(originSettledBeforeRouteEdge).toBe(false);
-          const routeEdge = await runtime.supervisor.fixtureControl("apply_document_context", {
-            event: realTrioFixtureDocumentContextEvent(REAL_TRIO_FIXTURE_DOCUMENT_ID),
-          });
+          const routeEdge = await runtime.refreshNorthDispatchFenceAfterControl();
           expect(routeEdge).toMatchObject({
             action: "apply_document_context",
             revision: runtime.documentContextAudit.revision + 1,
