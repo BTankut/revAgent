@@ -54,6 +54,10 @@ describe("WP-12 real-trio fixture document route gate", () => {
         event: "bridge.document_context_observation",
         stage, outcome, rsidHash, sequence,
         ...(stage === "snapshot" || stage === "queue" || stage === "send" ? {
+          // RealWorkerHost projects this legacy sha256-prefixed payload
+          // commitment together with the bare contextDigest; the journal
+          // intentionally retains only its presence bit after redaction.
+          payloadHash: `sha256:${"9".repeat(64)}`,
           ...(digest === undefined ? {} : { contextDigest: digest }),
           sourceRevision: 2,
           cacheIncarnationDigest: incarnation,
@@ -111,6 +115,12 @@ describe("WP-12 real-trio fixture document route gate", () => {
     };
     const redacted = redactBridgeTranscript(lifecycle());
     expect(redacted).toHaveLength(4);
+    expect(JSON.parse(lifecycle()[1]!.line)).toMatchObject({
+      contractVersion: "revagent.rbp-document-context-observation/v1",
+      event: "bridge.document_context_observation",
+      stage: "snapshot", outcome: "ready", payloadHash: `sha256:${"9".repeat(64)}`,
+      contextDigest, sourceRevision: 2, cacheIncarnationDigest: incarnation,
+    });
     expect(JSON.parse(redacted[1]!.line)).toMatchObject({
       stage: "snapshot", sequence: null, contextDigest,
       sourceRevision: 2, cacheIncarnationDigest: incarnation,
