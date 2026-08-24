@@ -180,7 +180,16 @@ internal sealed partial class RbpJournalStore
             if (reservation is null || !string.Equals(reservation.Rsid, rsid, StringComparison.Ordinal) ||
                 reservation.Phase != RbpRecoveryCarrierPhase.SendStarted ||
                 reservation.RawPayloadVersion != 7 || reservation.PlanVersion != 1 ||
-                reservation.ExpiresAtMilliseconds <= NowMilliseconds()) return null;
+                reservation.ExpiresAtMilliseconds <= NowMilliseconds() ||
+                reservation.ChunkCount != checked((reservation.PlaintextLength + reservation.ChunkSize - 1) / reservation.ChunkSize) ||
+                !string.Equals(reservation.HeaderJcs,
+                    "{\"content_encoding\":\"base64\",\"content_type\":\"application/json\",\"v\":1}", StringComparison.Ordinal) ||
+                !string.Equals(reservation.CanonicalEnvelopeDigest,
+                    Rfc8785Json.Sha256Digest(JsonSerializer.SerializeToElement(new {
+                        invocation_id = reservation.RecoveryInvocationId,
+                        origin_invocation_id = reservation.OriginInvocationId,
+                        expected_result_digest = reservation.ResultDigest,
+                    })), StringComparison.Ordinal)) return null;
             using SqliteCommand state = CreateCommand(connection, """
                 SELECT sequence.last_peer_ack,sequence.highest_tx_seq,sequence.next_tx_seq
                 FROM rbp_sessions AS session JOIN rbp_session_sequence AS sequence ON sequence.rsid=session.rsid
