@@ -6413,15 +6413,12 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         message: "dispatch lacks an authoritative effective scope",
       } }) };
     }
-    const proofPayload = envelope.payload as unknown as Record<string, unknown>;
-    const proofMethod = typeof proofPayload.method === "string"
-      ? proofPayload.method
-      : "invoke_batch";
-    const proofPolicy = (proofPayload.policy ?? null) as JsonValue;
-    const proofConfirmation = proofPolicy !== null && typeof proofPolicy === "object" &&
-      !Array.isArray(proofPolicy) && typeof (proofPolicy as Record<string, unknown>).confirmation_id === "string"
-      ? (proofPolicy as Record<string, unknown>).confirmation_id as string
-      : null;
+    const proofPolicy: JsonValue = {
+      class: input.dispatchContext.policyClass,
+      decision: input.dispatchContext.policyDecision,
+      confirmation_id: input.dispatchContext.confirmationId,
+      preview_invocation_id: input.dispatchContext.originatingPreviewInvocationId,
+    };
     const dispatchProof = this.#dispatchProofAuthority.mint({
       tenantId: input.tenantId,
       rsid: input.rsid,
@@ -6441,11 +6438,11 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       invocationId: input.correlationId,
       correlationId: input.correlationId,
       envelopeDigest: expectedDigest,
-      toolName: proofMethod,
-      toolVersion: "rbp/1",
-      argsDigest: makeParamsDigest((proofPayload.params ?? null) as JsonValue),
+      toolName: input.dispatchContext.toolName,
+      toolVersion: input.dispatchContext.toolVersion,
+      argsDigest: input.dispatchContext.paramsDigest,
       policy: proofPolicy,
-      confirmationId: proofConfirmation,
+      confirmationId: input.dispatchContext.confirmationId,
     });
     const proofDigest = this.#dispatchProofAuthority.digest(dispatchProof);
     const routeSnapshotDigest = this.#dispatchProofAuthority.routeSnapshotDigest(dispatchProof);
