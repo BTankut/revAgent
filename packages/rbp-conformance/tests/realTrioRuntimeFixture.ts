@@ -1277,6 +1277,7 @@ export function preControlWatcherSeedFromSnapshot(
 type PreControlWatcherSnapshotState =
   | Readonly<{ readonly kind: "seed"; readonly seed: RealTrioPreControlWatcherSeed }>
   | Readonly<{ readonly kind: "ack_pending" }>
+  | Readonly<{ readonly kind: "bootstrap_pending" }>
   | Readonly<{ readonly kind: "invalid" }>;
 
 function preControlWatcherSnapshotState(
@@ -1287,6 +1288,11 @@ function preControlWatcherSnapshotState(
       !/^(?:0|[1-9][0-9]*)$/u.test(snapshot.highWaterCursor)) return Object.freeze({ kind: "invalid" });
   const lowWater = BigInt(snapshot.lowWaterCursor);
   const highWater = BigInt(snapshot.highWaterCursor);
+  // A new process may expose an exact empty genesis ring before its first
+  // watcher probe. This is a wait-only state, never a usable route seed.
+  if (snapshot.rows.length === 0 && lowWater === 0n && highWater === 0n) {
+    return Object.freeze({ kind: "bootstrap_pending" });
+  }
   if (snapshot.rows.length === 0 || snapshot.rows.some((row) => !/^[1-9][0-9]*$/u.test(row.cursor)) ||
       lowWater !== 1n || highWater < lowWater ||
       BigInt(snapshot.rows[0]!.cursor) !== lowWater ||
