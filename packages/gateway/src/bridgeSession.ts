@@ -60,6 +60,7 @@ import type {
 import { gatewayUuidV7, isGatewayUuidV7 } from "./identifiers.js";
 import type {
   GatewayBridgeEvidenceLookup,
+  GatewayBridgeNoSendReceipt,
   GatewayBridgeResumeAuthorization,
   GatewayDurableBridgeEvidencePort,
   GatewayDurableDispatchObservation,
@@ -318,7 +319,16 @@ interface DurableDispatchEvidence {
   readonly journal: GatewayVerifiedBridgeJournalEvidence | null;
   /** Terminal truth is retained even when identity revocation suppresses delivery. */
   readonly terminalTruth?: DurableTerminalTruth | null;
+  /**
+   * Gateway-authored proof that a particular reserved dispatch was cancelled
+   * before the carrier invocation boundary.  This deliberately contains
+   * digests and durable lease coordinates only; no executable payload or
+   * dispatch proof object is retained.
+   */
+  readonly noSendReceipt?: DurableNoSendReceipt | null;
 }
+
+type DurableNoSendReceipt = GatewayBridgeNoSendReceipt;
 
 interface DurableTerminalTruth {
   readonly state: "completed" | "guarded" | "failed";
@@ -635,6 +645,77 @@ interface DurableEgressReservation {
   readonly record: DurableRbpSession;
   /** In-memory only; must never be serialized into a lease or envelope. */
   readonly dispatchProof?: object;
+}
+
+/**
+ * A dispatch carrier has two distinct pre-transport transitions: the durable
+ * reservation may be promoted, or the reservation may be cancelled.  These
+ * operations deliberately race on the same durable CAS fence, but callers
+ * must never race two in-memory cleanups around that fence.  In particular,
+ * a slow queue cancellation is allowed to make the caller unavailable while
+ * its one exact cleanup remains in flight; it is not allowed to reopen the
+ * route or to start a second cleanup for a newer lease.
+ *
+ * This is module-private on purpose.  The coordinator carries no wire data
+ * and its identity is one-shot for one `#sendWithDurableReservation` call.
+ */
+class PreStartCancellationCoordinator {
+  #cancelRequested = false;
+  #cancellation: Promise<boolean> | null = null;
+  #promotion: Promise<DurableEgressReservation> | null = null;
+
+  public constructor(
+    private readonly releaseReserved: () => Promise<boolean>,
+  ) {}
+
+  public requestCancel(): Promise<boolean> {
+    this.#cancelRequested = true;
+    if (this.#cancellation === null) {
+      this.#cancellation = this.releaseReserved();
+    }
+    return this.#cancellation;
+  }
+
+  public async promote(
+    promoteReserved: () => Promise<DurableEgressReservation>,
+  ): Promise<DurableEgressReservation> {
+    if (this.#cancelRequested) {
+      throw new GatewayRbpFault(
+        "unavailable",
+        "dispatch carrier cancelled before promotion",
+        503,
+        1011,
+      );
+    }
+    if (this.#promotion === null) {
+      this.#promotion = (async () => {
+        // Do not put a timer or a caller-wait bound here.  The durable
+        // promotion/cancellation CAS determines truth; a bound only governs
+        // when a caller stops awaiting that truth.
+        if (this.#cancelRequested) {
+          throw new GatewayRbpFault(
+            "unavailable",
+            "dispatch carrier cancelled before promotion",
+            503,
+            1011,
+          );
+        }
+        const promoted = await promoteReserved();
+        if (this.#cancelRequested) {
+          // Promotion won (or its post-commit state is all we can observe).
+          // Never release a started/uncertain lease from a cancellation path.
+          throw new GatewayRbpFault(
+            "unavailable",
+            "dispatch carrier cancellation lost durable promotion",
+            503,
+            1011,
+          );
+        }
+        return promoted;
+      })();
+    }
+    return await this.#promotion;
+  }
 }
 
 /** In-memory-only dispatch handoff; no proof or lease data crosses the carrier. */
@@ -2418,6 +2499,38 @@ function terminalJournalRecords(
     );
   }
   return records;
+}
+
+function noSendReceipt(
+  tenantId: string,
+  rsid: string,
+  pending: DurablePendingDispatch,
+  lease: DurableEgressLease,
+  recordedAtMs: number,
+): DurableNoSendReceipt {
+  if (
+    lease.operation !== "dispatch" ||
+    lease.proofDigest === undefined ||
+    lease.proofDigest === null ||
+    lease.routeSnapshotDigest === undefined ||
+    lease.routeSnapshotDigest === null ||
+    pending.envelopeDigest !== lease.envelopeDigest
+  ) {
+    throw new Error("no-send receipt lacks exact dispatch lease authority");
+  }
+  return Object.freeze({
+    schema: "gateway.dispatch-no-send/v1",
+    tenantId,
+    rsid,
+    invocationId: pending.invocationId,
+    correlationId: pending.invocationId,
+    envelopeDigest: pending.envelopeDigest,
+    leaseVersion: 1,
+    leaseTicket: lease.ticket,
+    proofDigest: lease.proofDigest,
+    routeSnapshotDigest: lease.routeSnapshotDigest,
+    recordedAtMs,
+  });
 }
 
 function sessionV2EvidenceChildren(record: DurableRbpSession): readonly {
@@ -6956,6 +7069,52 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
             !sameJson(fence.lease, reservation.lease) ||
             fence.lease.holderInstanceId !== this.#instanceId
           ) return { kind: "not_reserved" as const };
+          const cancelledPending =
+            record.pending?.envelopeDigest === reservation.lease.envelopeDigest
+              ? record.pending
+              : null;
+          const nowMs = this.#clock();
+          const cancelledEvidence: DurableDispatchEvidence | null =
+            cancelledPending === null
+              ? null
+              : (() => {
+                  const journals = cancelledPending.journalRecords.map(
+                    (journal) =>
+                      handleJournalSessionUnregister(journal, true, null).record,
+                  );
+                  const existing = record.evidence.find(
+                    (candidate) =>
+                      candidate.envelopeDigest === cancelledPending.envelopeDigest,
+                  );
+                  return {
+                    envelopeDigest: cancelledPending.envelopeDigest,
+                    // No carrier byte crossed the invocation boundary, so an
+                    // inbound bridge acknowledgement can never authorize this
+                    // cancellation receipt.
+                    acceptance: null,
+                    journal:
+                      journals.length === 0
+                        ? null
+                        : {
+                            kind: "known_terminal",
+                            rsid: record.rsid,
+                            sessionBindingId: record.sessionBindingId,
+                            envelopeDigest: cancelledPending.envelopeDigest,
+                            journalRecords: journals,
+                            batchTerminal: null,
+                            durableJournalVersion: record.sessionVersion,
+                            recordedAtMs: nowMs,
+                          },
+                    terminalTruth: existing?.terminalTruth ?? null,
+                    noSendReceipt: noSendReceipt(
+                      reservation.tenantId,
+                      reservation.rsid,
+                      cancelledPending,
+                      reservation.lease,
+                      nowMs,
+                    ),
+                  };
+                })();
           const next = nextSessionRecord(
             stored,
             record,
@@ -6965,12 +7124,21 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
               // clear only the pending record bound to this exact lease
               // envelope. A different/newer pending dispatch remains fenced.
               pending:
-                record.pending?.envelopeDigest === reservation.lease.envelopeDigest
-                  ? null
-                  : record.pending,
+                cancelledPending === null ? record.pending : null,
+              evidence:
+                cancelledEvidence === null
+                  ? record.evidence
+                  : [
+                      ...record.evidence.filter(
+                        (candidate) =>
+                          candidate.envelopeDigest !==
+                          cancelledEvidence.envelopeDigest,
+                      ),
+                      cancelledEvidence,
+                    ],
               egressFence: { ...fence, epoch: fence.epoch + 1, lease: null },
             },
-            this.#clock(),
+            nowMs,
           );
           attempted.current = { prior: stored, next };
           tx.stage({
@@ -7026,21 +7194,34 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     let completedAndVerified = false;
     let provenPreStartCancellation = false;
     let started: DurableEgressReservation | null = null;
+    const preStartCancellation = new PreStartCancellationCoordinator(
+      async () => await this.#releaseReservedEgressLease(reservation),
+    );
     try {
       const startedDispatch = connection.sendDispatchStarted?.(serialized, {
         revalidate: async (signal: AbortSignal) => {
-        if (signal.aborted) throw new GatewayRbpFault("unavailable", "dispatch carrier cancelled before promotion", 503, 1011);
-        // This closure remains nominal/in-memory only.  It is run by the
-        // adapter immediately before websocket.send()/response.write(), not
-        // when the dispatch was merely queued.  The next source statement in
-        // the adapter invokes the transport after this promise resolves.
-        started = await this.#promoteEgressReservation(reservation);
-        if (signal.aborted) throw new GatewayRbpFault("unavailable", "dispatch carrier cancelled after promotion", 503, 1011);
-        await this.#assertDispatchReservationCurrent(connection, started, authorityTicket);
-        if (signal.aborted) throw new GatewayRbpFault("unavailable", "dispatch carrier cancelled before invocation", 503, 1011);
-        this.#assertAuthorityTicket(authorityTicket, connection, { session: started.record });
+          if (signal.aborted) {
+            await preStartCancellation.requestCancel();
+            throw new GatewayRbpFault("unavailable", "dispatch carrier cancelled before promotion", 503, 1011);
+          }
+          // This closure remains nominal/in-memory only.  It is run by the
+          // adapter immediately before websocket.send()/response.write(), not
+          // when the dispatch was merely queued.  The next source statement in
+          // the adapter invokes the transport after this promise resolves.
+          started = await preStartCancellation.promote(
+            async () => await this.#promoteEgressReservation(reservation),
+          );
+          if (signal.aborted) {
+            // At this point promotion has won.  The started lease stays
+            // fenced for terminal/recovery handling rather than being
+            // incorrectly released as a no-send dispatch.
+            throw new GatewayRbpFault("unavailable", "dispatch carrier cancelled after promotion", 503, 1011);
+          }
+          await this.#assertDispatchReservationCurrent(connection, started, authorityTicket);
+          if (signal.aborted) throw new GatewayRbpFault("unavailable", "dispatch carrier cancelled before invocation", 503, 1011);
+          this.#assertAuthorityTicket(authorityTicket, connection, { session: started.record });
         },
-        cancelBeforeStart: async () => await this.#releaseReservedEgressLease(reservation),
+        cancelBeforeStart: async () => await preStartCancellation.requestCancel(),
       });
       if (startedDispatch === undefined) {
         started = await this.#promoteEgressReservation(reservation);
@@ -7539,6 +7720,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       observation: {
         acceptance: evidence.acceptance,
         journal: evidence.journal,
+        noSend: evidence.noSendReceipt ?? null,
       },
     };
   }
@@ -7909,9 +8091,14 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
           fence.lease.operation === "dispatch" &&
           pendingBeforeRevocation !== null &&
           fence.lease.envelopeDigest === pendingBeforeRevocation.envelopeDigest;
+        const cancellationLease = fence.lease;
         let pending = pendingBeforeRevocation;
         let evidence = record.evidence;
-        if (canceledBeforeSend && pendingBeforeRevocation !== null) {
+        if (
+          canceledBeforeSend &&
+          pendingBeforeRevocation !== null &&
+          cancellationLease !== null
+        ) {
           const journals = pendingBeforeRevocation.journalRecords.map((journal) =>
             handleJournalSessionUnregister(journal, true, null).record,
           );
@@ -7923,11 +8110,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
               ),
               {
                 envelopeDigest: pendingBeforeRevocation.envelopeDigest,
-                acceptance:
-                  record.evidence.find(
-                    (candidate) =>
-                      candidate.envelopeDigest === pendingBeforeRevocation.envelopeDigest,
-                  )?.acceptance ?? null,
+                acceptance: null,
                 journal: {
                   kind: "known_terminal",
                   rsid: record.rsid,
@@ -7938,6 +8121,13 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
                   durableJournalVersion: record.sessionVersion,
                   recordedAtMs: nowMs,
                 },
+                noSendReceipt: noSendReceipt(
+                  tenantId,
+                  record.rsid,
+                  pendingBeforeRevocation,
+                  cancellationLease,
+                  nowMs,
+                ),
               },
             ];
           }
