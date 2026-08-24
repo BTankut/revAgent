@@ -68,13 +68,15 @@ public static class RbpJournalPowerCutChild
     private static async Task RunAsync(string mode, string journalPath)
     {
         var suspender = new SuspendingFaultInjector(mode);
+        long now = RbpJournalTestData.Now.ToUnixTimeMilliseconds();
 
         // The production open path, including its durability profile
         // verification, quick checks, and writer lease.
         RbpJournalStore store = RbpJournalStore.Open(
             journalPath,
             new TestResumeTokenProtector(),
-            RbpJournalPowerCutData.ChildOptions(suspender));
+            RbpJournalPowerCutData.ChildOptions(suspender, () => now),
+            new TestRecoveryPayloadProtector());
         suspender.Profile = store.DurabilityProfile;
         _ = await store.PersistRegisteredSessionAsync(
             RbpJournalTestData.Registration());
@@ -127,12 +129,107 @@ public static class RbpJournalPowerCutChild
                     RbpJournalPowerCutData.CompletedTerminal());
                 return;
 
+            case RbpJournalPowerCutMode.RecoveryValidatedRaw:
+                RbpRecoveryCarrierReservationRequest validated =
+                    await PrepareRecoveryTerminalAsync(store);
+                suspender.Arm(RbpJournalFaultPoint.RecoveryValidatedRaw);
+                _ = await store.PersistProtectedRecoveryTerminalAndReserveAsync(validated);
+                return;
+
+            case RbpJournalPowerCutMode.RecoveryPlanInserted:
+                RbpRecoveryCarrierReservationRequest inserted =
+                    await PrepareRecoveryTerminalAsync(store);
+                suspender.Arm(RbpJournalFaultPoint.RecoveryPlanInserted);
+                _ = await store.PersistProtectedRecoveryTerminalAndReserveAsync(inserted);
+                return;
+
+            case RbpJournalPowerCutMode.RecoverySequenceReserved:
+                RbpRecoveryCarrierReservationRequest reserved =
+                    await PrepareRecoveryTerminalAsync(store);
+                suspender.Arm(RbpJournalFaultPoint.RecoverySequenceReserved);
+                _ = await store.PersistProtectedRecoveryTerminalAndReserveAsync(reserved);
+                return;
+
+            case RbpJournalPowerCutMode.RecoverySendStarted:
+                RbpRecoveryCarrierReservationRequest sendStarted =
+                    await PrepareRecoveryTerminalAsync(store);
+                _ = await store.PersistProtectedRecoveryTerminalAndReserveAsync(sendStarted);
+                suspender.Arm(RbpJournalFaultPoint.RecoverySendStarted);
+                _ = await store.MarkRecoveryCarrierSendStartedAsync(
+                    sendStarted.RecoveryInvocationId);
+                return;
+
+            case RbpJournalPowerCutMode.RecoveryEqualAcknowledgement:
+                RbpRecoveryCarrierReservationRequest equalAck =
+                    await PrepareRecoveryTerminalAsync(store);
+                _ = await store.PersistProtectedRecoveryTerminalAndReserveAsync(equalAck);
+                _ = await store.MarkRecoveryCarrierSendStartedAsync(
+                    equalAck.RecoveryInvocationId);
+                suspender.Arm(RbpJournalFaultPoint.RecoveryEqualAcknowledgement);
+                _ = await store.ApplyRecoveryCarrierFenceAcknowledgementAsync(
+                    equalAck.Rsid, 1);
+                return;
+
+            case RbpJournalPowerCutMode.RecoveryTombstoneRawDeleted:
+                RbpRecoveryCarrierReservationRequest rawDeleted =
+                    await PrepareRecoveryTerminalAsync(store);
+                _ = await store.PersistProtectedRecoveryTerminalAndReserveAsync(rawDeleted);
+                _ = await store.MarkRecoveryCarrierSendStartedAsync(
+                    rawDeleted.RecoveryInvocationId);
+                suspender.Arm(RbpJournalFaultPoint.RecoveryTombstoneRawDeleted);
+                _ = await store.ApplyRecoveryCarrierFenceAcknowledgementAsync(
+                    rawDeleted.Rsid, 2);
+                return;
+
+            case RbpJournalPowerCutMode.RecoveryMinimalTombstonePersisted:
+                RbpRecoveryCarrierReservationRequest minimal =
+                    await PrepareRecoveryTerminalAsync(store);
+                _ = await store.PersistProtectedRecoveryTerminalAndReserveAsync(minimal);
+                _ = await store.MarkRecoveryCarrierSendStartedAsync(
+                    minimal.RecoveryInvocationId);
+                suspender.Arm(RbpJournalFaultPoint.RecoveryMinimalTombstonePersisted);
+                _ = await store.ApplyRecoveryCarrierFenceAcknowledgementAsync(
+                    minimal.Rsid, 2);
+                return;
+
+            case RbpJournalPowerCutMode.RecoveryDetailedAuditPruned:
+                RbpRecoveryCarrierReservationRequest pruned =
+                    await PrepareRecoveryTerminalAsync(store);
+                _ = await store.PersistProtectedRecoveryTerminalAndReserveAsync(pruned);
+                _ = await store.MarkRecoveryCarrierSendStartedAsync(
+                    pruned.RecoveryInvocationId);
+                _ = await store.ApplyRecoveryCarrierFenceAcknowledgementAsync(
+                    pruned.Rsid, 2);
+                now += (long)TimeSpan.FromDays(15).TotalMilliseconds;
+                suspender.Arm(RbpJournalFaultPoint.RecoveryDetailedAuditPruned);
+                _ = await store.ApplyRetentionAsync(TimeSpan.FromDays(7));
+                return;
+
             default:
                 throw new ArgumentOutOfRangeException(
                     nameof(mode),
                     mode,
                     "Unknown power-cut kill point.");
         }
+    }
+
+    private static async Task<RbpRecoveryCarrierReservationRequest>
+        PrepareRecoveryTerminalAsync(RbpJournalStore store)
+    {
+        RbpInvocationIdentity origin =
+            RbpJournalPowerCutData.RecoveryOriginIdentity();
+        _ = await store.AdmitInvocationAsync(origin);
+        await store.MarkInvocationExecutingAsync(origin.IdempotencyKey);
+        byte[] raw = RbpJournalPowerCutData.RecoveryRawBytes();
+        string digest = RbpJournalPowerCutData.RecoveryRawDigest();
+        _ = await store.PersistInvocationTerminalAsync(
+            origin.IdempotencyKey,
+            new RbpInvocationTerminal(
+                RbpInvocationState.Completed,
+                RbpJournalTestData.Json("{\"outcome\":\"completed\"}"),
+                digest,
+                RecoveryPayload: new RbpRecoveryPayload(digest, raw)));
+        return RbpJournalPowerCutData.RecoveryRequest();
     }
 
     private static void Park(

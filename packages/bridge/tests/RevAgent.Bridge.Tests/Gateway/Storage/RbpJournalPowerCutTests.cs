@@ -26,26 +26,69 @@ namespace RevAgent.Bridge.Tests.Gateway.Storage;
 [Collection(RbpJournalPowerCutCollection.Name)]
 public sealed class RbpJournalPowerCutTests
 {
-    /// <summary>
-    /// C39 has seven distinct durability boundaries.  The generic transaction
-    /// hooks are not enough evidence: a kill test must be able to arm every
-    /// irreversible boundary separately, then reopen through the production
-    /// store and establish an old-or-new (never partial/unblocked/raw-leak)
-    /// result.  Keep these names as the harness contract so a future refactor
-    /// cannot silently collapse the required injection points.
-    /// </summary>
     [Theory]
-    [InlineData("RecoveryValidatedRaw")]
-    [InlineData("RecoveryPlanInserted")]
-    [InlineData("RecoverySequenceReserved")]
-    [InlineData("RecoverySendStarted")]
-    [InlineData("RecoveryEqualAcknowledgement")]
-    [InlineData("RecoveryTombstoneRawDeleted")]
-    [InlineData("RecoveryMinimalTombstonePersisted")]
-    [InlineData("RecoveryDetailedAuditPruned")]
-    public void C39CarrierPowerCutBoundariesRemainIndividuallyAddressable(string expectedFaultPoint)
+    [InlineData(RbpJournalPowerCutMode.RecoveryValidatedRaw)]
+    [InlineData(RbpJournalPowerCutMode.RecoveryPlanInserted)]
+    [InlineData(RbpJournalPowerCutMode.RecoverySequenceReserved)]
+    [InlineData(RbpJournalPowerCutMode.RecoverySendStarted)]
+    [InlineData(RbpJournalPowerCutMode.RecoveryEqualAcknowledgement)]
+    [InlineData(RbpJournalPowerCutMode.RecoveryTombstoneRawDeleted)]
+    [InlineData(RbpJournalPowerCutMode.RecoveryMinimalTombstonePersisted)]
+    [InlineData(RbpJournalPowerCutMode.RecoveryDetailedAuditPruned)]
+    public async Task KillAtEveryC39CarrierBoundaryRecoversOnlyAnAtomicOldOrNewState(string mode)
     {
-        Assert.Contains(expectedFaultPoint, Enum.GetNames<RbpJournalFaultPoint>());
+        using var directory = new RbpJournalTestDirectory();
+        RbpJournalPowerCutReadiness readiness =
+            await RbpJournalPowerCutProcess.KillAtAsync(mode, directory.JournalPath);
+        AssertKilledUnderProductionDurability(readiness);
+        RbpJournalPowerCutFiles.AssertWalRecoveryPending(directory.JournalPath);
+
+        await using (RbpJournalStore recovered = await OpenRecoveredAsync(directory))
+        {
+            await AssertIntegrityCheckIsOkAsync(recovered);
+            RbpRecoveryCarrierReservation? reservation =
+                await recovered.GetRecoveryCarrierReservationAsync(
+                    RbpJournalPowerCutData.RecoveryInvocationId);
+            RbpSequenceState sequence = await recovered.LoadSequenceAsync(
+                RbpJournalPowerCutData.Rsid);
+
+            if (IsPreReservationBoundary(mode))
+            {
+                Assert.Null(reservation);
+                Assert.Equal(0, sequence.HighestTxSequence);
+                Assert.Equal(1, sequence.NextTxSequence);
+                await AssertRecoveryRawPresentAsync(recovered);
+                RbpQueueOutboundResult queued = await recovered.QueueOutboundDataAsync(
+                    RbpJournalPowerCutData.Rsid,
+                    new RbpOutboundDataDraft("result", "recovery-old-state", RbpJournalTestData.Json("{}")));
+                Assert.Equal(1, queued.Envelope!.Sequence);
+            }
+            else if (string.Equals(mode, RbpJournalPowerCutMode.RecoveryDetailedAuditPruned, StringComparison.Ordinal))
+            {
+                Assert.NotNull(reservation);
+                Assert.Equal(RbpRecoveryCarrierPhase.Tombstoned, reservation!.Phase);
+                Assert.Null(await recovered.GetCorrelatedRecoveryPayloadAsync(
+                    RbpJournalPowerCutData.Rsid,
+                    RbpJournalPowerCutData.RecoveryOriginInvocationId,
+                    RbpJournalPowerCutData.RecoveryRawDigest()));
+                await AssertOutboundBlockedAsync(recovered);
+            }
+            else
+            {
+                Assert.NotNull(reservation);
+                Assert.Equal(
+                    string.Equals(mode, RbpJournalPowerCutMode.RecoverySendStarted, StringComparison.Ordinal)
+                        ? RbpRecoveryCarrierPhase.Reserved
+                        : RbpRecoveryCarrierPhase.SendStarted,
+                    reservation!.Phase);
+                Assert.Equal(1, reservation.CurrentReservedSequence);
+                Assert.Equal(0, sequence.LastPeerAcknowledgement);
+                await AssertRecoveryRawPresentAsync(recovered);
+                await AssertOutboundBlockedAsync(recovered);
+            }
+        }
+
+        RbpJournalPowerCutFiles.AssertRecoveredFileSetIsSane(directory.JournalPath);
     }
 
     private static readonly TimeSpan RecoveryOpenTimeout =
@@ -472,7 +515,8 @@ public sealed class RbpJournalPowerCutTests
                 return RbpJournalStore.Open(
                     directory.JournalPath,
                     new TestResumeTokenProtector(),
-                    RbpJournalTestData.Options());
+                    RbpJournalTestData.Options(),
+                    new TestRecoveryPayloadProtector());
             }
             catch (RbpJournalException exception)
                 when (exception.ErrorCode ==
@@ -526,4 +570,25 @@ public sealed class RbpJournalPowerCutTests
 
         return rows.AsReadOnly();
     }
+
+    private static bool IsPreReservationBoundary(string mode) =>
+        string.Equals(mode, RbpJournalPowerCutMode.RecoveryValidatedRaw, StringComparison.Ordinal) ||
+        string.Equals(mode, RbpJournalPowerCutMode.RecoveryPlanInserted, StringComparison.Ordinal) ||
+        string.Equals(mode, RbpJournalPowerCutMode.RecoverySequenceReserved, StringComparison.Ordinal);
+
+    private static async Task AssertRecoveryRawPresentAsync(RbpJournalStore store)
+    {
+        using RbpRecoveredPayload? payload = await store.GetCorrelatedRecoveryPayloadAsync(
+            RbpJournalPowerCutData.Rsid,
+            RbpJournalPowerCutData.RecoveryOriginInvocationId,
+            RbpJournalPowerCutData.RecoveryRawDigest());
+        Assert.NotNull(payload);
+        Assert.Equal(RbpJournalPowerCutData.RecoveryRawBytes(),
+            payload!.RawResponseBytes.ToArray());
+    }
+
+    private static async Task AssertOutboundBlockedAsync(RbpJournalStore store) =>
+        _ = await Assert.ThrowsAsync<RbpJournalException>(() => store.QueueOutboundDataAsync(
+            RbpJournalPowerCutData.Rsid,
+            new RbpOutboundDataDraft("result", "recovery-still-fenced", RbpJournalTestData.Json("{}"))));
 }

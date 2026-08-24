@@ -187,6 +187,45 @@ public sealed class RbpRecoveryCarrierPlanTests
         Assert.Equal(2, next.Envelope!.Sequence);
     }
 
+    [Fact]
+    public async Task RawRecoveryJsonAndItsBase64NeverAppearInJournalWalShmOrAdjacentSpoolTempAndLogFiles()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        const string ownerSentinel = "C39_CALLER_OWNER_SENTINEL_620b";
+        const string headerSentinel = "C39_FORBIDDEN_FREEFORM_HEADER_ae73";
+        byte[] raw = Encoding.UTF8.GetBytes(
+            "{\"owner\":\"" + ownerSentinel + "\",\"header\":\"" + headerSentinel + "\"}");
+        string digest = "sha256:" + Convert.ToHexString(SHA256.HashData(raw)).ToLowerInvariant();
+        string base64 = Convert.ToBase64String(raw);
+        var origin = new RbpInvocationIdentity("rs-test", "0197a3c2-0000-7000-8000-0000000000c1",
+            "get_current_view_info", false, null, "sha256:" + new string('a', 64), "{\"decision\":\"allow\"}", "[]");
+        var request = new RbpRecoveryCarrierReservationRequest(origin.Rsid,
+            "0197a3c2-0000-7000-8000-0000000000c2", origin.InvocationId, digest, raw.Length,
+            new RbpRecoveryCarrierHeader("application/json", "base64"),
+            "sha256:" + new string('e', 64), RbpJournalTestData.Now.AddHours(1));
+        await using (RbpJournalStore store = OpenStore(directory))
+        {
+            _ = await store.PersistRegisteredSessionAsync(RbpJournalTestData.Registration());
+            _ = await store.AdmitInvocationAsync(origin);
+            await store.MarkInvocationExecutingAsync(origin.IdempotencyKey);
+            _ = await store.PersistInvocationTerminalAsync(origin.IdempotencyKey,
+                new RbpInvocationTerminal(RbpInvocationState.Completed,
+                    RbpJournalTestData.Json("{\"outcome\":\"completed\"}"), digest,
+                    RecoveryPayload: new RbpRecoveryPayload(digest, raw)));
+            _ = await store.PersistProtectedRecoveryTerminalAndReserveAsync(request);
+        }
+        // Closing only releases the file handles; the active reservation is
+        // still durable and must not have emitted plaintext into its DB/WAL,
+        // spool, temp, or log neighbors.
+        AssertNoPlaintextLeak(directory.Path, raw, base64, ownerSentinel, headerSentinel);
+        await using (RbpJournalStore store = OpenStore(directory))
+        {
+            _ = await store.MarkRecoveryCarrierSendStartedAsync(request.RecoveryInvocationId);
+            _ = await store.ApplyRecoveryCarrierFenceAcknowledgementAsync(origin.Rsid, 2);
+        }
+        AssertNoPlaintextLeak(directory.Path, raw, base64, ownerSentinel, headerSentinel);
+    }
+
     private static RbpJournalStore OpenStore(RbpJournalTestDirectory directory) =>
         RbpJournalStore.Open(directory.JournalPath, new TestResumeTokenProtector(),
             RbpJournalTestData.Options(), new TestRecoveryPayloadProtector());
@@ -207,5 +246,23 @@ public sealed class RbpRecoveryCarrierPlanTests
             new RbpInvocationTerminal(RbpInvocationState.Completed, outcome.RootElement.Clone(), digest,
                 RecoveryPayload: new RbpRecoveryPayload(digest, raw)));
         return (origin, raw, digest);
+    }
+
+    private static void AssertNoPlaintextLeak(
+        string root,
+        byte[] raw,
+        string base64,
+        string ownerSentinel,
+        string headerSentinel)
+    {
+        foreach (string path in Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories))
+        {
+            byte[] bytes = File.ReadAllBytes(path);
+            string text = Encoding.UTF8.GetString(bytes);
+            Assert.DoesNotContain(Encoding.UTF8.GetString(raw), text, StringComparison.Ordinal);
+            Assert.DoesNotContain(base64, text, StringComparison.Ordinal);
+            Assert.DoesNotContain(ownerSentinel, text, StringComparison.Ordinal);
+            Assert.DoesNotContain(headerSentinel, text, StringComparison.Ordinal);
+        }
     }
 }
