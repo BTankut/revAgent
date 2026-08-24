@@ -13,9 +13,18 @@ namespace RevAgent.Bridge.Gateway.Dispatch;
 internal sealed class RbpProtectedRecoveryCarrierMaterializer
 {
     private readonly RbpJournalStore _journal;
+    private readonly Func<CancellationToken, Task>? _beforeFinalAuthorityCheck;
 
-    internal RbpProtectedRecoveryCarrierMaterializer(RbpJournalStore journal) =>
+    /// <summary>Internal deterministic race seam; null in production composition.</summary>
+    public Func<CancellationToken, Task>? TestBeforePostSnapshotRecheck { get; init; }
+
+    internal RbpProtectedRecoveryCarrierMaterializer(
+        RbpJournalStore journal,
+        Func<CancellationToken, Task>? beforeFinalAuthorityCheck = null)
+    {
         _journal = journal ?? throw new ArgumentNullException(nameof(journal));
+        _beforeFinalAuthorityCheck = beforeFinalAuthorityCheck;
+    }
 
     internal async Task<RbpRecoveryCarrierMaterializedFrame?> MaterializeCurrentAsync(
         string recoveryInvocationId,
@@ -60,6 +69,13 @@ internal sealed class RbpProtectedRecoveryCarrierMaterializer
             byte[] chunk = raw.AsSpan(offset, length).ToArray();
             try
             {
+                Func<CancellationToken, Task>? interlock =
+                    TestBeforePostSnapshotRecheck ?? _beforeFinalAuthorityCheck;
+                if (interlock is not null)
+                {
+                    await interlock(cancellationToken)
+                        .ConfigureAwait(false);
+                }
                 RbpRecoveryCarrierMaterializationSnapshot? fresh = await _journal
                     .ReadRecoveryCarrierMaterializationSnapshotAsync(recoveryInvocationId, rsid, cancellationToken)
                     .ConfigureAwait(false);
