@@ -333,7 +333,7 @@ internal sealed class RbpDocContextWatcher
         Observe(RbpDocumentContextObservation.Create(
             "probe", started is null ? "capability_absent" : "started", rsid));
         started?.Start(
-            RunWatchAsync(rsid, emitAsync, started.Token));
+            RunWatchAsync(rsid, emitAsync, started, started.Token));
     }
 
     /// <summary>Read-only lifecycle probe for coordinator observation only.</summary>
@@ -343,6 +343,17 @@ internal sealed class RbpDocContextWatcher
         lock (_sync)
         {
             return _loops.ContainsKey(rsid);
+        }
+    }
+
+    /// <summary>Signals at most one extra cached-context poll for this watch.</summary>
+    internal bool RequestImmediatePoll(string rsid)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(rsid);
+        lock (_sync)
+        {
+            if (!_loops.TryGetValue(rsid, out WatchLoop? loop)) return false;
+            return loop.Signal();
         }
     }
 
@@ -368,6 +379,7 @@ internal sealed class RbpDocContextWatcher
     private async Task RunWatchAsync(
         string rsid,
         RbpDocContextEmit emitAsync,
+        WatchLoop loop,
         CancellationToken token)
     {
         try
@@ -377,8 +389,9 @@ internal sealed class RbpDocContextWatcher
                 token.ThrowIfCancellationRequested();
                 await PollOnceAsync(rsid, emitAsync, token)
                     .ConfigureAwait(false);
-                await _clock.DelayAsync(PollInterval, token)
-                    .ConfigureAwait(false);
+                Task cadence = _clock.DelayAsync(PollInterval, token);
+                Task signalled = loop.WaitForSignalAsync(token);
+                await Task.WhenAny(cadence, signalled).ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException)
@@ -607,6 +620,7 @@ internal sealed class RbpDocContextWatcher
     private sealed class WatchLoop
     {
         private readonly CancellationTokenSource _cancellation;
+        private readonly SemaphoreSlim _signal = new(0, 1);
         private Task _loop = Task.CompletedTask;
 
         internal WatchLoop(CancellationTokenSource cancellation)
@@ -615,6 +629,17 @@ internal sealed class RbpDocContextWatcher
         }
 
         internal CancellationToken Token => _cancellation.Token;
+
+        internal bool Signal()
+        {
+            if (_cancellation.IsCancellationRequested || _signal.CurrentCount != 0)
+                return false;
+            try { _signal.Release(); return true; }
+            catch (SemaphoreFullException) { return false; }
+        }
+
+        internal Task WaitForSignalAsync(CancellationToken token) =>
+            _signal.WaitAsync(token);
 
         internal void Start(Task loop)
         {
@@ -639,7 +664,7 @@ internal sealed class RbpDocContextWatcher
             }
 
             _ = _loop.ContinueWith(
-                _ => _cancellation.Dispose(),
+                _ => { _signal.Dispose(); _cancellation.Dispose(); },
                 CancellationToken.None,
                 TaskContinuationOptions.ExecuteSynchronously,
                 TaskScheduler.Default);
