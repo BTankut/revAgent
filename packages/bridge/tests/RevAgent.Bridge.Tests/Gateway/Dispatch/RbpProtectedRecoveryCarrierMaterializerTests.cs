@@ -102,6 +102,31 @@ public sealed class RbpProtectedRecoveryCarrierMaterializerTests
         Assert.Empty((await store.LoadSequenceAsync(Rsid)).Outbox);
     }
 
+    [Fact]
+    public async Task MinimalRecoveryFenceTombstoneDeniesMaterializationAndNeverCreatesAnOrdinaryWireEnvelope()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        await using RbpJournalStore store = await OpenAsync(directory);
+        await ReserveAndStartAsync(store, Encoding.UTF8.GetBytes("{\"ok\":true}"));
+        RbpRecoveryCarrierReservation tombstone = Assert.IsType<RbpRecoveryCarrierReservation>(
+            await store.ApplyRecoveryCarrierFenceAcknowledgementAsync(Rsid, 2));
+        Assert.Equal(RbpRecoveryCarrierPhase.Tombstoned, tombstone.Phase);
+        Assert.Null(await new RbpProtectedRecoveryCarrierMaterializer(store)
+            .MaterializeCurrentAsync(RecoveryId, Rsid, CancellationToken.None));
+        Assert.Empty((await store.LoadSequenceAsync(Rsid)).Outbox);
+    }
+
+    [Fact]
+    public void PostSnapshotDriftRequiresADeterministicMaterializerTestInterlock()
+    {
+        // The implementation performs a second authoritative read, but has no
+        // injectable point between the two reads. Without this seam a test
+        // cannot deterministically tombstone/advance the reservation in that
+        // interval and prove the method returns null before a draft exists.
+        Assert.NotNull(typeof(RbpProtectedRecoveryCarrierMaterializer).GetProperty(
+            "TestBeforePostSnapshotRecheck"));
+    }
+
     private static async Task<RbpJournalStore> OpenAsync(RbpJournalTestDirectory directory, bool register = true)
     {
         RbpJournalStore store = RbpJournalStore.Open(directory.JournalPath,
