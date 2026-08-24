@@ -18,6 +18,8 @@ import {
 import { runRealTrioCli } from "../src/realTrioCli.js";
 import {
   buildRealTrioRuntimeFixture,
+  REAL_TRIO_FIXTURE_DOCUMENT_ID,
+  realTrioFixtureDocumentContextEvent,
   rethrowRealTrioC38Failure,
   startRealTrioRuntimeFixture,
 } from "./realTrioRuntimeFixture.js";
@@ -124,7 +126,7 @@ describe.sequential("WP-12 direct real trio runtime fixture", () => {
           // successful MCP tool result; fixture provenance is the sole origin
           // observation and does not manufacture a replay/result/reference.
           await runtime.verifyNorthDispatchFence();
-          const carrier = await c39OriginCarrier(client, {
+          const originPromise = client.toolCall({
             name: "conformance.fixture.c39_multifile",
             arguments: {
               scenario: "valid_multifile", fileCount: 1, bytesPerFile: 1024,
@@ -132,9 +134,27 @@ describe.sequential("WP-12 direct real trio runtime fixture", () => {
             },
             requestId: `wp12-c39-origin-${binding}`,
           });
+          const initialProvenance = readC39OriginProvenance(await runtime.supervisor.fixtureControl("read_c39_origin_provenance"));
+          expect(initialProvenance.count).toBe(1);
+          expect(initialProvenance.ready).toBe(true);
+          let originSettledBeforeRouteEdge = false;
+          void originPromise.then(
+            () => { originSettledBeforeRouteEdge = true; },
+            () => { originSettledBeforeRouteEdge = true; },
+          );
+          await new Promise<void>((resolve) => setTimeout(resolve, 250));
+          expect(originSettledBeforeRouteEdge).toBe(false);
+          const routeEdge = await runtime.supervisor.fixtureControl("apply_document_context", {
+            event: realTrioFixtureDocumentContextEvent(REAL_TRIO_FIXTURE_DOCUMENT_ID),
+          });
+          expect(routeEdge).toMatchObject({
+            action: "apply_document_context",
+            revision: runtime.documentContextAudit.revision + 1,
+            activeDocumentIdentityHash: expect.stringMatching(SHA256),
+          });
+          const carrier = await c39OriginCarrierFromPromise(originPromise);
           const origin = Object.freeze({ requestId: carrier.origin_invocation_id, responseDigest: carrier.expected_result_digest });
           expect(origin.requestId).toMatch(UUID_V7);
-          const initialProvenance = readC39OriginProvenance(await runtime.supervisor.fixtureControl("read_c39_origin_provenance"));
           assertC39OriginProvenance(initialProvenance, origin.responseDigest, 1);
           const recovery = await waitForC39Recovery(client, runtime, carrier, binding, 45_000);
           const result = recovery.content.result as Record<string, unknown>;
@@ -433,12 +453,11 @@ async function waitForObservedC39Recovery(
   }
 }
 
-async function c39OriginCarrier(
-  client: RealTrioNorthMcpClient,
-  input: Parameters<RealTrioNorthMcpClient["toolCall"]>[0],
+async function c39OriginCarrierFromPromise(
+  originPromise: Promise<{ readonly content: Record<string, unknown> }>,
 ): Promise<NonNullable<ReturnType<typeof parseOmittedPayloadCoordinateCarrier>>> {
   try {
-    const result = await client.toolCall(input);
+    const result = await originPromise;
     const carrier = parseOmittedPayloadCoordinateCarrier(result.content);
     if (carrier === null) throw new Error("C39 origin did not return the strict public omitted-payload coordinate carrier");
     return carrier;
