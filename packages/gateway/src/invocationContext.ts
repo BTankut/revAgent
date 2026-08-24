@@ -12,6 +12,90 @@ import type {
 export type GatewayParamsDigest = `sha256:${string}`;
 
 /**
+ * Nominal, process-local proof for a north dispatch.  Its object identity is
+ * intentionally the authority: neither its token nor the material used to
+ * mint it is serializable or accepted from a client, wire frame, or harness.
+ */
+export interface GatewayDispatchProofAuthority {
+  mint(input: GatewayDispatchProofMaterial): object;
+  digest(proof: object): `sha256:${string}`;
+  routeSnapshotDigest(proof: object): `sha256:${string}`;
+  assert(proof: object): void;
+}
+
+export interface GatewayDispatchProofMaterial {
+  readonly tenantId: string;
+  readonly rsid: string;
+  readonly effectiveMcpSessionId: string;
+  readonly sessionBindingId: string;
+  readonly connectionId: string;
+  readonly routeSnapshot: JsonValue;
+  readonly documentHash: string;
+  readonly documentSequence: number;
+  readonly documentAck: number;
+  readonly gatewayProcessEpoch: string;
+  readonly gatewayProcessOrdinal: number;
+  readonly effectiveScope: JsonValue;
+  readonly invocationId: string;
+  readonly correlationId: string;
+  readonly envelopeDigest: `sha256:${string}`;
+  readonly toolName: string;
+  readonly toolVersion: string;
+  readonly argsDigest: `sha256:${string}`;
+  readonly policy: JsonValue;
+  readonly confirmationId: string | null;
+}
+
+/** Creates one private authority per Gateway instance; proofs are not portable. */
+export function createGatewayDispatchProofAuthority(): GatewayDispatchProofAuthority {
+  const issued = new WeakSet<object>();
+  const records = new WeakMap<object, {
+    readonly digest: `sha256:${string}`;
+    readonly routeSnapshotDigest: `sha256:${string}`;
+  }>();
+  const read = (proof: object) => {
+    const value = records.get(proof);
+    if (!issued.has(proof) || value === undefined) {
+      throw new GatewayInvocationContextError("invalid_invocation_route", "dispatch proof is not owned by this Gateway instance");
+    }
+    return value;
+  };
+  return Object.freeze({
+    mint(input: GatewayDispatchProofMaterial): object {
+      const routeSnapshotDigest = makeParamsDigest({
+        domain: "revagent.gateway.dispatch-proof-route/v1",
+        route: input.routeSnapshot,
+      } as JsonValue);
+      const proofDigest = makeParamsDigest({
+        domain: "revagent.gateway.dispatch-proof/v1",
+        tenant: input.tenantId,
+        rsid: input.rsid,
+        mcp_session: input.effectiveMcpSessionId,
+        session_binding: input.sessionBindingId,
+        connection: input.connectionId,
+        route_snapshot_digest: routeSnapshotDigest,
+        document: { hash: input.documentHash, sequence: input.documentSequence, ack: input.documentAck },
+        gateway: { epoch: input.gatewayProcessEpoch, ordinal: input.gatewayProcessOrdinal },
+        effective_scope: input.effectiveScope,
+        invocation: input.invocationId,
+        correlation: input.correlationId,
+        envelope_digest: input.envelopeDigest,
+        tool: { name: input.toolName, version: input.toolVersion, args_digest: input.argsDigest },
+        policy: input.policy,
+        confirmation_id: input.confirmationId,
+      } as JsonValue);
+      const proof = Object.freeze({});
+      issued.add(proof);
+      records.set(proof, Object.freeze({ digest: proofDigest, routeSnapshotDigest }));
+      return proof;
+    },
+    digest(proof: object): `sha256:${string}` { return read(proof).digest; },
+    routeSnapshotDigest(proof: object): `sha256:${string}` { return read(proof).routeSnapshotDigest; },
+    assert(proof: object): void { void read(proof); },
+  });
+}
+
+/**
  * The sole MCP session identity admitted for one north request.  It is minted
  * once at ingress and deliberately carries the authenticated principal so
  * downstream authority cannot accidentally mix a transport session with an

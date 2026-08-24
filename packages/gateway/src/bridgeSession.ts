@@ -82,6 +82,7 @@ import type {
   EffectiveMcpRequestScopeV1,
   GatewayInvocationRoute,
 } from "./invocationContext.js";
+import { createGatewayDispatchProofAuthority } from "./invocationContext.js";
 import type {
   GatewayResourceAuthority,
   GatewayResourceScope,
@@ -440,6 +441,10 @@ interface DurableEgressLease {
   readonly connectionId: string;
   readonly operation: DurableEgressOperation;
   readonly envelopeDigest: `sha256:${string}`;
+  /** v2 only: a Gateway-owned nominal dispatch proof, never wire material. */
+  readonly proofDigest?: `sha256:${string}` | null;
+  /** v2 only: binds the exact route snapshot independently of the envelope. */
+  readonly routeSnapshotDigest?: `sha256:${string}` | null;
   readonly phase: "reserved" | "started";
   readonly reservedAtMs: number;
   readonly reserveExpiresAtMs: number;
@@ -622,6 +627,8 @@ interface DurableEgressReservation {
   readonly rsid: string;
   readonly lease: DurableEgressLease;
   readonly record: DurableRbpSession;
+  /** In-memory only; must never be serialized into a lease or envelope. */
+  readonly dispatchProof?: object;
 }
 
 interface ReservedResumeAck extends DurableEgressReservation {
@@ -915,7 +922,7 @@ function emptyNormalizedConflictIndex(): DurableNormalizedConflictIndex {
 }
 
 function parseEgressLease(value: unknown): DurableEgressLease {
-  if (!isRecord(value) || !hasExactKeys(value, [
+  const legacyKeys = [
     "leaseId",
     "ticket",
     "holderInstanceId",
@@ -926,7 +933,9 @@ function parseEgressLease(value: unknown): DurableEgressLease {
     "reservedAtMs",
     "reserveExpiresAtMs",
     "startedAtMs",
-  ])) {
+  ] as const;
+  const v2Keys = [...legacyKeys, "proofDigest", "routeSnapshotDigest"] as const;
+  if (!isRecord(value) || (!hasExactKeys(value, legacyKeys) && !hasExactKeys(value, v2Keys))) {
     throw new Error("malformed egress lease");
   }
   const phase = value.phase;
@@ -942,6 +951,10 @@ function parseEgressLease(value: unknown): DurableEgressLease {
       value.operation !== "resume_retransmit") ||
     typeof value.envelopeDigest !== "string" ||
     !DIGEST_PATTERN.test(value.envelopeDigest) ||
+    (Object.hasOwn(value, "proofDigest") &&
+      (typeof value.proofDigest !== "string" || !DIGEST_PATTERN.test(value.proofDigest))) ||
+    (Object.hasOwn(value, "routeSnapshotDigest") &&
+      (typeof value.routeSnapshotDigest !== "string" || !DIGEST_PATTERN.test(value.routeSnapshotDigest))) ||
     (phase !== "reserved" && phase !== "started") ||
     !isSafeNonNegativeInteger(value.reservedAtMs) ||
     !isSafeNonNegativeInteger(value.reserveExpiresAtMs) ||
@@ -2819,6 +2832,8 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
   readonly #productionIdentity: ProductionIdentityAuthority | null;
   readonly #clock: () => number;
   readonly #instanceId: string;
+  /** Private per-process authority; no proof object leaves this class. */
+  readonly #dispatchProofAuthority = createGatewayDispatchProofAuthority();
   readonly #wait: (milliseconds: number) => Promise<void>;
   readonly #maxActiveSeatReassignments: number;
   readonly #seatReassignmentTimeoutMs: number;
@@ -6249,6 +6264,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       correlationId: request.context.invocationId,
       mutating: request.context.mutating,
       effectiveMcpRequestScope: request.context.effectiveMcpRequestScope,
+      dispatchContext: request.context,
       recoveryDispatch: prepared ?? null,
       envelope: prepared?.envelope ?? draft!.envelope,
       journalRecords: prepared?.journalRecords ?? [],
@@ -6272,6 +6288,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       correlationId: request.batchId,
       mutating: request.steps.some((step) => step.context.mutating),
       effectiveMcpRequestScope: first.context.effectiveMcpRequestScope,
+      dispatchContext: first.context,
       recoveryDispatch: prepared,
       envelope: prepared.envelope,
       journalRecords: prepared.journalRecords,
@@ -6284,6 +6301,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     readonly correlationId: string;
     readonly mutating: boolean;
     readonly effectiveMcpRequestScope: EffectiveMcpRequestScopeV1 | undefined;
+    readonly dispatchContext: GatewayExecutorRequest["context"];
     readonly recoveryDispatch: GatewayRecoveryPendingDispatch | null;
     readonly envelope: unknown;
     readonly journalRecords: readonly InvocationJournalRecord[];
@@ -6324,6 +6342,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       readonly correlationId: string;
       readonly mutating: boolean;
       readonly effectiveMcpRequestScope: EffectiveMcpRequestScopeV1 | undefined;
+      readonly dispatchContext: GatewayExecutorRequest["context"];
       readonly recoveryDispatch: GatewayRecoveryPendingDispatch | null;
       readonly envelope: unknown;
       readonly journalRecords: readonly InvocationJournalRecord[];
@@ -6382,6 +6401,54 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       expectedDigest,
       input.mutating,
     );
+    // A dispatch proof is minted only after the authenticated connection,
+    // immutable effective scope, and current live route have all been
+    // selected.  It is process-local object identity; only these digests are
+    // persisted, never proof material.
+    if (
+      input.effectiveMcpRequestScope === undefined
+    ) {
+      return { outcome: Promise.resolve({ state: "failed", error: {
+        code: "executor_unavailable",
+        message: "dispatch lacks an authoritative effective scope",
+      } }) };
+    }
+    const proofPayload = envelope.payload as unknown as Record<string, unknown>;
+    const proofMethod = typeof proofPayload.method === "string"
+      ? proofPayload.method
+      : "invoke_batch";
+    const proofPolicy = (proofPayload.policy ?? null) as JsonValue;
+    const proofConfirmation = proofPolicy !== null && typeof proofPolicy === "object" &&
+      !Array.isArray(proofPolicy) && typeof (proofPolicy as Record<string, unknown>).confirmation_id === "string"
+      ? (proofPolicy as Record<string, unknown>).confirmation_id as string
+      : null;
+    const dispatchProof = this.#dispatchProofAuthority.mint({
+      tenantId: input.tenantId,
+      rsid: input.rsid,
+      effectiveMcpSessionId: input.effectiveMcpRequestScope.effectiveMcpSessionId,
+      sessionBindingId: active.record.sessionBindingId,
+      connectionId: active.record.connectionId,
+      routeSnapshot: {
+        live: active.record.liveDocumentRoute,
+        document: input.dispatchContext.documentIdentity,
+      } as unknown as JsonValue,
+      documentHash: digest(canonicalizeJson(input.dispatchContext.documentIdentity as unknown as JsonValue)),
+      documentSequence: active.record.liveDocumentRoute?.observedSequence ?? active.record.sequence.lastRxSeq,
+      documentAck: active.record.sequence.lastRxSeq,
+      gatewayProcessEpoch: this.#instanceId,
+      gatewayProcessOrdinal: sessionEgressFence(active.record).epoch,
+      effectiveScope: input.effectiveMcpRequestScope as unknown as JsonValue,
+      invocationId: input.correlationId,
+      correlationId: input.correlationId,
+      envelopeDigest: expectedDigest,
+      toolName: proofMethod,
+      toolVersion: "rbp/1",
+      argsDigest: makeParamsDigest((proofPayload.params ?? null) as JsonValue),
+      policy: proofPolicy,
+      confirmationId: proofConfirmation,
+    });
+    const proofDigest = this.#dispatchProofAuthority.digest(dispatchProof);
+    const routeSnapshotDigest = this.#dispatchProofAuthority.routeSnapshotDigest(dispatchProof);
     const leaseId = gatewayUuidV7(this.#clock());
     let reservation: DurableEgressReservation | null = null;
     for (let attempt = 0; attempt < MAX_AUTHORIZATION_CAS_ATTEMPTS; attempt += 1) {
@@ -6467,6 +6534,8 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
           connectionId: record.connectionId,
           operation: "dispatch",
           envelopeDigest: expectedDigest,
+          proofDigest,
+          routeSnapshotDigest,
           phase: "reserved",
           reservedAtMs: nowMs,
           reserveExpiresAtMs: nowMs + SEND_RESERVATION_TTL_MS,
@@ -6518,6 +6587,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
           rsid: input.rsid,
           record: persisted.value.record,
           lease: persisted.value.lease,
+          dispatchProof,
         };
         break;
       }
@@ -6531,6 +6601,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
             rsid: input.rsid,
             record: parseStoredSession(readBack, input.tenantId, input.rsid),
             lease: evidence.lease,
+            dispatchProof,
           };
           break;
         }
@@ -6656,6 +6727,9 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
             fence.revocation !== null ||
             lease === null ||
             lease.phase !== "reserved" ||
+            (lease.operation === "dispatch" &&
+              (lease.proofDigest === undefined || lease.proofDigest === null ||
+                lease.routeSnapshotDigest === undefined || lease.routeSnapshotDigest === null)) ||
             lease.reserveExpiresAtMs <= nowMs ||
             !sameJson(lease, reservation.lease)
           ) {
@@ -6853,15 +6927,17 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       this.#assertAuthorityTicket(authorityTicket, connection, {
         session: started.record,
       });
-      // Do not insert an await between the successful durable promotion and
-      // invoking the transport: the started lease is the cross-process proof
-      // that any final tombstone must wait for this send call to begin.
-      beforeSend?.();
+      // Do not insert an await between promotion and invoking transport. A
+      // rejected/throwing adapter has not accepted a dispatch and therefore
+      // must not install a waiter or acquire an indeterminate outcome.
       this.#assertAuthorityTicket(authorityTicket, connection, {
         session: started.record,
       });
-      sendBegan = true;
       const sendOperation = connection.send(serialized);
+      sendBegan = true;
+      // Only the completed synchronous adapter handoff is a truthful
+      // sendStarted point. Completion stays outside the store transaction.
+      beforeSend?.();
       await sendOperation;
       await this.#assertDispatchReservationCurrent(connection, started, authorityTicket);
     } catch (error) {
@@ -6898,11 +6974,32 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     }
     const record = parseStoredSession(stored, reservation.tenantId, reservation.rsid);
     const lease = sessionEgressFence(record).lease;
+    if (lease?.operation === "dispatch") {
+      if (reservation.dispatchProof === undefined) {
+        throw new GatewayRbpFault("unavailable", "dispatch proof is unavailable after reservation", 503, 1011);
+      }
+      this.#dispatchProofAuthority.assert(reservation.dispatchProof);
+      if (
+        lease.proofDigest !== this.#dispatchProofAuthority.digest(reservation.dispatchProof) ||
+        lease.routeSnapshotDigest !== this.#dispatchProofAuthority.routeSnapshotDigest(reservation.dispatchProof)
+      ) {
+        throw new GatewayRbpFault("unavailable", "dispatch proof no longer matches durable route authority", 503, 1011);
+      }
+    }
     if (record.connectionId !== connection.connectionId ||
         record.sessionBindingId !== reservation.record.sessionBindingId ||
-        !record.sessionLifecycle.dispatchAllowed || record.liveDocumentRoute === null ||
-        !sameJson(record.liveDocumentRoute, reservation.record.liveDocumentRoute) ||
-        lease === null || lease.phase !== "started" || !sameJson(lease, reservation.lease)) {
+        !record.sessionLifecycle.dispatchAllowed ||
+        // Public north routing never creates a reservation without a live
+        // route. Keep old internal lifecycle tests distinct: they may have
+        // no north route, but can never carry a north proof into this path.
+        (reservation.record.liveDocumentRoute !== null &&
+          (record.liveDocumentRoute === null ||
+            !sameJson(record.liveDocumentRoute, reservation.record.liveDocumentRoute))) ||
+        lease === null || lease.phase !== "started" ||
+        (lease.operation === "dispatch" &&
+          (lease.proofDigest === undefined || lease.proofDigest === null ||
+            lease.routeSnapshotDigest === undefined || lease.routeSnapshotDigest === null)) ||
+        !sameJson(lease, reservation.lease)) {
       throw new GatewayRbpFault("unavailable", "dispatch reservation no longer authorizes its route", 503, 1011);
     }
     this.#assertAuthorityTicket(authorityTicket, connection, { session: record });

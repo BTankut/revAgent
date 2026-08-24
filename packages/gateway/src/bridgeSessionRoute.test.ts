@@ -22,7 +22,10 @@ import {
 } from "./bridgeSession.js";
 import type { GatewayExecutorRequest, GatewayJsonObject } from "./dispatch.js";
 import { gatewayUuidV7 } from "./identifiers.js";
-import { createEffectiveMcpRequestScopeV1 } from "./invocationContext.js";
+import {
+  createEffectiveMcpRequestScopeV1,
+  createGatewayDispatchProofAuthority,
+} from "./invocationContext.js";
 import { GatewayResourceAuthority } from "./resourceAuthority.js";
 import { createMemoryObjectStore, createRestartableTestStore } from "./testAdapters.js";
 
@@ -1097,5 +1100,32 @@ describe("GatewayBridgeSessionAuthority live document routing", () => {
     );
 
     expectUnavailable(created);
+  });
+});
+
+describe("Gateway dispatch proof nominal authority", () => {
+  it("rejects a forged or foreign proof while JCS-equivalent route material remains stable", () => {
+    const first = createGatewayDispatchProofAuthority();
+    const second = createGatewayDispatchProofAuthority();
+    const material = {
+      tenantId: "tenant-route", rsid: "rsid-route", effectiveMcpSessionId: "mcp-route",
+      sessionBindingId: "binding-route", connectionId: "connection-route",
+      routeSnapshot: { b: 2, a: 1 }, documentHash: "sha256:" + "a".repeat(64),
+      documentSequence: 2, documentAck: 1, gatewayProcessEpoch: "epoch-route",
+      gatewayProcessOrdinal: 4, effectiveScope: { principalKey: "p", effectiveMcpSessionId: "mcp-route" },
+      invocationId: "invoke-route", correlationId: "invoke-route",
+      envelopeDigest: ("sha256:" + "b".repeat(64)) as `sha256:${string}`,
+      toolName: "route_tool", toolVersion: "1", argsDigest: ("sha256:" + "c".repeat(64)) as `sha256:${string}`,
+      policy: { decision: "auto" }, confirmationId: null,
+    };
+    const proof = first.mint(material);
+    expect(first.digest(proof)).toMatch(/^sha256:/u);
+    expect(first.routeSnapshotDigest(proof)).toBe(first.routeSnapshotDigest(proof));
+    expect(() => second.assert(proof)).toThrow(/not owned/u);
+    expect(() => first.assert(Object.freeze({}))).toThrow(/not owned/u);
+    expect(first.digest(first.mint({ ...material, routeSnapshot: { a: 1, b: 2 } })))
+      .toBe(first.digest(proof));
+    expect(first.digest(first.mint({ ...material, toolName: "changed" })))
+      .not.toBe(first.digest(proof));
   });
 });
