@@ -83,7 +83,7 @@ export interface RealTrioSupervisorResult {
   readonly sessionReadiness: RealTrioSessionReadiness;
   /** Fixture-only fault/evidence route; it never reaches the C# worker control channel. */
   readonly fixtureControl: (
-    action: "plan_fault" | "release_stall" | "apply_document_context" | "snapshot_evidence",
+    action: "plan_fault" | "release_stall" | "apply_document_context" | "snapshot_evidence" | "read_c39_origin_provenance",
     fields?: Readonly<Record<string, JsonValue>>,
   ) => Promise<JsonValue>;
   /** Tenant-scoped, public and redacted audit correlation for real case assertions. */
@@ -1127,7 +1127,7 @@ export async function startRealTrioSupervisor(input: RealTrioSupervisorLaunch): 
         // The real runtime must prove its post-registration cache update via
         // the fixture's advertised, strict control surface; accepting an
         // unadvertised action would turn this into a hidden bypass.
-        requiredActions: ["apply_document_context", "snapshot_evidence", "shutdown"],
+        requiredActions: ["apply_document_context", "snapshot_evidence", "read_c39_origin_provenance", "shutdown"],
       });
       try {
         const fixtureTokens = fixtureAttestationTokens(fixture.readiness, fixture.pid);
@@ -1213,7 +1213,7 @@ export async function startRealTrioSupervisor(input: RealTrioSupervisorLaunch): 
           return sessionReadiness;
         };
         const fixtureControl = async (
-          action: "plan_fault" | "release_stall" | "apply_document_context" | "snapshot_evidence",
+          action: "plan_fault" | "release_stall" | "apply_document_context" | "snapshot_evidence" | "read_c39_origin_provenance",
           fields: Readonly<Record<string, JsonValue>> = {},
         ): Promise<JsonValue> => await fixture.request(action, fields);
         const readRealCaseAuditOutcome = async (): Promise<RealTrioAuditControlOutcome> => {

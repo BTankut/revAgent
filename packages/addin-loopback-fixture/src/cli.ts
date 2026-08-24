@@ -65,6 +65,7 @@ async function main(): Promise<void> {
         "release_stall",
         "apply_document_context",
         "snapshot_evidence",
+        "read_c39_origin_provenance",
         "shutdown",
       ],
       host: address.host,

@@ -22,6 +22,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
+      - name: Validate fixed Windows runner labels
+        env:
+          RUNNER_LABELS_JSON: ${{ inputs.runner_labels_json }}
+        run: test "$RUNNER_LABELS_JSON" = '["self-hosted","Windows","revagent-ci"]'
       - name: Checkout exact candidate head
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
@@ -53,7 +57,7 @@ jobs:
   windows-real-trio:
     name: C39 Windows real trio (${{ matrix.binding }})
     needs: linux-preflight
-    runs-on: ${{ fromJSON(inputs.runner_labels_json) }}
+    runs-on: [self-hosted, Windows, revagent-ci]
     timeout-minutes: 60
     strategy:
       fail-fast: false

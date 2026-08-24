@@ -210,8 +210,21 @@ describe("fixture CLI JSONL control and cleanup", () => {
       "release_stall",
       "apply_document_context",
       "snapshot_evidence",
+      "read_c39_origin_provenance",
       "shutdown",
     ]);
+    const emptyC39Provenance = await channel.send(control("c39-origin-empty", "read_c39_origin_provenance"));
+    expect(emptyC39Provenance.value).toMatchObject({
+      ok: true,
+      result: {
+        version: 1,
+        method: "fixture_multi_file_output",
+        count: 0,
+        ready: false,
+        latestDigest: null,
+        domainHash: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u),
+      },
+    });
     const address = { host: ready.host, port: ready.port };
 
     const duplicate = await channel.sendRaw(

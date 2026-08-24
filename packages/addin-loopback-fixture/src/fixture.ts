@@ -34,6 +34,7 @@ import type {
   Effect,
   FaultPlan,
   FixtureAddress,
+  FixtureC39OriginProvenance,
   FixtureHandler,
   FixtureEvidenceSnapshot,
   FixtureObservation,
@@ -664,6 +665,30 @@ export class AddinLoopbackFixture {
 
   public getMethodExecutionCount(method: string): number {
     return this.#methodCounts.get(method) ?? 0;
+  }
+
+  /**
+   * Fixed D0 proof for C39.  It deliberately omits request IDs, parameters,
+   * paths, responses, and every recovery claim; the public Gateway carrier is
+   * the sole source of an origin UUID and recovery coordinates.
+   */
+  public c39OriginProvenance(): FixtureC39OriginProvenance {
+    const method = "fixture_multi_file_output" as const;
+    const values = [...this.#c39OriginResponseDigests.values()];
+    const latestDigest = values.at(-1) ?? null;
+    const count = values.length;
+    const domainHash = sha256(Buffer.from(
+      `revagent/c39-origin-provenance/v1\0${method}\0${String(count)}\0${latestDigest ?? ""}`,
+      "utf8",
+    ));
+    return Object.freeze({
+      version: 1,
+      method,
+      count,
+      ready: count === 1 && latestDigest !== null,
+      latestDigest,
+      domainHash,
+    });
   }
 
   public snapshotEvidence(): FixtureEvidenceSnapshot {

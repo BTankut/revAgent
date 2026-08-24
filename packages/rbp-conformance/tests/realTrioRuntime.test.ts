@@ -10,6 +10,7 @@ import {
   realTrioNorthToolForCase,
 } from "../src/realTrioCaseDriver.js";
 import {
+  parseOmittedPayloadCoordinateCarrier,
   withRealTrioNorthMcpClient,
   type RealTrioNorthMcpClient,
 } from "../src/realTrioMcpClient.js";
@@ -72,9 +73,7 @@ describe.sequential("WP-12 direct real trio runtime fixture", () => {
       const evidenceDirectory = mkdtempSync(path.join(tmpdir(), `wp12-real-${binding}-`));
       const launched = await runRealTrioCli(
         ["real-trio", binding],
-        async (selectedBinding) => await startRealTrioRuntimeFixture(selectedBinding, {
-          evidenceDirectory, c39D0PostWriteFault: true,
-        }),
+        async (selectedBinding) => await startRealTrioRuntimeFixture(selectedBinding, { evidenceDirectory }),
       );
       const runtime = launched.result;
       try {
@@ -106,7 +105,9 @@ describe.sequential("WP-12 direct real trio runtime fixture", () => {
       const evidenceDirectory = mkdtempSync(path.join(tmpdir(), `wp12-c39-${binding}-`));
       const launched = await runRealTrioCli(
         ["real-trio", binding],
-        async (selectedBinding) => await startRealTrioRuntimeFixture(selectedBinding, { evidenceDirectory }),
+        async (selectedBinding) => await startRealTrioRuntimeFixture(selectedBinding, {
+          evidenceDirectory, c39D0PostWriteFault: true,
+        }),
       );
       const runtime = launched.result;
       try {
@@ -120,7 +121,7 @@ describe.sequential("WP-12 direct real trio runtime fixture", () => {
           // successful MCP tool result; fixture provenance is the sole origin
           // observation and does not manufacture a replay/result/reference.
           await runtime.verifyNorthDispatchFence();
-          const normalOriginSuppressed = await c39NormalOriginIsSuppressed(client, {
+          const carrier = await c39OriginCarrier(client, {
             name: "conformance.fixture.c39_multifile",
             arguments: {
               scenario: "valid_multifile", fileCount: 1, bytesPerFile: 1024,
@@ -128,15 +129,11 @@ describe.sequential("WP-12 direct real trio runtime fixture", () => {
             },
             requestId: `wp12-c39-origin-${binding}`,
           });
-          expect(normalOriginSuppressed).toBe(true);
-
-          // One fully drained fixture snapshot proves D0 provenance/count;
-          // continuation pages release the fixture slot before D1 polling.
-          await new Promise<void>((resolve) => setTimeout(resolve, 1_000));
-          const originEvidence = await readCompleteFixtureEvidence(runtime);
-          const origin = c39OriginFromEvidence(originEvidence);
+          const origin = Object.freeze({ requestId: carrier.origin_invocation_id, responseDigest: carrier.expected_result_digest });
           expect(origin.requestId).toMatch(UUID_V7);
-          const recovery = await waitForC39Recovery(client, runtime, origin, binding, 45_000);
+          const initialProvenance = readC39OriginProvenance(await runtime.supervisor.fixtureControl("read_c39_origin_provenance"));
+          assertC39OriginProvenance(initialProvenance, origin.responseDigest, 1);
+          const recovery = await waitForC39Recovery(client, runtime, carrier, binding, 45_000);
           const result = recovery.content.result as Record<string, unknown>;
           expect(result).toMatchObject({ kind: "result_ref", digest: expect.stringMatching(SHA256) });
           expect(result).not.toHaveProperty("payload");
@@ -190,7 +187,10 @@ describe.sequential("WP-12 direct real trio runtime fixture", () => {
             requestId: `wp12-c39-retry-${binding}`,
           });
           expect(retry.content).toMatchObject({ state: "completed" });
-          expect(executionCount(originEvidence, origin.requestId)).toBe(1);
+          assertC39OriginProvenance(
+            readC39OriginProvenance(await runtime.supervisor.fixtureControl("read_c39_origin_provenance")),
+            origin.responseDigest, 1,
+          );
 
           const observed = await waitForObservedC39Recovery(
             runtime, origin, result.digest as `sha256:${string}`, 45_000,
@@ -204,12 +204,11 @@ describe.sequential("WP-12 direct real trio runtime fixture", () => {
           const restartRecoveryDenied = await expectC39RecoveryDenied(client, origin, binding, "restart");
           const bindingDriftDenied = restartResourceDenied && restartRecoveryDenied;
           expect(bindingDriftDenied).toBe(true);
-          const finalEvidence = await readCompleteFixtureEvidence(runtime);
-          expect(executionCount(finalEvidence, origin.requestId)).toBe(1);
-
-          const originExecutionCount = executionCount(finalEvidence, origin.requestId);
+          const finalProvenance = readC39OriginProvenance(await runtime.supervisor.fixtureControl("read_c39_origin_provenance"));
+          assertC39OriginProvenance(finalProvenance, origin.responseDigest, 1);
+          const originExecutionCount = finalProvenance.count;
           expect(originExecutionCount).toBe(1);
-          const cleanup = finalEvidence;
+          const cleanup = await readCompleteFixtureEvidence(runtime);
           expect(cleanup).toMatchObject({ openSocketCount: 0, pendingStalls: [] });
           await runtime.stop();
           writeC39SuccessSummary({
@@ -217,7 +216,7 @@ describe.sequential("WP-12 direct real trio runtime fixture", () => {
             origin,
             originExecutionCount,
             observed,
-            normalOriginSuppressed,
+            normalOriginSuppressed: carrier.code === "payload_omitted",
             client: Object.freeze({
               ownerReadSucceeded,
               samePrincipalDenied,
@@ -431,11 +430,14 @@ async function waitForObservedC39Recovery(
   }
 }
 
-async function c39NormalOriginIsSuppressed(
+async function c39OriginCarrier(
   client: RealTrioNorthMcpClient,
   input: Parameters<RealTrioNorthMcpClient["toolCall"]>[0],
-): Promise<boolean> {
-  try { return (await client.toolCall(input)).content.state !== "completed"; } catch { return true; }
+): Promise<NonNullable<ReturnType<typeof parseOmittedPayloadCoordinateCarrier>>> {
+  const result = await client.toolCall(input);
+  const carrier = parseOmittedPayloadCoordinateCarrier(result.content);
+  if (carrier === null) throw new Error("C39 origin did not return the strict public omitted-payload coordinate carrier");
+  return carrier;
 }
 
 async function expectC39RecoveryDenied(
@@ -477,23 +479,41 @@ function object(value: unknown): Record<string, unknown> | null {
     ? value as Record<string, unknown> : null;
 }
 
-function executionCount(snapshot: Record<string, unknown>, requestId: string): number {
-  const counts = Array.isArray(snapshot.executionCounts) ? snapshot.executionCounts : [];
-  const row = counts.map(object).find((entry) => entry?.requestId === requestId);
-  return typeof row?.count === "number" ? row.count : 0;
+interface C39FixtureProvenance {
+  readonly version: 1;
+  readonly method: "fixture_multi_file_output";
+  readonly count: number;
+  readonly ready: boolean;
+  readonly latestDigest: `sha256:${string}` | null;
+  readonly domainHash: `sha256:${string}`;
 }
 
-function c39OriginFromEvidence(snapshot: Record<string, unknown>): C39OriginProvenance {
-    const rows = Array.isArray(snapshot.c39OriginResponses) ? snapshot.c39OriginResponses : [];
-    const candidates = rows.map(object).filter((row): row is Record<string, unknown> =>
-      typeof row?.requestId === "string" && typeof row.responseDigest === "string" &&
-      /^sha256:[0-9a-f]{64}$/u.test(row.responseDigest),
-    );
-    if (candidates.length !== 1) throw new Error("real C39 fixture origin provenance is not singular");
-    const candidate = candidates[0]!;
-    const requestId = candidate.requestId as string;
-    if (executionCount(snapshot, requestId) !== 1) throw new Error("real C39 fixture origin count is not one");
-    return Object.freeze({ requestId, responseDigest: candidate.responseDigest as `sha256:${string}` });
+function readC39OriginProvenance(value: unknown): C39FixtureProvenance {
+  const record = object(value);
+  const keys = record === null ? [] : Object.keys(record).sort();
+  const expected = ["count", "domainHash", "latestDigest", "method", "ready", "version"];
+  if (record === null || keys.length !== expected.length || keys.some((key, index) => key !== expected[index]) ||
+      record.version !== 1 || record.method !== "fixture_multi_file_output" ||
+      !Number.isSafeInteger(record.count) || Number(record.count) < 0 || typeof record.ready !== "boolean" ||
+      !(record.latestDigest === null || (typeof record.latestDigest === "string" && SHA256.test(record.latestDigest))) ||
+      typeof record.domainHash !== "string" || !SHA256.test(record.domainHash)) {
+    throw new Error("C39 fixture origin provenance control is malformed");
+  }
+  return Object.freeze(record as unknown as C39FixtureProvenance);
+}
+
+function assertC39OriginProvenance(
+  provenance: C39FixtureProvenance,
+  expectedDigest: `sha256:${string}`,
+  expectedCount: number,
+): void {
+  const expectedDomainHash = `sha256:${createHash("sha256")
+    .update(`revagent/c39-origin-provenance/v1\0fixture_multi_file_output\0${String(expectedCount)}\0${expectedDigest}`, "utf8")
+    .digest("hex")}`;
+  if (provenance.count !== expectedCount || provenance.ready !== (expectedCount === 1) ||
+      provenance.latestDigest !== expectedDigest || provenance.domainHash !== expectedDomainHash) {
+    throw new Error("C39 fixture origin provenance did not match the strict public coordinate carrier");
+  }
 }
 
 async function readCompleteFixtureEvidence(
@@ -527,22 +547,21 @@ async function readCompleteFixtureEvidence(
 async function waitForC39Recovery(
   client: RealTrioNorthMcpClient,
   runtime: Awaited<ReturnType<typeof startRealTrioRuntimeFixture>>,
-  origin: C39OriginProvenance,
+  carrier: NonNullable<ReturnType<typeof parseOmittedPayloadCoordinateCarrier>>,
   binding: "wss" | "streamable_http_sse",
   timeoutMs: number,
 ): Promise<{ readonly content: Record<string, unknown> }> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
-    const audit = object(await runtime.supervisor.readRealCaseAudit());
-    if (object(audit?.c39Recovery)?.status === "joined") {
-      await runtime.verifyNorthDispatchFence();
-      const result = await client.toolCall({
-        name: realTrioNorthToolForCase("O1-C39").toolName,
-        arguments: { origin_invocation_id: origin.requestId, expected_result_digest: origin.responseDigest },
+    await runtime.verifyNorthDispatchFence();
+    try {
+      const result = await client.recoverOmittedPayload({
+        carrier,
+        advertisedTool: { name: carrier.recovery_tool, version: carrier.recovery_tool_version },
         requestId: `wp12-c39-recovery-${binding}`,
       });
       if (result.content.state === "completed") return result;
-    }
+    } catch { /* C2 admission remains unavailable until the real D0 replay is durable. */ }
     if (Date.now() >= deadline) throw new Error("real C39 public recovery did not complete");
     await new Promise<void>((resolve) => setTimeout(resolve, 200));
   }

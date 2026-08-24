@@ -153,6 +153,16 @@ export interface FixtureEvidenceSnapshot {
   readonly crashed: boolean;
 }
 
+/** Fixed, slot-free D0 provenance projection for the C39 conformance route. */
+export interface FixtureC39OriginProvenance {
+  readonly version: 1;
+  readonly method: "fixture_multi_file_output";
+  readonly count: number;
+  readonly ready: boolean;
+  readonly latestDigest: string | null;
+  readonly domainHash: string;
+}
+
 /** Value-free receipt returned by the strict fixture control plane. */
 export interface DocumentContextControlAcknowledgement {
   readonly action: "apply_document_context";
