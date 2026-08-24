@@ -723,7 +723,10 @@ describe("WP-12 real-trio fixture document route gate", () => {
       coherentAuditControl: { outcome: "success", audit: {} },
       preControlBaseline: { processEpoch: "123e4567-e89b-42d3-a456-426614174000", observationOrdinal: 1,
         acceptedObservationOrdinal: 1, currentIdentity: `sha256:${"f".repeat(64)}` },
-      preControlAudit: { documentContextObservationHighWaterOrdinal: 1, documentContextUpdates: [{ secret: "must-not-persist" }] },
+      preControlAudit: { documentContextObservationHighWaterOrdinal: 1, documentContextUpdates: [
+        { stage: "accepted", secret: "must-not-persist" },
+        { stage: "not_accepted", secret: "must-not-persist" },
+      ] },
       selectorReason: "source_pair_missing",
       childState: { childExited: false, processDiagnostics: [] },
     });
@@ -737,7 +740,7 @@ describe("WP-12 real-trio fixture document route gate", () => {
       gatewayCoherentAudit: { status: "retry_exhausted", lastAttemptStatus: "observation_churn", attemptCount: 3, observationCount: 1, highWaterOrdinal: 2 },
       gatewayAuditControl: { outcome: "success", error: null },
       preControlBaselinePresent: true,
-      preControlBaseline: { processEpochPresent: true, observationOrdinalPresent: true, highWaterOrdinalPresent: true, acceptedObservationCount: 1 },
+      preControlBaseline: { processEpochPresent: true, observationOrdinalPresent: true, highWaterOrdinalPresent: true, retainedUpdateCount: 2 },
       selectorReason: "source_pair_missing",
     });
     expect(failure.documentStages).toHaveLength(64);

@@ -267,7 +267,8 @@ export interface RealTrioDocumentContextFailure {
     readonly processEpochPresent: boolean;
     readonly observationOrdinalPresent: boolean;
     readonly highWaterOrdinalPresent: boolean;
-    readonly acceptedObservationCount: number | null;
+    /** Count of retained audit update rows; this is not an acceptance count. */
+    readonly retainedUpdateCount: number | null;
   }>;
   /** Last fixed selector result, retained independently from post-failure audit control. */
   readonly selectorReason: RealTrioCurrentRouteSelectorReason | null;
@@ -441,7 +442,7 @@ function preControlBaselineEvidence(
       baseline.observationOrdinal >= 0,
     highWaterOrdinalPresent: isObject(audit) && Number.isSafeInteger(audit.documentContextObservationHighWaterOrdinal) &&
       Number(audit.documentContextObservationHighWaterOrdinal) >= 0,
-    acceptedObservationCount: updateCount,
+    retainedUpdateCount: updateCount,
   });
 }
 
