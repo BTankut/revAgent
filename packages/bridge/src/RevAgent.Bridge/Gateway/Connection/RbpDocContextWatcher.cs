@@ -4,6 +4,7 @@ using System.Security.Cryptography;
 using Newtonsoft.Json.Linq;
 using RevAgent.Bridge.AddinLoopback;
 using RevAgent.Bridge.Gateway.Dispatch;
+using RevAgent.Bridge.Gateway.Protocol;
 using RevAgent.Contracts.Rbp;
 
 namespace RevAgent.Bridge.Gateway.Connection;
@@ -29,10 +30,16 @@ internal sealed record RbpDocumentContextObservation(
     string Outcome,
     string RsidHash,
     string? PayloadHash,
+    string? ContextDigest,
     long? Sequence)
 {
     internal const string CurrentContractVersion =
         "revagent.rbp-document-context-observation/v1";
+    private const string ContextDigestDomain =
+        "revagent:doc-context-payload:v1\n";
+    private static readonly UTF8Encoding StrictUtf8 = new(
+        encoderShouldEmitUTF8Identifier: false,
+        throwOnInvalidBytes: true);
 
     internal static RbpDocumentContextObservation Create(
         string stage,
@@ -47,7 +54,77 @@ internal sealed record RbpDocumentContextObservation(
             outcome,
             Hash(rsid),
             payload is { } value ? Hash(value.GetRawText()) : null,
+            payload is { } context ? TryMakeContextDigest(context) : null,
             sequence);
+
+    /// <summary>
+    /// Creates an observation only when the document-context payload can be
+    /// proven canonical. A diagnostic failure must never disclose a raw
+    /// document payload or weaken delivery of the unchanged RBP payload.
+    /// </summary>
+    internal static bool TryCreate(
+        string stage,
+        string outcome,
+        string rsid,
+        JsonElement? payload,
+        long? sequence,
+        out RbpDocumentContextObservation? observation)
+    {
+        if (payload is not { } value)
+        {
+            observation = Create(stage, outcome, rsid, sequence: sequence);
+            return true;
+        }
+
+        try
+        {
+            observation = new RbpDocumentContextObservation(
+                CurrentContractVersion,
+                "bridge.document_context_observation",
+                stage,
+                outcome,
+                Hash(rsid),
+                Hash(value.GetRawText()),
+                MakeContextDigest(value),
+                sequence);
+            return true;
+        }
+        catch
+        {
+            // Duplicate keys, non-finite values, malformed Unicode, or a
+            // canonicalizer failure have no safe diagnostic representation.
+            observation = null;
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Derives the diagnostic-only correlate for a document-context payload
+    /// using the pinned RFC 8785 canonicalizer. The result is bare lowercase
+    /// SHA-256 hexadecimal and is never added to the RBP wire payload.
+    /// </summary>
+    internal static string MakeContextDigest(JsonElement payload)
+    {
+        byte[] domain = StrictUtf8.GetBytes(ContextDigestDomain);
+        byte[] canonical = StrictUtf8.GetBytes(
+            Rfc8785Json.Canonicalize(payload));
+        byte[] material = new byte[domain.Length + canonical.Length];
+        Buffer.BlockCopy(domain, 0, material, 0, domain.Length);
+        Buffer.BlockCopy(canonical, 0, material, domain.Length, canonical.Length);
+        return Convert.ToHexString(SHA256.HashData(material)).ToLowerInvariant();
+    }
+
+    private static string? TryMakeContextDigest(JsonElement payload)
+    {
+        try
+        {
+            return MakeContextDigest(payload);
+        }
+        catch
+        {
+            return null;
+        }
+    }
 
     private static string Hash(string value) =>
         "sha256:" + Convert.ToHexString(
@@ -316,8 +393,7 @@ internal sealed class RbpDocContextWatcher
         {
             payload = document.RootElement.Clone();
         }
-        Observe(RbpDocumentContextObservation.Create(
-            "snapshot", "ready", rsid, payload));
+        ObservePayload("snapshot", "ready", rsid, payload);
 
         bool emitted;
         try
@@ -332,8 +408,7 @@ internal sealed class RbpDocContextWatcher
         {
             // The update was not durably queued; keep the previous emitted
             // state so the change is retried at the next tick.
-            Observe(RbpDocumentContextObservation.Create(
-                "failure", "queue_failed", rsid, payload));
+            ObservePayload("failure", "queue_failed", rsid, payload);
             return;
         }
 
@@ -348,8 +423,26 @@ internal sealed class RbpDocContextWatcher
         }
         else
         {
-            Observe(RbpDocumentContextObservation.Create(
-                "queue", "not_queued", rsid, payload));
+            ObservePayload("queue", "not_queued", rsid, payload);
+        }
+    }
+
+    private void ObservePayload(
+        string stage,
+        string outcome,
+        string rsid,
+        JsonElement payload)
+    {
+        if (RbpDocumentContextObservation.TryCreate(
+                stage,
+                outcome,
+                rsid,
+                payload,
+                sequence: null,
+                out RbpDocumentContextObservation? observation) &&
+            observation is not null)
+        {
+            Observe(observation);
         }
     }
 

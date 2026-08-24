@@ -6,12 +6,122 @@ using RevAgent.Bridge.Gateway.Connection;
 using RevAgent.Bridge.Gateway.Dispatch;
 using RevAgent.Bridge.Gateway.Protocol;
 using RevAgent.Bridge.Gateway.Storage;
+using RevAgent.Bridge.Tests.Gateway.Protocol;
 using RevAgent.Bridge.Tests.Gateway.Storage;
 
 namespace RevAgent.Bridge.Tests.Gateway.Connection;
 
 public sealed partial class RbpConnectionCoordinatorTests
 {
+    [Fact]
+    public void DocumentContextDigestVectorsMatchPinnedRfc8785Canonicalization()
+    {
+        using JsonDocument fixture = LoadDocumentContextDigestFixture();
+        int count = 0;
+        foreach (JsonElement vector in fixture.RootElement
+                     .GetProperty("accepted")
+                     .EnumerateArray())
+        {
+            JsonElement payload = vector.GetProperty("payload");
+            string digest = RbpDocumentContextObservation.MakeContextDigest(
+                payload);
+
+            Assert.Equal(
+                vector.GetProperty("canonical").GetString(),
+                Rfc8785Json.Canonicalize(payload));
+            Assert.Equal(
+                vector.GetProperty("contextDigest").GetString(),
+                digest);
+            Assert.Matches("^[0-9a-f]{64}$", digest);
+            Assert.NotEqual(
+                vector.GetProperty("wrongDomainDigest").GetString(),
+                digest);
+            count++;
+        }
+
+        Assert.Equal(4, count);
+    }
+
+    [Fact]
+    public void DocumentContextDigestRejectionsOmitTheDiagnosticObservation()
+    {
+        using JsonDocument fixture = LoadDocumentContextDigestFixture();
+        int count = 0;
+        foreach (JsonElement vector in fixture.RootElement
+                     .GetProperty("rejected")
+                     .EnumerateArray())
+        {
+            string raw = vector.GetProperty("raw").GetString() ??
+                         throw new InvalidDataException(
+                             "Digest rejection vector is missing raw JSON.");
+            try
+            {
+                using JsonDocument payload = JsonDocument.Parse(raw);
+                Assert.False(RbpDocumentContextObservation.TryCreate(
+                    "snapshot",
+                    "ready",
+                    "rs-sensitive",
+                    payload.RootElement,
+                    sequence: 1,
+                    out RbpDocumentContextObservation? observation));
+                Assert.Null(observation);
+            }
+            catch (JsonException)
+            {
+                // Malformed JSON cannot produce a JsonElement, therefore it
+                // cannot produce a document-context diagnostic observation.
+            }
+
+            count++;
+        }
+
+        Assert.Equal(3, count);
+    }
+
+    [Fact]
+    public void DocumentContextDigestIsStableButObservationsRemainDistinctAndValueFree()
+    {
+        const string sensitiveTitle = "Confidential MEP Model";
+        const string sensitiveDocumentId = "doc-secret-017";
+        using JsonDocument payload = JsonDocument.Parse(
+            $$"""
+              {
+                "title":"{{sensitiveTitle}}",
+                "document_id":"{{sensitiveDocumentId}}",
+                "revision":7
+              }
+              """);
+
+        Assert.True(RbpDocumentContextObservation.TryCreate(
+            "snapshot",
+            "ready",
+            "rs-sensitive",
+            payload.RootElement,
+            sequence: 7,
+            out RbpDocumentContextObservation? first));
+        Assert.True(RbpDocumentContextObservation.TryCreate(
+            "queue",
+            "not_queued",
+            "rs-sensitive",
+            payload.RootElement,
+            sequence: 8,
+            out RbpDocumentContextObservation? second));
+
+        Assert.NotNull(first);
+        Assert.NotNull(second);
+        Assert.Equal(first.ContextDigest, second.ContextDigest);
+        Assert.NotEqual(first, second);
+        Assert.Matches("^[0-9a-f]{64}$", first.ContextDigest!);
+
+        string transcript = JsonSerializer.Serialize(new[] { first, second });
+        Assert.DoesNotContain(sensitiveTitle, transcript, StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            sensitiveDocumentId,
+            transcript,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain("rs-sensitive", transcript, StringComparison.Ordinal);
+    }
+
     [Fact]
     public async Task RegistrationTriggersImmediatePollAndEmitsUpdate()
     {
@@ -28,6 +138,7 @@ public sealed partial class RbpConnectionCoordinatorTests
         Assert.Equal(RbpEnvelopeScope.Data, update.Scope);
         Assert.Equal("rs-8080", update.Rsid);
         Assert.Equal(1, update.Sequence);
+        Assert.False(update.Payload.TryGetProperty("contextDigest", out _));
         JsonElement document = Assert.Single(
             update.Payload.GetProperty("documents").EnumerateArray());
         Assert.Equal(
@@ -255,6 +366,21 @@ public sealed partial class RbpConnectionCoordinatorTests
                 """),
             port,
             Json("""{"active_task":null,"addin_reachable":true}"""));
+    }
+
+    private static JsonDocument LoadDocumentContextDigestFixture()
+    {
+        string path = Path.Combine(
+            RbpFixtureReader.FindRepositoryRoot(),
+            "packages",
+            "bridge",
+            "tests",
+            "RevAgent.Bridge.Tests",
+            "Gateway",
+            "Connection",
+            "Fixtures",
+            "doc-context-digest.json");
+        return JsonDocument.Parse(File.ReadAllBytes(path));
     }
 
     /// <summary>
