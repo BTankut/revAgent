@@ -124,7 +124,8 @@ internal sealed class RbpRoutedInvocationChannel(
             evidence.RequestPayloadBytes,
             evidence.ResponseBytesObserved,
             GuardedReason: guarded ? guardedReason : null,
-            Lease: lease);
+            Lease: lease,
+            ProcessAttestation: result.ProcessAttestation);
     }
 
     private static RbpAddinOutcome FromFailure(

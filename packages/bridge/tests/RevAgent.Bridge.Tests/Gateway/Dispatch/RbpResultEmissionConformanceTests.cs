@@ -82,6 +82,57 @@ public sealed class RbpResultEmissionConformanceTests
     }
 
     [Fact]
+    public async Task C39D_AttestedFixtureOriginIsSuppressedThenReplayedOnceWithoutResultBytes()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        await using RbpJournalStore store = await OpenAsync(directory, protectRecovery: true);
+        var attestation = new AddinProcessAttestation(
+            new AddinProcessIdentity(481, 638400000000000000), "2025",
+            "addin-loopback-fixture/test-only");
+        var observation = RbpConformanceOmittedOriginObservation
+            .CreateFixtureOneShot(() => attestation);
+        byte[] raw = Encoding.UTF8.GetBytes(
+            "{\"jsonrpc\":\"2.0\",\"id\":\"x\",\"result\":{\"fixture\":true}}");
+        var channel = new StubChannel(() => Task.FromResult(
+            Completed("{\"fixture\":true}", raw) with
+            {
+                ProcessAttestation = attestation,
+            }));
+        RbpInvocationDispatcher dispatcher = new(
+            store, channel, new RbpInFlightGate(),
+            omittedOriginObservation: observation);
+        RbpInvokeRequest request = FixtureRequest();
+
+        await Assert.ThrowsAsync<RbpConformanceOriginSuppressedException>(
+            () => dispatcher.DispatchAsync(request, CancellationToken.None));
+        RbpStoredInvocation? stored = await store.GetInvocationAsync(
+            request.ToIdentity().IdempotencyKey);
+        Assert.Equal(RbpInvocationState.Completed, stored!.State);
+        Assert.Contains("\"result\"", stored.TerminalOutcomeJson!);
+        Assert.Contains("\"payload_omitted\":false", stored.TerminalOutcomeJson!);
+
+        RbpInvocationAnswer replay = await dispatcher.DispatchAsync(
+            request, CancellationToken.None);
+        Assert.Equal(1, channel.Calls);
+        Assert.True(replay.Payload.GetProperty("replayed").GetBoolean());
+        Assert.True(replay.Payload.GetProperty("payload_omitted").GetBoolean());
+        Assert.False(replay.Payload.TryGetProperty("result", out _));
+        Assert.NotNull(replay.OmittedOriginReplay);
+        Assert.False(observation.TryConsumeDurableAcknowledgement(Rsid, 1));
+        Assert.True(observation.TryBindReplay(
+            replay.OmittedOriginReplay!, 7,
+            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
+        Assert.False(observation.TryConsumeDurableAcknowledgement("foreign", 7));
+        Assert.False(observation.TryConsumeDurableAcknowledgement(Rsid, 6));
+        Assert.True(observation.TryConsumeDurableAcknowledgement(Rsid, 7));
+
+        RbpInvocationAnswer ordinary = await dispatcher.DispatchAsync(
+            request, CancellationToken.None);
+        Assert.True(ordinary.Payload.TryGetProperty("result", out _));
+        Assert.False(ordinary.Payload.GetProperty("payload_omitted").GetBoolean());
+    }
+
+    [Fact]
     public async Task AGuardWithoutAUsableReasonFallsBackToUnspecifiedGuarded()
     {
         using var directory = new RbpJournalTestDirectory();
@@ -312,12 +363,14 @@ public sealed class RbpResultEmissionConformanceTests
         new(store, channel, new RbpInFlightGate());
 
     private static async Task<RbpJournalStore> OpenAsync(
-        RbpJournalTestDirectory directory)
+        RbpJournalTestDirectory directory,
+        bool protectRecovery = false)
     {
         RbpJournalStore store = RbpJournalStore.Open(
             directory.JournalPath,
             new TestResumeTokenProtector(),
-            RbpJournalTestData.Options());
+            RbpJournalTestData.Options(),
+            protectRecovery ? new TestRecoveryPayloadProtector() : null);
         _ = await store.PersistRegisteredSessionAsync(
             RbpJournalTestData.Registration());
         return store;
@@ -355,6 +408,22 @@ public sealed class RbpResultEmissionConformanceTests
               "policy": {"class":"confirm","decision":"confirmed","confirmation_id":"c1"},
               "verification": null,
               "recovery_clearances": []
+            }
+            """);
+
+    private static RbpInvokeRequest FixtureRequest() =>
+        Parse(
+            """
+            {
+              "invocation_id":"0197a3c2-0000-7000-8000-0000000000f1",
+              "method":"fixture_multi_file_output",
+              "params":{"scenario":"valid_multifile","fileCount":1,"bytesPerFile":1048577},
+              "timeout_ms":120000,
+              "mutating":false,
+              "mutation_scope":null,
+              "policy":{"class":"auto","decision":"auto","confirmation_id":null},
+              "verification":null,
+              "recovery_clearances":[]
             }
             """);
 

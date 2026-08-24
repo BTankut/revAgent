@@ -52,7 +52,10 @@ internal sealed record RbpAddinOutcome(
     // Internal-only signal for a resolver refusal before an add-in byte can
     // be written.  It lets the document-context watcher distinguish route
     // authority loss from a cache that is merely warming/not ready.
-    bool RouteFailure = false);
+    bool RouteFailure = false,
+    // This is an internal, already post-response-verified attestation from
+    // AddinTcpTransport. It is never serialized or exposed to a caller.
+    AddinProcessAttestation? ProcessAttestation = null);
 
 /// <summary>
 /// Ownership of an add-in session for the duration of one invocation.

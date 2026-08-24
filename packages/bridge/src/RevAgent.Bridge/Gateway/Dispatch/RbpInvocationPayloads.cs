@@ -89,6 +89,35 @@ internal static class RbpInvocationPayloads
             resultDigest: ReadStoredResultDigest(storedOutcome));
 
     /// <summary>
+    /// Fixture-attested C39 reconnect evidence. This is the existing
+    /// non-chunked omitted-payload replay shape; no result bytes are emitted.
+    /// </summary>
+    internal static JsonElement ConformanceOmittedOriginReplay(
+        string originInvocationId, string resultDigest)
+    {
+        if (!RbpRecoveryClearance.IsUuidV7(originInvocationId) ||
+            !RbpJournalSerialization.IsSha256Digest(resultDigest))
+        {
+            throw new ArgumentException("A UUIDv7 origin and SHA-256 digest are required.");
+        }
+        using var buffer = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(buffer))
+        {
+            writer.WriteStartObject();
+            writer.WriteString("kind", "invocation");
+            writer.WriteString("invocation_id", originInvocationId);
+            writer.WriteString("status", "completed");
+            writer.WriteBoolean("payload_omitted", true);
+            writer.WriteString("result_digest", resultDigest);
+            writer.WriteBoolean("replayed", true);
+            writer.WriteBoolean("late_after_indeterminate", false);
+            WriteMetrics(writer, new RbpInvocationMetrics(0, 0, 0));
+            writer.WriteEndObject();
+        }
+        return Materialize(buffer);
+    }
+
+    /// <summary>
     /// Section 12.2 rule 2: a durable outcome that became known after the same
     /// invocation had already been answered <c>journal_indeterminate</c>.
     /// </summary>

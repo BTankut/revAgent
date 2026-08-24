@@ -89,6 +89,9 @@ internal static class Program
             var fixtureAttestor = new FixtureAddinProcessAttestor(
                 options.FixtureProcessId,
                 options.AddinPort);
+            var omittedOriginObservation =
+                RbpConformanceOmittedOriginObservation.CreateFixtureOneShot(
+                    fixtureAttestor.ReadLiveFixtureAttestation);
             var router = new AddinSessionRouter(transport, fixtureAttestor);
             var claims = new RbpCredentialClaimBinding(enrollment);
             var catalog = new WorkerAddinSessionCatalog(
@@ -134,7 +137,8 @@ internal static class Program
                     OnConnectionFailureObservation: ObserveConnectionFailure,
                     OnLifecycleTimeoutObservation: ObserveLifecycleTimeout,
                     OnDocumentContextObservation: ObserveDocumentContext,
-                    CarrierProducer: carrier));
+                    CarrierProducer: carrier,
+                    OmittedOriginObservation: omittedOriginObservation));
             return new WorkerGatewayRuntime(coordinator, catalog, journal, carrierProducer: carrier);
         }
         catch
@@ -355,7 +359,7 @@ internal static class Program
             }
         }
 
-        private AddinProcessAttestation ReadLiveFixtureAttestation()
+        internal AddinProcessAttestation ReadLiveFixtureAttestation()
         {
             try
             {

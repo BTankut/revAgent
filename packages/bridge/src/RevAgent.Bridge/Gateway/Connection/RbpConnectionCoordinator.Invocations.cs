@@ -318,8 +318,30 @@ internal sealed partial class RbpConnectionCoordinator
             return;
         }
 
+        RbpEnvelope outboundEnvelope = CreateDataEnvelope(outbound);
+        if (answer.OmittedOriginReplay is { } omitted)
+        {
+            byte[] outer = RbpEnvelopeCodec.Encode(outboundEnvelope);
+            try
+            {
+                string digest = "sha256:" + Convert.ToHexString(
+                    System.Security.Cryptography.SHA256.HashData(outer)).ToLowerInvariant();
+                if (!_omittedOriginObservation.TryBindReplay(
+                        omitted, outbound.Sequence, digest))
+                {
+                    throw new RbpCoordinatorException(
+                        RbpCoordinatorErrorCode.UnexpectedControl,
+                        "The C39 fixture replay marker could not bind its terminal.");
+                }
+            }
+            finally
+            {
+                System.Security.Cryptography.CryptographicOperations.ZeroMemory(outer);
+            }
+        }
+
         await context.Cycle
-            .SendAsync(CreateDataEnvelope(outbound), context.Token)
+            .SendAsync(outboundEnvelope, context.Token)
             .ConfigureAwait(false);
     }
 }

@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.Globalization;
+using System.Security.Cryptography;
 using System.Runtime.ExceptionServices;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -130,6 +131,16 @@ internal sealed partial class RbpConnectionCoordinator
             // the invocation would be a second delivery of the same frame, and
             // Section 12.2 arbitrates redelivery on the invocation key, not on
             // the transport sequence.
+            if (accepted.Kind == RbpInboundDataKind.Duplicate &&
+                string.Equals(snapshot.Type, "invoke", StringComparison.Ordinal) &&
+                _omittedOriginObservation.IsArmedExactReplay(
+                    snapshot.Rsid, snapshot.Payload))
+            {
+                // Exact fixture-only duplicate after the deliberate post-commit
+                // close. The dispatcher still performs normal journal replay;
+                // this is never a second add-in dispatch.
+                context.StartInvocation(snapshot);
+            }
             return;
         }
 
@@ -436,6 +447,11 @@ internal sealed partial class RbpConnectionCoordinator
                         fence,
                         context.Token)
                     .ConfigureAwait(false);
+            foreach (RbpSessionAcknowledgement acknowledgement in acknowledgements)
+            {
+                _ = _omittedOriginObservation.TryConsumeDurableAcknowledgement(
+                    acknowledgement.Rsid, acknowledgement.Sequence);
+            }
             ObserveDocumentContextAcknowledgements(acknowledgements);
             IReadOnlyList<RbpReleasedCarrier> releasedCarriers =
                 await _journal.ApplyCarrierPlanAcknowledgementsAsync(

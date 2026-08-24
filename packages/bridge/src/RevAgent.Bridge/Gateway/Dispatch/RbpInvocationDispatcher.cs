@@ -58,6 +58,7 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
     private readonly IRbpRevitBusyProbe? _busyProbe;
     private readonly TimeProvider _timeProvider;
     private readonly RbpArtifactCarrierProducer? _carrierProducer;
+    private readonly RbpConformanceOmittedOriginObservation _omittedOriginObservation;
     private readonly AsyncLocal<IReadOnlyList<string>?> _connectionCapabilities = new();
 
     internal RbpInvocationDispatcher(
@@ -66,7 +67,8 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
         IRbpInFlightGate inFlightGate,
         IRbpRevitBusyProbe? busyProbe = null,
         TimeProvider? timeProvider = null,
-        RbpArtifactCarrierProducer? carrierProducer = null)
+        RbpArtifactCarrierProducer? carrierProducer = null,
+        RbpConformanceOmittedOriginObservation? omittedOriginObservation = null)
     {
         _journal = journal ?? throw new ArgumentNullException(nameof(journal));
         _channel = channel ?? throw new ArgumentNullException(nameof(channel));
@@ -75,6 +77,8 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
         _busyProbe = busyProbe;
         _timeProvider = timeProvider ?? TimeProvider.System;
         _carrierProducer = carrierProducer;
+        _omittedOriginObservation = omittedOriginObservation ??
+            RbpConformanceOmittedOriginObservation.Never;
     }
 
     /// <summary>
@@ -147,7 +151,9 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
         switch (admission.Admission)
         {
             case RbpInvocationAdmission.ReplayTerminal:
-                return ReplayTerminal(admission.Stored);
+                return await ReplayTerminalAsync(
+                        request, admission.Stored, cancellationToken)
+                    .ConfigureAwait(false);
 
             case RbpInvocationAdmission.ReplayLateAfterIndeterminate:
                 return ReplayLate(admission.Stored);
@@ -402,12 +408,25 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
             ? text
             : "00000000-0000-7000-8000-000000000000";
 
-    private static RbpInvocationAnswer ReplayTerminal(
-        RbpStoredInvocation stored)
+    private async Task<RbpInvocationAnswer> ReplayTerminalAsync(
+        RbpInvokeRequest request,
+        RbpStoredInvocation stored,
+        CancellationToken cancellationToken)
     {
         if (stored.State == RbpInvocationState.Indeterminate)
         {
             return ReplayIndeterminate(stored);
+        }
+
+        RbpConformanceOmittedOriginReplay? omitted = await _omittedOriginObservation
+            .TryPrepareReplayAsync(request, stored, _journal, cancellationToken)
+            .ConfigureAwait(false);
+        if (omitted is not null)
+        {
+            return RbpInvocationAnswer.Result(
+                RbpInvocationPayloads.ConformanceOmittedOriginReplay(
+                    omitted.OriginInvocationId, omitted.ResultDigest),
+                omittedOriginReplay: omitted);
         }
 
         JsonElement outcome = RequireOutcome(
@@ -764,6 +783,12 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
             }
         }
 
+        // The sealed production policy is Never. Only the real-worker host
+        // can arm this after the routed channel carried its verified fixture
+        // process attestation; ordinary completed terminals stay unchanged.
+        bool armSuppressedOrigin = _omittedOriginObservation.TryArm(
+            request, identity, outcome, digest);
+
         // Durability step 3, before the answer leaves the bridge.
         await _journal
             .PersistInvocationTerminalAsync(
@@ -775,11 +800,16 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
                     carrierKey is null
                         ? null
                         : CreateCarrierPlan(carrierKey, prefixes, body),
-                    IsOmittedPayload(body)
+                    (IsOmittedPayload(body) || armSuppressedOrigin)
                         ? new RbpRecoveryPayload(digest, outcome.RawResponsePayload)
                         : null),
                 DurableDecisionToken)
             .ConfigureAwait(false);
+
+        if (armSuppressedOrigin)
+        {
+            throw new RbpConformanceOriginSuppressedException();
+        }
 
         return terminalState == RbpInvocationState.Failed
             ? RbpInvocationAnswer.Error(body)
@@ -1035,13 +1065,16 @@ internal sealed record RbpInvocationAnswer(
     JsonElement Payload,
     IReadOnlyList<RbpInvocationAnswer>? Prefixes = null,
     string? CarrierKey = null,
-    RbpRecoveryCarrierReservation? RecoveryReservation = null)
+    RbpRecoveryCarrierReservation? RecoveryReservation = null,
+    RbpConformanceOmittedOriginReplay? OmittedOriginReplay = null)
 {
     internal static RbpInvocationAnswer Result(
         JsonElement payload,
         IReadOnlyList<RbpInvocationAnswer>? prefixes = null,
-        string? carrierKey = null) =>
-        new("result", payload, prefixes, carrierKey);
+        string? carrierKey = null,
+        RbpConformanceOmittedOriginReplay? omittedOriginReplay = null) =>
+        new("result", payload, prefixes, carrierKey,
+            OmittedOriginReplay: omittedOriginReplay);
 
     internal static RbpInvocationAnswer Error(JsonElement payload) =>
         new("error", payload);

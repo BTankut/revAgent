@@ -44,7 +44,8 @@ internal sealed record WorkerGatewayServices(
     Func<RbpLifecycleTimeoutObservation, ValueTask>?
         OnLifecycleTimeoutObservation = null,
     Func<RbpDocumentContextObservation, ValueTask>?
-        OnDocumentContextObservation = null);
+        OnDocumentContextObservation = null,
+    RbpConformanceOmittedOriginObservation? OmittedOriginObservation = null);
 
 /// <summary>
 /// Composes the production RBP data plane inside the worker host: the journal
@@ -215,7 +216,8 @@ internal static class WorkerGatewayComposition
             new LocalCatalogRevitBusyProbe(
                 services.SessionCatalog,
                 surface.SessionRoutes),
-            carrierProducer: services.CarrierProducer);
+            carrierProducer: services.CarrierProducer,
+            omittedOriginObservation: services.OmittedOriginObservation);
 
         // The P3-T7 standing document-context watcher polls the add-in's
         // cached get_document_context through the same routed channel the
@@ -255,7 +257,8 @@ internal static class WorkerGatewayComposition
             services.OnConnectionFailureObservation,
             services.CarrierProducer,
             services.OnLifecycleTimeoutObservation,
-            services.OnDocumentContextObservation);
+            services.OnDocumentContextObservation,
+            omittedOriginObservation: services.OmittedOriginObservation);
     }
 
     /// <summary>
