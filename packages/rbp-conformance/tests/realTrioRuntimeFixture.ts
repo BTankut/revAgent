@@ -2084,15 +2084,27 @@ export async function startRealTrioRuntimeFixture(
         const secondAudit = await readCapturedRealCaseAudit(supervisor, refreshAuditCapture);
         const secondSnapshot = supervisor.readDocumentContextSnapshot();
         const refreshBaseline = gatewayAuditBaseline(firstAudit);
+        const secondBaseline = gatewayAuditBaseline(secondAudit);
         const refreshSeed = preControlWatcherSeedFromSnapshot(firstSnapshot);
+        const sameBaseline = refreshBaseline !== null && secondBaseline !== null &&
+          refreshBaseline.processEpoch === secondBaseline.processEpoch &&
+          refreshBaseline.observationOrdinal === secondBaseline.observationOrdinal &&
+          refreshBaseline.acceptedObservationOrdinal === secondBaseline.acceptedObservationOrdinal &&
+          refreshBaseline.currentIdentity === secondBaseline.currentIdentity;
+        const absent = isObject(firstAudit) && isObject(secondAudit) &&
+          firstAudit.documentContextCurrentRoute === null && secondAudit.documentContextCurrentRoute === null &&
+          Array.isArray(firstAudit.documentContextUpdates) && firstAudit.documentContextUpdates.length === 0 &&
+          Array.isArray(secondAudit.documentContextUpdates) && secondAudit.documentContextUpdates.length === 0 &&
+          refreshBaseline?.acceptedObservationOrdinal === undefined &&
+          refreshBaseline?.currentIdentity === undefined;
+        const current = isObject(firstAudit) && isObject(secondAudit) &&
+          firstAudit.documentContextCurrentRoute !== null && secondAudit.documentContextCurrentRoute !== null &&
+          refreshBaseline?.acceptedObservationOrdinal !== undefined &&
+          refreshBaseline?.currentIdentity !== undefined;
         if (refreshBaseline === null || firstSnapshot.generation !== secondSnapshot.generation ||
             firstSnapshot.highWaterCursor !== secondSnapshot.highWaterCursor ||
-            !isObject(firstAudit) || !isObject(secondAudit) ||
-            firstAudit.documentContextCurrentRoute !== null || secondAudit.documentContextCurrentRoute !== null ||
-            !Array.isArray(firstAudit.documentContextUpdates) || firstAudit.documentContextUpdates.length !== 0 ||
-            !Array.isArray(secondAudit.documentContextUpdates) || secondAudit.documentContextUpdates.length !== 0 ||
-            refreshSeed === null) {
-          throw new Error("real trio route-null resume baseline is not stable");
+            !sameBaseline || (!absent && !current) || refreshSeed === null) {
+          throw new Error("real trio route refresh baseline is not stable");
         }
         const control = documentContextControlAudit(await supervisor.fixtureControl("apply_document_context", {
           event: realTrioFixtureDocumentContextEvent(),
