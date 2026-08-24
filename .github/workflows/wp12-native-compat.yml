@@ -1,0 +1,73 @@
+name: WP-12 native compatibility
+
+on:
+  pull_request:
+    paths:
+      - package.json
+      - package-lock.json
+      - packages/gateway/**
+      - packages/bridge-simulator/**
+      - packages/rbp-conformance/**
+      - scripts/wp12-native-compat-conformance.mjs
+      - .github/workflows/wp12-native-compat.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wp12-native-compat-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native-compatibility:
+    name: Native compatibility (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24]
+    steps:
+      - name: Checkout exact candidate head
+        # actions/checkout v6.0.0, tag dereferenced 2026-08-24.
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Setup Node ${{ matrix.node }}
+        # actions/setup-node v6.0.0, tag dereferenced 2026-08-24.
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: ${{ matrix.node }}.x
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install native build toolchain
+        run: sudo apt-get update && sudo apt-get install --yes build-essential python3 make g++
+
+      - name: Install locked workspace without lifecycle scripts
+        run: npm ci --ignore-scripts
+
+      - name: Rebuild approved native dependency from source
+        env:
+          npm_config_build_from_source: "true"
+        run: |
+          npm rebuild better-sqlite3 --ignore-scripts=false --foreground-scripts
+          # The WP-12 script below validates both workspace package closures;
+          # the older root smoke is not importable from this workspace root.
+
+      - name: Run Node ${{ matrix.node }} native compatibility conformance
+        run: node scripts/wp12-native-compat-conformance.mjs
+
+      - name: Run Node 22 bridge-simulator determinism
+        if: matrix.node == 22
+        run: npm run test:determinism --workspace @revagent/bridge-simulator
+
+      - name: Run Node 24 Gateway conformance-host shutdown tests
+        if: matrix.node == 24
+        run: |
+          npm run build --workspace @revagent/protocol
+          npm run build --workspace @revagent/bridge-simulator
+          npm run build --workspace @revagent/gateway
+          npx vitest run packages/gateway/src/conformanceEphemeralAdapters.test.ts packages/gateway/src/productionConformanceHost.test.ts packages/gateway/src/productionConformanceHostCli.test.ts
