@@ -1,4 +1,5 @@
 using System.Text.Json;
+using RevAgent.Bridge.Gateway.Protocol;
 using RevAgent.Bridge.Gateway.Storage;
 
 namespace RevAgent.Bridge.Gateway.Dispatch;
@@ -279,3 +280,36 @@ internal sealed record RbpInvocationMetrics(
     int ResponseBytes);
 
 internal sealed record AddinErrorDetail(int Code, string? Message);
+
+internal sealed record RbpPayloadRecoveryRequest(
+    string OriginInvocationId,
+    string ExpectedResultDigest)
+{
+    internal static RbpPayloadRecoveryRequest Parse(RbpInvokeRequest request)
+    {
+        JsonElement origin = default;
+        JsonElement digest = default;
+        if (request.Mutating || request.Parameters.ValueKind != JsonValueKind.Object ||
+            request.Parameters.EnumerateObject().Count() != 2 ||
+            request.RecoveryClearances.ValueKind != JsonValueKind.Array ||
+            request.RecoveryClearances.GetArrayLength() != 0 ||
+            !request.Parameters.TryGetProperty("origin_invocation_id", out origin) ||
+            !request.Parameters.TryGetProperty("expected_result_digest", out digest) ||
+            origin.ValueKind != JsonValueKind.String || digest.ValueKind != JsonValueKind.String ||
+            !RbpRecoveryClearance.IsUuidV7(origin.GetString()) ||
+            !RbpJournalSerialization.IsSha256Digest(digest.GetString() ?? string.Empty))
+        {
+            throw new RbpDispatchException(RbpDispatchErrorCode.Protocol,
+                "dispatch_payload_recovery requires exactly origin_invocation_id and expected_result_digest.");
+        }
+        return new RbpPayloadRecoveryRequest(origin.GetString()!, digest.GetString()!);
+    }
+
+    internal string EnvelopeDigest(string recoveryInvocationId) =>
+        Rfc8785Json.Sha256Digest(JsonSerializer.SerializeToElement(new
+        {
+            invocation_id = recoveryInvocationId,
+            origin_invocation_id = OriginInvocationId,
+            expected_result_digest = ExpectedResultDigest,
+        }));
+}

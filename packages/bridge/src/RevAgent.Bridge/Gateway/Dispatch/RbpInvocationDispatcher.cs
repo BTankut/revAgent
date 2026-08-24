@@ -35,6 +35,7 @@ namespace RevAgent.Bridge.Gateway.Dispatch;
 /// </remarks>
 internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
 {
+    internal const string DispatchPayloadRecoveryMethod = "dispatch_payload_recovery";
     /// <summary>
     /// Section 12.1 step 3 must not be cancellable.
     /// </summary>
@@ -117,6 +118,17 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
         RbpInvokeRequest request,
         CancellationToken cancellationToken)
     {
+        RbpPayloadRecoveryRequest? recovery = null;
+        if (string.Equals(request.Method, DispatchPayloadRecoveryMethod, StringComparison.Ordinal))
+        {
+            try { recovery = RbpPayloadRecoveryRequest.Parse(request); }
+            catch (RbpDispatchException)
+            {
+                return RbpInvocationAnswer.Error(RbpInvocationPayloads.KnownError(
+                    request.InvocationId, "protocol", false,
+                    "The correlated recovery request is invalid."));
+            }
+        }
         RbpInvocationIdentity identity = request.ToIdentity();
         (RbpInvocationAdmissionResult? admitted, RbpInvocationAnswer? answered)
             = await AdmitAsync(request, identity, cancellationToken)
@@ -157,7 +169,7 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
                         request,
                         identity,
                         claimDispatchOwnership: true,
-                        cancellationToken)
+                        cancellationToken, recovery)
                     .ConfigureAwait(false);
 
             case RbpInvocationAdmission.RetryNonMutating:
@@ -171,7 +183,7 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
                         claimDispatchOwnership:
                             admission.Stored.State ==
                                 RbpInvocationState.Received,
-                        cancellationToken)
+                        cancellationToken, recovery)
                     .ConfigureAwait(false);
 
             default:
@@ -504,7 +516,8 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
         RbpInvokeRequest request,
         RbpInvocationIdentity identity,
         bool claimDispatchOwnership,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        RbpPayloadRecoveryRequest? recovery)
     {
         // Durability step 2, before dispatch ownership.
         if (claimDispatchOwnership)
@@ -513,6 +526,12 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
                 .MarkInvocationExecutingAsync(
                     identity.IdempotencyKey,
                     cancellationToken)
+                .ConfigureAwait(false);
+        }
+
+        if (recovery is not null)
+        {
+            return await ReservePayloadRecoveryAsync(request, identity, recovery)
                 .ConfigureAwait(false);
         }
 
@@ -591,6 +610,36 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
             // memory; a crash in that window lets a redelivery dispatch again
             // against a row the journal still reports as `executing`.
             outcome.Lease?.ReleaseAfterDurableDecision();
+        }
+    }
+
+    private async Task<RbpInvocationAnswer> ReservePayloadRecoveryAsync(
+        RbpInvokeRequest request, RbpInvocationIdentity identity,
+        RbpPayloadRecoveryRequest recovery)
+    {
+        RbpRecoveredPayload? lease = await _journal.GetCorrelatedRecoveryPayloadAsync(
+            request.Rsid, recovery.OriginInvocationId, recovery.ExpectedResultDigest,
+            DurableDecisionToken).ConfigureAwait(false);
+        if (lease is null)
+            return RbpInvocationAnswer.Error(RbpInvocationPayloads.KnownError(
+                request.InvocationId, "environment", false,
+                "The correlated recovery payload is unavailable."));
+        using (lease)
+        {
+            if (lease.RawResponseBytes.Length is <= 0 or > RbpArtifactCarrierProducer.MaximumCombinedBytes ||
+                !(_connectionCapabilities.Value ?? Array.Empty<string>()).Contains("chunked_results", StringComparer.Ordinal))
+                return RbpInvocationAnswer.Error(RbpInvocationPayloads.KnownError(request.InvocationId,
+                    "environment", false, "The correlated recovery payload is unavailable."));
+            RbpRecoveryCarrierReservation reservation = await _journal
+                .PersistProtectedRecoveryTerminalAndReserveAsync(
+                    new RbpRecoveryCarrierReservationRequest(request.Rsid, request.InvocationId,
+                        recovery.OriginInvocationId, recovery.ExpectedResultDigest,
+                        RbpArtifactCarrierProducer.MaximumChunkBytes,
+                        new RbpRecoveryCarrierHeader("application/json", "base64"),
+                        recovery.EnvelopeDigest(request.InvocationId),
+                        DateTimeOffset.UtcNow.Add(RbpJournalStore.DefaultRetentionPeriod)),
+                    DurableDecisionToken).ConfigureAwait(false);
+            return RbpInvocationAnswer.Recovery(reservation);
         }
     }
 
@@ -942,7 +991,8 @@ internal sealed record RbpInvocationAnswer(
     string Type,
     JsonElement Payload,
     IReadOnlyList<RbpInvocationAnswer>? Prefixes = null,
-    string? CarrierKey = null)
+    string? CarrierKey = null,
+    RbpRecoveryCarrierReservation? RecoveryReservation = null)
 {
     internal static RbpInvocationAnswer Result(
         JsonElement payload,
@@ -955,4 +1005,7 @@ internal sealed record RbpInvocationAnswer(
 
     internal static RbpInvocationAnswer Partial(JsonElement payload) =>
         new("partial", payload);
+
+    internal static RbpInvocationAnswer Recovery(RbpRecoveryCarrierReservation reservation) =>
+        new("recovery_carrier", default, RecoveryReservation: reservation);
 }
