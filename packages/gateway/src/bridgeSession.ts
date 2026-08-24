@@ -587,6 +587,8 @@ type DurableEgressOperation =
 interface D2ConformanceOriginPayload {
   readonly tenantId: string;
   readonly userId: string;
+  readonly deviceId: string;
+  readonly seatId: string;
   readonly principalKey: string;
   readonly effectiveMcpSessionId: string;
   readonly rsid: string;
@@ -610,6 +612,9 @@ interface D2ConformanceOriginPayload {
 export interface ConformanceOriginResendPolicy {
   readonly kind: "internal_d2b_conformance" | "never";
   allowCapture(input: Pick<D2ConformanceOriginPayload, "tenantId" | "userId" | "rsid" | "originInvocationId" | "method" | "toolName">): boolean;
+  /** New D2 lifecycle contract: reading a request must not consume it. */
+  peekResumeRequest?(input: { readonly tenantId: string; readonly userId: string; readonly deviceId: string; readonly seatId: string; readonly rsid: string; readonly sessionBindingId: string }): { readonly originInvocationId: string; readonly originIdempotencyKey: string; readonly principalKey: string; readonly effectiveMcpSessionId: string } | null;
+  /** Compatibility adapter for pre-lifecycle D2b hosts; removed by the host slice. */
   takeResumeRequest(input: { readonly tenantId: string; readonly userId: string; readonly rsid: string; readonly sessionBindingId: string }): { readonly originInvocationId: string; readonly originIdempotencyKey: string } | null;
   clear(input: { readonly rsid: string; readonly originInvocationId: string }): void;
 }
@@ -3457,6 +3462,8 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
   readonly #waiters = new Map<string, PendingWaiter>();
   /** Never durable: loss on restart turns a D2 claim into cleanup-only state. */
   readonly #d2ConformancePayloads = new Map<string, D2ConformanceOriginPayload>();
+  /** One event-driven retry per rsid; never a timer/polling loop. */
+  readonly #d2RouteRetries = new Set<string>();
   readonly #d2ConformanceOriginResendPolicy: ConformanceOriginResendPolicy;
   readonly #receiveTails = new Map<string, Promise<void>>();
   readonly #rsidCarrierReceiveTailBytes = new Map<string, number>();
@@ -3879,6 +3886,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     for (const payload of [...this.#d2ConformancePayloads.values()]) {
       this.#clearD2ConformanceOrigin(payload.rsid, payload.originInvocationId);
     }
+    this.#d2RouteRetries.clear();
     const drained = await Promise.allSettled(
       connections.map(async (connection) => {
         try {
@@ -7728,6 +7736,8 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     const candidate: D2ConformanceOriginPayload = Object.freeze({
       tenantId: record.tenantId,
       userId: record.userId,
+      deviceId: record.deviceId,
+      seatId: record.seatId,
       principalKey: input.request.effectiveMcpRequestScope.principalKey,
       effectiveMcpSessionId: input.request.effectiveMcpRequestScope.effectiveMcpSessionId,
       rsid: record.rsid,
@@ -7754,6 +7764,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
   }
 
   #clearD2ConformanceOrigin(rsid: string, originInvocationId?: string): void {
+    if (originInvocationId === undefined) this.#d2RouteRetries.delete(rsid);
     for (const [key, candidate] of this.#d2ConformancePayloads) {
       if (candidate.rsid !== rsid || (originInvocationId !== undefined && candidate.originInvocationId !== originInvocationId)) continue;
       candidate.innerPayloadBytes.fill(0);
@@ -7812,15 +7823,20 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         const fence = sessionEgressFence(record);
         if (
           record.d2ConformanceOriginResend !== null && record.d2ConformanceOriginResend !== undefined ||
-          record.userId !== captured.userId || record.sessionBindingId !== captured.sessionBindingId ||
-          record.connectionId !== captured.connectionId || record.connectionId !== connection.connectionId ||
+          record.userId !== captured.userId || record.deviceId !== captured.deviceId ||
+          record.seatId !== captured.seatId || record.connectionId !== connection.connectionId ||
           record.pending === null || record.pending.invocationId !== captured.originInvocationId ||
           record.pending.envelopeDigest !== captured.originEnvelopeDigest ||
           record.sequence.outbox.some((entry) => entry.envelope.seq === captured.originOuterSequence) ||
           record.evidence.some((entry) => entry.envelopeDigest === captured.originEnvelopeDigest && (entry.acceptance !== null || entry.terminalTruth !== undefined && entry.terminalTruth !== null)) ||
           fence.state !== "open" || fence.revocation !== null || fence.lease !== null ||
-          !record.sessionLifecycle.dispatchAllowed || record.liveDocumentRoute === null
+          (record.pending.effectiveMcpRequestScope?.principalKey !== captured.principalKey) ||
+          (record.pending.effectiveMcpRequestScope?.effectiveMcpSessionId !== captured.effectiveMcpSessionId)
         ) return { kind: "blocked" as const };
+        if (!record.sessionLifecycle.dispatchAllowed || record.liveDocumentRoute === null) {
+          this.#d2RouteRetries.add(record.rsid);
+          return { kind: "blocked" as const };
+        }
         let payload: unknown; try { payload = JSON.parse(captured.innerPayloadBytes.toString("utf8")); } catch { return { kind: "blocked" as const }; }
         const queued = queueOutboundData(record.sequence, { type: "invoke", id: outerId, ack: record.sequence.lastRxSeq, ts, payload: payload as JsonValue });
         if (queued.kind !== "queued" || !Buffer.from(JSON.stringify((queued.envelope as InvokeEnvelope).payload), "utf8").equals(captured.innerPayloadBytes)) return { kind: "blocked" as const };
@@ -7843,15 +7859,19 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
   }
 
   async #resumeConformanceOriginFromPolicy(record: DurableRbpSession): Promise<void> {
-    const request = this.#d2ConformanceOriginResendPolicy.takeResumeRequest({
+    const request = this.#d2ConformanceOriginResendPolicy.peekResumeRequest?.({
       tenantId: record.tenantId,
       userId: record.userId,
+      deviceId: record.deviceId,
+      seatId: record.seatId,
       rsid: record.rsid,
       sessionBindingId: record.sessionBindingId,
     });
-    if (request === null) return;
+    if (request === undefined || request === null) return;
     const captured = this.#d2ConformancePayloads.get(`${record.rsid}/${request.originInvocationId}`);
-    if (captured === undefined || captured.originIdempotencyKey !== request.originIdempotencyKey) return;
+    if (captured === undefined || captured.originIdempotencyKey !== request.originIdempotencyKey ||
+      captured.principalKey !== request.principalKey ||
+      captured.effectiveMcpSessionId !== request.effectiveMcpSessionId) return;
     await this.#resumeCapturedConformanceOrigin({
       tenantId: captured.tenantId,
       userId: captured.userId,
@@ -10905,6 +10925,10 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       };
     });
     active.record = updated;
+    if (nextLiveDocumentRoute !== null && nextLiveDocumentRoute !== undefined && this.#d2RouteRetries.delete(updated.rsid)) {
+      // One route-readiness edge retry; it is deliberately not a poller.
+      void this.#resumeConformanceOriginFromPolicy(updated).catch(() => undefined);
+    }
     let deliveryAuthorized = true;
     try {
       this.#assertAuthorityTicket(authorityTicket, connection, {
