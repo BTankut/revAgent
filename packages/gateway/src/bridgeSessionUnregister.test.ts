@@ -73,7 +73,15 @@ function tokenDigest(value: string): `sha256:${string}` {
   return `sha256:${createHash("sha256").update(value).digest("hex")}`;
 }
 
-function cumulativeAckReceipt(
+/**
+ * RecoveryAuthority composition fixtures require a complete syntactic receipt
+ * when their subject is the downstream recovery protocol rather than the
+ * Bridge producer.  This helper is deliberately confined to the WP-10 import,
+ * retained-origin redelivery, and legacy-only clearance scenarios below;
+ * production binding, integrity, replay, and cross-scope tests must obtain
+ * acceptance from GatewayBridgeSessionAuthority.inspectDispatch instead.
+ */
+function syntacticRecoveryAcceptanceFixture(
   pending: GatewayRecoveryPendingDispatch,
   durableSequenceVersion: number,
 ): GatewayBridgeCumulativeAckReceipt {
@@ -1733,6 +1741,8 @@ describe("GatewayBridgeSessionAuthority durable unregister", () => {
     let unregisteringResolution: Promise<unknown> | null = null;
     try {
       await ackStarted.promise;
+      const allowedStartedFrameCount = resumeChannel.frames.length;
+      expect(resumeChannel.frames.filter((frame) => frame.type === "resume_ack")).toHaveLength(1);
       const revokerConnection = await openConnection(revoker);
       pendingCommit = store.holdAfterCommit(revocationPendingWrite);
       unregistering = revoker.receive(
@@ -1754,8 +1764,25 @@ describe("GatewayBridgeSessionAuthority durable unregister", () => {
       expect(store.snapshot().some(
         (record) => record.namespace === GATEWAY_RBP_UNREGISTER_NAMESPACE,
       )).toBe(true);
+      // The one ACK that started before durable revocation is permitted to
+      // drain; revocation must not emit any further resume frame.
+      expect(resumeChannel.frames).toHaveLength(allowedStartedFrameCount);
+      expect(resumeChannel.frames.filter((frame) => frame.type === "invoke")).toHaveLength(0);
+      expect(resumeChannel.frames.filter(
+        (frame) => frame.type === "result" || frame.type === "error",
+      )).toHaveLength(0);
       expect((sessionForLegacyProof(store, session.rsid).egressFence as GatewayJsonObject).lease)
         .toBeNull();
+      const restartChannel = channel();
+      const restarted = new GatewayBridgeSessionAuthority(store.createPort(), identity());
+      authorities.push(restarted);
+      await restarted.open();
+      const restartConnection = await openConnection(restarted, { channel: restartChannel });
+      await expect(
+        restarted.receive(restartConnection.connectionId, resume(session.rsid, session.resumeToken)),
+      ).rejects.toMatchObject({ closeCode: 4403 });
+      expect(resumeChannel.frames).toHaveLength(allowedStartedFrameCount);
+      expect(restartChannel.frames).toHaveLength(0);
     } finally {
       pendingCommit?.release();
       ackRelease.resolve();
@@ -1823,6 +1850,8 @@ describe("GatewayBridgeSessionAuthority durable unregister", () => {
     const session = await register(original);
     const execution = original.createExecutor().execute(request(session.rsid, false));
     await new Promise((resolve) => setTimeout(resolve, 0));
+    const originalInvokeCount = session.channel.frames.filter((frame) => frame.type === "invoke").length;
+    expect(originalInvokeCount).toBe(1);
     await original.detach(session.connectionId);
     const resumeConnection = await openConnection(resumer, { channel: resumeChannel });
     const resuming = resumer.receive(
@@ -1841,6 +1870,9 @@ describe("GatewayBridgeSessionAuthority durable unregister", () => {
     let unregisteringResolution: Promise<unknown> | null = null;
     try {
       await retransmitStarted.promise;
+      const retransmitInvokeCount = resumeChannel.frames.filter((frame) => frame.type === "invoke").length;
+      const allowedStartedFrameCount = resumeChannel.frames.length;
+      expect(retransmitInvokeCount).toBe(1);
       const revokerConnection = await openConnection(revoker);
       pendingCommit = store.holdAfterCommit(revocationPendingWrite);
       unregistering = revoker.receive(
@@ -1862,8 +1894,31 @@ describe("GatewayBridgeSessionAuthority durable unregister", () => {
       expect(store.snapshot().some(
         (record) => record.namespace === GATEWAY_RBP_UNREGISTER_NAMESPACE,
       )).toBe(true);
+      expect(session.channel.frames.filter((frame) => frame.type === "invoke")).toHaveLength(
+        originalInvokeCount,
+      );
+      expect(resumeChannel.frames.filter((frame) => frame.type === "invoke")).toHaveLength(
+        retransmitInvokeCount,
+      );
+      expect(resumeChannel.frames).toHaveLength(allowedStartedFrameCount);
+      expect(resumeChannel.frames.filter(
+        (frame) => frame.type === "result" || frame.type === "error",
+      )).toHaveLength(0);
       expect((sessionForLegacyProof(store, session.rsid).egressFence as GatewayJsonObject).lease)
         .toBeNull();
+      const restartChannel = channel();
+      const restarted = new GatewayBridgeSessionAuthority(store.createPort(), identity());
+      authorities.push(restarted);
+      await restarted.open();
+      const restartConnection = await openConnection(restarted, { channel: restartChannel });
+      await expect(
+        restarted.receive(restartConnection.connectionId, resume(session.rsid, session.resumeToken)),
+      ).rejects.toMatchObject({ closeCode: 4403 });
+      expect(session.channel.frames.filter((frame) => frame.type === "invoke")).toHaveLength(
+        originalInvokeCount,
+      );
+      expect(resumeChannel.frames).toHaveLength(allowedStartedFrameCount);
+      expect(restartChannel.frames).toHaveLength(0);
     } finally {
       pendingCommit?.release();
       retransmitRelease.resolve();
@@ -2440,7 +2495,9 @@ describe("GatewayBridgeSessionAuthority durable unregister", () => {
         return {
           kind: "found" as const,
           observation: {
-            acceptance: cumulativeAckReceipt(retained, 1),
+            // This intentionally indeterminate observation has no committed
+            // Bridge ACK; custom recovery fixtures must not synthesize one.
+            acceptance: null,
             journal: {
               kind: "indeterminate" as const,
               rsid: session.rsid,
@@ -2859,7 +2916,7 @@ describe("GatewayBridgeSessionAuthority durable unregister", () => {
       observations.set(prepared.dispatch.envelopeDigest, {
         kind: "found",
         observation: {
-          acceptance: cumulativeAckReceipt(prepared.dispatch, 1),
+          acceptance: syntacticRecoveryAcceptanceFixture(prepared.dispatch, 1),
           journal: {
             kind: "indeterminate",
             rsid: session.rsid,
@@ -2920,7 +2977,7 @@ describe("GatewayBridgeSessionAuthority durable unregister", () => {
     observations.set(verificationPrepared.dispatch.envelopeDigest, {
       kind: "found",
       observation: {
-        acceptance: cumulativeAckReceipt(verificationPrepared.dispatch, 2),
+        acceptance: syntacticRecoveryAcceptanceFixture(verificationPrepared.dispatch, 2),
         journal: {
           kind: "known_terminal",
           rsid: session.rsid,
@@ -2992,7 +3049,7 @@ describe("GatewayBridgeSessionAuthority durable unregister", () => {
     observations.set(clearancePrepared.dispatch.envelopeDigest, {
       kind: "found",
       observation: {
-        acceptance: cumulativeAckReceipt(clearancePrepared.dispatch, 3),
+        acceptance: syntacticRecoveryAcceptanceFixture(clearancePrepared.dispatch, 3),
         journal: {
           kind: "known_terminal",
           rsid: session.rsid,
@@ -3418,7 +3475,7 @@ describe("GatewayBridgeSessionAuthority durable unregister", () => {
         return {
           kind: "found" as const,
           observation: {
-            acceptance: cumulativeAckReceipt(pending, 1),
+            acceptance: syntacticRecoveryAcceptanceFixture(pending, 1),
             journal: {
               kind: "indeterminate" as const,
               rsid: session.rsid,
@@ -3621,7 +3678,7 @@ describe("GatewayBridgeSessionAuthority durable unregister", () => {
     observations.set(originPrepared.dispatch.envelopeDigest, {
       kind: "found",
       observation: {
-        acceptance: cumulativeAckReceipt(originPrepared.dispatch, 1),
+        acceptance: syntacticRecoveryAcceptanceFixture(originPrepared.dispatch, 1),
         journal: {
           kind: "indeterminate",
           rsid: session.rsid,
@@ -3681,7 +3738,7 @@ describe("GatewayBridgeSessionAuthority durable unregister", () => {
     observations.set(verificationPrepared.dispatch.envelopeDigest, {
       kind: "found",
       observation: {
-        acceptance: cumulativeAckReceipt(verificationPrepared.dispatch, 2),
+        acceptance: syntacticRecoveryAcceptanceFixture(verificationPrepared.dispatch, 2),
         journal: {
           kind: "known_terminal",
           rsid: session.rsid,

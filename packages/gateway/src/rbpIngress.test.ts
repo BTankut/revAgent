@@ -3277,103 +3277,151 @@ describe("GW-12 production RBP ingress", () => {
     await authority.close();
   });
 
-  it("exposes only committed bridge acceptance and terminal journal evidence", async () => {
-    const restartable = createRestartableTestStore();
-    const authority = new GatewayBridgeSessionAuthority(restartable.store, identity());
-    await authority.open();
-    const sent: RbpEnvelope[] = [];
-    const opening = await authority.openConnection({
-      deviceToken: "device-token",
-      binding: "wss",
-      hello: hello(),
-      channel: {
-        async send(serialized) {
-          sent.push(JSON.parse(serialized) as RbpEnvelope);
+  it.each(["wss", "http_sse"] as const)(
+    "exposes only committed bridge acceptance and terminal journal evidence over %s",
+    async (kind) => {
+      const restartable = createRestartableTestStore();
+      const activeIdentity = identity(undefined, {
+        grantedConnectionCapabilities: ["transport_streamable_http"],
+      });
+      const authority = new GatewayBridgeSessionAuthority(restartable.store, activeIdentity);
+      const server = await startGatewayServer({
+        config,
+        ports: {
+          ...createFailClosedPorts(),
+          identity: activeIdentity,
+          protocolStore: restartable.store,
+          rbpIngress: createProductionRbpIngressHost({ authority }),
         },
-        async close() {},
-      },
-    });
-    await authority.receive(opening.connectionId, registration());
-    const registered = sent.pop() as SessionRegisteredEnvelope;
-    const invocation = request(registered.payload.rsid, { mutating: true });
-    const executor = authority.createExecutor();
-    const draft = executor.buildMutationDispatch!(invocation);
-    const envelope = draft.envelope as Extract<RbpEnvelope, { type: "invoke" }>;
-    const journal = createReceivedJournalRecord(draft.expected.bindings[0]!);
-    const envelopeDigest = dataEnvelopeImmutableDigest(
-      envelope as DataEnvelopeSnapshot,
-    );
-    const prepared: GatewayRecoveryPendingDispatch = {
-      kind: "mutation",
-      envelope,
-      envelopeDigest,
-      gatewaySequence: envelope.seq,
-      sessionBindingId: draft.sessionBindingId,
-      preparedConnectionId: draft.connectionId,
-      authorizedSessionVersion: 1,
-      requiredSessionCapabilities: [],
-      mutationEntries: [
-        {
+      });
+      handles.push(server);
+      const binding: GatewayBinding =
+        kind === "wss"
+          ? new WssGatewayBinding({
+              baseUrl: `ws://127.0.0.1:${String(server.port)}/bridge/v1`,
+              deviceToken: "device-token",
+              endpointPolicy: "loopback_test_readiness",
+            })
+          : new HttpSseGatewayBinding({
+              baseUrl: `http://127.0.0.1:${String(server.port)}/bridge/v1/http/connections`,
+              deviceToken: "device-token",
+              endpointPolicy: "loopback_test_readiness",
+            });
+      bindings.push(binding);
+
+      await binding.open(hello());
+      await binding.send(registration());
+      const registered = (await next(binding)) as SessionRegisteredEnvelope;
+      const invocation = request(registered.payload.rsid, { mutating: true });
+      const executor = authority.createExecutor();
+      const draft = executor.buildMutationDispatch!(invocation);
+      const envelope = draft.envelope as Extract<RbpEnvelope, { type: "invoke" }>;
+      const journal = createReceivedJournalRecord(draft.expected.bindings[0]!);
+      const envelopeDigest = dataEnvelopeImmutableDigest(envelope as DataEnvelopeSnapshot);
+      const expected = {
+        rsid: registered.payload.rsid,
+        sessionBindingId: draft.sessionBindingId,
+        gatewaySequence: envelope.seq,
+        envelopeDigest,
+        invocationBindings: [{
+          idempotencyKey: invocation.context.idempotencyKey,
+          bindingDigest: journal.bindingDigest,
+        }],
+      } as const;
+      const prepared: GatewayRecoveryPendingDispatch = {
+        kind: "mutation",
+        envelope,
+        envelopeDigest,
+        gatewaySequence: envelope.seq,
+        sessionBindingId: draft.sessionBindingId,
+        preparedConnectionId: draft.connectionId,
+        authorizedSessionVersion: 1,
+        requiredSessionCapabilities: [],
+        mutationEntries: [{
           invocationId: invocation.context.invocationId,
           idempotencyKey: invocation.context.idempotencyKey,
           mutationScope: { kind: "session" },
           journalBindingDigest: journal.bindingDigest,
-        },
-      ],
-      journalRecords: [journal],
-      journalAttestation: null,
-      batchTerminal: null,
-      recoveryHoldIds: [],
-      recoveryClearances: [],
-      verificationHoldId: null,
-      originRedelivery: false,
-      bridgeAcceptance: null,
-      preparedAtMs: Date.now(),
-    };
-    const pending = executor.executePreparedMutation!(invocation, prepared);
-    while (sent.length === 0) {
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    }
-    const dispatched = sent.shift() as Extract<RbpEnvelope, { type: "invoke" }>;
-    await authority.receive(
-      opening.connectionId,
-      terminal(
-        registered.payload.rsid,
-        invocation.context.invocationId,
-        1,
-        dispatched.seq,
-      ),
-    );
-    await expect(pending).resolves.toMatchObject({ state: "completed" });
+        }],
+        journalRecords: [journal],
+        journalAttestation: null,
+        batchTerminal: null,
+        recoveryHoldIds: [],
+        recoveryClearances: [],
+        verificationHoldId: null,
+        originRedelivery: false,
+        bridgeAcceptance: null,
+        preparedAtMs: Date.now(),
+      };
+      const pending = executor.executePreparedMutation!(invocation, prepared);
+      const dispatched = (await next(binding)) as Extract<RbpEnvelope, { type: "invoke" }>;
+      expect(dispatched).toMatchObject({
+        rsid: registered.payload.rsid,
+        seq: envelope.seq,
+        payload: { invocation_id: invocation.context.invocationId },
+      });
 
-    const lookup = await restartable.store.transact(
-      { tenantId: "tenant-gw12" },
-      async (tx) =>
-        authority.inspectDispatch(tx, {
-          rsid: registered.payload.rsid,
-          sessionBindingId: draft.sessionBindingId,
-          gatewaySequence: dispatched.seq,
-          envelopeDigest,
-          invocationBindings: [
-            {
-              idempotencyKey: invocation.context.idempotencyKey,
-              bindingDigest: journal.bindingDigest,
+      const beforeCommit = await restartable.store.transact(
+        { tenantId: "tenant-gw12" },
+        async (tx) => authority.inspectDispatch(tx, expected),
+      );
+      expect(beforeCommit).toStrictEqual({ ok: true, value: { kind: "not_durable_yet" } });
+
+      await binding.send(
+        terminal(
+          registered.payload.rsid,
+          invocation.context.invocationId,
+          1,
+          dispatched.seq,
+        ),
+      );
+      await expect(pending).resolves.toMatchObject({ state: "completed" });
+
+      const lookup = await restartable.store.transact(
+        { tenantId: "tenant-gw12" },
+        async (tx) => authority.inspectDispatch(tx, expected),
+      );
+      expect(lookup).toMatchObject({
+        ok: true,
+        value: {
+          kind: "found",
+          observation: {
+            acceptance: {
+              source: "durable_rbp_sequence",
+              rsid: registered.payload.rsid,
+              sessionBindingId: draft.sessionBindingId,
+              acceptedConnectionId: binding.connectionId,
+              invocationId: invocation.context.invocationId,
+              correlationId: invocation.context.invocationId,
+              gatewaySequence: dispatched.seq,
+              cumulativeAck: dispatched.seq,
+              envelopeDigest,
             },
-          ],
-        }),
-    );
-    expect(lookup).toMatchObject({
-      ok: true,
-      value: {
-        kind: "found",
-        observation: {
-          acceptance: { cumulativeAck: dispatched.seq },
-          journal: { kind: "known_terminal" },
+            journal: { kind: "known_terminal" },
+          },
         },
-      },
-    });
-    await authority.close();
-  });
+      });
+      const crossBinding = await restartable.store.transact(
+        { tenantId: "tenant-gw12" },
+        async (tx) => authority.inspectDispatch(tx, { ...expected, sessionBindingId: id() }),
+      );
+      expect(crossBinding).toStrictEqual({
+        ok: true,
+        value: { kind: "protocol_fault", reason: "session_binding_mismatch" },
+      });
+      const forgedSequence = await restartable.store.transact(
+        { tenantId: "tenant-gw12" },
+        async (tx) => authority.inspectDispatch(tx, {
+          ...expected,
+          gatewaySequence: dispatched.seq + 1,
+        }),
+      );
+      expect(forgedSequence).toStrictEqual({
+        ok: true,
+        value: { kind: "protocol_fault", reason: "dispatch_evidence_mismatch" },
+      });
+    },
+  );
 
   it("uses the frozen heartbeat thresholds for degraded and disconnected dispatch", async () => {
     let nowMs = 0;
