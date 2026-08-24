@@ -1,5 +1,5 @@
 import { fork } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -7,11 +7,25 @@ import { describe, expect, it } from "vitest";
 
 import {
   coherentDocumentContextAudit,
+  createProductionConformanceRecoveryAuthority,
   createOrderedConformanceHostShutdown,
   MAX_DOCUMENT_CONTEXT_OBSERVATIONS,
   MAX_DOCUMENT_CONTEXT_OBSERVATION_BYTES,
   type DocumentContextObservationSnapshot,
 } from "./productionConformanceHostCli.js";
+import { GatewayBridgeSessionAuthority } from "./bridgeSession.js";
+import { GatewayResourceAuthority } from "./resourceAuthority.js";
+import { GATEWAY_RECOVERY_NAMESPACE } from "./recoveryAuthority.js";
+import { GATEWAY_AUTH_CONTRACT_VERSION, type AuthContext } from "./authContext.js";
+import { GatewayDispatcher, type GatewayExecutor } from "./dispatch.js";
+import { createEffectiveMcpRequestScopeV1 } from "./invocationContext.js";
+import { GatewayToolRegistry, M2_BOOTSTRAP_TOOL_RECORDS } from "./registry.js";
+import {
+  ConformanceCredentialAuthority,
+  DigestFileConformanceObjectStore,
+  SqliteConformanceProtocolStore,
+  createConformanceSupportingPorts,
+} from "./conformanceEphemeralAdapters.js";
 
 const epoch = "123e4567-e89b-42d3-a456-426614174000";
 const digest = (character: string) => `sha256:${character.repeat(64)}` as const;
@@ -272,4 +286,117 @@ describe("WP-12 conformance host shutdown", () => {
       await rm(root, { recursive: true, force: true });
     }
   }, 30_000);
+});
+
+describe("WP-12 conformance recovery composition", () => {
+  it("uses the exact SQLite store and Bridge evidence authority for isolated read windows", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "revagent-wp12-recovery-composition-"));
+    const store = new SqliteConformanceProtocolStore(root);
+    const opened = await store.open();
+    expect(opened.ok).toBe(true);
+    try {
+      const identity = new ConformanceCredentialAuthority([
+        { tenantId: "tenant-a", userId: "user-a", deviceId: "device-a", token: "token-a" },
+      ]);
+      const bridgeEvidence = new GatewayBridgeSessionAuthority(store, identity, {
+        resourceAuthority: new GatewayResourceAuthority({
+          protocolStore: store,
+          objectStore: new DigestFileConformanceObjectStore(root),
+        }),
+      });
+      const recovery = createProductionConformanceRecoveryAuthority({
+        protocolStore: store,
+        bridgeEvidence,
+      });
+      const rsid = "recovery-read-rsid";
+      const firstAttempt = "0197a3c2-0000-7000-8000-000000000101";
+      const secondAttempt = "0197a3c2-0000-7000-8000-000000000102";
+
+      await expect(recovery.acquireInvocationWindow({ tenantId: "tenant-a", rsid, attemptId: firstAttempt }))
+        .resolves.toEqual({ kind: "acquired" });
+      await expect(recovery.acquireInvocationWindow({ tenantId: "tenant-b", rsid, attemptId: secondAttempt }))
+        .resolves.toEqual({ kind: "acquired" });
+      await expect(recovery.releaseInvocationWindow({ tenantId: "tenant-a", rsid, attemptId: firstAttempt }))
+        .resolves.toEqual({ kind: "released" });
+      await expect(recovery.releaseInvocationWindow({ tenantId: "tenant-b", rsid, attemptId: secondAttempt }))
+        .resolves.toEqual({ kind: "released" });
+
+      const readA = await store.transact({ tenantId: "tenant-a" }, (tx) => tx.read(GATEWAY_RECOVERY_NAMESPACE, rsid));
+      const readB = await store.transact({ tenantId: "tenant-b" }, (tx) => tx.read(GATEWAY_RECOVERY_NAMESPACE, rsid));
+      expect(readA).toMatchObject({ ok: true, value: { value: { invocationWindow: null, pendingDispatch: null } } });
+      expect(readB).toMatchObject({ ok: true, value: { value: { invocationWindow: null, pendingDispatch: null } } });
+      expect(JSON.stringify([readA, readB])).not.toContain("token-a");
+    } finally {
+      await store.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("acquires and releases the public core.ui.state read window after success and executor failure", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "revagent-wp12-recovery-dispatch-"));
+    const store = new SqliteConformanceProtocolStore(root);
+    expect((await store.open()).ok).toBe(true);
+    try {
+      const identity = new ConformanceCredentialAuthority([
+        { tenantId: "tenant-a", userId: "user-a", deviceId: "device-a", token: "token-a" },
+      ]);
+      const bridgeEvidence = new GatewayBridgeSessionAuthority(store, identity, {
+        resourceAuthority: new GatewayResourceAuthority({
+          protocolStore: store,
+          objectStore: new DigestFileConformanceObjectStore(root),
+        }),
+      });
+      const recovery = createProductionConformanceRecoveryAuthority({ protocolStore: store, bridgeEvidence });
+      const auth: AuthContext = Object.freeze({
+        contractVersion: GATEWAY_AUTH_CONTRACT_VERSION,
+        actor: Object.freeze({ type: "user", tenantId: "tenant-a", userId: "user-a", role: "user", oidcIssuer: "https://issuer.invalid", oidcSubject: "subject-a" }),
+        session: Object.freeze({ sessionId: "gateway-session", clientType: "mcp", mcpSessionId: "mcp-session", oauthClientId: "test-client" }),
+        principalKey: "tenant-a:user-a", issuedAtMs: 1, expiresAtMs: null,
+      });
+      const scope = createEffectiveMcpRequestScopeV1({ principalKey: auth.principalKey, transportMcpSessionId: "mcp-session", identityMcpSessionId: null, nowMs: 1 });
+      let sequence = 0;
+      const dispatch = async (outcome: "success" | "throw") => {
+        const executor: GatewayExecutor = {
+          binding: "bridge",
+          async execute() {
+            if (outcome === "throw") throw new Error("fixture executor failure");
+            return { state: "completed" as const, result: { state: "read" } };
+          },
+        };
+        const dispatcher = new GatewayDispatcher(new GatewayToolRegistry(M2_BOOTSTRAP_TOOL_RECORDS), [executor], {
+          eventSink: createConformanceSupportingPorts().events,
+          eventSource: { component: "gateway-production-conformance", version: "wp12", instance: "loopback" },
+          recoveryAuthority: recovery,
+          newInvocationId: () => `0197a3c2-0000-7000-8000-${String(++sequence).padStart(12, "0")}`,
+          newAttemptId: () => `0197a3c2-0000-7000-8000-${String(++sequence).padStart(12, "0")}`,
+          newEventId: () => `0197a3c2-0000-7000-8000-${String(++sequence).padStart(12, "0")}`,
+          clock: () => 1,
+        });
+        return dispatcher.dispatch({
+          toolName: "core.ui.state", args: {}, auth, mcpSessionId: "mcp-session", effectiveMcpRequestScope: scope,
+          resolveRoute: (_auth, effectiveMcpRequestScope) => Object.freeze({
+            tenantId: "tenant-a", principalKey: auth.principalKey, mcpSessionId: "mcp-session", effectiveMcpRequestScope,
+            rsid: "core-ui-read-rsid", documentIdentity: Object.freeze({ kind: "live" as const, session_document_id: "document-live" }),
+          }),
+        });
+      };
+      const successful = await dispatch("success");
+      expect(successful).toMatchObject({ ok: true, state: "completed" });
+      await expect(dispatch("throw")).resolves.toMatchObject({ ok: false, state: "failed" });
+      const record = await store.transact({ tenantId: "tenant-a" }, (tx) => tx.read(GATEWAY_RECOVERY_NAMESPACE, "core-ui-read-rsid"));
+      expect(record).toMatchObject({ ok: true, value: { value: { invocationWindow: null, pendingDispatch: null } } });
+    } finally {
+      await store.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("has no recovery control-plane fallback and fixes evidence denial without a message field", async () => {
+    const source = await readFile(new URL("./productionConformanceHostCli.ts", import.meta.url), "utf8");
+    expect(source).toContain("recoveryAuthority,");
+    expect(source).not.toContain("recoveryAuthority: {} as never");
+    expect(source).toContain('kind: "rejected" as const');
+    expect(source).toContain('reason: "conformance_recovery_evidence_denied"');
+    expect(source).not.toContain("createReadOnlyRecoveryAuthorityFixture");
+  });
 });

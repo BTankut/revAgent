@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 
 import { GatewayBridgeSessionAuthority } from "./bridgeSession.js";
+import { GatewayRecoveryAuthority } from "./recoveryAuthority.js";
 import { GatewayResourceAuthority } from "./resourceAuthority.js";
 import { GatewayDispatcher } from "./dispatch.js";
 import { EntitledCatalogView } from "./entitledRegistry.js";
@@ -34,6 +35,30 @@ type ConformanceBinding = "wss" | "streamable_http_sse";
 export interface OrderedConformanceHostShutdown {
   readonly beginShutdown: () => void;
   readonly close: () => Promise<void>;
+}
+
+/**
+ * Recovery is deliberately composed from the same durable store and Bridge
+ * evidence authority as the public conformance endpoint.  The conformance
+ * host has no recovery-evidence control plane: a fixed denial keeps recovery
+ * inspection from becoming an authorization, replay, clearance, or hold
+ * mutation path.
+ */
+export function createProductionConformanceRecoveryAuthority(input: {
+  readonly protocolStore: SqliteConformanceProtocolStore;
+  readonly bridgeEvidence: GatewayBridgeSessionAuthority;
+}): GatewayRecoveryAuthority {
+  return new GatewayRecoveryAuthority(input.protocolStore, {
+    bridgeEvidence: input.bridgeEvidence,
+    evidenceDecision: Object.freeze({
+      async decideEvidence() {
+        return Object.freeze({
+          kind: "rejected" as const,
+          reason: "conformance_recovery_evidence_denied",
+        });
+      },
+    }),
+  });
 }
 
 /**
@@ -516,6 +541,10 @@ export async function runProductionConformanceHostCli(args: readonly string[]): 
       documentContextObservations.push(candidate);
     },
   });
+  const recoveryAuthority = createProductionConformanceRecoveryAuthority({
+    protocolStore,
+    bridgeEvidence: authority,
+  });
   const ingress = createConformanceRbpIngressHost({ authority });
   const supporting = createConformanceSupportingPorts();
   const registry = new GatewayToolRegistry([
@@ -534,10 +563,7 @@ export async function runProductionConformanceHostCli(args: readonly string[]): 
       version: "wp12",
       instance: "loopback",
     },
-    // This host exposes a single auto/read-only MCP tool. Any mutation path is
-    // intentionally unreachable, so it cannot use the test control plane as a
-    // recovery authority.
-    recoveryAuthority: {} as never,
+    recoveryAuthority,
   });
   const auditAccesses: Array<{ readonly atMs: number; readonly tenantId: string; readonly action: string }> = [];
   const northMcp: NorthMcpEndpointOptions = Object.freeze({
