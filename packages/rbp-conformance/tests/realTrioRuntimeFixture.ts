@@ -422,18 +422,53 @@ export function probeRealTrioFixtureDocumentContext(
   });
 }
 
-/** Selects one post-control ordered lifecycle; historical worker output is inert. */
+/**
+ * Selects one controlled ordered lifecycle.  A watcher probe which began just
+ * before the control acknowledgement is admissible only as a one-record
+ * prefix; completed or ambiguous historical lifecycles remain inert.
+ */
 export function correlatedDocumentContextSendSince(
   records: readonly { readonly line: string; readonly at?: string }[],
   floor: number,
 ): RealTrioDocumentContextCorrelation | null {
-  if (!Number.isSafeInteger(floor) || floor < 0) return null;
+  if (!Number.isSafeInteger(floor) || floor < 0 || floor > records.length) return null;
   const expected = Object.freeze([
     Object.freeze({ stage: "probe", outcome: "started" }),
     Object.freeze({ stage: "snapshot", outcome: "ready" }),
     Object.freeze({ stage: "queue", outcome: "durably_queued" }),
     Object.freeze({ stage: "send", outcome: "sent" }),
   ]);
+  type Observation = Record<string, unknown>;
+  const observationAt = (index: number): Observation | null => {
+    try {
+      const value = JSON.parse(records[index]!.line) as unknown;
+      return isObject(value) && value.event === "bridge.document_context_observation" ? value : null;
+    } catch { return null; }
+  };
+  const controlFloorProbe = (): Observation | null => {
+    if (floor === 0) return null;
+    const prefix = observationAt(floor - 1);
+    if (prefix === null || prefix.stage !== "probe" || prefix.outcome !== "started" ||
+        !isSha256(prefix.rsidHash) || !(prefix.sequence === null || Number.isSafeInteger(prefix.sequence)) ||
+        (prefix.sequence !== null && Number(prefix.sequence) < 1)) return null;
+    // The immediately preceding probe is usable only when it is the sole,
+    // still-active observation for this exact RSID before the control floor.
+    for (let index = 0; index < floor - 1; index += 1) {
+      const prior = observationAt(index);
+      if (prior === null) {
+        // Diagnostics are pre-filtered to this event type. A malformed row in
+        // a direct caller therefore cannot be silently used to bridge a floor.
+        try { JSON.parse(records[index]!.line); } catch { return null; }
+        continue;
+      }
+      if (!isSha256(prior.rsidHash) || prior.rsidHash !== prefix.rsidHash) continue;
+      // Any earlier same-RSID lifecycle row (including an earlier probe) makes
+      // this prefix stale, duplicated, or otherwise non-canonical.
+      return null;
+    }
+    return prefix;
+  };
+  const prefix = controlFloorProbe();
   let next = 0;
   let canonicalHash: `sha256:${string}` | null = null;
   let canonicalSequence: number | null = null;
@@ -442,7 +477,16 @@ export function correlatedDocumentContextSendSince(
     try {
       const value = JSON.parse(record.line) as unknown;
       if (!isObject(value) || value.event !== "bridge.document_context_observation") continue;
-      if (value.stage === "failure") return null;
+      if (value.stage === "failure" || value.stage === "completed") return null;
+      // A control-floor prefix is allowed only when the first post-floor
+      // lifecycle row is its exact snapshot; queue/send remain post-floor.
+      if (next === 0 && value.stage === "snapshot" && value.outcome === "ready") {
+        if (prefix === null) return null;
+        canonicalHash = prefix.rsidHash as `sha256:${string}`;
+        const prefixSequence = prefix.sequence === null ? null : Number(prefix.sequence);
+        canonicalSequence = prefixSequence;
+        next = 1;
+      }
       const expectedStep = expected[next];
       if (expectedStep === undefined || value.stage !== expectedStep.stage || value.outcome !== expectedStep.outcome ||
           !isSha256(value.rsidHash) || !(value.sequence === null || Number.isSafeInteger(value.sequence))) return null;

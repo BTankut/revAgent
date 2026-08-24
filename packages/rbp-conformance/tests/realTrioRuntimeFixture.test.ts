@@ -123,7 +123,7 @@ describe("WP-12 real-trio fixture document route gate", () => {
     expect(hasGatewayAcceptedDocumentContextRoute({ documentContextEpochSchema: "revagent.wp12-document-context-epoch/v1", documentContextProcessEpoch: epoch, documentContextObservationHighWaterOrdinal: 6, documentContextUpdates: [] }, expected, baseline)).toBe(false);
   });
 
-  it("selects only the controlled post-ACK send and rejects a borrowed historical route", () => {
+  it("selects only the controlled post-ACK send and permits its one-record active probe prefix", () => {
     const observation = (stage: string, rsidHash: string, sequence: number) => ({ line: JSON.stringify({
       event: "bridge.document_context_observation", stage,
       outcome: stage === "probe" ? "started" : stage === "snapshot" ? "ready" :
@@ -138,7 +138,50 @@ describe("WP-12 real-trio fixture document route gate", () => {
       observation("queue", controlledHash, 2), observation("send", controlledHash, 2),
     ];
     expect(correlatedDocumentContextSendSince(transcript, 4)).toMatchObject({ rsidHash: controlledHash, sequence: 2, sendTranscriptIndex: 7 });
-    expect(correlatedDocumentContextSendSince(transcript, 5)).toBeNull();
+    expect(correlatedDocumentContextSendSince(transcript, 5)).toMatchObject({ rsidHash: controlledHash, sequence: 2, sendTranscriptIndex: 7 });
+  });
+
+  it("admits exactly one active pre-control probe and rejects ambiguous control-floor prefixes", () => {
+    const hash = `sha256:${"a".repeat(64)}`;
+    const otherHash = `sha256:${"b".repeat(64)}`;
+    const event = (stage: string, outcome: string, rsidHash = hash, sequence: number | null = null) => ({
+      line: JSON.stringify({ event: "bridge.document_context_observation", stage, outcome, rsidHash, sequence }),
+    });
+    const postFloor = () => [
+      event("snapshot", "ready"), event("queue", "durably_queued", hash, 11), event("send", "sent", hash, 11),
+    ];
+
+    // The only permitted cross-floor shape: probe immediately before control,
+    // then snapshot/queue/send wholly after it.
+    expect(correlatedDocumentContextSendSince([event("probe", "started"), ...postFloor()], 1)).toMatchObject({
+      rsidHash: hash, sequence: 11, sendTranscriptIndex: 3,
+    });
+    // A previous completed lifecycle makes the apparent probe stale.
+    expect(correlatedDocumentContextSendSince([
+      event("probe", "started"), event("snapshot", "ready"), event("queue", "durably_queued", hash, 3),
+      event("send", "sent", hash, 3), event("completed", "done", hash, 3), event("probe", "started"), ...postFloor(),
+    ], 6)).toBeNull();
+    // Prefix and first post-floor snapshot must carry one canonical RSID.
+    expect(correlatedDocumentContextSendSince([
+      event("probe", "started"), event("snapshot", "ready", otherHash),
+      event("queue", "durably_queued", otherHash, 11), event("send", "sent", otherHash, 11),
+    ], 1)).toBeNull();
+    // A second pre-floor probe is not a unique active prefix.
+    expect(correlatedDocumentContextSendSince([
+      event("probe", "started"), event("probe", "started"), ...postFloor(),
+    ], 2)).toBeNull();
+    // Snapshot/queue/send before the floor cannot be borrowed as a prefix.
+    expect(correlatedDocumentContextSendSince([
+      event("probe", "started"), event("snapshot", "ready"), event("probe", "started"), ...postFloor(),
+    ], 3)).toBeNull();
+    // A failed pre-floor lifecycle is terminal, even if a later probe appears valid.
+    expect(correlatedDocumentContextSendSince([
+      event("probe", "started"), event("failure", "snapshot_failed"), event("probe", "started"), ...postFloor(),
+    ], 3)).toBeNull();
+    // The ordinary fully post-floor lifecycle still requires all four stages.
+    expect(correlatedDocumentContextSendSince([
+      event("probe", "started"), event("snapshot", "ready"), event("queue", "durably_queued", hash, 11), event("send", "sent", hash, 11),
+    ], 0)).toMatchObject({ rsidHash: hash, sequence: 11, sendTranscriptIndex: 3 });
   });
 
   it("fails closed on mixed, duplicate, skipped, failed, malformed, and pre-send-ACK lifecycles", () => {
