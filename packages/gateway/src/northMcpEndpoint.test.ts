@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import type { IncomingMessage } from "node:http";
 import { tmpdir } from "node:os";
@@ -659,6 +660,124 @@ describe("M2 north MCP first slice", () => {
       await endpoint?.close().catch(() => undefined);
     }
   }, 15_000);
+
+  it("returns a fixed, message-free failure after post-dispatch result delivery fails", async () => {
+    const registry = buildNorthFirstSliceCallableRegistry(VERIFIED_CATALOG);
+    const record = registry.require("core.ui.state");
+    const catalogEntry = FULL_CATALOG_VIEW.get(record.name);
+    if (catalogEntry === undefined) throw new Error("delivery test catalog entry is unavailable");
+    const dispatcher = new GatewayDispatcher(registry, [{
+      binding: "bridge",
+      async execute(): Promise<GatewayExecutorOutcome> {
+        return { state: "completed", result: {} };
+      },
+    }], dispatcherOptions());
+    const outcomes: GatewayDispatchOutcome[] = [
+      {
+        ok: true, state: "completed", toolName: record.name, toolVersion: record.version,
+        executor: record.executor, requestId: "delivery-secret-completed", result: { committed: true },
+      },
+      {
+        ok: true, state: "guarded", toolName: record.name, toolVersion: record.version,
+        executor: record.executor, requestId: "delivery-secret-guarded", guardedReason: "guard-secret", result: { guarded: true },
+      },
+      {
+        ok: false, state: "failed", toolName: record.name, requestId: "delivery-secret-not-reached",
+        executorReached: false, error: { code: "executor_failed", message: "must-not-leak" },
+      },
+      {
+        ok: false, state: "failed", toolName: record.name, requestId: "delivery-secret-reached",
+        executorReached: true, error: { code: "executor_failed", message: "must-not-leak" },
+      },
+      {
+        ok: true, state: "confirmation_required", toolName: record.name, toolVersion: record.version,
+        executor: record.executor, requestId: "delivery-secret-confirmation", result: { preview: true },
+        confirmation: {
+          confirmToken: "confirmation-secret", confirmationId: "019f9ac3-ae89-7342-9f6d-b9269e1671ff",
+          originatingPreviewInvocationId: "019f9ac3-ae89-7342-9f6d-b9269e1671fe",
+          previewDigest: `sha256:${"a".repeat(64)}`, previewRef: "inline:secret",
+          commitArgsDigest: `sha256:${"b".repeat(64)}`, expiresAtMs: 1,
+        },
+      },
+      {
+        ok: true, state: "future_dispatch_state", toolName: record.name, toolVersion: record.version,
+        executor: record.executor, requestId: "delivery-secret-unknown", result: { secret: true },
+      } as unknown as GatewayDispatchOutcome,
+    ];
+    vi.spyOn(dispatcher, "dispatch").mockImplementation(async () => {
+      const next = outcomes.shift();
+      if (next === undefined) throw new Error("unexpected delivery test dispatch");
+      return next;
+    });
+    const resourceAuthority: Pick<GatewayResourceAuthority, "boundResult" | "readResource"> = {
+      async boundResult() { throw new Error("delivery exception must not leak"); },
+      async readResource() { throw new Error("not used"); },
+    };
+    let endpoint: NorthMcpEndpointHandle | undefined;
+    let client: Client | undefined;
+    let transport: StreamableHTTPClientTransport | undefined;
+    try {
+      endpoint = await startNorthMcpEndpoint({
+        dispatcher,
+        registry,
+        catalogViewFor: () => new EntitledCatalogView([catalogEntry], entitleAll),
+        invocationRouteFor,
+        requestState: { key: REQUEST_STATE_KEY },
+        resourceAuthority,
+        resourceMetadataUrl: new URL("https://gateway.example.test/.well-known/oauth-protected-resource/mcp"),
+        authenticator: {
+          async authenticate(request) {
+            return request.headers.authorization === `Bearer ${TOKEN}`
+              ? authenticatedRequest(PRINCIPAL_KEY, { token: TOKEN, clientId: "delivery-failure", scopes: ["mcp:tools"] })
+              : null;
+          },
+        },
+      });
+      client = new Client({ name: "post-dispatch delivery test", version: "0.0.0-test" });
+      transport = new StreamableHTTPClientTransport(endpoint.endpoint, {
+        requestInit: { headers: { authorization: `Bearer ${TOKEN}` } },
+      });
+      await client.connect(transport);
+      const cases = [
+        ["completed", true, true, "completed", "delivery-secret-completed"],
+        ["guarded", true, true, "guarded", "delivery-secret-guarded"],
+        ["failed", false, false, null, "delivery-secret-not-reached"],
+        ["failed", false, true, null, "delivery-secret-reached"],
+        ["confirmation_required", true, true, null, "delivery-secret-confirmation"],
+        ["failed", true, true, null, "delivery-secret-unknown"],
+      ] as const;
+      for (const [dispatchState, dispatchOk, executorReached, terminalKnown, requestId] of cases) {
+        const result = await client.callTool({ name: record.name, arguments: {} });
+        const requestIdDigest = `sha256:${createHash("sha256")
+          .update("revagent:north-mcp:post-dispatch-delivery:v1\0", "utf8")
+          .update(requestId, "utf8").digest("hex")}`;
+        expect(result.isError).toBe(true);
+        expect(result.content).toHaveLength(1);
+        expect(result.structuredContent).toEqual({
+          ok: false,
+          state: "failed",
+          toolName: record.name,
+          requestIdDigest,
+          error: { code: "result_delivery_unavailable" },
+          delivery: {
+            phase: "post_dispatch", dispatchState, dispatchOk, executorReached, terminalKnown,
+            mutationDisposition: "not_reclassified",
+          },
+          resultContractVersion: 2,
+        });
+        expect(JSON.parse((result.content[0] as { readonly text: string }).text)).toEqual(result.structuredContent);
+        const serialized = JSON.stringify(result);
+        expect(serialized).not.toContain(requestId);
+        for (const forbidden of ["message", "audit", "cause", "params", "artifacts", "tokens"]) {
+          expect(serialized).not.toContain(forbidden);
+        }
+      }
+    } finally {
+      await client?.close().catch(() => undefined);
+      await transport?.close().catch(() => undefined);
+      await endpoint?.close().catch(() => undefined);
+    }
+  });
 
   it("threads an ordinary MCP confirmation re-invocation without exposing controls to functional args", async () => {
     const catalogEntry = FULL_CATALOG_VIEW.get("core.parameter.set");

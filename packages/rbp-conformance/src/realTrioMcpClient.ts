@@ -10,7 +10,8 @@ const SESSION_ID = /^[-A-Za-z0-9._:]{1,512}$/u;
 const SAFE_TOOL_DIAGNOSTIC_ENUMS = new Set([
   "completed", "failed", "guarded", "indeterminate", "unknown",
   "result_delivery_unavailable", "journal_indeterminate", "delivered",
-  "not_delivered", "pending", "unavailable",
+  "not_delivered", "pending", "unavailable", "post_dispatch",
+  "not_reclassified",
 ]);
 
 export interface RealTrioNorthCredential {
@@ -77,12 +78,16 @@ export interface RealTrioNorthToolResultEvidence {
     readonly errorCodePresent: boolean;
     readonly nestedErrorCodePresent: boolean;
     readonly deliveryOutcomePresent: boolean;
+    readonly deliveryPhasePresent: boolean;
+    readonly mutationDispositionPresent: boolean;
     readonly state: string | null;
     readonly reason: string | null;
     readonly code: string | null;
     readonly errorCode: string | null;
     readonly nestedErrorCode: string | null;
     readonly deliveryOutcome: string | null;
+    readonly deliveryPhase: string | null;
+    readonly mutationDisposition: string | null;
   }>;
 }
 
@@ -371,6 +376,7 @@ function boundedToolDiagnostic(
   const source = structured !== null ? "structured_content" : fallback !== null ? "fallback_text" : "none";
   const diagnostic = structured ?? fallback;
   const error = diagnostic !== null && "error" in diagnostic ? asStrictObject(diagnostic.error) : null;
+  const delivery = diagnostic !== null && "delivery" in diagnostic ? asStrictObject(diagnostic.delivery) : null;
   const value = (key: "state" | "reason" | "code" | "errorCode" | "deliveryOutcome"): string | null =>
     diagnostic !== null && key in diagnostic ? boundedDiagnosticEnum(diagnostic[key]) : null;
   return Object.freeze({
@@ -385,12 +391,18 @@ function boundedToolDiagnostic(
     errorCodePresent: diagnostic !== null && "errorCode" in diagnostic,
     nestedErrorCodePresent: error !== null && "code" in error,
     deliveryOutcomePresent: diagnostic !== null && "deliveryOutcome" in diagnostic,
+    deliveryPhasePresent: delivery !== null && "phase" in delivery,
+    mutationDispositionPresent: delivery !== null && "mutationDisposition" in delivery,
     state: value("state"),
     reason: value("reason"),
     code: value("code"),
     errorCode: value("errorCode"),
     nestedErrorCode: error !== null && "code" in error ? boundedDiagnosticEnum(error.code) : null,
     deliveryOutcome: value("deliveryOutcome"),
+    deliveryPhase: delivery !== null && "phase" in delivery
+      ? boundedDiagnosticEnum(delivery.phase) : null,
+    mutationDisposition: delivery !== null && "mutationDisposition" in delivery
+      ? boundedDiagnosticEnum(delivery.mutationDisposition) : null,
   });
 }
 

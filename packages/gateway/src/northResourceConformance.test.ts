@@ -270,11 +270,28 @@ describe("GW-9 north MCP artifact resources", () => {
     expect(deliveryFailure).toMatchObject({
       isError: true,
       structuredContent: {
-        state: "completed",
-        executorOutcomePreserved: true,
+        ok: false,
+        state: "failed",
         error: { code: "result_delivery_unavailable" },
+        delivery: {
+          phase: "post_dispatch",
+          dispatchState: "completed",
+          dispatchOk: true,
+          executorReached: true,
+          terminalKnown: "completed",
+          mutationDisposition: "not_reclassified",
+        },
+        resultContractVersion: 2,
       },
     });
+    expect(deliveryFailure.structuredContent).not.toHaveProperty("requestId");
+    expect(deliveryFailure.structuredContent).not.toHaveProperty("result");
+    expect(deliveryFailure.structuredContent).not.toHaveProperty("audit");
+    expect(deliveryFailure.structuredContent).not.toHaveProperty("message");
+    expect(deliveryFailure.content).toHaveLength(1);
+    expect(JSON.parse((deliveryFailure.content[0] as { text: string }).text)).toEqual(
+      deliveryFailure.structuredContent,
+    );
     await expect(
       client.readResource({ uri: resultRef.uri }),
     ).resolves.toMatchObject({

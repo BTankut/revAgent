@@ -17,6 +17,7 @@ import {
   type McpRequestContext,
   type RequestStateCodec,
 } from "@modelcontextprotocol/server";
+import { canonicalizeJson, type JsonValue } from "@revagent/protocol";
 import { z } from "zod";
 import type { AuthContext, IdentityPort } from "./authContext.js";
 import type { GatewayPortAdapterKind } from "./gatewayPorts.js";
@@ -436,6 +437,73 @@ function toolResult(
   };
 }
 
+type PostDispatchDeliveryState =
+  | "completed"
+  | "guarded"
+  | "confirmation_required"
+  | "failed";
+
+/**
+ * Only expose the fixed dispatch classification after result delivery fails.
+ * This must not turn a completed/guarded executor outcome into a new executor
+ * result, nor leak an exception, request id, audit record, or tool payload.
+ */
+function postDispatchDeliveryState(
+  outcome: Awaited<ReturnType<GatewayDispatcher["dispatch"]>>,
+): PostDispatchDeliveryState {
+  switch (outcome.state) {
+    case "completed":
+    case "guarded":
+    case "confirmation_required":
+    case "failed":
+      return outcome.state;
+    default:
+      // A future or malformed dispatcher state is not evidence that delivery
+      // was safe. Keep the public diagnostic fixed and fail closed.
+      return "failed";
+  }
+}
+
+function postDispatchRequestIdDigest(requestId: string): `sha256:${string}` {
+  return `sha256:${createHash("sha256")
+    .update("revagent:north-mcp:post-dispatch-delivery:v1\0", "utf8")
+    .update(requestId, "utf8")
+    .digest("hex")}`;
+}
+
+function postDispatchDeliveryFailureResult(
+  outcome: Awaited<ReturnType<GatewayDispatcher["dispatch"]>>,
+) {
+  const dispatchState = postDispatchDeliveryState(outcome);
+  const terminalKnown = dispatchState === "completed" || dispatchState === "guarded"
+    ? dispatchState
+    : null;
+  const structuredContent = Object.freeze({
+    ok: false as const,
+    state: "failed" as const,
+    toolName: outcome.toolName,
+    requestIdDigest: postDispatchRequestIdDigest(outcome.requestId),
+    error: Object.freeze({ code: "result_delivery_unavailable" as const }),
+    delivery: Object.freeze({
+      phase: "post_dispatch" as const,
+      dispatchState,
+      dispatchOk: outcome.ok,
+      executorReached: outcome.ok ? true : outcome.executorReached === true,
+      terminalKnown,
+      mutationDisposition: "not_reclassified" as const,
+    }),
+    resultContractVersion: 2 as const,
+  });
+  // Canonicalize exactly once. The same frozen object is carried as structured
+  // content, so text and structured MCP representations cannot diverge.
+  const text = canonicalizeJson(structuredContent as unknown as JsonValue);
+  return {
+    content: [{ type: "text" as const, text }],
+    structuredContent: structuredContent as Record<string, unknown>,
+    isError: true as const,
+  };
+}
+
 function modeAToolResult(
   value: Readonly<Record<string, unknown>>,
   isError = false,
@@ -842,22 +910,8 @@ function createSessionServer(input: {
             outcome,
             content as unknown as Readonly<Record<string, unknown>>,
           );
-        } catch (error) {
-          return toolResult(
-            outcome,
-            Object.freeze({
-              ok: false,
-              state: outcome.state,
-              toolName: outcome.toolName,
-              requestId: outcome.requestId,
-              executorOutcomePreserved: true,
-              error: Object.freeze({
-                code: "result_delivery_unavailable",
-                message: error instanceof Error ? error.message : String(error),
-              }),
-            }),
-            true,
-          );
+        } catch {
+          return postDispatchDeliveryFailureResult(outcome);
         }
       },
     );

@@ -201,6 +201,35 @@ describe("strict real-trio Streamable HTTP MCP client", () => {
     } } satisfies Partial<RealTrioNorthToolResultError>);
   });
 
+  it("keeps post-dispatch delivery diagnostics allowlisted while isError remains fatal", async () => {
+    const server = await testServer({ toolCallResult: {
+      isError: true,
+      structuredContent: {
+        state: "failed",
+        error: { code: "result_delivery_unavailable" },
+        delivery: { phase: "post_dispatch", mutationDisposition: "not_reclassified" },
+      },
+      content: [{ type: "text", text: JSON.stringify({
+        state: "failed",
+        error: { code: "result_delivery_unavailable" },
+        delivery: { phase: "post_dispatch", mutationDisposition: "not_reclassified" },
+      }) }],
+    } });
+    await expect(withRealTrioNorthMcpClient({ ...server, credential }, async (client) =>
+      await client.toolCall({ name: "core.ui.state", arguments: {}, requestId: "post-dispatch-diagnostic" }),
+    )).rejects.toMatchObject({ name: "RealTrioNorthToolResultError", evidence: {
+      isError: true,
+      diagnostic: {
+        state: "failed",
+        nestedErrorCode: "result_delivery_unavailable",
+        deliveryPhasePresent: true,
+        mutationDispositionPresent: true,
+        deliveryPhase: "post_dispatch",
+        mutationDisposition: "not_reclassified",
+      },
+    } } satisfies Partial<RealTrioNorthToolResultError>);
+  });
+
   it("classifies only allowlisted short fallback diagnostic enums and redacts malicious values", async () => {
     const server = await testServer({ toolCallResult: {
       isError: true,
