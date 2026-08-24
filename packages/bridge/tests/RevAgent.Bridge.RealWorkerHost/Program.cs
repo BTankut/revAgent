@@ -41,7 +41,7 @@ internal static class Program
             var recoveryObservations = new RecoveryCarrierObservationRing(
                 MaxRecoveryCarrierObservations,
                 MaxRecoveryCarrierObservationBytes);
-            var postWriteFault = options.TestC39PostWriteFault
+            var postWriteFault = options.TestC39D0PostWriteFault
                 ? new OneShotPostWriteRecoveryFault()
                 : null;
             Func<CancellationToken, Task>? postWriteFaultCallback =
@@ -623,7 +623,7 @@ internal static class Program
         }
     }
 
-    private sealed record Options(Uri GatewayUri, int AddinPort, int FixtureProcessId, string InstallRoot, string StateRoot, string DeviceId, string DeviceToken, string Fingerprint, string CertificateSha256, string Binding, int TestHeartbeatIntervalMilliseconds, bool TestC39PostWriteFault)
+    private sealed record Options(Uri GatewayUri, int AddinPort, int FixtureProcessId, string InstallRoot, string StateRoot, string DeviceId, string DeviceToken, string Fingerprint, string CertificateSha256, string Binding, int TestHeartbeatIntervalMilliseconds, bool TestC39D0PostWriteFault)
     {
         public static Options Parse(IReadOnlyList<string> args)
         {
@@ -642,9 +642,9 @@ internal static class Program
             if (!int.TryParse(Required("--addin-port"), out int port) || port is < 1 or > 65535) throw new ArgumentException("invalid addin port");
             if (!int.TryParse(Required("--fixture-pid"), out int fixturePid) || fixturePid <= 0) throw new ArgumentException("invalid fixture pid");
             if (!int.TryParse(Required("--test-heartbeat-interval-ms"), out int testHeartbeatIntervalMilliseconds) || testHeartbeatIntervalMilliseconds is < 250 or > 5_000) throw new ArgumentException("test heartbeat interval must be between 250 and 5000 milliseconds");
-            bool testC39PostWriteFault = values.Remove("--test-c39-postwrite-fault", out string? faultProfile);
-            if (testC39PostWriteFault && !string.Equals(faultProfile, "once", StringComparison.Ordinal)) throw new ArgumentException("invalid C39 post-write fault profile");
-            Options result = new(endpoint, port, fixturePid, Required("--install-root"), Required("--state-root"), Required("--device-id"), Required("--device-token"), Required("--fingerprint"), Required("--certificate-sha256"), binding, testHeartbeatIntervalMilliseconds, testC39PostWriteFault);
+            bool testC39D0PostWriteFault = values.Remove("--test-c39-profile", out string? profile);
+            if (testC39D0PostWriteFault && !string.Equals(profile, "d0_postwrite_once", StringComparison.Ordinal)) throw new ArgumentException("invalid C39 test profile");
+            Options result = new(endpoint, port, fixturePid, Required("--install-root"), Required("--state-root"), Required("--device-id"), Required("--device-token"), Required("--fingerprint"), Required("--certificate-sha256"), binding, testHeartbeatIntervalMilliseconds, testC39D0PostWriteFault);
             if (values.Count != 0 || !result.Fingerprint.StartsWith("sha256:", StringComparison.Ordinal) || result.CertificateSha256.Length != 64) throw new ArgumentException("invalid test identity or certificate pin");
             return result;
         }

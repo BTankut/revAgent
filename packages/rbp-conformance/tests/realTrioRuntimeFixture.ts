@@ -257,7 +257,7 @@ export interface RealTrioRuntimeFixtureOptions {
   /** Test-only bound for an observed document-context failure. */
   readonly documentContextTimeoutMs?: number;
   /** C39-only fixed worker launch profile; never a production selector. */
-  readonly c39PostWriteFault?: boolean;
+  readonly c39D0PostWriteFault?: boolean;
   /** Unit-only supervisor/credential seam; production paths never supply it. */
   readonly controlledHarness?: Readonly<{
     readonly supervisor: RealTrioSupervisorResult;
@@ -1884,8 +1884,8 @@ export async function startRealTrioRuntimeFixture(
         "--fingerprint", `sha256:${"a".repeat(64)}`,
         "--certificate-sha256", "{{gateway_certificate_sha256}}",
         "--test-heartbeat-interval-ms", "{{test_heartbeat_interval_ms}}",
-        ...(options.c39PostWriteFault === true
-          ? ["--test-c39-postwrite-fault", "once"]
+        ...(options.c39D0PostWriteFault === true
+          ? ["--test-c39-profile", "d0_postwrite_once"]
           : []),
       ],
       workingDirectory: repoRoot,

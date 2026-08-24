@@ -73,7 +73,7 @@ describe.sequential("WP-12 direct real trio runtime fixture", () => {
       const launched = await runRealTrioCli(
         ["real-trio", binding],
         async (selectedBinding) => await startRealTrioRuntimeFixture(selectedBinding, {
-          evidenceDirectory, c39PostWriteFault: true,
+          evidenceDirectory, c39D0PostWriteFault: true,
         }),
       );
       const runtime = launched.result;

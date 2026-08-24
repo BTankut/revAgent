@@ -83,6 +83,7 @@ internal sealed partial class RbpConnectionCoordinator
     private readonly object _recoveryCarrierClaimSync = new();
     private readonly HashSet<RecoveryCarrierCycleKey> _recoveryCarrierClaims = new();
     private readonly HashSet<RecoveryCarrierAckGateKey> _recoveryCarrierAckGates = new();
+    private readonly HashSet<RecoveryTerminalDeliveryKey> _recoveryTerminalDeliveries = new();
     private readonly HashSet<RecoveryTerminalCycleKey> _recoveryTerminalClaims = new();
     private readonly Dictionary<RecoveryCarrierDigestCycleKey, string>
         _recoveryCarrierOuterDigests = new();
