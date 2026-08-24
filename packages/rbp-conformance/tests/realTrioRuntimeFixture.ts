@@ -242,6 +242,11 @@ export interface RealTrioRuntimeFixtureOptions {
   readonly evidenceDirectory: string;
   /** Test-only bound for an observed document-context failure. */
   readonly documentContextTimeoutMs?: number;
+  /** Unit-only supervisor/credential seam; production paths never supply it. */
+  readonly controlledHarness?: Readonly<{
+    readonly supervisor: RealTrioSupervisorResult;
+    readonly issueNorthCredential: () => Promise<Record<string, unknown>>;
+  }>;
 }
 
 export const REAL_TRIO_RUNTIME_FAILURE_SCHEMA =
@@ -1406,6 +1411,19 @@ export class RealTrioPreControlCaptureError extends Error {
   }
 }
 
+export function verifiedRealTrioDocumentContextState(
+  expected: StrictDocumentContextCandidate | undefined,
+  gatewayBaseline: RealTrioGatewayAuditBaseline | undefined,
+): Readonly<{ readonly expected: StrictDocumentContextCandidate; readonly gatewayBaseline: RealTrioGatewayAuditBaseline }> {
+  if (expected === undefined || gatewayBaseline === undefined) {
+    throw new Error("real trio internal-state missing verified document-context proof");
+  }
+  return Object.freeze({
+    expected: Object.freeze({ ...expected }),
+    gatewayBaseline: Object.freeze({ ...gatewayBaseline }),
+  });
+}
+
 /**
  * Capture an atomic causal floor before the fixture control. The two complete
  * ring snapshots prevent a Gateway audit from being paired with a cursor
@@ -1627,10 +1645,13 @@ export async function startRealTrioRuntimeFixture(
   mkdirSync(path.join(root, "state"), { recursive: true });
   const tls = createEphemeralLoopbackTlsIdentity(root);
   const controlToken = `wp12-${path.basename(root)}`;
-  const gatewayCli = requiredFile("packages/gateway/dist/productionConformanceHostCli.js");
-  const fixtureCli = requiredFile("packages/addin-loopback-fixture/dist/cli.js");
-  const worker = requiredRealTrioWorker();
-  const supervisor = await startRealTrioSupervisor({
+  const controlledHarness = options.controlledHarness;
+  const gatewayCli = controlledHarness === undefined
+    ? requiredFile("packages/gateway/dist/productionConformanceHostCli.js") : "controlled-gateway";
+  const fixtureCli = controlledHarness === undefined
+    ? requiredFile("packages/addin-loopback-fixture/dist/cli.js") : "controlled-fixture";
+  const worker = controlledHarness === undefined ? requiredRealTrioWorker() : "controlled-worker";
+  const supervisor = controlledHarness?.supervisor ?? await startRealTrioSupervisor({
     evidenceDirectory: options.evidenceDirectory,
     gateway: {
       executable: node24,
@@ -1679,6 +1700,8 @@ export async function startRealTrioRuntimeFixture(
     preControlBaseline: null, preControlAudit: null, lastSelectorReason: null };
   let failureReason: RealTrioDocumentContextFailure["reason"] = "ack_failure";
   let documentContextAudit: RealTrioDocumentContextAudit;
+  let expected: StrictDocumentContextCandidate | undefined;
+  let gatewayBaseline: RealTrioGatewayAuditBaseline | undefined;
   try {
     // This is the normal attested loopback fixture document-context event;
     // route authority is still earned only when the C# watcher forwards it
@@ -1693,10 +1716,11 @@ export async function startRealTrioRuntimeFixture(
     });
     const preControlSnapshot = preControl.snapshot;
     const preControlAudit = preControl.audit;
-    const gatewayBaseline = preControl.baseline;
+    const selectedGatewayBaseline = preControl.baseline;
+    gatewayBaseline = selectedGatewayBaseline;
     const precedingSeed = preControl.seed;
     auditCapture.preControlAudit = preControlAudit;
-    auditCapture.preControlBaseline = gatewayBaseline;
+    auditCapture.preControlBaseline = selectedGatewayBaseline;
     const controlAudit = documentContextControlAudit(await supervisor.fixtureControl("apply_document_context", {
       event: realTrioFixtureDocumentContextEvent(),
     }));
@@ -1712,17 +1736,18 @@ export async function startRealTrioRuntimeFixture(
     // This probe is value-free and must succeed before any public Gateway
     // route can qualify. The regular 15 s C# watcher is the only forwarder.
     failureReason = "stage_timeout";
-    const expected = await waitForDocumentContextSend({
+    const selectedExpected = await waitForDocumentContextSend({
       supervisor,
       controlCursor: preControlSnapshot.highWaterCursor,
       generation: preControlSnapshot.generation,
       precedingProbe: null,
       precedingSeed,
-      gatewayBaseline,
+      gatewayBaseline: selectedGatewayBaseline,
       control: controlAudit,
       auditCapture,
       timeoutMs: options.documentContextTimeoutMs,
     });
+    expected = selectedExpected;
     timeline.push("document_sent");
     failureReason = "ack_failure";
     const counts = probeRealTrioFixtureDocumentContext(
@@ -1738,14 +1763,14 @@ export async function startRealTrioRuntimeFixture(
     failureReason = "ack_failure";
     await waitForPostRouteDocumentContextHeartbeatAck({
       supervisor,
-      expected,
+      expected: selectedExpected,
       timeoutMs: options.documentContextTimeoutMs,
     });
     timeline.push("heartbeat_ack");
     const finalAudit = await readCapturedRealCaseAudit(supervisor, auditCapture);
     if (!hasDurableDocumentContextHeartbeatAckFromCursor(
-      cursorSinceOrThrow({ supervisor, cursor: expected.controlCursor, generation: expected.generation }), expected,
-    ) || !hasGatewayAcceptedDocumentContextRoute(finalAudit, expected, gatewayBaseline)) {
+      cursorSinceOrThrow({ supervisor, cursor: selectedExpected.controlCursor, generation: selectedExpected.generation }), selectedExpected,
+    ) || !hasGatewayAcceptedDocumentContextRoute(finalAudit, selectedExpected, selectedGatewayBaseline)) {
       throw new Error("real trio document-context proof changed before north dispatch");
     }
   } catch (error) {
@@ -1772,13 +1797,19 @@ export async function startRealTrioRuntimeFixture(
     await supervisor.stop().catch(() => undefined);
     throw failure;
   }
+  let verified: Readonly<{ readonly expected: StrictDocumentContextCandidate; readonly gatewayBaseline: RealTrioGatewayAuditBaseline }>;
   try {
-    const issued = await publicGatewayControl(
-      endpoint,
-      controlToken,
-      certificateSha256,
-      issueNorthCredentialControlPayload(),
-    );
+    verified = verifiedRealTrioDocumentContextState(expected, gatewayBaseline);
+  } catch (error) {
+    await supervisor.stop().catch(() => undefined);
+    throw error;
+  }
+  const verifiedExpected = verified.expected;
+  const verifiedGatewayBaseline = verified.gatewayBaseline;
+  try {
+    const issued = controlledHarness === undefined
+      ? await publicGatewayControl(endpoint, controlToken, certificateSha256, issueNorthCredentialControlPayload())
+      : await controlledHarness.issueNorthCredential();
     return Object.freeze({
       root,
       binding,
@@ -1790,8 +1821,8 @@ export async function startRealTrioRuntimeFixture(
       verifyNorthDispatchFence: async (): Promise<void> => {
         const audit = await supervisor.readRealCaseAudit();
         if (!hasDurableDocumentContextHeartbeatAckFromCursor(
-          cursorSinceOrThrow({ supervisor, cursor: expected.controlCursor, generation: expected.generation }), expected,
-        ) || !hasGatewayAcceptedDocumentContextRoute(audit, expected, gatewayBaseline)) {
+          cursorSinceOrThrow({ supervisor, cursor: verifiedExpected.controlCursor, generation: verifiedExpected.generation }), verifiedExpected,
+        ) || !hasGatewayAcceptedDocumentContextRoute(audit, verifiedExpected, verifiedGatewayBaseline)) {
           throw new Error("real trio north dispatch fence rejected stale route evidence");
         }
       },

@@ -29,9 +29,11 @@ import {
   realTrioFixtureDocumentContextEvent,
   selectCurrentDocumentContextSendFromCursor,
   selectCurrentDocumentContextSendReason,
+  startRealTrioRuntimeFixture,
   writeRealTrioDocumentContextFailure,
   writeRealTrioRuntimeFailure,
   unmatchedDocumentContextProbe,
+  verifiedRealTrioDocumentContextState,
 } from "./realTrioRuntimeFixture.js";
 
 describe("WP-12 real-trio fixture document route gate", () => {
@@ -704,6 +706,73 @@ describe("WP-12 real-trio fixture document route gate", () => {
       timeoutMs: 250, pollIntervalMs: 100, now: () => now, sleep,
     })).rejects.toMatchObject({ reason: "ack_timeout" });
     expect(now).toBe(250);
+  });
+
+  it("keeps verified document proof alive through credential issue and the returned north fence", async () => {
+    const rsidHash = `sha256:${"a".repeat(64)}`;
+    const cacheIncarnationDigest = `sha256:${"b".repeat(64)}`;
+    const epoch = "123e4567-e89b-42d3-a456-426614174000";
+    const contextDigest = "c".repeat(64);
+    const route = (sequence: number) => ({ processEpoch: epoch, rsidHash, observedSequence: sequence, contextDigest,
+      routeDigest: `sha256:${"d".repeat(64)}`, recordDigest: `sha256:${"e".repeat(64)}`,
+      sessionBindingDigest: `sha256:${"f".repeat(64)}`, connectionDigest: `sha256:${"1".repeat(64)}`,
+      sessionRecordVersion: sequence });
+    const audit = (sequence: number, ordinal: number) => {
+      const current = route(sequence);
+      return { documentContextEpochSchema: "revagent.wp12-document-context-epoch/v1",
+        documentContextProcessEpoch: epoch, documentContextGeneration: 1,
+        documentContextObservationHighWaterOrdinal: ordinal, documentContextCurrentRoute: current,
+        documentContextUpdates: [{ contractVersion: "revagent.wp12-document-context-audit/v1",
+          event: "gateway.doc_context_update_observation", stage: "accepted", ...current, observationOrdinal: ordinal }] };
+    };
+    const sourceRow = (cursor: number, stage: "snapshot" | "queue" | "send", sequence: number | null) => ({
+      cursor: String(cursor), at: "", line: JSON.stringify({ event: "bridge.document_context_observation", stage,
+        outcome: stage === "snapshot" ? "ready" : stage === "queue" ? "durably_queued" : "sent", rsidHash, sequence,
+        contextDigest, sourceRevision: 2, cacheIncarnationDigest }),
+    });
+    const priorRows = [
+      cursorRow("1", "probe", "started", null, rsidHash), cursorRow("2", "snapshot", "ready", null, rsidHash),
+      cursorRow("3", "queue", "durably_queued", 1, rsidHash), cursorRow("4", "send", "sent", 1, rsidHash),
+      cursorRow("5", "ack", "durably_acknowledged", 1, rsidHash),
+    ];
+    const postRows = [sourceRow(6, "snapshot", null), sourceRow(7, "queue", 2), sourceRow(8, "send", 2),
+      cursorRow("9", "ack", "durably_acknowledged", 2, rsidHash)];
+    let applied = false;
+    let stops = 0;
+    const control = { action: "apply_document_context", revision: 2, cacheIncarnationDigest,
+      cachedContextHash: `sha256:${"2".repeat(64)}`, activeDocumentIdentityHash: `sha256:${"3".repeat(64)}`,
+      acknowledgementHash: `sha256:${"4".repeat(64)}` };
+    const supervisor = {
+      gatewayReadiness: { endpoint: "https://127.0.0.1:1", tlsCertificateSha256: `sha256:${"5".repeat(64)}` },
+      readDocumentContextSnapshot: () => ({ generation: 1, lowWaterCursor: "1", highWaterCursor: "5", rows: priorRows }),
+      readDocumentContextSince: () => ({ state: "ok", generation: 1, highWaterCursor: "9", rows: postRows }),
+      readDocumentContextFailureState: () => ({ childExited: false, processDiagnostics: [] }),
+      readRealCaseAuditOutcome: async () => ({ outcome: "success", audit: audit(applied ? 2 : 1, applied ? 2 : 1) }),
+      readRealCaseAudit: async () => audit(2, 2),
+      fixtureControl: async (action: string) => {
+        if (action === "apply_document_context") { applied = true; return control; }
+        return { documentContextEvidence: { currentRevision: 2, cacheIncarnationDigest,
+          cachedContextHash: control.cachedContextHash, activeDocumentIdentityHash: control.activeDocumentIdentityHash,
+          lastControlAcknowledgementHash: control.acknowledgementHash, cacheReadCount: 1, pollRequestCount: 1 } };
+      },
+      readDocumentContextDiagnostics: () => [], readDocumentContextFailureStages: () => [], stop: async () => { stops += 1; },
+    };
+    const evidenceDirectory = mkdtempSync(path.join(tmpdir(), "wp12-verified-state-"));
+    const runtime = await startRealTrioRuntimeFixture("wss", { evidenceDirectory, controlledHarness: {
+      supervisor: supervisor as never,
+      issueNorthCredential: async () => ({ bearer: "controlled-bearer", audience: "https://north.example",
+        credentialProvenance: "gateway_production_conformance", identityContract: "revagent.auth-context/v1" }),
+    } });
+    expect(runtime.credential.bearer).toBe("controlled-bearer");
+    await expect(runtime.verifyNorthDispatchFence()).resolves.toBeUndefined();
+    await runtime.stop();
+    expect(stops).toBe(1);
+  });
+
+  it("fails closed when verified document proof state is missing", () => {
+    expect(() => verifiedRealTrioDocumentContextState(undefined, undefined)).toThrow(
+      "real trio internal-state missing verified document-context proof",
+    );
   });
 
   it("uses a value-free seed for snapshot-first post-control selection and never carries the old pair", () => {
