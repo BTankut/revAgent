@@ -19,6 +19,8 @@ import {
   type RealTrioAuditControlFailure,
   type RealTrioAuditControlOutcome,
   type RealTrioSupervisorResult,
+  PublicGatewayControlError,
+  classifyRealTrioAuditControlFailure,
 } from "../src/realTrioSupervisor.js";
 import { stableJson } from "../src/stableJson.js";
 import { createEphemeralLoopbackTlsIdentity } from "../src/ephemeralTlsIdentity.js";
@@ -469,14 +471,24 @@ interface GatewayAuditCapture {
   lastSelectorReason: RealTrioCurrentRouteSelectorReason | null;
 }
 
-async function readCapturedRealCaseAudit(
+async function readCapturedRealCaseAuditOutcome(
   supervisor: Pick<RealTrioSupervisorResult, "readRealCaseAuditOutcome">,
   capture: GatewayAuditCapture,
-): Promise<unknown> {
+): Promise<RealTrioAuditControlOutcome> {
   const outcome = await supervisor.readRealCaseAuditOutcome();
   capture.lastControlOutcome = outcome;
   if (outcome.outcome === "success") {
     capture.lastSuccessfulAudit = outcome.audit;
+  }
+  return outcome;
+}
+
+async function readCapturedRealCaseAudit(
+  supervisor: Pick<RealTrioSupervisorResult, "readRealCaseAuditOutcome">,
+  capture: GatewayAuditCapture,
+): Promise<unknown> {
+  const outcome = await readCapturedRealCaseAuditOutcome(supervisor, capture);
+  if (outcome.outcome === "success") {
     return outcome.audit;
   }
   throw new Error("real trio public audit control unavailable");
@@ -1386,7 +1398,8 @@ export interface RealTrioPreControlBundle {
 
 export class RealTrioPreControlCaptureError extends Error {
   public constructor(
-    readonly reason: "ack_timeout" | "invalid_history" | "generation_changed" | "child_exit",
+    readonly reason: "ack_timeout" | "invalid_history" | "generation_changed" | "child_exit" |
+      `audit_${RealTrioAuditControlFailure["error"]}`,
   ) {
     super(`real trio pre-control capture failed closed: ${reason}`);
     this.name = "RealTrioPreControlCaptureError";
@@ -1402,7 +1415,7 @@ export class RealTrioPreControlCaptureError extends Error {
 export async function capturePreControlDocumentContextBundle(input: {
   readonly supervisor: Pick<RealTrioSupervisorResult, "readDocumentContextSnapshot"> &
     Partial<Pick<RealTrioSupervisorResult, "readDocumentContextFailureState">>;
-  readonly readGatewayAudit: () => Promise<unknown>;
+  readonly readGatewayAuditOutcome: () => Promise<RealTrioAuditControlOutcome>;
   /** Existing document-context ACK/route deadline; default covers 15 s production heartbeat plus jitter. */
   readonly timeoutMs?: number;
   /** Bounded observation poll. Production callers use 100 ms; tests may inject 50-100 ms. */
@@ -1426,13 +1439,21 @@ export async function capturePreControlDocumentContextBundle(input: {
     const first = input.supervisor.readDocumentContextSnapshot();
     let audit: unknown = null;
     let baseline: RealTrioGatewayAuditBaseline | null = null;
+    let auditFailure: RealTrioAuditControlFailure | null = null;
     try {
-      audit = await input.readGatewayAudit();
-      baseline = gatewayAuditBaseline(audit);
-    } catch {
-      // A public audit control can transiently lose its current route while
-      // the worker's heartbeat is in flight. It is retried under this bound.
+      const outcome = await input.readGatewayAuditOutcome();
+      if (outcome.outcome === "success") {
+        audit = outcome.audit;
+        baseline = gatewayAuditBaseline(audit);
+      } else auditFailure = outcome;
+    } catch (error) {
+      auditFailure = classifyRealTrioAuditControlFailure(error, false);
     }
+    if (auditFailure !== null && !isTransientPreControlAuditFailure(auditFailure)) {
+      throw new RealTrioPreControlCaptureError(`audit_${auditFailure.error}`);
+    }
+    // Timeouts and the explicit 503 real-case-audit-unavailable shape are
+    // transient only until this one document-context deadline.
     const second = input.supervisor.readDocumentContextSnapshot();
     if (first.generation !== second.generation) throw new RealTrioPreControlCaptureError("generation_changed");
     const firstState = preControlWatcherSnapshotState(first);
@@ -1447,6 +1468,11 @@ export async function capturePreControlDocumentContextBundle(input: {
     if (now() >= deadline) throw new RealTrioPreControlCaptureError("ack_timeout");
     await sleep(Math.min(pollIntervalMs, Math.max(1, deadline - now())));
   }
+}
+
+function isTransientPreControlAuditFailure(failure: RealTrioAuditControlFailure): boolean {
+  return failure.error === "timeout" || (failure.error === "http_status_5xx" &&
+    failure.statusCode === 503 && failure.okKeyPresent && failure.actionKeyPresent);
 }
 
 async function waitForPostRouteDocumentContextHeartbeatAck(input: {
@@ -1662,7 +1688,7 @@ export async function startRealTrioRuntimeFixture(
     // through its latest watcher ACK before the control may be applied.
     const preControl = await capturePreControlDocumentContextBundle({
       supervisor,
-      readGatewayAudit: () => readCapturedRealCaseAudit(supervisor, auditCapture),
+      readGatewayAuditOutcome: () => readCapturedRealCaseAuditOutcome(supervisor, auditCapture),
       timeoutMs: options.documentContextTimeoutMs,
     });
     const preControlSnapshot = preControl.snapshot;

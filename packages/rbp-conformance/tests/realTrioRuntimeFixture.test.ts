@@ -4,6 +4,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 import {
+  PublicGatewayControlError,
   redactBridgeTranscript,
   RealTrioDocumentContextCursorJournal,
 } from "../src/realTrioSupervisor.js";
@@ -579,10 +580,11 @@ describe("WP-12 real-trio fixture document route gate", () => {
         const value = snapshot(rows(now >= 300));
         return reads === 2 ? { ...value, rows: value.rows.map((row, index) => index === 0 ? { ...row, at: "churn" } : row) } : value;
       } } as never,
-      readGatewayAudit: async () => {
+      readGatewayAuditOutcome: async () => {
         auditReads += 1;
-        if (auditReads === 1) throw new Error("temporarily unavailable");
-        return audit;
+        if (auditReads === 1) return { outcome: "failure", error: "timeout", statusCode: null,
+          okKeyPresent: false, actionKeyPresent: false } as const;
+        return { outcome: "success", audit } as const;
       }, timeoutMs: 500, pollIntervalMs: 100,
       now: () => now, sleep,
     });
@@ -592,7 +594,7 @@ describe("WP-12 real-trio fixture document route gate", () => {
     now = 0;
     const nearBound = await capturePreControlDocumentContextBundle({
       supervisor: { readDocumentContextSnapshot: () => snapshot(rows(now >= 400)) } as never,
-      readGatewayAudit: async () => audit, timeoutMs: 450, pollIntervalMs: 100,
+      readGatewayAuditOutcome: async () => ({ outcome: "success", audit } as const), timeoutMs: 450, pollIntervalMs: 100,
       now: () => now, sleep,
     });
     expect(nearBound.seed.lastAckSequence).toBe(1);
@@ -600,7 +602,7 @@ describe("WP-12 real-trio fixture document route gate", () => {
     now = 0;
     await expect(capturePreControlDocumentContextBundle({
       supervisor: { readDocumentContextSnapshot: () => snapshot(rows(false)) } as never,
-      readGatewayAudit: async () => audit, timeoutMs: 250, pollIntervalMs: 100,
+      readGatewayAuditOutcome: async () => ({ outcome: "success", audit } as const), timeoutMs: 250, pollIntervalMs: 100,
       now: () => now, sleep,
     })).rejects.toMatchObject({ reason: "ack_timeout" } satisfies Partial<RealTrioPreControlCaptureError>);
     expect(now).toBe(250);
@@ -630,15 +632,78 @@ describe("WP-12 real-trio fixture document route gate", () => {
     const sleep = async (): Promise<void> => { sleeps += 1; };
     await expect(capturePreControlDocumentContextBundle({
       supervisor: { readDocumentContextSnapshot: () => snapshot(1) } as never,
-      readGatewayAudit: async () => audit, timeoutMs: 1_000, now: () => 0, sleep,
+      readGatewayAuditOutcome: async () => ({ outcome: "success", audit } as const), timeoutMs: 1_000, now: () => 0, sleep,
     })).rejects.toMatchObject({ reason: "invalid_history" } satisfies Partial<RealTrioPreControlCaptureError>);
     expect(sleeps).toBe(0);
     const snapshots = [snapshot(1, wrongAckRows.slice(0, 4)), snapshot(2, wrongAckRows.slice(0, 4))];
     await expect(capturePreControlDocumentContextBundle({
       supervisor: { readDocumentContextSnapshot: () => snapshots.shift()! } as never,
-      readGatewayAudit: async () => audit, timeoutMs: 1_000, now: () => 0, sleep,
+      readGatewayAuditOutcome: async () => ({ outcome: "success", audit } as const), timeoutMs: 1_000, now: () => 0, sleep,
     })).rejects.toMatchObject({ reason: "generation_changed" } satisfies Partial<RealTrioPreControlCaptureError>);
     expect(sleeps).toBe(0);
+  });
+
+  it("retries only typed transient audit outcomes and preserves permanent typed reasons", async () => {
+    const hash = `sha256:${"a".repeat(64)}`;
+    const epoch = "123e4567-e89b-42d3-a456-426614174000";
+    const route = { processEpoch: epoch, rsidHash: hash, observedSequence: 1, contextDigest: "d".repeat(64),
+      routeDigest: `sha256:${"e".repeat(64)}`, recordDigest: `sha256:${"f".repeat(64)}`,
+      sessionBindingDigest: `sha256:${"1".repeat(64)}`, connectionDigest: `sha256:${"2".repeat(64)}`,
+      sessionRecordVersion: 1 };
+    const audit = { documentContextEpochSchema: "revagent.wp12-document-context-epoch/v1",
+      documentContextProcessEpoch: epoch, documentContextObservationHighWaterOrdinal: 1,
+      documentContextCurrentRoute: route, documentContextUpdates: [{
+        contractVersion: "revagent.wp12-document-context-audit/v1", event: "gateway.doc_context_update_observation",
+        stage: "accepted", ...route, observationOrdinal: 1,
+      }] };
+    const rows = [
+      cursorRow("1", "probe", "started", null, hash), cursorRow("2", "snapshot", "ready", null, hash),
+      cursorRow("3", "queue", "durably_queued", 1, hash), cursorRow("4", "send", "sent", 1, hash),
+      cursorRow("5", "ack", "durably_acknowledged", 1, hash),
+    ];
+    const snapshot = { generation: 1, lowWaterCursor: "1", highWaterCursor: "5", rows };
+    const failure = (error: "timeout" | "tls_pin" | "http_status_4xx" | "http_status_5xx" |
+      "invalid_shape" | "process_exited" | "ipc_error" | "unknown", statusCode: number | null = null,
+      okKeyPresent = false, actionKeyPresent = false) =>
+      ({ outcome: "failure", error, statusCode, okKeyPresent, actionKeyPresent } as const);
+    for (const value of [
+      failure("tls_pin"), failure("invalid_shape"), failure("http_status_4xx", 401, true, true),
+      failure("process_exited"), failure("ipc_error"), failure("unknown"),
+      failure("http_status_5xx", 500, true, true), failure("http_status_5xx", 503, false, true),
+    ]) {
+      let sleeps = 0;
+      await expect(capturePreControlDocumentContextBundle({
+        supervisor: { readDocumentContextSnapshot: () => snapshot } as never,
+        readGatewayAuditOutcome: async () => value, timeoutMs: 1_000, now: () => 0,
+        sleep: async () => { sleeps += 1; },
+      })).rejects.toMatchObject({ reason: `audit_${value.error}` });
+      expect(sleeps).toBe(0);
+    }
+    // A direct public-control error is classified by the same typed path.
+    await expect(capturePreControlDocumentContextBundle({
+      supervisor: { readDocumentContextSnapshot: () => snapshot } as never,
+      readGatewayAuditOutcome: async () => { throw new PublicGatewayControlError("tls_pin"); },
+      timeoutMs: 1_000, now: () => 0, sleep: async () => undefined,
+    })).rejects.toMatchObject({ reason: "audit_tls_pin" });
+
+    let now = 0;
+    let calls = 0;
+    const sleep = async (milliseconds: number): Promise<void> => { now += milliseconds; };
+    const eligible503 = failure("http_status_5xx", 503, true, true);
+    const recovered = await capturePreControlDocumentContextBundle({
+      supervisor: { readDocumentContextSnapshot: () => snapshot } as never,
+      readGatewayAuditOutcome: async () => calls++ < 3 ? eligible503 : ({ outcome: "success", audit } as const),
+      timeoutMs: 500, pollIntervalMs: 100, now: () => now, sleep,
+    });
+    expect(recovered.seed.lastAckSequence).toBe(1);
+    expect(now).toBe(300);
+    now = 0;
+    await expect(capturePreControlDocumentContextBundle({
+      supervisor: { readDocumentContextSnapshot: () => snapshot } as never,
+      readGatewayAuditOutcome: async () => eligible503,
+      timeoutMs: 250, pollIntervalMs: 100, now: () => now, sleep,
+    })).rejects.toMatchObject({ reason: "ack_timeout" });
+    expect(now).toBe(250);
   });
 
   it("uses a value-free seed for snapshot-first post-control selection and never carries the old pair", () => {
