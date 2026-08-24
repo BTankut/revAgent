@@ -605,6 +605,10 @@ interface LiveConnection {
   readonly grantedCapabilities: readonly string[];
   readonly lifecycle: ConnectionLifecycleState;
   send(serialized: string): Promise<void>;
+  sendDispatchStarted?(serialized: string, revalidate: () => void): {
+    readonly started: Promise<void>;
+    readonly completion: Promise<void>;
+  };
   close(code: number, reason: string): Promise<void>;
 }
 
@@ -650,6 +654,11 @@ interface TrustedRecoveryAdmission {
 
 export interface BridgeConnectionChannel {
   send(serialized: string): Promise<void>;
+  /** Dispatch-only two-promise handoff; lifecycle traffic remains on send(). */
+  sendDispatchStarted?(serialized: string, revalidate: () => void): {
+    readonly started: Promise<void>;
+    readonly completion: Promise<void>;
+  };
   close(code: number, reason: string): Promise<void>;
 }
 
@@ -5722,6 +5731,11 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       async send(serialized): Promise<void> {
         await input.channel.send(serialized);
       },
+      ...(input.channel.sendDispatchStarted === undefined ? {} : {
+        sendDispatchStarted(serialized: string, revalidate: () => void) {
+          return input.channel.sendDispatchStarted!(serialized, revalidate);
+        },
+      }),
       async close(code, reason): Promise<void> {
         await input.channel.close(code, reason);
       },
@@ -6930,12 +6944,31 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       this.#assertAuthorityTicket(authorityTicket, connection, {
         session: started.record,
       });
-      const sendOperation = connection.send(serialized);
-      sendBegan = true;
-      // Only the completed synchronous adapter handoff is a truthful
-      // sendStarted point. Completion stays outside the store transaction.
-      beforeSend?.();
-      await sendOperation;
+      const startedDispatch = connection.sendDispatchStarted?.(serialized, () => {
+        // This callback is an opaque closure over the in-memory proof; it is
+        // not carried in a frame, lease, or queue serialization.
+        this.#assertAuthorityTicket(authorityTicket, connection, { session: started.record });
+        const active = this.#active.get(reservation.rsid);
+        if (active === undefined || active.record.connectionId !== connection.connectionId ||
+            active.record.sessionBindingId !== started.record.sessionBindingId ||
+            !active.record.sessionLifecycle.dispatchAllowed) {
+          throw new GatewayRbpFault("unavailable", "dispatch was revoked before transport invocation", 503, 1011);
+        }
+      });
+      if (startedDispatch === undefined) {
+        const sendOperation = connection.send(serialized);
+        sendBegan = true;
+        beforeSend?.();
+        await sendOperation;
+      } else {
+        // `started` is resolved only by the concrete WSS/SSE invocation, not
+        // by enqueueing. Thus a cancelled or starving queue cannot acquire a
+        // waiter or a mutation-indeterminate result.
+        await startedDispatch.started;
+        sendBegan = true;
+        beforeSend?.();
+        await startedDispatch.completion;
+      }
       await this.#assertDispatchReservationCurrent(connection, started, authorityTicket);
     } catch (error) {
       sendFailure = error;
