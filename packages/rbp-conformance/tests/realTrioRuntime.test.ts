@@ -14,6 +14,26 @@ import {
   startRealTrioRuntimeFixture,
 } from "./realTrioRuntimeFixture.js";
 
+const AUDIT_RSID_HASH = /^(?:sha256:)?[0-9a-f]{64}$/u;
+const AUDIT_ROUTE_DIGEST = /^sha256:[0-9a-f]{64}$/u;
+
+function assertAcceptedDocumentContextUpdate(audit: unknown): void {
+  expect(audit).toMatchObject({ ok: true, action: "read_real_case_audit" });
+  expect(audit).toHaveProperty("documentContextUpdates");
+  const updates = (audit as { readonly documentContextUpdates?: unknown }).documentContextUpdates;
+  expect(updates).toHaveLength(1);
+  const update = (updates as readonly unknown[])[0];
+  expect(update).toMatchObject({
+    contractVersion: "revagent.wp12-document-context-audit/v1",
+    event: "gateway.doc_context_update_observation",
+    stage: "accepted",
+    rsidHash: expect.stringMatching(AUDIT_RSID_HASH),
+    routeDigest: expect.stringMatching(AUDIT_ROUTE_DIGEST),
+  });
+  expect(update).not.toHaveProperty("rsid");
+  expect(update).not.toHaveProperty("rsidDigest");
+}
+
 describe.sequential("WP-12 direct real trio runtime fixture", () => {
   it.each(["wss", "streamable_http_sse"] as const)(
     "runs C38's public core UI probe against the real %s Worker binding",
@@ -37,16 +57,7 @@ describe.sequential("WP-12 direct real trio runtime fixture", () => {
         expect(result.state).toBe("completed");
         expect(result.commit).toBeNull();
         const audit = await runtime.supervisor.readRealCaseAudit();
-        expect(audit).toMatchObject({ ok: true, action: "read_real_case_audit" });
-        expect(audit.documentContextUpdates).toEqual([
-          expect.objectContaining({
-            contractVersion: "revagent.wp12-document-context-audit/v1",
-            event: "gateway.doc_context_update_observation",
-            stage: "accepted",
-            rsidDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u),
-            routeDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u),
-          }),
-        ]);
+        assertAcceptedDocumentContextUpdate(audit);
       } catch (error) {
         rethrowRealTrioC38Failure({ evidenceDirectory, binding, error });
       } finally {

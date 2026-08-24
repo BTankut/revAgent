@@ -941,6 +941,16 @@ describe("WP-12 real-trio fixture document route gate", () => {
       event: "gateway.doc_context_update_observation", stage: "accepted", processEpoch, rsidHash, observedSequence, contextDigest, routeDigest, recordDigest, sessionBindingDigest, connectionDigest, sessionRecordVersion, observationOrdinal, observedAtUtc,
     }] });
     expect(hasGatewayAcceptedDocumentContextRoute(audit(expected.rsidHash, expected.sequence), expected, baseline)).toBe(true);
+    // The accepted audit projection is deliberately named rsidHash.  A
+    // session-list rsidDigest is a different, legacy summary field and must
+    // never be accepted as a substitute by the current-route join.
+    const acceptedHash = audit(expected.rsidHash, expected.sequence);
+    expect(hasGatewayAcceptedDocumentContextRoute(acceptedHash, expected, baseline)).toBe(true);
+    const [{ rsidHash: _removedRsidHash, ...legacyOnly }] = acceptedHash.documentContextUpdates;
+    expect(hasGatewayAcceptedDocumentContextRoute({
+      ...acceptedHash,
+      documentContextUpdates: [{ ...legacyOnly, rsidDigest: expected.rsidHash }],
+    }, expected, baseline)).toBe(false);
     expect(hasGatewayAcceptedDocumentContextRoute(audit(expected.rsidHash, 6), expected, baseline)).toBe(false);
     expect(hasGatewayAcceptedDocumentContextRoute(audit(`sha256:${"b".repeat(64)}`, 7), expected, baseline)).toBe(false);
     expect(hasGatewayAcceptedDocumentContextRoute(audit(`sha256:${"A".repeat(64)}`, 7), expected, baseline)).toBe(false);
