@@ -336,6 +336,22 @@ export type GatewayOmittedPayloadRecoveryAdmissionInput = Readonly<{
   readonly newCarrierRecoveryInvocationId: string;
 }>;
 
+/**
+ * Internal composition proof for a C39 protected-resource reauthorization.
+ * It is intentionally a current live snapshot, never a generic store read or
+ * a north/API result.
+ */
+export type GatewayCurrentRecoveryAuthoritySnapshot = Readonly<{
+  readonly tenantId: string;
+  readonly userId: string;
+  readonly principalKey: string;
+  readonly effectiveMcpSessionId: string;
+  readonly rsid: string;
+  readonly sessionBindingId: string;
+  readonly sessionBindingVersion: number;
+  readonly expiresAtMs: number;
+}>;
+
 type GatewayDocumentContextObserver = (
   observation: GatewayDocumentContextObservation,
 ) => void;
@@ -6776,6 +6792,94 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       owner,
     });
     return result === null ? null : (result as unknown as GatewayJsonValue);
+  }
+
+  /**
+   * Internal C39 reauthorization seam for the protected resource authority.
+   * The supplied coordinates come from a Gateway-owned recovery receipt, but
+   * every live owner/session/binding value is read from the active durable
+   * route before it is returned. It cannot create, resume, replay, or expose
+   * a generic private-store query.
+   */
+  public async resolveCurrentRecoveryAuthoritySnapshot(
+    input: RecoveryOwner,
+  ): Promise<GatewayCurrentRecoveryAuthoritySnapshot | null> {
+    if (
+      !isBoundedNonEmptyString(input.tenantId) ||
+      !isBoundedNonEmptyString(input.userId) ||
+      !isBoundedNonEmptyString(input.principalKey) ||
+      !isBoundedNonEmptyString(input.effectiveMcpSessionId) ||
+      !isBoundedNonEmptyString(input.rsid) ||
+      !isGatewayUuidV7(input.sessionBindingId) ||
+      !isSafePositiveInteger(input.sessionBindingVersion) ||
+      !isGatewayUuidV7(input.recoveryInvocationId) ||
+      !isGatewayUuidV7(input.originInvocationId) ||
+      !DIGEST_PATTERN.test(input.originResultDigest)
+    ) return null;
+    try {
+      this.#assertOpen();
+      return await this.#withSessionAuthorization(input.rsid, async () => {
+        const active = this.#active.get(input.rsid);
+        if (
+          active === undefined || active.tenantId !== input.tenantId ||
+          active.record.userId !== input.userId ||
+          active.record.sessionBindingId !== input.sessionBindingId ||
+          active.record.sessionVersion !== input.sessionBindingVersion ||
+          active.record.resumeExpiresAtMs <= this.#clock()
+        ) return null;
+        const connection = this.#connections.get(active.record.connectionId);
+        if (
+          !this.#connectionIsCurrentlyAuthorized(connection) ||
+          !active.record.sessionLifecycle.dispatchAllowed ||
+          (active.record.connectionLifecycle.phase !== "steady" &&
+            active.record.connectionLifecycle.phase !== "degraded") ||
+          active.record.liveDocumentRoute === null ||
+          active.record.liveDocumentRoute === undefined ||
+          active.record.liveDocumentRoute.observedConnectionId !==
+            active.record.connectionId
+        ) return null;
+        const evidence = active.record.evidence.some((entry) =>
+          entry.terminalInvocationId === input.originInvocationId &&
+          entry.terminalSessionBindingId === active.record.sessionBindingId &&
+          entry.terminalSessionVersion === active.record.sessionVersion &&
+          entry.effectiveMcpSessionId === input.effectiveMcpSessionId &&
+          entry.payloadOmittedRecoveryEligible === true &&
+          entry.terminalTruth?.resultDigest === input.originResultDigest,
+        );
+        if (!evidence) return null;
+        const recovered = await this.#sessionRepository.transact(
+          { tenantId: active.tenantId },
+          async (tx) => await readOmittedPayloadRecoveryByInvocation(tx, {
+            tenantId: active.tenantId,
+            userId: active.record.userId,
+            effectiveMcpSessionId: input.effectiveMcpSessionId,
+            rsid: active.record.rsid,
+            sessionBindingId: active.record.sessionBindingId,
+            sessionVersion: active.record.sessionVersion,
+            active: true,
+            ownerSessionExpiresAtMs: active.record.resumeExpiresAtMs,
+            nowMs: this.#clock(),
+          }, input.recoveryInvocationId),
+        );
+        if (
+          !recovered.ok || recovered.value === null ||
+          recovered.value.originInvocationId !== input.originInvocationId ||
+          recovered.value.originResultDigest !== input.originResultDigest
+        ) return null;
+        return Object.freeze({
+          tenantId: active.tenantId,
+          userId: active.record.userId,
+          principalKey: input.principalKey,
+          effectiveMcpSessionId: input.effectiveMcpSessionId,
+          rsid: active.record.rsid,
+          sessionBindingId: active.record.sessionBindingId,
+          sessionBindingVersion: active.record.sessionVersion,
+          expiresAtMs: active.record.resumeExpiresAtMs,
+        });
+      });
+    } catch {
+      return null;
+    }
   }
 
   /**

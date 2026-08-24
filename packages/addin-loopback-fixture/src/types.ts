@@ -113,6 +113,11 @@ export interface FixtureEvidenceSnapshot {
     readonly method: string;
     readonly count: number;
   }[];
+  /** Bounded fixture-only origin-response provenance for D0 C39. */
+  readonly c39OriginResponses: readonly {
+    readonly requestId: string;
+    readonly responseDigest: string;
+  }[];
   readonly modelStateDigest: string;
   readonly modelStateEntryCount: number;
   readonly pendingStalls: readonly {

@@ -89,8 +89,16 @@ export const PRODUCTION_CONFORMANCE_TOOL_RECORDS = Object.freeze([
 
 export function productionConformanceCatalog(
   coreRecord: GatewayToolRecord,
+  payloadRecoveryRecord: GatewayToolRecord,
 ): readonly CatalogEntry[] {
-  const records = [coreRecord, ...PRODUCTION_CONFORMANCE_TOOL_RECORDS];
+  if (coreRecord.name !== "core.ui.state" ||
+      payloadRecoveryRecord.name !== "core.dispatch.payload_recovery" ||
+      payloadRecoveryRecord.executorMethod !== "dispatch_payload_recovery" ||
+      payloadRecoveryRecord.policyClass !== "auto" ||
+      payloadRecoveryRecord.mutationScopePolicy !== "none") {
+    throw new Error("production conformance catalog requires exact normal C39 recovery record");
+  }
+  const records = [coreRecord, payloadRecoveryRecord, ...PRODUCTION_CONFORMANCE_TOOL_RECORDS];
   return Object.freeze(records.map((record) => Object.freeze({
     name: record.name,
     summary: record.summary,

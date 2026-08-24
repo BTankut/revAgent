@@ -592,6 +592,7 @@ export class AddinLoopbackFixture {
   readonly #stallLatches = new Map<string, StallLatch[]>();
   readonly #dispatchCounts = new Map<string, number>();
   readonly #methodCounts = new Map<string, number>();
+  readonly #c39OriginResponseDigests = new Map<string, string>();
   readonly #observations: FixtureObservation[] = [];
   readonly #modelState = new Map<string, JsonValue>();
   readonly #sockets = new Set<Socket>();
@@ -679,6 +680,9 @@ export class AddinLoopbackFixture {
       methodExecutionCounts: [...this.#methodCounts]
         .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
         .map(([method, count]) => ({ method, count })),
+      c39OriginResponses: [...this.#c39OriginResponseDigests]
+        .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+        .map(([requestId, responseDigest]) => ({ requestId, responseDigest })),
       modelStateDigest: sha256(Buffer.from(JSON.stringify(modelEntries), "utf8")),
       modelStateEntryCount: modelEntries.length,
       pendingStalls: [...this.#stallLatches]
@@ -1163,6 +1167,7 @@ export class AddinLoopbackFixture {
       }
 
       const { response, executionOrdinal } = await responsePromise;
+      this.#recordC39OriginResponse(request.id, request.method, response);
       const responseBytes = jsonPayloadBytes(response).byteLength;
       const outcome = this.#responseOutcome(response);
       this.#finishTask(task, outcome, responseBytes);
@@ -1674,6 +1679,13 @@ export class AddinLoopbackFixture {
           ? outcome.error.message
           : null;
     this.#observe(requestId, method, phase, ordinal, null, detail);
+  }
+
+  /** Test-only provenance; it does not alter dispatch or manufacture replay data. */
+  #recordC39OriginResponse(requestId: string, method: string, response: JsonObject): void {
+    if (method !== "fixture_multi_file_output" || this.#c39OriginResponseDigests.has(requestId)) return;
+    if (this.#c39OriginResponseDigests.size >= 16 || !isObject(response.result)) return;
+    this.#c39OriginResponseDigests.set(requestId, sha256(jsonPayloadBytes(response)));
   }
 
   #responseOutcome(response: JsonObject): HandlerOutcome {

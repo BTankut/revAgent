@@ -38,7 +38,7 @@ export const REAL_TRIO_NORTH_CASE_TOOL_MAP = Object.freeze({
   "O1-C28": Object.freeze({ toolName: "conformance.fixture.c28_mutation", confirmation: true }),
   "O1-C29": Object.freeze({ toolName: "conformance.fixture.c29_atomic_batch", confirmation: true }),
   "O1-C38": Object.freeze({ toolName: "core.ui.state", confirmation: false }),
-  "O1-C39": Object.freeze({ toolName: "conformance.fixture.c39_multifile", confirmation: false }),
+  "O1-C39": Object.freeze({ toolName: "core.dispatch.payload_recovery", confirmation: false }),
 } as const);
 
 export function realTrioNorthToolForCase(
@@ -54,6 +54,7 @@ export type RealTrioMappedOperation =
   | "fixture_fault"
   | "north_tool_call"
   | "north_confirm_commit"
+  | "public_resource_read"
   | "public_audit_poll"
   | "supervisor_restart"
   | "raw_binding";
@@ -110,10 +111,11 @@ export const REAL_TRIO_CASE_SEMANTIC_MAPPINGS = Object.freeze({
     schemaVersion: REAL_TRIO_CASE_MAPPING_SCHEMA,
     caseId: "O1-C39",
     operations: Object.freeze([
-      "audited_readiness", "north_tool_call", "public_audit_poll",
+      "audited_readiness", "fixture_fault", "north_tool_call",
+      "public_resource_read", "public_audit_poll", "supervisor_restart",
     ] as const),
     rejectedFrozenActions: Object.freeze([
-      "dispatch_payload_recovery", "resource_store_mutate", "guessed_result_recovery",
+      "resource_store_mutate", "guessed_result_recovery",
     ]),
   }),
 } satisfies Record<keyof typeof REAL_TRIO_NORTH_CASE_TOOL_MAP, RealTrioCaseSemanticMapping>);

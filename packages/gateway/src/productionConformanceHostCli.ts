@@ -1,10 +1,13 @@
-import { createHash, randomUUID, timingSafeEqual, X509Certificate } from "node:crypto";
+import { createHash, randomBytes, randomUUID, timingSafeEqual, X509Certificate } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
 import { GatewayBridgeSessionAuthority } from "./bridgeSession.js";
 import { GatewayRecoveryAuthority } from "./recoveryAuthority.js";
-import { GatewayResourceAuthority } from "./resourceAuthority.js";
+import {
+  GatewayResourceAuthority,
+  ResourceAuthorityProtectedKeyInventoryPort,
+} from "./resourceAuthority.js";
 import { GatewayDispatcher } from "./dispatch.js";
 import { EntitledCatalogView } from "./entitledRegistry.js";
 import { GatewayToolRegistry, M2_BOOTSTRAP_TOOL_RECORDS } from "./registry.js";
@@ -18,6 +21,8 @@ import {
   createConformanceSupportingPorts,
 } from "./conformanceEphemeralAdapters.js";
 import { startProductionGatewayHost } from "./productionConformanceHost.js";
+import { ConformanceProtectedObjectKeyProvider } from "./protectedObjectKeyProvider.js";
+import { EncryptedProtectedObjectStore } from "./protectedObjectStore.js";
 import { createConformanceRbpIngressHost } from "./rbpIngress.js";
 import type { AuthorizedNorthMcpRequest, NorthMcpEndpointOptions } from "./northMcpEndpoint.js";
 import type { EffectiveMcpRequestScopeV1 } from "./invocationContext.js";
@@ -505,9 +510,39 @@ export async function runProductionConformanceHostCli(args: readonly string[]): 
   // deliberately composed before ingress so carrier capability grants cannot
   // pass a readiness check against an unrelated object store.
   const objectStore = new DigestFileConformanceObjectStore(options.root);
+  // This inventory reads the same durable recovery rows as production C2b;
+  // only its wrapper/provider are conformance-only and have no config/env
+  // selection path. The random process key is never emitted or persisted.
+  const durableKeyInventory = new ResourceAuthorityProtectedKeyInventoryPort(protocolStore);
+  const conformanceKeyInventory = Object.freeze({
+    kind: "conformance" as const,
+    async listLiveKids(): Promise<readonly string[] | null> {
+      return await durableKeyInventory.listLiveKids();
+    },
+  });
+  const protectedKeys = new ConformanceProtectedObjectKeyProvider(
+    "c39-conformance-v1",
+    new Map([["c39-conformance-v1", randomBytes(32)]]),
+    conformanceKeyInventory,
+  );
+  const protectedObjectStore = new EncryptedProtectedObjectStore(
+    objectStore,
+    protectedKeys,
+  );
+  let authority: GatewayBridgeSessionAuthority | null = null;
   const resourceAuthority = new GatewayResourceAuthority({
     protocolStore,
     objectStore,
+    protectedObjectStore,
+    async reauthorizeRecoveryScope(owner) {
+      const current = await authority?.resolveCurrentRecoveryAuthoritySnapshot(owner);
+      return current === null || current === undefined
+        ? null
+        : Object.freeze({
+          sessionBindingId: current.sessionBindingId,
+          sessionBindingVersion: current.sessionBindingVersion,
+        });
+    },
   });
   // The test control response retains no document route or identity values.
   // A bounded stage/sequence trace distinguishes Gateway acceptance from
@@ -521,7 +556,7 @@ export async function runProductionConformanceHostCli(args: readonly string[]): 
       documentContextObservationOrdinal,
       documentContextObservations,
     );
-  const authority = new GatewayBridgeSessionAuthority(protocolStore, identity, {
+  authority = new GatewayBridgeSessionAuthority(protocolStore, identity, {
     resourceAuthority,
     onDocumentContextObservation(observation) {
       if (documentContextObservationOrdinal >= Number.MAX_SAFE_INTEGER) return;
@@ -543,20 +578,21 @@ export async function runProductionConformanceHostCli(args: readonly string[]): 
   });
   const recoveryAuthority = createProductionConformanceRecoveryAuthority({
     protocolStore,
-    bridgeEvidence: authority,
+    bridgeEvidence: authority!,
   });
-  const ingress = createConformanceRbpIngressHost({ authority });
+  const ingress = createConformanceRbpIngressHost({ authority: authority! });
   const supporting = createConformanceSupportingPorts();
   const registry = new GatewayToolRegistry([
     ...M2_BOOTSTRAP_TOOL_RECORDS,
     ...PRODUCTION_CONFORMANCE_TOOL_RECORDS,
   ]);
   const coreUiState = registry.require("core.ui.state");
+  const payloadRecoveryTool = registry.require("core.dispatch.payload_recovery");
   const entitledCatalog = new EntitledCatalogView(
-    productionConformanceCatalog(coreUiState),
+    productionConformanceCatalog(coreUiState, payloadRecoveryTool),
     () => true,
   );
-  const dispatcher = new GatewayDispatcher(registry, [authority.createExecutor()], {
+  const dispatcher = new GatewayDispatcher(registry, [authority!.createExecutor()], {
     eventSink: supporting.events,
     eventSource: {
       component: "gateway-production-conformance",
@@ -566,14 +602,28 @@ export async function runProductionConformanceHostCli(args: readonly string[]): 
     recoveryAuthority,
   });
   const auditAccesses: Array<{ readonly atMs: number; readonly tenantId: string; readonly action: string }> = [];
+  const protectedReady = (await protectedObjectStore.checkReadiness()).ready;
+  if (!protectedReady || authority === null) {
+    throw new Error("production conformance C39 protected recovery did not become ready");
+  }
+  const payloadRecoveryAuthority: NonNullable<NorthMcpEndpointOptions["payloadRecovery"]> = Object.freeze({
+    ready: () => protectedReady,
+    async admit(input) {
+      return await authority!.admitOmittedPayloadRecoveryFromNorth(input);
+    },
+    async replayCompleted(input) {
+      return await authority!.replayOmittedPayloadRecoveryReferenceFromNorth(input);
+    },
+  });
   const northMcp: NorthMcpEndpointOptions = Object.freeze({
     registry,
     dispatcher,
     resourceAuthority,
+    payloadRecovery: payloadRecoveryAuthority,
     resourceMaxInlineResultBytes: 32 * 1024,
     catalogViewFor: () => entitledCatalog,
     invocationRouteFor: (authenticated: AuthorizedNorthMcpRequest, _mcpSessionId: string, effectiveMcpRequestScope: EffectiveMcpRequestScopeV1) =>
-      authority.resolveLiveInvocationRoute({
+      authority!.resolveLiveInvocationRoute({
         tenantId: authenticated.authContext.actor.tenantId,
         userId: authenticated.authContext.actor.userId,
         deviceId: credentials[0]!.deviceId,
@@ -620,7 +670,7 @@ export async function runProductionConformanceHostCli(args: readonly string[]): 
   try {
     const handle = await startProductionGatewayHost({
       hostProfile: "production_conformance",
-      authority,
+      authority: authority!,
       resourceAuthority,
       northMcp,
       server: {

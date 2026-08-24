@@ -1410,4 +1410,64 @@ describe("Gateway omitted-payload recovery admission", () => {
       await created.close();
     }
   });
+
+  it("returns an exact live C39 recovery snapshot only for its durable owner", async () => {
+    const fixture = createRestartableTestStore();
+    const created = new GatewayBridgeSessionAuthority(fixture.store, identity());
+    await created.open();
+    try {
+      const opened = await openConnection(created);
+      await created.receive(opened.connectionId, registration("snapshot-omitted"));
+      const session = registeredFrame(opened.channel);
+      await created.receive(opened.connectionId, contextUpdate({
+        rsid: session.payload.rsid, seq: 1, activeDocument: "document-c39",
+        documents: [document("document-c39", true)],
+      }));
+      const invocationId = id();
+      const originResultDigest = `sha256:${"f".repeat(64)}` as const;
+      const outcome = created.createExecutor().execute(bridgeRequest(session.payload.rsid, invocationId));
+      const invoke = await emittedInvoke(opened.channel);
+      await created.receive(opened.connectionId, {
+        v: 1, type: "result", id: id(), rsid: session.payload.rsid, seq: 2, ack: invoke.seq,
+        ts: new Date().toISOString(), payload: {
+          kind: "invocation", invocation_id: invocationId, status: "completed", replayed: true,
+          payload_omitted: true, result_digest: originResultDigest,
+          metrics: { execute_ms: 0, request_bytes: 0, response_bytes: 0, framing: "length-prefixed" },
+        },
+      });
+      await outcome;
+      const root = fixture.snapshot().records.find((row) => row.namespace === "gateway.rbp-session/v2" && row.key === session.payload.rsid);
+      const binding = (root?.value as { binding?: { sessionBindingId?: string; sessionVersion?: number } }).binding;
+      if (binding?.sessionBindingId === undefined || binding.sessionVersion === undefined) throw new Error("missing recovery binding");
+      const claim = await created.admitOmittedPayloadRecovery({
+        tenantId: TENANT_ID, userId: USER_ID, effectiveMcpSessionId: MCP_SESSION_ID,
+        rsid: session.payload.rsid, sessionBindingId: binding.sessionBindingId,
+        sessionVersion: binding.sessionVersion, originInvocationId: invocationId,
+        originResultDigest, newCarrierRecoveryInvocationId: id(),
+      });
+      if (claim.kind !== "admitted") throw new Error("recovery claim was not admitted");
+      const snapshot = await created.resolveCurrentRecoveryAuthoritySnapshot({
+        tenantId: TENANT_ID, userId: USER_ID, principalKey: `${TENANT_ID}:${USER_ID}`,
+        effectiveMcpSessionId: MCP_SESSION_ID, rsid: session.payload.rsid,
+        sessionBindingId: binding.sessionBindingId, sessionBindingVersion: binding.sessionVersion,
+        recoveryInvocationId: claim.record.carrierRecoveryInvocationId,
+        originInvocationId: invocationId, originResultDigest,
+      });
+      expect(snapshot).toEqual(expect.objectContaining({
+        tenantId: TENANT_ID, userId: USER_ID, effectiveMcpSessionId: MCP_SESSION_ID,
+        rsid: session.payload.rsid, sessionBindingId: binding.sessionBindingId,
+        sessionBindingVersion: binding.sessionVersion,
+      }));
+      await created.detach(opened.connectionId);
+      await expect(created.resolveCurrentRecoveryAuthoritySnapshot({
+        tenantId: TENANT_ID, userId: USER_ID, principalKey: `${TENANT_ID}:${USER_ID}`,
+        effectiveMcpSessionId: MCP_SESSION_ID, rsid: session.payload.rsid,
+        sessionBindingId: binding.sessionBindingId, sessionBindingVersion: binding.sessionVersion,
+        recoveryInvocationId: claim.record.carrierRecoveryInvocationId,
+        originInvocationId: invocationId, originResultDigest,
+      })).resolves.toBeNull();
+    } finally {
+      await created.close().catch(() => undefined);
+    }
+  });
 });

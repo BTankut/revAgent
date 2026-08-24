@@ -16,13 +16,26 @@ describe("WP-12 production-conformance tools", () => {
       expect(defaultRegistry.get(tool.name)).toBeUndefined();
       expect(conformanceRegistry.require(tool.name).executorMethod).toBe(tool.executorMethod);
     }
-    expect(productionConformanceCatalog(conformanceRegistry.require("core.ui.state"))
+    expect(productionConformanceCatalog(
+      conformanceRegistry.require("core.ui.state"),
+      conformanceRegistry.require("core.dispatch.payload_recovery"),
+    )
       .map((entry) => entry.name)).toEqual([
       "conformance.fixture.c28_mutation",
       "conformance.fixture.c29_atomic_batch",
       "conformance.fixture.c39_multifile",
+      "core.dispatch.payload_recovery",
       "core.ui.state",
     ]);
+  });
+
+  it("admits C39 only as the normal fixed-argument recovery tool", () => {
+    const registry = new GatewayToolRegistry(M2_BOOTSTRAP_TOOL_RECORDS);
+    const recovery = registry.require("core.dispatch.payload_recovery");
+    expect(recovery).toMatchObject({ policyClass: "auto", mutationScopePolicy: "none", executorMethod: "dispatch_payload_recovery" });
+    expect(() => productionConformanceCatalog(registry.require("core.ui.state"), {
+      ...recovery, name: "conformance.fixture.c39_multifile",
+    })).toThrow(/exact normal C39 recovery record/u);
   });
 
   it("rejects arbitrary C28 code and non-fixture C29/C39 shapes at the executable boundary", () => {

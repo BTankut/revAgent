@@ -20,7 +20,7 @@ describe("WP-12 real-trio C28/C38/C39 case-driver admission", () => {
       "O1-C28": { toolName: "conformance.fixture.c28_mutation", confirmation: true },
       "O1-C29": { toolName: "conformance.fixture.c29_atomic_batch", confirmation: true },
       "O1-C38": { toolName: "core.ui.state", confirmation: false },
-      "O1-C39": { toolName: "conformance.fixture.c39_multifile", confirmation: false },
+      "O1-C39": { toolName: "core.dispatch.payload_recovery", confirmation: false },
     });
     for (const caseId of ["O1-C28", "O1-C29", "O1-C38", "O1-C39"] as const) {
       expect(realTrioNorthToolForCase(caseId)).toBe(REAL_TRIO_NORTH_CASE_TOOL_MAP[caseId]);
@@ -39,13 +39,15 @@ describe("WP-12 real-trio C28/C38/C39 case-driver admission", () => {
         operations: ["audited_readiness", "fixture_fault", "raw_binding", "public_audit_poll"],
       }),
       "O1-C39": expect.objectContaining({
-        operations: ["audited_readiness", "north_tool_call", "public_audit_poll"],
+        operations: ["audited_readiness", "fixture_fault", "north_tool_call", "public_resource_read", "public_audit_poll", "supervisor_restart"],
       }),
     });
     const serialized = JSON.stringify(REAL_TRIO_CASE_SEMANTIC_MAPPINGS);
     expect(serialized).toContain("journal_mutate");
     expect(serialized).toContain("crash_latch_mutate");
     expect(serialized).toContain("resource_store_mutate");
+    expect(REAL_TRIO_CASE_SEMANTIC_MAPPINGS["O1-C39"].rejectedFrozenActions)
+      .not.toContain("dispatch_payload_recovery");
     expect(REAL_TRIO_CASE_SEMANTIC_MAPPINGS["O1-C28"].operations).not.toContain("supervisor_restart");
     expect(realTrioSemanticMappingForCase("O1-C39")).toBe(
       REAL_TRIO_CASE_SEMANTIC_MAPPINGS["O1-C39"],

@@ -377,11 +377,12 @@ describe("add-in loopback fixture listener", () => {
   });
 
   it("returns deterministic multi-file artifact observations", async () => {
-    const { address } = await started();
+    const { fixture, address } = await started();
     const socket = await connected(address);
+    const requestId = uuid7(8);
     const response = await writeAndRead(
       socket,
-      request(uuid7(8), "fixture_multi_file_output"),
+      request(requestId, "fixture_multi_file_output"),
     );
     const files = ((response.result as JsonObject).files ?? []) as unknown[];
 
@@ -399,6 +400,9 @@ describe("add-in loopback fixture listener", () => {
         `sha256:${createHash("sha256").update(bytes).digest("hex")}`,
       );
     }
+    expect(fixture.snapshotEvidence().c39OriginResponses).toEqual([
+      { requestId, responseDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u) },
+    ]);
   });
 
   it("honors bounded deterministic multi-file scenario sizing and rejects an over-budget scenario", async () => {
