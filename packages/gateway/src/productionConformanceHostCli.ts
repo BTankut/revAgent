@@ -44,6 +44,9 @@ const REQUIRED_CONNECTION_CAPABILITIES = Object.freeze([
 
 const REAL_CASE_AUDIT_SCHEMA = "revagent.wp12-real-case-audit/v1" as const;
 const DOCUMENT_CONTEXT_EPOCH_SCHEMA = "revagent.wp12-document-context-epoch/v1" as const;
+const MAX_DOCUMENT_CONTEXT_OBSERVATIONS = 32;
+const MAX_DOCUMENT_CONTEXT_OBSERVATION_BYTES = 2 * 1024;
+const DOCUMENT_CONTEXT_DIGEST = /^[0-9a-f]{64}$/u;
 
 function digest(value: unknown): `sha256:${string}` {
   return `sha256:${createHash("sha256").update(JSON.stringify(value)).digest("hex")}`;
@@ -90,42 +93,107 @@ function redactedSessionAudit(records: readonly { readonly namespace: string; re
 }
 
 /** Value-free proof that the Gateway accepted a real doc_context_update. */
-function redactedDocumentContextAudit(
-  records: readonly { readonly namespace: string; readonly key: string; readonly value: unknown }[],
-  observations: readonly Readonly<{ readonly stage: "accepted" | "rejected"; readonly sequence: number; readonly ordinal: number; readonly observedAtUtc: string }>[],
-): readonly Record<string, unknown>[] {
-  return Object.freeze(records
-    .filter((record) => record.namespace === "gateway.rbp-session/v2")
-    .slice(0, 32)
-    .flatMap((record) => {
-      const value = record.value !== null && typeof record.value === "object" && !Array.isArray(record.value)
-        ? record.value as Record<string, unknown>
-        : null;
-      const lifecycle = value?.lifecycle !== null && typeof value?.lifecycle === "object" && !Array.isArray(value?.lifecycle)
-        ? value.lifecycle as Record<string, unknown>
-        : null;
-      const route = lifecycle?.liveDocumentRoute;
-      if (route === null || typeof route !== "object" || Array.isArray(route)) return [];
-      const observedSequence = safeObservedSequence((route as Record<string, unknown>).observedSequence);
-      if (typeof value?.rsid !== "string" || observedSequence === null) return [];
-      const matches = observations.filter((observation) => observation.stage === "accepted" &&
-        observation.sequence === observedSequence && Number.isSafeInteger(observation.ordinal) && observation.ordinal >= 1 &&
-        isCanonicalUtc(observation.observedAtUtc));
-      if (matches.length !== 1) return [];
-      const observation = matches[0]!;
-      return [Object.freeze({
+type DocumentContextObservation = Readonly<{
+  readonly stage: "accepted";
+  readonly sequence: number;
+  readonly contextDigest: string;
+  readonly ordinal: number;
+  readonly observedAtUtc: string;
+}>;
+
+interface DocumentContextObservationSnapshot {
+  readonly processEpoch: string;
+  readonly highWaterOrdinal: number;
+  readonly rows: readonly DocumentContextObservation[];
+}
+
+function observationSnapshot(
+  processEpoch: string,
+  highWaterOrdinal: number,
+  rows: readonly DocumentContextObservation[],
+): DocumentContextObservationSnapshot {
+  return Object.freeze({
+    processEpoch,
+    highWaterOrdinal,
+    rows: Object.freeze([...rows]),
+  });
+}
+
+function sameDocumentContextRoute(
+  left: ReturnType<GatewayBridgeSessionAuthority["readCurrentDocumentRouteAuditSnapshot"]>,
+  right: ReturnType<GatewayBridgeSessionAuthority["readCurrentDocumentRouteAuditSnapshot"]>,
+): boolean {
+  return left !== null && right !== null &&
+    left.rsidHash === right.rsidHash &&
+    left.observedSequence === right.observedSequence &&
+    left.contextDigest === right.contextDigest &&
+    left.routeDigest === right.routeDigest &&
+    left.recordDigest === right.recordDigest &&
+    left.sessionBindingDigest === right.sessionBindingDigest &&
+    left.connectionDigest === right.connectionDigest &&
+    left.sessionRecordVersion === right.sessionRecordVersion;
+}
+
+/**
+ * Bounded optimistic join: it only reports one exact worker/Gateway pair.
+ * Any journal churn, restart, eviction, route advancement, or ambiguity
+ * produces no row. It is an evidence projection, never an authority path.
+ */
+function coherentDocumentContextAudit(input: {
+  readonly authority: GatewayBridgeSessionAuthority;
+  readonly processEpoch: string;
+  readonly snapshotObservations: () => DocumentContextObservationSnapshot;
+}): Readonly<{
+  readonly currentRoute: Record<string, unknown> | null;
+  readonly updates: readonly Record<string, unknown>[];
+  readonly highWaterOrdinal: number;
+}> {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const before = input.snapshotObservations();
+    const route = input.authority.readCurrentDocumentRouteAuditSnapshot({ tenantId: "conformance" });
+    const after = input.snapshotObservations();
+    if (before.processEpoch !== input.processEpoch || after.processEpoch !== input.processEpoch ||
+        before.highWaterOrdinal !== after.highWaterOrdinal || route === null ||
+        !DOCUMENT_CONTEXT_DIGEST.test(route.contextDigest)) continue;
+    const matches = after.rows.filter((observation) => observation.stage === "accepted" &&
+      observation.sequence === route.observedSequence &&
+      observation.contextDigest === route.contextDigest &&
+      observation.ordinal >= 1 && observation.ordinal <= after.highWaterOrdinal &&
+      isCanonicalUtc(observation.observedAtUtc));
+    if (matches.length !== 1) continue;
+    const finalRoute = input.authority.readCurrentDocumentRouteAuditSnapshot({ tenantId: "conformance" });
+    if (!sameDocumentContextRoute(route, finalRoute)) continue;
+    const currentRoute = Object.freeze({
+      processEpoch: input.processEpoch,
+      rsidHash: route.rsidHash,
+      observedSequence: route.observedSequence,
+      contextDigest: route.contextDigest,
+      routeDigest: route.routeDigest,
+      recordDigest: route.recordDigest,
+      sessionBindingDigest: route.sessionBindingDigest,
+      connectionDigest: route.connectionDigest,
+      sessionRecordVersion: route.sessionRecordVersion,
+    });
+    const observation = matches[0]!;
+    return Object.freeze({
+      currentRoute,
+      updates: Object.freeze([Object.freeze({
         contractVersion: "revagent.wp12-document-context-audit/v1",
         event: "gateway.doc_context_update_observation",
         stage: "accepted",
-        rsidDigest: typeof value?.rsid === "string" ? digest(value.rsid) : null,
-        rsidHash: rsidHash(value.rsid),
-        observedSequence,
+        ...currentRoute,
         observationOrdinal: observation.ordinal,
         observedAtUtc: observation.observedAtUtc,
-        routeDigest: digest(route),
-        recordDigest: digest(value),
-      })];
-    }));
+      })]),
+      highWaterOrdinal: after.highWaterOrdinal,
+    });
+  }
+  const latest = input.snapshotObservations();
+  return Object.freeze({
+    currentRoute: null,
+    updates: Object.freeze([]),
+    highWaterOrdinal: latest.highWaterOrdinal,
+  });
 }
 
 export function conformanceConnectionCapabilitiesForBinding(
@@ -212,26 +280,33 @@ export async function runProductionConformanceHostCli(args: readonly string[]): 
   // The test control response retains no document route or identity values.
   // A bounded stage/sequence trace distinguishes Gateway acceptance from
   // rejection without becoming a second authority path.
-  const documentContextObservations: Array<Readonly<{
-    readonly stage: "accepted" | "rejected";
-    readonly sequence: number;
-    readonly ordinal: number;
-    readonly observedAtUtc: string;
-  }>> = [];
+  const documentContextObservations: DocumentContextObservation[] = [];
   const documentContextProcessEpoch = randomUUID();
   let documentContextObservationOrdinal = 0;
+  const snapshotDocumentContextObservations = (): DocumentContextObservationSnapshot =>
+    observationSnapshot(
+      documentContextProcessEpoch,
+      documentContextObservationOrdinal,
+      documentContextObservations,
+    );
   const authority = new GatewayBridgeSessionAuthority(protocolStore, identity, {
     resourceAuthority,
     onDocumentContextObservation(observation) {
       if (documentContextObservationOrdinal >= Number.MAX_SAFE_INTEGER) return;
-      if (documentContextObservations.length === 32) documentContextObservations.shift();
-      documentContextObservationOrdinal += 1;
-      documentContextObservations.push(Object.freeze({
+      if (observation.stage !== "accepted" || !DOCUMENT_CONTEXT_DIGEST.test(observation.contextDigest) ||
+          !safeObservedSequence(observation.sequence)) return;
+      const candidate = Object.freeze({
         stage: observation.stage,
         sequence: observation.sequence,
-        ordinal: documentContextObservationOrdinal,
+        contextDigest: observation.contextDigest,
+        ordinal: documentContextObservationOrdinal + 1,
         observedAtUtc: new Date().toISOString(),
-      }));
+      }) satisfies DocumentContextObservation;
+      if (!isCanonicalUtc(candidate.observedAtUtc) ||
+          Buffer.byteLength(JSON.stringify(candidate), "utf8") > MAX_DOCUMENT_CONTEXT_OBSERVATION_BYTES) return;
+      documentContextObservationOrdinal += 1;
+      if (documentContextObservations.length === MAX_DOCUMENT_CONTEXT_OBSERVATIONS) documentContextObservations.shift();
+      documentContextObservations.push(candidate);
     },
   });
   const ingress = createConformanceRbpIngressHost({ authority });
@@ -431,18 +506,26 @@ export async function runProductionConformanceHostCli(args: readonly string[]): 
               records.push(...result.value.map((row) => ({ namespace: row.namespace, key: row.key, value: row.value })));
             }
             const rows = redactedSessionAudit(records);
-            const documentContextUpdates = redactedDocumentContextAudit(records, documentContextObservations);
+            const coherentDocumentContext = coherentDocumentContextAudit({
+              authority,
+              processEpoch: documentContextProcessEpoch,
+              snapshotObservations: snapshotDocumentContextObservations,
+            });
             return reply.send({
               ok: true,
               action,
               schemaVersion: REAL_CASE_AUDIT_SCHEMA,
               tenantDigest: digest("conformance"),
               rows,
-              documentContextUpdates,
-              documentContextObservations: Object.freeze([...documentContextObservations]),
+              documentContextUpdates: coherentDocumentContext.updates,
+              documentContextCurrentRoute: coherentDocumentContext.currentRoute,
               documentContextEpochSchema: DOCUMENT_CONTEXT_EPOCH_SCHEMA,
               documentContextProcessEpoch,
-              documentContextObservationHighWaterOrdinal: documentContextObservationOrdinal,
+              // The Gateway process owns a single immutable journal epoch;
+              // a bridge restart must therefore be rejected by the child
+              // cursor generation, never hidden by a synthetic host reset.
+              documentContextGeneration: 1,
+              documentContextObservationHighWaterOrdinal: coherentDocumentContext.highWaterOrdinal,
               counts: Object.freeze({ records: records.length, auditAccesses: auditAccesses.length }),
               frontier: digest(rows),
               auditAccessDigest: digest(auditAccesses.map((entry) => entry.action)),

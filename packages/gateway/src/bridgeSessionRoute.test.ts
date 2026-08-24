@@ -847,7 +847,7 @@ describe("GatewayBridgeSessionAuthority live document routing", () => {
     "persists the %s document route before the next heartbeat-driven acknowledgement",
     async (binding) => {
       const fixture = createRestartableTestStore();
-      const observations: Array<{ readonly stage: string; readonly sequence: number }> = [];
+      const observations: Array<{ readonly stage: string; readonly sequence: number; readonly contextDigest: string }> = [];
       const created = new GatewayBridgeSessionAuthority(fixture.store, identity(
         binding === "http_sse"
           ? { connectionCapabilities: ["transport_streamable_http"] }
@@ -889,7 +889,9 @@ describe("GatewayBridgeSessionAuthority live document routing", () => {
         kind: "live",
         session_document_id: "document-route-before-ack",
       });
-      expect(observations).toEqual([{ stage: "accepted", sequence: 1 }]);
+      expect(observations).toEqual([expect.objectContaining({
+        stage: "accepted", sequence: 1, contextDigest: expect.stringMatching(/^[0-9a-f]{64}$/u),
+      })]);
       expect(session.channel.frames.filter((frame) => frame.type === "heartbeat_ack")).toEqual([]);
 
       await created.receive(session.connectionId, {
@@ -903,9 +905,9 @@ describe("GatewayBridgeSessionAuthority live document routing", () => {
     },
   );
 
-  it("records a rejected document update by stage/sequence only without route or acknowledgement", async () => {
+  it("does not journal a rejected document update without route or acknowledgement", async () => {
     const fixture = createRestartableTestStore();
-    const observations: Array<{ readonly stage: string; readonly sequence: number }> = [];
+    const observations: Array<{ readonly stage: string; readonly sequence: number; readonly contextDigest: string }> = [];
     const created = new GatewayBridgeSessionAuthority(fixture.store, identity(), {
       onDocumentContextObservation: (observation) => observations.push(observation),
     });
@@ -920,7 +922,7 @@ describe("GatewayBridgeSessionAuthority live document routing", () => {
       documents: [document("document-a", true), document("document-b", true)],
     }))).rejects.toMatchObject({ code: "protocol", httpStatus: 400 });
 
-    expect(observations).toEqual([{ stage: "rejected", sequence: 1 }]);
+    expect(observations).toEqual([]);
     expectUnavailable(created);
     expect(session.channel.frames.filter((frame) => frame.type === "heartbeat_ack")).toEqual([]);
   });

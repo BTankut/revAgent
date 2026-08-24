@@ -614,7 +614,11 @@ export function correlatedDocumentContextSendFromCursor(
   return null;
 }
 
-interface StrictDocumentContextCandidate extends RealTrioDocumentContextCorrelation {
+interface LocalDocumentContextCandidate extends RealTrioDocumentContextCorrelation {
+  readonly contextDigest: string;
+}
+
+interface StrictDocumentContextCandidate extends LocalDocumentContextCandidate {
   readonly routeDigest: `sha256:${string}`;
 }
 
@@ -632,7 +636,7 @@ function strictDocumentContextCandidates(input: {
   readonly generation: number;
   readonly controlCursor: string;
   readonly precedingProbe: RealTrioDocumentContextCursorRow | null;
-}): readonly StrictDocumentContextCandidate[] | null {
+}): readonly LocalDocumentContextCandidate[] | null {
   if (!Number.isSafeInteger(input.generation) || input.generation < 1 ||
       !/^(?:0|[1-9][0-9]*)$/u.test(input.controlCursor)) return null;
   const control = BigInt(input.controlCursor);
@@ -648,7 +652,7 @@ function strictDocumentContextCandidates(input: {
         prefix.outcome !== "started" || !isSha256(prefix.rsidHash) ||
         !(prefix.sequence === null || (Number.isSafeInteger(prefix.sequence) && Number(prefix.sequence) >= 1)))) return null;
 
-  const candidates: StrictDocumentContextCandidate[] = [];
+  const candidates: LocalDocumentContextCandidate[] = [];
   let index = 0;
   let usePrefix = prefix !== null;
   while (index < input.rows.length) {
@@ -657,6 +661,7 @@ function strictDocumentContextCandidates(input: {
       : [["probe", "started"], ["snapshot", "ready"], ["queue", "durably_queued"], ["send", "sent"]] as const;
     let hash: `sha256:${string}` | null = usePrefix ? prefix!.rsidHash as `sha256:${string}` : null;
     let sequence: number | null = usePrefix && prefix!.sequence !== null ? Number(prefix!.sequence) : null;
+    let contextDigest: string | null = null;
     let send: RealTrioDocumentContextCursorRow | null = null;
     for (const [stage, outcome] of expected) {
       const row = input.rows[index++];
@@ -672,15 +677,14 @@ function strictDocumentContextCandidates(input: {
         else if (sequence !== valueSequence) return null;
       }
       if ((stage === "queue" || stage === "send") && valueSequence === null) return null;
+      if (stage === "snapshot" || stage === "queue" || stage === "send") {
+        if (typeof value.contextDigest !== "string" || !/^[0-9a-f]{64}$/u.test(value.contextDigest)) return null;
+        if (contextDigest === null) contextDigest = value.contextDigest;
+        else if (contextDigest !== value.contextDigest) return null;
+      }
       if (stage === "send") send = row!;
     }
-    if (hash === null || sequence === null || send === null) return null;
-    const sent = documentObservation(send)!;
-    // There is no permitted synthetic digest. A trusted send-side field is
-    // the only local source eligible to bind the immutable route audit.
-    const routeDigest = isSha256(sent.routeDigest) ? sent.routeDigest :
-      isSha256(sent.fixtureRouteDigest) ? sent.fixtureRouteDigest : null;
-    if (routeDigest === null) return null;
+    if (hash === null || sequence === null || contextDigest === null || send === null) return null;
     candidates.push(Object.freeze({
       rsidHash: hash,
       sequence,
@@ -688,7 +692,7 @@ function strictDocumentContextCandidates(input: {
       generation: input.generation,
       sendTranscriptIndex: index - 1,
       sendRecordedAt: send.at.length === 0 ? null : send.at,
-      routeDigest,
+      contextDigest,
     }));
     usePrefix = false;
     // ACK proves only the already selected send; it never begins or selects a
@@ -709,7 +713,11 @@ function strictDocumentContextCandidates(input: {
 interface CurrentRouteAuditIdentity {
   readonly rsidHash: `sha256:${string}`;
   readonly sequence: number;
+  readonly contextDigest: string;
   readonly routeDigest: `sha256:${string}`;
+  readonly recordDigest: `sha256:${string}`;
+  readonly sessionBindingDigest: `sha256:${string}`;
+  readonly connectionDigest: `sha256:${string}`;
   readonly sessionRecordVersion: number;
 }
 
@@ -722,12 +730,19 @@ function currentRouteAuditIdentity(audit: unknown, baseline: RealTrioGatewayAudi
   const route = audit.documentContextCurrentRoute;
   if (route.processEpoch !== baseline.processEpoch || !isSha256(route.rsidHash) ||
       !Number.isSafeInteger(route.observedSequence) || Number(route.observedSequence) < 1 ||
-      !isSha256(route.routeDigest) || !Number.isSafeInteger(route.sessionRecordVersion) ||
+      typeof route.contextDigest !== "string" || !/^[0-9a-f]{64}$/u.test(route.contextDigest) ||
+      !isSha256(route.routeDigest) || !isSha256(route.recordDigest) ||
+      !isSha256(route.sessionBindingDigest) || !isSha256(route.connectionDigest) ||
+      !Number.isSafeInteger(route.sessionRecordVersion) ||
       Number(route.sessionRecordVersion) < 1) return null;
   return Object.freeze({
     rsidHash: route.rsidHash,
     sequence: Number(route.observedSequence),
+    contextDigest: route.contextDigest,
     routeDigest: route.routeDigest,
+    recordDigest: route.recordDigest,
+    sessionBindingDigest: route.sessionBindingDigest,
+    connectionDigest: route.connectionDigest,
     sessionRecordVersion: Number(route.sessionRecordVersion),
   });
 }
@@ -742,7 +757,9 @@ function hasOneCurrentAcceptedObservation(
     value.contractVersion === "revagent.wp12-document-context-audit/v1" &&
     value.event === "gateway.doc_context_update_observation" && value.stage === "accepted" &&
     value.processEpoch === baseline.processEpoch && value.rsidHash === current.rsidHash &&
-    value.observedSequence === current.sequence && value.routeDigest === current.routeDigest &&
+    value.observedSequence === current.sequence && value.contextDigest === current.contextDigest &&
+    value.routeDigest === current.routeDigest && value.recordDigest === current.recordDigest &&
+    value.sessionBindingDigest === current.sessionBindingDigest && value.connectionDigest === current.connectionDigest &&
     value.sessionRecordVersion === current.sessionRecordVersion &&
     Number.isSafeInteger(value.observationOrdinal) && Number(value.observationOrdinal) > baseline.observationOrdinal &&
     Number.isSafeInteger(audit.documentContextObservationHighWaterOrdinal) &&
@@ -766,9 +783,9 @@ export function selectCurrentDocumentContextSendFromCursor(
     return null;
   }
   const selected = candidates.filter((candidate) => candidate.rsidHash === current.rsidHash &&
-    candidate.sequence === current.sequence && candidate.routeDigest === current.routeDigest);
+    candidate.sequence === current.sequence && candidate.contextDigest === current.contextDigest);
   if (selected.length !== 1) return null;
-  return selected[0]!;
+  return Object.freeze({ ...selected[0]!, routeDigest: current.routeDigest });
 }
 
 function cursorSinceOrThrow(input: {
@@ -874,6 +891,7 @@ export function hasGatewayAcceptedDocumentContextRoute(
 ): boolean {
   const current = currentRouteAuditIdentity(audit, baseline);
   const routeDigest = (expected as Partial<StrictDocumentContextCandidate>).routeDigest;
+  const contextDigest = (expected as Partial<StrictDocumentContextCandidate>).contextDigest;
   if (!isObject(audit) || !Array.isArray(audit.documentContextUpdates) ||
       audit.documentContextEpochSchema !== "revagent.wp12-document-context-epoch/v1" ||
       audit.documentContextProcessEpoch !== baseline.processEpoch || !isProcessEpoch(audit.documentContextProcessEpoch) ||
@@ -881,12 +899,14 @@ export function hasGatewayAcceptedDocumentContextRoute(
       Number(audit.documentContextObservationHighWaterOrdinal) < baseline.observationOrdinal ||
       !isCanonicalUtc(expected.sendRecordedAt) || current === null || !isSha256(routeDigest) ||
       current.rsidHash !== expected.rsidHash || current.sequence !== expected.sequence ||
+      current.contextDigest !== contextDigest ||
       current.routeDigest !== routeDigest) return false;
   const candidates = audit.documentContextUpdates.filter((value) => isObject(value) &&
     value.contractVersion === "revagent.wp12-document-context-audit/v1" &&
     value.event === "gateway.doc_context_update_observation" && value.stage === "accepted" &&
     value.rsidHash === expected.rsidHash && value.observedSequence === expected.sequence &&
-    value.processEpoch === baseline.processEpoch && value.routeDigest === current.routeDigest &&
+    value.processEpoch === baseline.processEpoch && value.contextDigest === current.contextDigest &&
+    value.routeDigest === current.routeDigest &&
     value.sessionRecordVersion === current.sessionRecordVersion &&
     isSha256(value.rsidHash) && Number.isSafeInteger(value.observedSequence) && Number(value.observedSequence) >= 1 &&
     Number.isSafeInteger(value.observationOrdinal) && Number(value.observationOrdinal) > baseline.observationOrdinal &&

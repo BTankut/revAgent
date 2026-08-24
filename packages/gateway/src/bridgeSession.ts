@@ -88,6 +88,10 @@ import {
   BridgeCarrierTerminalAborted,
   BRIDGE_CARRIER_COMMIT_OK,
 } from "./resourceAuthority.js";
+import {
+  documentContextDigest,
+  isDocumentContextDigest,
+} from "./documentContextDigest.js";
 import type {
   BridgeCarrierCommitResult,
   BridgeCarrierCommitMode,
@@ -301,8 +305,11 @@ type CarrierReceiveTailObserver = (event: {
  * ever exposed through this callback.
  */
 export type GatewayDocumentContextObservation = Readonly<{
-  readonly stage: "accepted" | "rejected";
+  /** Only accepted payloads are correlated; rejection has no durable route. */
+  readonly stage: "accepted";
   readonly sequence: number;
+  /** Bare lower-case SHA-256, matching the real C# worker observation. */
+  readonly contextDigest: string;
 }>;
 
 type GatewayDocumentContextObserver = (
@@ -407,6 +414,8 @@ interface DurableLiveDocumentRoute {
   readonly sessionDocumentId: string;
   readonly observedConnectionId: string;
   readonly observedSequence: number;
+  /** Diagnostic-only correlate for the admitted payload, never north input. */
+  readonly contextDigest: string;
 }
 
 interface DurableRbpSession {
@@ -853,6 +862,23 @@ export interface GatewayBridgeSessionLifecycleSnapshot {
   readonly protocolStore: BridgeLifecycleResourceState;
   readonly identity: BridgeLifecycleResourceState;
   readonly protocolStoreManagedBy: "bridge" | "identity";
+}
+
+/**
+ * Value-free, read-only current-route evidence.  It is intentionally not a
+ * dispatch route and contains no RSID, connection ID, document ID, or session
+ * binding value.  The conformance host may read it only to join a C# emitted
+ * context digest to the Gateway's already-authoritative current route.
+ */
+export interface GatewayCurrentDocumentRouteAuditSnapshot {
+  readonly rsidHash: `sha256:${string}`;
+  readonly observedSequence: number;
+  readonly contextDigest: string;
+  readonly routeDigest: `sha256:${string}`;
+  readonly recordDigest: `sha256:${string}`;
+  readonly sessionBindingDigest: `sha256:${string}`;
+  readonly connectionDigest: `sha256:${string}`;
+  readonly sessionRecordVersion: number;
 }
 
 export class GatewayRbpFault extends Error {
@@ -2312,7 +2338,11 @@ function liveDocumentRouteFrom(
   payload: DocContextUpdate,
   connectionId: string,
   sequence: number,
+  contextDigest: string,
 ): DurableLiveDocumentRoute | null {
+  if (!isDocumentContextDigest(contextDigest)) {
+    throw new GatewayRbpFault("protocol", "document context digest is invalid", 400, 4400);
+  }
   const documentIds = new Set<string>();
   const activeDocuments: string[] = [];
   for (const document of payload.documents) {
@@ -2357,6 +2387,7 @@ function liveDocumentRouteFrom(
     sessionDocumentId: payload.active_document,
     observedConnectionId: connectionId,
     observedSequence: sequence,
+    contextDigest,
   };
 }
 
@@ -6427,12 +6458,15 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
             ),
           );
           if (envelope.type === "doc_context_update") {
-            this.#observeDocumentContext("accepted", envelope.seq);
+            // Production RBP ingress has already parsed this payload through
+            // parseRbpFrame, including recursive duplicate-key rejection.
+            // Never compute a correlate from a last-wins JSON.parse value at
+            // an unguarded admission boundary.
+            this.#observeDocumentContext(envelope.seq, documentContextDigest(
+              envelope.payload as unknown as JsonValue,
+            ));
           }
         } catch (error) {
-          if (envelope.type === "doc_context_update") {
-            this.#observeDocumentContext("rejected", envelope.seq);
-          }
           throw error;
         }
         return;
@@ -6449,11 +6483,16 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
   }
 
   #observeDocumentContext(
-    stage: GatewayDocumentContextObservation["stage"],
     sequence: number,
+    contextDigest: string,
   ): void {
+    if (!isDocumentContextDigest(contextDigest)) return;
     try {
-      this.#documentContextObserver?.(Object.freeze({ stage, sequence }));
+      this.#documentContextObserver?.(Object.freeze({
+        stage: "accepted",
+        sequence,
+        contextDigest,
+      }));
     } catch {
       // Diagnostic sinks cannot affect protocol acceptance or acknowledgement.
     }
@@ -6520,6 +6559,53 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
 
   public createExecutor(): GatewayExecutor {
     return new BridgeSessionExecutor(this);
+  }
+
+  /**
+   * Returns one current, already-authorized route in digest-only form for the
+   * conformance audit join. This method cannot create, select, dispatch, or
+   * recover a route: ambiguity and liveness loss return null.
+   */
+  public readCurrentDocumentRouteAuditSnapshot(input: {
+    readonly tenantId: string;
+  }): GatewayCurrentDocumentRouteAuditSnapshot | null {
+    const candidates = [...this.#active.values()].filter((active) => {
+      const record = active.record;
+      const connection = this.#connections.get(record.connectionId);
+      return record.tenantId === input.tenantId &&
+        this.#connectionIsCurrentlyAuthorized(connection) &&
+        record.sessionLifecycle.dispatchAllowed &&
+        (record.connectionLifecycle.phase === "steady" ||
+          record.connectionLifecycle.phase === "degraded") &&
+        record.liveDocumentRoute !== null &&
+        record.liveDocumentRoute !== undefined &&
+        record.liveDocumentRoute.observedConnectionId === record.connectionId;
+    });
+    if (candidates.length !== 1) return null;
+    const record = candidates[0]!.record;
+    const route = record.liveDocumentRoute!;
+    if (!isDocumentContextDigest(route.contextDigest) ||
+        !isSafePositiveInteger(record.recordVersion)) return null;
+    try {
+      return Object.freeze({
+        rsidHash: digest(record.rsid),
+        observedSequence: route.observedSequence,
+        contextDigest: route.contextDigest,
+        routeDigest: digest(canonicalizeJson(route as unknown as JsonValue)),
+        recordDigest: digest(canonicalizeJson(record as unknown as JsonValue)),
+        sessionBindingDigest: digest(canonicalizeJson({
+          sessionBindingId: record.sessionBindingId,
+          sessionVersion: record.sessionVersion,
+        })),
+        connectionDigest: digest(canonicalizeJson({
+          binding: record.binding,
+          connectionId: record.connectionId,
+        })),
+        sessionRecordVersion: record.recordVersion,
+      });
+    } catch {
+      return null;
+    }
   }
 
   /**
@@ -9998,6 +10084,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
             envelope.payload,
             connection.connectionId,
             envelope.seq,
+            documentContextDigest(envelope.payload as unknown as JsonValue),
           )
         : undefined;
     const updated = await this.#updateSession(active.tenantId, active.rsid, (record) => {
