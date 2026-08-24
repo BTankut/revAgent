@@ -403,7 +403,6 @@ internal sealed class RbpDocContextWatcher
         lock (_sync)
         {
             if (_emitted.TryGetValue(rsid, out EmittedContext? current) &&
-                current.Revision == snapshot.Revision &&
                 string.Equals(
                     current.Normalized,
                     normalized,
@@ -413,9 +412,14 @@ internal sealed class RbpDocContextWatcher
                     snapshot.CacheIncarnationDigest,
                     StringComparison.Ordinal))
             {
-                // The emitted identity has not changed. A missing fixture
-                // correlate compares equal only to another missing correlate,
-                // preserving the production/add-in v1 path exactly.
+                // Revision is a cache freshness signal, not a delivery
+                // identity. Retain it atomically for the accepted unchanged
+                // snapshot, so production and same-incarnation revision churn
+                // remain silent on later polls/reconnects.
+                _emitted[rsid] = new EmittedContext(
+                    snapshot.Revision,
+                    normalized,
+                    snapshot.CacheIncarnationDigest);
                 return;
             }
         }

@@ -241,6 +241,42 @@ public sealed partial class RbpConnectionCoordinatorTests
     }
 
     [Fact]
+    public async Task ProductionRevisionOnlyChurnWithAbsentIncarnationStaysSilent()
+    {
+        await using var harness = await DocContextHarness.StartAsync(
+            DocContextLocalSession(8093, 1013));
+        await EventuallyAsync(() => harness.SentDocContextUpdates().Length == 1);
+
+        harness.Channel.SetSnapshot(revision: 2, title: "Project A");
+        harness.Clock.Advance(TimeSpan.FromSeconds(15));
+        await EventuallyAsync(() => harness.Channel.CallCount >= 2);
+        await Task.Delay(30);
+
+        Assert.Single(harness.SentDocContextUpdates());
+    }
+
+    [Fact]
+    public async Task SameFixtureIncarnationRevisionOnlyChurnStaysSilent()
+    {
+        const string incarnation =
+            "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+        await using var harness = await DocContextHarness.StartAsync(
+            DocContextLocalSession(8094, 1014));
+        await EventuallyAsync(() => harness.SentDocContextUpdates().Length == 1);
+
+        harness.Channel.SetSnapshot(revision: 2, title: "Project A", incarnation);
+        harness.Clock.Advance(TimeSpan.FromSeconds(15));
+        await EventuallyAsync(() => harness.SentDocContextUpdates().Length == 2);
+
+        harness.Channel.SetSnapshot(revision: 3, title: "Project A", incarnation);
+        harness.Clock.Advance(TimeSpan.FromSeconds(15));
+        await EventuallyAsync(() => harness.Channel.CallCount >= 3);
+        await Task.Delay(30);
+
+        Assert.Equal(2, harness.SentDocContextUpdates().Length);
+    }
+
+    [Fact]
     public async Task ChangedSnapshotEmitsExactlyOneUpdate()
     {
         await using var harness = await DocContextHarness.StartAsync(
