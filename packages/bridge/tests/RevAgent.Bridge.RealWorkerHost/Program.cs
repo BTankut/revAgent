@@ -41,13 +41,17 @@ internal static class Program
             var recoveryObservations = new RecoveryCarrierObservationRing(
                 MaxRecoveryCarrierObservations,
                 MaxRecoveryCarrierObservationBytes);
+            var reconnectObservations = new ReconnectObservationRing(
+                MaxRecoveryCarrierObservations,
+                MaxRecoveryCarrierObservationBytes);
             var postWriteFault = options.TestC39D0PostWriteFault
                 ? new OneShotPostWriteRecoveryFault()
                 : null;
             Func<CancellationToken, Task>? postWriteFaultCallback =
                 postWriteFault is null ? null : postWriteFault.InvokeAsync;
             await using WorkerGatewayRuntime runtime = Compose(options,
-                recoveryObservations, postWriteFaultCallback);
+                recoveryObservations, reconnectObservations,
+                postWriteFaultCallback);
             using var cancellation = new CancellationTokenSource();
             Task run = runtime.RunAsync(cancellation.Token);
             await Console.Out.WriteLineAsync(JsonSerializer.Serialize(new
@@ -94,7 +98,10 @@ internal static class Program
                     await Console.Out.WriteLineAsync(JsonSerializer.Serialize(new
                     {
                         controlVersion = 1, id = id.GetString(), ok = true,
-                        result = new { observations = recoveryObservations.Snapshot() },
+                        result = new {
+                            observations = recoveryObservations.Snapshot(),
+                            reconnectWatchObservations = reconnectObservations.Snapshot(),
+                        },
                     })).ConfigureAwait(false);
                     continue;
                 }
@@ -124,6 +131,7 @@ internal static class Program
     private static WorkerGatewayRuntime Compose(
         Options options,
         IRbpRecoveryCarrierObservationSink recoveryCarrierObservationSink,
+        IRbpReconnectObservationSink reconnectObservationSink,
         Func<CancellationToken, Task>? afterRecoveryCarrierWriteBeforeAck)
     {
         var layout = new BridgeInstallLayout(options.InstallRoot, options.StateRoot);
@@ -192,6 +200,7 @@ internal static class Program
                     OmittedOriginObservation: omittedOriginObservation,
                     RecoveryCarrierObservationSink:
                         recoveryCarrierObservationSink,
+                    ReconnectObservationSink: reconnectObservationSink,
                     AfterRecoveryCarrierWriteBeforeAck:
                         afterRecoveryCarrierWriteBeforeAck));
             return new WorkerGatewayRuntime(coordinator, catalog, journal, carrierProducer: carrier);
@@ -414,6 +423,63 @@ internal static class Program
                 RbpRecoveryCarrierObservation.PhaseLabel(row.Phase)) +
             Encoding.UTF8.GetByteCount(row.HashedRecoveryId) +
             Encoding.UTF8.GetByteCount(row.OuterDigest) + 32;
+    }
+
+    private sealed class ReconnectObservationRing : IRbpReconnectObservationSink
+    {
+        private readonly object _gate = new();
+        private readonly Queue<RbpReconnectObservation> _rows = new();
+        private readonly int _maxRows;
+        private readonly int _maxBytes;
+        private int _bytes;
+
+        internal ReconnectObservationRing(int maxRows, int maxBytes)
+        {
+            _maxRows = maxRows;
+            _maxBytes = maxBytes;
+        }
+
+        public void Observe(RbpReconnectObservation observation)
+        {
+            try
+            {
+                if (observation.Generation < 1 || observation.Ordinal < 1 ||
+                    !IsDiagnosticSha256(observation.RsidHash) ||
+                    !IsDiagnosticSha256(observation.SessionBindingDigest) ||
+                    !IsDiagnosticSha256(observation.ConnectionDigest)) return;
+                int bytes = 3 * ("sha256:".Length + 64) + 32;
+                lock (_gate)
+                {
+                    while (_rows.Count > 0 &&
+                        (_rows.Count >= _maxRows || _bytes + bytes > _maxBytes))
+                    {
+                        _rows.Dequeue();
+                        _bytes -= 3 * ("sha256:".Length + 64) + 32;
+                    }
+                    if (_rows.Count >= _maxRows || _bytes + bytes > _maxBytes)
+                        return;
+                    _rows.Enqueue(observation);
+                    _bytes += bytes;
+                }
+            }
+            catch { }
+        }
+
+        internal object[] Snapshot()
+        {
+            lock (_gate)
+            {
+                return _rows.Select(row => new {
+                    phase = row.Phase == RbpReconnectObservationPhase.ResumeAcknowledgementApplied
+                        ? "resume_ack_applied" : "watcher_started",
+                    generation = row.Generation,
+                    ordinal = row.Ordinal,
+                    rsidHash = row.RsidHash,
+                    sessionBindingDigest = row.SessionBindingDigest,
+                    connectionDigest = row.ConnectionDigest,
+                }).Cast<object>().ToArray();
+            }
+        }
     }
 
     private static ResolvedBridgeConfiguration Configuration(Options options) => new(

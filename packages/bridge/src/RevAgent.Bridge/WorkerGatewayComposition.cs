@@ -47,6 +47,7 @@ internal sealed record WorkerGatewayServices(
         OnDocumentContextObservation = null,
     RbpConformanceOmittedOriginObservation? OmittedOriginObservation = null,
     IRbpRecoveryCarrierObservationSink? RecoveryCarrierObservationSink = null,
+    IRbpReconnectObservationSink? ReconnectObservationSink = null,
     Func<CancellationToken, Task>? AfterRecoveryCarrierWriteBeforeAck = null);
 
 /// <summary>
@@ -198,6 +199,7 @@ internal static class WorkerGatewayComposition
                     services.OnLifecycleTimeoutObservation,
                 recoveryCarrierObservationSink:
                     services.RecoveryCarrierObservationSink,
+                reconnectObservationSink: services.ReconnectObservationSink,
                 afterRecoveryCarrierWriteBeforeAck:
                     services.AfterRecoveryCarrierWriteBeforeAck);
         }
@@ -267,6 +269,7 @@ internal static class WorkerGatewayComposition
             omittedOriginObservation: services.OmittedOriginObservation,
             recoveryCarrierObservationSink:
                 services.RecoveryCarrierObservationSink,
+            reconnectObservationSink: services.ReconnectObservationSink,
             afterRecoveryCarrierWriteBeforeAck:
                 services.AfterRecoveryCarrierWriteBeforeAck);
     }

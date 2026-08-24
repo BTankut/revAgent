@@ -73,3 +73,50 @@ internal sealed class RbpRecoveryCarrierObservationSink :
         // Deliberately no-op. Observation failure must never affect a send.
     }
 }
+
+internal interface IRbpReconnectObservationSink
+{
+    void Observe(RbpReconnectObservation observation);
+}
+
+internal enum RbpReconnectObservationPhase
+{
+    ResumeAcknowledgementApplied,
+    WatcherStarted,
+}
+
+/// <summary>
+/// Fixed reconnect/watch readiness observation. All identities are
+/// domain-separated hashes; it has no transport, journal, or control effect.
+/// </summary>
+internal sealed record RbpReconnectObservation(
+    RbpReconnectObservationPhase Phase,
+    long Generation,
+    long Ordinal,
+    string RsidHash,
+    string SessionBindingDigest,
+    string ConnectionDigest)
+{
+    internal static string Hash(string label, string value)
+    {
+        byte[] bytes = Encoding.UTF8.GetBytes(
+            $"revagent/c39-reconnect-watch/{label}/v1\0{value}");
+        return "sha256:" + Convert.ToHexString(SHA256.HashData(bytes))
+            .ToLowerInvariant();
+    }
+}
+
+/// <summary>Closed default used by all production composition.</summary>
+internal sealed class RbpReconnectObservationSink : IRbpReconnectObservationSink
+{
+    internal static RbpReconnectObservationSink None { get; } = new();
+
+    private RbpReconnectObservationSink()
+    {
+    }
+
+    public void Observe(RbpReconnectObservation observation)
+    {
+        // Best-effort only; observation must not alter reconnect or watch.
+    }
+}

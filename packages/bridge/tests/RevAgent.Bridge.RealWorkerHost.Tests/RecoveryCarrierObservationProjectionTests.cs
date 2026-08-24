@@ -77,6 +77,39 @@ public sealed class RecoveryCarrierObservationProjectionTests
         Assert.NotEqual(wrongDomain, actual);
     }
 
+    [Fact]
+    public void ReconnectRingProjectsOnlyOrderedHashRows()
+    {
+        Type ringType = HostAssembly.GetType(
+            "RevAgent.Bridge.RealWorkerHost.Program+ReconnectObservationRing",
+            throwOnError: true)!;
+        object ring = Activator.CreateInstance(ringType,
+            BindingFlags.Instance | BindingFlags.NonPublic, null,
+            new object[] { 2, 4096 }, null)!;
+        Type phaseType = BridgeAssembly.GetType(
+            "RevAgent.Bridge.Gateway.Connection.RbpReconnectObservationPhase",
+            throwOnError: true)!;
+        Type observationType = BridgeAssembly.GetType(
+            "RevAgent.Bridge.Gateway.Connection.RbpReconnectObservation",
+            throwOnError: true)!;
+        MethodInfo observe = ringType.GetMethod("Observe")!;
+        MethodInfo snapshot = ringType.GetMethod("Snapshot",
+            BindingFlags.Instance | BindingFlags.NonPublic)!;
+        foreach (var item in new[] { ("ResumeAcknowledgementApplied", 1L), ("WatcherStarted", 2L), ("WatcherStarted", 3L) })
+        {
+            object observation = Activator.CreateInstance(observationType,
+                Enum.Parse(phaseType, item.Item1), 2L, item.Item2,
+                Digest, Digest, Digest)!;
+            observe.Invoke(ring, new[] { observation });
+        }
+        object[] rows = Assert.IsType<object[]>(snapshot.Invoke(ring, null));
+        using JsonDocument json = JsonDocument.Parse(JsonSerializer.Serialize(rows));
+        Assert.Equal(2, json.RootElement.GetArrayLength());
+        Assert.Equal(2L, json.RootElement[0].GetProperty("ordinal").GetInt64());
+        Assert.Equal("watcher_started", json.RootElement[0].GetProperty("phase").GetString());
+        Assert.DoesNotContain("rsid\"", json.RootElement.GetRawText());
+    }
+
     private static object Observation(string phase, long ordinal)
     {
         Type type = BridgeAssembly.GetType(

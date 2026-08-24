@@ -336,6 +336,16 @@ internal sealed class RbpDocContextWatcher
             RunWatchAsync(rsid, emitAsync, started.Token));
     }
 
+    /// <summary>Read-only lifecycle probe for coordinator observation only.</summary>
+    internal bool IsWatching(string rsid)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(rsid);
+        lock (_sync)
+        {
+            return _loops.ContainsKey(rsid);
+        }
+    }
+
     /// <summary>
     /// Cleanly stops the session's watch loop and forgets its emitted
     /// snapshot. Used when the session ends (unregister/replaced/exited);

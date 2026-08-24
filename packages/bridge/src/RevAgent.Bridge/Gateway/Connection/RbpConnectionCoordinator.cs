@@ -54,6 +54,7 @@ internal sealed partial class RbpConnectionCoordinator
     private readonly RbpConformanceOmittedOriginObservation _omittedOriginObservation;
     private readonly IRbpRecoveryCarrierObservationSink
         _recoveryCarrierObservationSink;
+    private readonly IRbpReconnectObservationSink _reconnectObservationSink;
 
     /// <summary>
     /// Bounded, non-secret dispatch trace. The batch path has several silent
@@ -88,6 +89,7 @@ internal sealed partial class RbpConnectionCoordinator
     private readonly Dictionary<RecoveryCarrierDigestCycleKey, string>
         _recoveryCarrierOuterDigests = new();
     private long _recoveryCarrierObservationOrdinal;
+    private long _reconnectObservationOrdinal;
 
     internal RbpConnectionCoordinator(
         IRbpConnectionCycleFactory cycleFactory,
@@ -113,7 +115,8 @@ internal sealed partial class RbpConnectionCoordinator
         Func<CancellationToken, Task>? beforeRecoveryCarrierWrite = null,
         Func<CancellationToken, Task>? afterRecoveryCarrierWriteBeforeAck = null,
         RbpConformanceOmittedOriginObservation? omittedOriginObservation = null,
-        IRbpRecoveryCarrierObservationSink? recoveryCarrierObservationSink = null)
+        IRbpRecoveryCarrierObservationSink? recoveryCarrierObservationSink = null,
+        IRbpReconnectObservationSink? reconnectObservationSink = null)
     {
         _batchCoordinator = batchCoordinator;
         _carrierProducer = carrierProducer;
@@ -134,6 +137,8 @@ internal sealed partial class RbpConnectionCoordinator
             RbpConformanceOmittedOriginObservation.Never;
         _recoveryCarrierObservationSink = recoveryCarrierObservationSink ??
             RbpRecoveryCarrierObservationSink.None;
+        _reconnectObservationSink = reconnectObservationSink ??
+            RbpReconnectObservationSink.None;
         _catalog = catalog ?? throw new ArgumentNullException(nameof(catalog));
         _options = options ??
             throw new ArgumentNullException(nameof(options));

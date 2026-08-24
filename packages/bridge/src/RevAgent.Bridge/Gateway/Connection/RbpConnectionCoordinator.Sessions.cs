@@ -234,6 +234,8 @@ internal sealed partial class RbpConnectionCoordinator
 
             context.AcknowledgeResumeApplied(candidate.Session.Rsid);
             StartDocContextWatch(context, parsed.Rsid, local);
+            ObserveReconnectWatchReadiness(context, applied.Session,
+                watcherStarted: _docContextWatcher?.IsWatching(parsed.Rsid) == true);
         }
         catch (Exception exception)
         {
@@ -245,6 +247,38 @@ internal sealed partial class RbpConnectionCoordinator
         finally
         {
             context.EndResume(candidate.Session.Rsid);
+        }
+    }
+
+    private void ObserveReconnectWatchReadiness(
+        ConnectionCycleContext context,
+        RbpStoredSession session,
+        bool watcherStarted)
+    {
+        try
+        {
+            long resumeOrdinal = Interlocked.Increment(
+                ref _reconnectObservationOrdinal);
+            string rsidHash = RbpReconnectObservation.Hash("rsid", session.Rsid);
+            string bindingDigest = RbpReconnectObservation.Hash(
+                "session_binding", session.RegistrationDigest);
+            string connectionDigest = RbpReconnectObservation.Hash(
+                "connection", $"{context.Generation}:{session.Rsid}");
+            _reconnectObservationSink.Observe(new RbpReconnectObservation(
+                RbpReconnectObservationPhase.ResumeAcknowledgementApplied,
+                context.Generation, resumeOrdinal, rsidHash, bindingDigest,
+                connectionDigest));
+            if (!watcherStarted) return;
+            long watchOrdinal = Interlocked.Increment(
+                ref _reconnectObservationOrdinal);
+            _reconnectObservationSink.Observe(new RbpReconnectObservation(
+                RbpReconnectObservationPhase.WatcherStarted,
+                context.Generation, watchOrdinal, rsidHash, bindingDigest,
+                connectionDigest));
+        }
+        catch
+        {
+            // Observation must not change successful durable resume/watch.
         }
     }
 
