@@ -626,7 +626,10 @@ function strictDocumentObservation(row: RealTrioDocumentContextCursorRow): Stric
   if ((value.stage === "snapshot" && value.outcome === "ready") ||
       (value.stage === "queue" && value.outcome === "durably_queued") ||
       (value.stage === "send" && value.outcome === "sent")) {
-    if (sequence === null || context === null) return null;
+    // A snapshot establishes only watcher identity and context.  The durable
+    // queue operation is the sole source of the cycle sequence.
+    if ((value.stage === "snapshot" && sequence !== null) ||
+        (value.stage !== "snapshot" && sequence === null) || context === null) return null;
     return Object.freeze({ stage: value.stage, rsidHash: value.rsidHash, sequence, contextDigest: context });
   }
   // `failure`, a malformed stage, and a future/unknown document event are all
@@ -675,7 +678,7 @@ function parseDocumentContextGrammar(input: {
     readonly rsidHash: `sha256:${string}`;
     lastSentSequence: number | null;
     lastAcknowledgedSequence: number | null;
-    cycle: { readonly sequence: number; readonly contextDigest: string; readonly startCursor: string; readonly startIndex: number; readonly stage: "snapshot" | "queue" } | null;
+    cycle: { readonly sequence: number | null; readonly contextDigest: string; readonly startCursor: string; readonly startIndex: number; readonly stage: "snapshot" | "queue" } | null;
     readonly sent: Map<number, ParsedDocumentContextCandidate>;
   } | null = null;
   const candidates: ParsedDocumentContextCandidate[] = [];
@@ -724,10 +727,9 @@ function parseDocumentContextGrammar(input: {
     }
 
     if (observation.stage === "snapshot") {
-      if (watcher.cycle !== null || (watcher.lastSentSequence !== null &&
-          observation.sequence! <= watcher.lastSentSequence)) return null;
+      if (watcher.cycle !== null) return null;
       watcher.cycle = {
-        sequence: observation.sequence!,
+        sequence: null,
         contextDigest: observation.contextDigest!,
         startCursor: row.cursor,
         startIndex: index,
@@ -737,9 +739,9 @@ function parseDocumentContextGrammar(input: {
     }
     if (observation.stage === "queue") {
       if (watcher.cycle === null || watcher.cycle.stage !== "snapshot" ||
-          watcher.cycle.sequence !== observation.sequence ||
-          watcher.cycle.contextDigest !== observation.contextDigest) return null;
-      watcher.cycle = { ...watcher.cycle, stage: "queue" };
+          watcher.cycle.contextDigest !== observation.contextDigest ||
+          (watcher.lastSentSequence !== null && observation.sequence! <= watcher.lastSentSequence)) return null;
+      watcher.cycle = { ...watcher.cycle, sequence: observation.sequence!, stage: "queue" };
       continue;
     }
     // send/sent completes exactly the snapshot -> queue -> send cycle.

@@ -35,7 +35,7 @@ describe("WP-12 real-trio fixture document route gate", () => {
     const hash = `sha256:${"a".repeat(64)}`;
     const probe = cursorRow("4", "probe", "started", null, hash);
     const selected = correlatedDocumentContextSendFromCursor([
-      cursorRow("5", "snapshot", "ready", 9, hash),
+      cursorRow("5", "snapshot", "ready", null, hash),
       cursorRow("6", "queue", "durably_queued", 9, hash),
       cursorRow("7", "send", "sent", 9, hash),
     ], 2, probe);
@@ -47,7 +47,7 @@ describe("WP-12 real-trio fixture document route gate", () => {
     const hash = `sha256:${"a".repeat(64)}`;
     const flow = [
       cursorRow("1", "probe", "started", null, hash),
-      cursorRow("2", "snapshot", "ready", 3, hash),
+      cursorRow("2", "snapshot", "ready", null, hash),
       cursorRow("3", "queue", "durably_queued", 3, hash),
       cursorRow("4", "send", "sent", 3, hash),
     ];
@@ -77,7 +77,7 @@ describe("WP-12 real-trio fixture document route gate", () => {
     ).line;
     const lifecycle = (start: number, sequence: number, contextDigest: string) => ["probe", "snapshot", "queue", "send"].map((stage, offset) => ({
       cursor: String(start + offset), at: "2026-08-24T00:00:01.000Z", line: JSON.stringify({
-        ...JSON.parse(row(start + offset, stage, sequence, digest1)),
+        ...JSON.parse(row(start + offset, stage, stage === "snapshot" ? null : sequence, digest1)),
         ...(["snapshot", "queue", "send"].includes(stage) ? { contextDigest } : {}),
       }),
     }));
@@ -114,7 +114,7 @@ describe("WP-12 real-trio fixture document route gate", () => {
       event: "bridge.document_context_observation", stage, outcome, rsidHash: hash, sequence,
       ...(["snapshot", "queue", "send"].includes(stage) ? { contextDigest } : {}),
     }) });
-    const flow = [event(1, "probe", "started", 2), event(2, "snapshot", "ready", 2), event(3, "queue", "durably_queued", 2), event(4, "send", "sent", 2)];
+    const flow = [event(1, "probe", "started", 2), event(2, "snapshot", "ready", null), event(3, "queue", "durably_queued", 2), event(4, "send", "sent", 2)];
     const current = { processEpoch: epoch, rsidHash: hash, observedSequence: 2, contextDigest, routeDigest: digest, recordDigest: `sha256:${"f".repeat(64)}`, sessionBindingDigest: `sha256:${"1".repeat(64)}`, connectionDigest: `sha256:${"2".repeat(64)}`, sessionRecordVersion: 4 };
     const audit = (updates: readonly unknown[] = [{ contractVersion: "revagent.wp12-document-context-audit/v1", event: "gateway.doc_context_update_observation", stage: "accepted", ...current, observationOrdinal: 5 }]) => ({
       documentContextEpochSchema: "revagent.wp12-document-context-epoch/v1", documentContextProcessEpoch: epoch,
@@ -147,7 +147,7 @@ describe("WP-12 real-trio fixture document route gate", () => {
     });
     const probe = (cursor: number, rsidHash = hash) => row(cursor, "probe", "started", null, null, rsidHash);
     const cycle = (start: number, sequence: number, contextDigest: string, rsidHash = hash) => [
-      row(start, "snapshot", "ready", sequence, contextDigest, rsidHash),
+      row(start, "snapshot", "ready", null, contextDigest, rsidHash),
       row(start + 1, "queue", "durably_queued", sequence, contextDigest, rsidHash),
       row(start + 2, "send", "sent", sequence, contextDigest, rsidHash),
     ];
@@ -181,7 +181,7 @@ describe("WP-12 real-trio fixture document route gate", () => {
     expect(select(ordinary)).toMatchObject({ sequence: 2, sendCursor: "7" });
     // A late ACK for cycle 1 is still evidence, including while cycle 2 is active.
     expect(select([probe(1), ...cycle(2, 1, context1), acknowledgement(5, 1), ...cycle(6, 2, context2), acknowledgement(9, 2)])).toMatchObject({ sequence: 2 });
-    expect(select([probe(1), ...cycle(2, 1, context1), row(5, "snapshot", "ready", 2, context2),
+    expect(select([probe(1), ...cycle(2, 1, context1), row(5, "snapshot", "ready", null, context2),
       acknowledgement(6, 1), row(7, "queue", "durably_queued", 2, context2),
       row(8, "send", "sent", 2, context2), acknowledgement(9, 2)])).toMatchObject({ sequence: 2 });
 
@@ -200,7 +200,23 @@ describe("WP-12 real-trio fixture document route gate", () => {
     expect(select([{ ...withInertOrdinal[0]!, cursor: "2" }, ...withInertOrdinal.slice(1)])).toBeNull();
     expect(select([...ordinary, row(9, "failure", "send_failed", 2, null)])).toBeNull();
     expect(select([...ordinary, row(9, "future_stage", "future_outcome", 2, null)])).toBeNull();
-    expect(select([probe(1), ...cycle(2, 1, context1), row(5, "snapshot", "ready", 2, context2),
+    const invalid = (cursor: number, stage: string, outcome: string, sequence: unknown) => ({
+      cursor: String(cursor), at: "2026-08-24T00:00:01.000Z", line: JSON.stringify({
+        event: "bridge.document_context_observation", stage, outcome, rsidHash: hash, sequence,
+        contextDigest: context1,
+      }),
+    });
+    // Snapshot carries identity/context only; the durable queue binds sequence.
+    expect(select([probe(1), invalid(2, "snapshot", "ready", 1), ...cycle(3, 1, context1)])).toBeNull();
+    expect(select([probe(1), invalid(2, "snapshot", "ready", -1), ...cycle(3, 1, context1)])).toBeNull();
+    expect(select([probe(1), invalid(2, "snapshot", "ready", "1"), ...cycle(3, 1, context1)])).toBeNull();
+    expect(select([probe(1), row(2, "snapshot", "ready", null, context1),
+      row(3, "queue", "durably_queued", null, context1), row(4, "send", "sent", 1, context1)])).toBeNull();
+    expect(select([probe(1), ...cycle(2, 1, context1), row(5, "snapshot", "ready", null, context2),
+      row(6, "queue", "durably_queued", 1, context2), row(7, "send", "sent", 1, context2)])).toBeNull();
+    expect(select([probe(1), row(2, "snapshot", "ready", null, context1, otherHash),
+      row(3, "queue", "durably_queued", 1, context1, otherHash), row(4, "send", "sent", 1, context1, otherHash)])).toBeNull();
+    expect(select([probe(1), ...cycle(2, 1, context1), row(5, "snapshot", "ready", null, context2),
       row(6, "queue", "durably_queued", 2, context1), row(7, "send", "sent", 2, context2)])).toBeNull();
 
     // A new probe makes previous sends ineligible for ACK; it cannot borrow them.
@@ -216,7 +232,7 @@ describe("WP-12 real-trio fixture document route gate", () => {
     const selectedCycle1 = select(cycle1AcknowledgedThenCycle2, audit(1, context1))!;
     expect(hasDurableDocumentContextHeartbeatAckFromCursor(cycle1AcknowledgedThenCycle2, selectedCycle1)).toBe(true);
     // The ACK may arrive after cycle 2 starts, provided it references an already-sent cycle 1.
-    const cycle2BeforeAck1 = [probe(1), ...cycle(2, 1, context1), row(5, "snapshot", "ready", 2, context2),
+    const cycle2BeforeAck1 = [probe(1), ...cycle(2, 1, context1), row(5, "snapshot", "ready", null, context2),
       acknowledgement(6, 1), row(7, "queue", "durably_queued", 2, context2), row(8, "send", "sent", 2, context2)];
     const lateAck1 = select(cycle2BeforeAck1, audit(1, context1))!;
     expect(hasDurableDocumentContextHeartbeatAckFromCursor(cycle2BeforeAck1, lateAck1)).toBe(true);
