@@ -117,4 +117,4 @@ internal sealed class RbpProtectedRecoveryCarrierMaterializer
 /// <summary>Internal epoch-tagged draft; C1c must revalidate before any socket write.</summary>
 internal sealed record RbpRecoveryCarrierMaterializedFrame(
     RbpInvocationAnswer Answer, long ReservedSequence, int PlanVersion,
-    string WireEnvelopeDigest);
+    string PayloadDigest);

@@ -231,6 +231,8 @@ public sealed class RbpProtectedRecoveryCarrierMaterializerTests
             await new RbpProtectedRecoveryCarrierMaterializer(oneStore)
                 .MaterializeCurrentAsync(RecoveryId, Rsid, CancellationToken.None));
         Assert.Equal(exact, Convert.FromBase64String(one.Answer.Payload.GetProperty("data").GetString()!));
+        Assert.Equal(Rfc8785Json.Sha256Digest(one.Answer.Payload), one.PayloadDigest);
+        Assert.Null(typeof(RbpRecoveryCarrierMaterializedFrame).GetProperty("OuterEnvelopeDigest"));
         Assert.Equal(1, (await oneStore.GetRecoveryCarrierReservationAsync(RecoveryId))!.ChunkCount);
 
         using var splitDirectory = new RbpJournalTestDirectory();
