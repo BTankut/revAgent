@@ -2543,6 +2543,7 @@ function terminalAdmissionFor(
   const pending = record.pending;
   const correlationId = terminalCorrelationId(envelope);
   const receipt = pending?.dispatchReceipt ?? null;
+  const terminalSequence = envelope.seq;
   if (
     pending === null ||
     correlationId === null ||
@@ -2556,8 +2557,11 @@ function terminalAdmissionFor(
     receipt.intent !== "dispatch" ||
     !DIGEST_PATTERN.test(receipt.proofDigest) ||
     !DIGEST_PATTERN.test(receipt.routeSnapshotDigest) ||
-    !Number.isSafeInteger(receipt.egressEpoch) || receipt.egressEpoch < 0 ||
-    !Number.isSafeInteger(receipt.leaseTicket) || receipt.leaseTicket < 1
+    !Number.isSafeInteger(receipt.egressEpoch) ||
+    receipt.egressEpoch < 0 ||
+    !Number.isSafeInteger(receipt.leaseTicket) ||
+    receipt.leaseTicket < 1 ||
+    !isSafePositiveInteger(terminalSequence)
   ) {
     throw new Error("carrier terminal lacks an exact original dispatch admission");
   }
@@ -2581,7 +2585,7 @@ function terminalAdmissionFor(
     sessionBindingId: record.sessionBindingId,
     connectionId,
     correlationId,
-    terminalSequence: envelope.seq,
+    terminalSequence,
     pendingEnvelopeDigest: pending.envelopeDigest,
     pendingGatewaySequence: pending.gatewaySequence,
     dispatchReceiptDigest,
@@ -2594,7 +2598,7 @@ function terminalAdmissionFor(
     sessionBindingId: record.sessionBindingId,
     connectionId,
     correlationId,
-    terminalSequence: envelope.seq,
+    terminalSequence,
     pendingEnvelopeDigest: pending.envelopeDigest,
     pendingGatewaySequence: pending.gatewaySequence,
     dispatchReceiptDigest,
@@ -9611,7 +9615,9 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
           namespace: GATEWAY_RBP_SESSION_NAMESPACE, key: original.rsid, value: asJson(next),
           expect: { kind: "version", version: stored.version },
         });
-        return { kind: "committed" as const, record: next };
+        // Keep the committed evidence visible to the raw-store test seam that
+        // deliberately interleaves post-commit revocation before readback.
+        return { kind: "committed" as const, record: next, evidence: next.evidence };
       });
       if (persisted.ok) {
         if (persisted.value.kind === "committed") {
@@ -9853,8 +9859,6 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
             envelope.seq,
           )
         : undefined;
-    let completed: GatewayExecutorOutcome | null = null;
-    let completedInvocationId: string | null = null;
     const updated = await this.#updateSession(active.tenantId, active.rsid, (record) => {
       this.#assertAuthorityTicket(authorityTicket, connection, {
         session: active.record,
@@ -9934,61 +9938,6 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
           next,
         ];
       }
-      if (pending !== null && (envelope.type === "result" || envelope.type === "error")) {
-        const correlationId =
-          envelope.type === "result" && envelope.payload.kind === "invocation"
-            ? envelope.payload.invocation_id
-            : envelope.type === "result" && envelope.payload.kind === "batch"
-              ? envelope.payload.batch_id
-            : envelope.type === "error"
-              ? envelope.payload.invocation_id ?? null
-              : null;
-        if (correlationId !== pending.invocationId) {
-          throw new Error("terminal envelope does not match the active invocation");
-        }
-        const journals = terminalJournalRecords(pending.journalRecords, envelope);
-        const durableTerminalOutcome = terminalOutcome(envelope);
-        const terminalTruth = durableTerminalTruth(envelope);
-        const existing = evidence.find(
-          (candidate) => candidate.envelopeDigest === pending!.envelopeDigest,
-        );
-        const batchTerminal =
-          envelope.type === "result" && envelope.payload.kind === "batch"
-            ? {
-                result: structuredClone(envelope.payload) as BatchResult,
-                resultDigest: makeParamsDigest(
-                  envelope.payload as unknown as JsonValue,
-                ),
-              }
-            : null;
-        const journal: GatewayVerifiedBridgeJournalEvidence | null =
-          journals.length === 0
-            ? null
-            : {
-                kind: "known_terminal",
-                rsid: record.rsid,
-                sessionBindingId: record.sessionBindingId,
-                envelopeDigest: pending.envelopeDigest,
-                journalRecords: journals,
-                batchTerminal,
-                durableJournalVersion: record.sessionVersion,
-                recordedAtMs: this.#clock(),
-              };
-        evidence = [
-          ...evidence.filter(
-            (candidate) => candidate.envelopeDigest !== pending!.envelopeDigest,
-          ),
-          {
-            envelopeDigest: pending.envelopeDigest,
-            acceptance: existing?.acceptance ?? null,
-            journal,
-            terminalTruth,
-          },
-        ];
-        completed = durableTerminalOutcome;
-        completedInvocationId = pending.invocationId;
-        pending = null;
-      }
       return {
         ...record,
         sequence: accepted.state,
@@ -10015,29 +9964,6 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       this.#ticketScopeIsRevokedOrBlocked(authorityTicket)
     ) {
       await this.#revokeStaleAuthorizedSession(connection, envelope.rsid);
-    }
-    if (completedInvocationId !== null && completed !== null) {
-      if (!deliveryAuthorized) {
-        const waiter = this.#waiters.get(completedInvocationId);
-        if (waiter !== undefined) {
-          clearTimeout(waiter.timer);
-          this.#waiters.delete(completedInvocationId);
-          waiter.resolve({
-            state: "failed",
-            error: {
-              code: "executor_unavailable",
-              message: "identity revocation suppressed terminal delivery",
-            },
-          });
-        }
-        return;
-      }
-      const waiter = this.#waiters.get(completedInvocationId);
-      if (waiter !== undefined) {
-        clearTimeout(waiter.timer);
-        this.#waiters.delete(completedInvocationId);
-        waiter.resolve(completed);
-      }
     }
     if (!deliveryAuthorized) {
       throw new GatewayRbpFault(
