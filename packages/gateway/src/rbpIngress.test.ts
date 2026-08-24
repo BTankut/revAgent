@@ -28,6 +28,7 @@ import {
   GatewayBridgeSessionAuthority,
   GatewayRbpFault,
   type BridgeConnectionChannel,
+  type DispatchTransportHandoff,
 } from "./bridgeSession.js";
 import type {
   GatewayExecutorRequest,
@@ -1073,6 +1074,64 @@ describe("GW-12 production RBP ingress", () => {
     const closed = await client.closed;
     expect(closed).toMatchObject({ code: 1013, reason: "RBP application egress overloaded" });
     expect(held.callbacks).toHaveLength(0);
+    held.restore();
+  });
+
+  it("routes a WSS dispatch overload through one shared pre-start cleanup", async () => {
+    const restartable = createRestartableTestStore();
+    const activeIdentity = identity();
+    const authority = new GatewayBridgeSessionAuthority(restartable.store, activeIdentity);
+    let channel!: BridgeConnectionChannel;
+    const originalOpen = authority.openConnection.bind(authority);
+    vi.spyOn(authority, "openConnection").mockImplementation(async (input) => {
+      channel = input.channel;
+      return originalOpen(input);
+    });
+    const accepted = captureNextServerSocket();
+    const server = await startGatewayServer({
+      config,
+      ports: {
+        ...createFailClosedPorts(),
+        identity: activeIdentity,
+        protocolStore: restartable.store,
+        rbpIngress: createProductionRbpIngressHost({
+          authority,
+          wssEgress: { queuedFrames: 1, sendCompletionTimeoutMs: 100 },
+        }),
+      },
+    });
+    handles.push(server);
+    const client = await openRawWss(server.port);
+    const serverSocket = await accepted.promise;
+    client.socket.send(JSON.stringify(hello()));
+    await vi.waitFor(() => expect(client.messages[0]?.type).toBe("hello_ack"));
+    const held = holdWebSocketSendCallbacks(serverSocket);
+    const occupying = channel.send(JSON.stringify({ occupying: true }));
+    await vi.waitFor(() => expect(held.callbacks).toHaveLength(1));
+    const cancelBeforeStart = vi.fn(async (): Promise<boolean> => true);
+    const handoff: DispatchTransportHandoff = {
+      revalidate: vi.fn(async (): Promise<void> => undefined),
+      cancelBeforeStart,
+    };
+    if (channel.sendDispatchStarted === undefined) {
+      throw new Error("production WSS channel lacks dispatch-start carrier");
+    }
+    const sendsBeforeOverload = vi.mocked(serverSocket.send).mock.calls.length;
+    const overloaded = channel.sendDispatchStarted(
+      JSON.stringify({ reserved: "must-not-send" }),
+      handoff,
+    );
+    await expect(overloaded.started).rejects.toThrow("application egress queue overloaded");
+    await expect(overloaded.completion).rejects.toThrow("application egress queue overloaded");
+    await expect(Promise.all([overloaded.cancel(), overloaded.cancel()]))
+      .resolves.toStrictEqual([true, true]);
+    expect(cancelBeforeStart).toHaveBeenCalledTimes(1);
+    expect(handoff.revalidate).not.toHaveBeenCalled();
+    expect(vi.mocked(serverSocket.send).mock.calls).toHaveLength(sendsBeforeOverload);
+    held.callbacks.shift()!();
+    await occupying.catch(() => undefined);
+    const closed = await client.closed;
+    expect(closed).toMatchObject({ code: 1013, reason: "RBP application egress overloaded" });
     held.restore();
   });
 

@@ -1545,7 +1545,20 @@ export function createProductionRbpIngressHost(
               rejectStart(overloadError);
               const completion = Promise.reject<void>(overloadError);
               void completion.catch(() => undefined);
-              return { started, completion, cancel: async () => true };
+              // The queue rejected this dispatch before revalidation, but the
+              // Gateway has already persisted its reserved lease/pending
+              // record.  Do not claim a no-send outcome until that exact
+              // durable cancellation wins.  The promise is intentionally
+              // shared so a started-race cleanup and teardown cannot each
+              // invoke a new cancellation against a later lease.
+              let cancellation: Promise<boolean> | null = null;
+              const cancel = async (): Promise<boolean> => {
+                if (cancellation === null) {
+                  cancellation = boundedDispatchCancellation(handoff);
+                }
+                return await cancellation;
+              };
+              return { started, completion, cancel };
             }
             applicationEgressFrames = nextFrames;
             applicationEgressBytes = nextBytes;
