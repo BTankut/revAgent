@@ -22,7 +22,10 @@ import {
 } from "./bridgeSession.js";
 import type { GatewayExecutorRequest, GatewayJsonObject } from "./dispatch.js";
 import { gatewayUuidV7 } from "./identifiers.js";
-import { createEffectiveMcpRequestScopeV1 } from "./invocationContext.js";
+import {
+  createEffectiveMcpRequestScopeV1,
+  createGatewayDispatchProofAuthority,
+} from "./invocationContext.js";
 import { GatewayResourceAuthority } from "./resourceAuthority.js";
 import { createMemoryObjectStore, createRestartableTestStore } from "./testAdapters.js";
 
@@ -157,6 +160,19 @@ function contextUpdate(input: {
 
 interface TestChannel extends BridgeConnectionChannel {
   readonly frames: RbpEnvelope[];
+}
+
+interface Deferred<T = void> {
+  readonly promise: Promise<T>;
+  resolve(value: T): void;
+}
+
+function deferred<T = void>(): Deferred<T> {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
 }
 
 function channel(): TestChannel {
@@ -358,6 +374,59 @@ describe("GatewayBridgeSessionAuthority live document routing", () => {
       "journal_v1",
     ];
     await created.receive(opened.connectionId, registrationFrame);
+    expect(registeredFrame(openedChannel).payload.granted_session_capabilities).toEqual([
+      "batch_atomic",
+      "doc_context_cached_v1",
+    ]);
+  });
+
+  it("grants the complete provisioned HTTP carrier and session capability sets", async () => {
+    const fixture = createRestartableTestStore();
+    const resources = new GatewayResourceAuthority({
+      protocolStore: fixture.store,
+      objectStore: createMemoryObjectStore(),
+    });
+    const created = new GatewayBridgeSessionAuthority(
+      fixture.store,
+      identity({
+        connectionCapabilities: [
+          "journal_v1",
+          "transport_streamable_http",
+          "chunked_results",
+          "artifact_result_v1",
+        ],
+        sessionCapabilities: ["batch_atomic", "doc_context_cached_v1"],
+      }),
+      { resourceAuthority: resources },
+    );
+    authorities.push(created);
+    await created.open();
+    const offered = hello();
+    offered.payload.capabilities = [
+      "journal_v1",
+      "transport_streamable_http",
+      "chunked_results",
+      "artifact_result_v1",
+    ];
+    const openedChannel = channel();
+    const opened = await created.openConnection({
+      deviceToken: DEVICE_TOKEN,
+      binding: "http_sse",
+      hello: offered,
+      channel: openedChannel,
+    });
+    expect(opened.helloAck.payload.granted_capabilities).toEqual([
+      "journal_v1",
+      "chunked_results",
+      "artifact_result_v1",
+      "transport_streamable_http",
+    ]);
+    const register = registration("http-full-grants");
+    register.payload.session_capabilities = [
+      "batch_atomic",
+      "doc_context_cached_v1",
+    ];
+    await created.receive(opened.connectionId, register);
     expect(registeredFrame(openedChannel).payload.granted_session_capabilities).toEqual([
       "batch_atomic",
       "doc_context_cached_v1",
@@ -774,6 +843,90 @@ describe("GatewayBridgeSessionAuthority live document routing", () => {
     expect(resolve(created).principalKey).toBe(`${TENANT_ID}:${USER_ID}`);
   });
 
+  it.each(["wss", "http_sse"] as const)(
+    "persists the %s document route before the next heartbeat-driven acknowledgement",
+    async (binding) => {
+      const fixture = createRestartableTestStore();
+      const observations: Array<{ readonly stage: string; readonly sequence: number; readonly contextDigest: string }> = [];
+      const created = new GatewayBridgeSessionAuthority(fixture.store, identity(
+        binding === "http_sse"
+          ? { connectionCapabilities: ["transport_streamable_http"] }
+          : {},
+      ), {
+        onDocumentContextObservation: (observation) => observations.push(observation),
+      });
+      authorities.push(created);
+      await created.open();
+      const openedChannel = channel();
+      const offered = hello();
+      if (binding === "http_sse") {
+        offered.payload.capabilities = ["partial_progress", "transport_streamable_http"];
+      }
+      const opened = await created.openConnection({
+        deviceToken: DEVICE_TOKEN,
+        binding,
+        hello: offered,
+        channel: openedChannel,
+      });
+      await created.receive(opened.connectionId, registration(`route-before-ack-${binding}`));
+      const registered = registeredFrame(openedChannel);
+      const session = {
+        connectionId: opened.connectionId,
+        channel: openedChannel,
+        rsid: registered.payload.rsid,
+      };
+
+      await created.receive(session.connectionId, contextUpdate({
+        rsid: session.rsid,
+        seq: 1,
+        activeDocument: "document-route-before-ack",
+        documents: [document("document-route-before-ack", true)],
+      }));
+
+      // This is the public route authority, independently visible before the
+      // worker emits its later heartbeat fence acknowledgement.
+      expect(resolve(created).documentIdentity).toEqual({
+        kind: "live",
+        session_document_id: "document-route-before-ack",
+      });
+      expect(observations).toEqual([expect.objectContaining({
+        stage: "accepted", sequence: 1, contextDigest: expect.stringMatching(/^[0-9a-f]{64}$/u),
+      })]);
+      expect(session.channel.frames.filter((frame) => frame.type === "heartbeat_ack")).toEqual([]);
+
+      await created.receive(session.connectionId, {
+        v: 1,
+        type: "heartbeat",
+        id: id(),
+        ts: new Date().toISOString(),
+        payload: { bridge_version: "m4-route-test", acks: [], sessions: [] },
+      });
+      expect(session.channel.frames.filter((frame) => frame.type === "heartbeat_ack")).toHaveLength(1);
+    },
+  );
+
+  it("does not journal a rejected document update without route or acknowledgement", async () => {
+    const fixture = createRestartableTestStore();
+    const observations: Array<{ readonly stage: string; readonly sequence: number; readonly contextDigest: string }> = [];
+    const created = new GatewayBridgeSessionAuthority(fixture.store, identity(), {
+      onDocumentContextObservation: (observation) => observations.push(observation),
+    });
+    authorities.push(created);
+    await created.open();
+    const session = await register(created, "document-route-rejected");
+
+    await expect(created.receive(session.connectionId, contextUpdate({
+      rsid: session.rsid,
+      seq: 1,
+      activeDocument: "document-a",
+      documents: [document("document-a", true), document("document-b", true)],
+    }))).rejects.toMatchObject({ code: "protocol", httpStatus: 400 });
+
+    expect(observations).toEqual([]);
+    expectUnavailable(created);
+    expect(session.channel.frames.filter((frame) => frame.type === "heartbeat_ack")).toEqual([]);
+  });
+
   it("clears the live route when a later accepted context has no active document", async () => {
     const created = await authority();
     const session = await register(created);
@@ -962,5 +1115,122 @@ describe("GatewayBridgeSessionAuthority live document routing", () => {
     );
 
     expectUnavailable(created);
+  });
+
+  it("fences a blocked resume send at phase one without holding another rsid", async () => {
+    const fixture = createRestartableTestStore();
+    let nowMs = 1_775_000_100_000;
+    const drainEntered = deferred();
+    const releaseDrain = deferred();
+    const created = new GatewayBridgeSessionAuthority(fixture.store, identity(), {
+      clock: () => nowMs,
+      wait: async () => {
+        drainEntered.resolve();
+        await releaseDrain.promise;
+        nowMs += 5_000;
+      },
+    });
+    authorities.push(created);
+    await created.open();
+    const original = await register(created, "lock-scope-original");
+    await created.detach(original.connectionId);
+
+    const resumeStarted = deferred();
+    const releaseResume = deferred();
+    const blocked = channel();
+    const send = blocked.send.bind(blocked);
+    blocked.send = async (serialized): Promise<void> => {
+      const frame = JSON.parse(serialized) as RbpEnvelope;
+      if (frame.type === "resume_ack") {
+        resumeStarted.resolve();
+        await releaseResume.promise;
+      }
+      await send(serialized);
+    };
+    const replacement = await created.openConnection({
+      deviceToken: DEVICE_TOKEN,
+      binding: "wss",
+      hello: hello(),
+      channel: blocked,
+    });
+    const resuming = created.receive(replacement.connectionId, {
+      v: 1,
+      type: "session_resume",
+      id: id(),
+      ts: new Date().toISOString(),
+      payload: {
+        rsid: original.rsid,
+        resume_token: original.resumeToken,
+        last_rx_seq: 0,
+      },
+    });
+    await resumeStarted.promise;
+
+    const revoker = await created.openConnection({
+      deviceToken: DEVICE_TOKEN,
+      binding: "wss",
+      hello: hello(),
+      channel: channel(),
+    });
+    const unregistering = created.receive(revoker.connectionId, {
+      v: 1,
+      type: "session_unregister",
+      id: id(),
+      ts: new Date().toISOString(),
+      payload: { rsid: original.rsid, reason: "revit_exited" },
+    });
+    await drainEntered.promise;
+
+    const egress = fixture.snapshot().records.find((row) =>
+      row.namespace === "gateway.rbp-session-egress/v2" &&
+      typeof row.value === "object" && row.value !== null &&
+      "rsid" in row.value && row.value.rsid === original.rsid,
+    );
+    expect(egress?.value).toMatchObject({
+      fence: {
+        state: "revocation_pending",
+        lease: { operation: "resume_ack", phase: "started" },
+      },
+    });
+
+    // A distinct rsid is never queued behind the blocked carrier's tail.
+    const other = await register(created, "lock-scope-other");
+    expect(other.rsid).not.toBe(original.rsid);
+
+    releaseResume.resolve();
+    await expect(resuming).rejects.toMatchObject({
+      code: "unavailable",
+      message: "dispatch completed after durable revocation",
+    });
+    releaseDrain.resolve();
+    await expect(unregistering).resolves.toBeUndefined();
+    expect(blocked.frames.filter((frame) => frame.type === "resume_ack")).toHaveLength(1);
+  });
+});
+
+describe("Gateway dispatch proof nominal authority", () => {
+  it("rejects a forged or foreign proof while JCS-equivalent route material remains stable", () => {
+    const first = createGatewayDispatchProofAuthority();
+    const second = createGatewayDispatchProofAuthority();
+    const material = {
+      tenantId: "tenant-route", rsid: "rsid-route", effectiveMcpSessionId: "mcp-route",
+      sessionBindingId: "binding-route", connectionId: "connection-route",
+      routeSnapshot: { b: 2, a: 1 }, documentHash: "sha256:" + "a".repeat(64),
+      documentSequence: 2, documentAck: 1, gatewayProcessEpoch: "epoch-route",
+      gatewayProcessOrdinal: 4, effectiveScope: { principalKey: "p", effectiveMcpSessionId: "mcp-route" },
+      invocationId: "invoke-route", correlationId: "invoke-route",
+      envelopeDigest: ("sha256:" + "b".repeat(64)) as `sha256:${string}`,
+      toolName: "route_tool", toolVersion: "1", argsDigest: ("sha256:" + "c".repeat(64)) as `sha256:${string}`,
+      policy: { decision: "auto" }, confirmationId: null,
+    };
+    const proof = first.mint(material);
+    expect(first.digest(proof)).toMatch(/^sha256:/u);
+    expect(first.routeSnapshotDigest(proof)).toBe(first.routeSnapshotDigest(proof));
+    expect(() => second.assert(proof)).toThrow(/not owned/u);
+    expect(() => first.assert(Object.freeze({}))).toThrow(/not owned/u);
+    expect(first.digest(first.mint({ ...material, routeSnapshot: { a: 1, b: 2 } })))
+      .toBe(first.digest(proof));
+    expect(first.digest(first.mint({ ...material, toolName: "changed" })))
+      .not.toBe(first.digest(proof));
   });
 });

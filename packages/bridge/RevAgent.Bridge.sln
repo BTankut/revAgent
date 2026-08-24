@@ -1,4 +1,4 @@
-Microsoft Visual Studio Solution File, Format Version 12.00
+﻿Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
 VisualStudioVersion = 17.0.31903.59
 MinimumVisualStudioVersion = 10.0.40219.1
@@ -15,6 +15,10 @@ EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RevAgent.Bridge.Tests", "tests\RevAgent.Bridge.Tests\RevAgent.Bridge.Tests.csproj", "{400970A8-AEC3-4D82-9D3A-C2B6B15F2671}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RevAgent.Bridge.PowerCutHarness", "tests\RevAgent.Bridge.PowerCutHarness\RevAgent.Bridge.PowerCutHarness.csproj", "{8C2DF0D1-F031-48EA-84FD-6A762FD625A9}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{56D93A93-0E0F-48AF-89C0-F33EFD85CB3F}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RevAgent.Bridge.RealWorkerHost.Tests", "tests\RevAgent.Bridge.RealWorkerHost.Tests\RevAgent.Bridge.RealWorkerHost.Tests.csproj", "{420C5FF0-6A61-42B0-A7E9-DE21622EFE8B}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -50,5 +54,12 @@ Global
 		{8C2DF0D1-F031-48EA-84FD-6A762FD625A9}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{8C2DF0D1-F031-48EA-84FD-6A762FD625A9}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{8C2DF0D1-F031-48EA-84FD-6A762FD625A9}.Release|Any CPU.Build.0 = Release|Any CPU
+		{420C5FF0-6A61-42B0-A7E9-DE21622EFE8B}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{420C5FF0-6A61-42B0-A7E9-DE21622EFE8B}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{420C5FF0-6A61-42B0-A7E9-DE21622EFE8B}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{420C5FF0-6A61-42B0-A7E9-DE21622EFE8B}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{420C5FF0-6A61-42B0-A7E9-DE21622EFE8B} = {56D93A93-0E0F-48AF-89C0-F33EFD85CB3F}
 	EndGlobalSection
 EndGlobal

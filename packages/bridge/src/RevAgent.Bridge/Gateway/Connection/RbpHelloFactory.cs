@@ -15,6 +15,10 @@ internal sealed class RbpHelloProfile
     internal const string StreamableHttpCapability =
         "transport_streamable_http";
 
+    internal const string ChunkedResultsCapability = "chunked_results";
+
+    internal const string ArtifactResultCapability = "artifact_result_v1";
+
     internal RbpHelloProfile(
         string bridgeVersion,
         string hostname,
@@ -86,7 +90,8 @@ internal sealed class RbpHelloProfile
     }
 
     private static bool IsImplementedConnectionCapability(string capability) =>
-        capability is JournalCapability or StreamableHttpCapability;
+        capability is JournalCapability or StreamableHttpCapability or
+            ChunkedResultsCapability or ArtifactResultCapability;
 
     private static IReadOnlyList<string> FreezeUnique(
         IReadOnlyList<string> values,

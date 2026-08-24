@@ -16,6 +16,8 @@ import { WebSocket, WebSocketServer, type RawData } from "ws";
 import {
   GatewayRbpFault,
   type BridgeConnectionChannel,
+  type DispatchPreStartCancellation,
+  type DispatchTransportHandoff,
   type GatewayBridgeSessionAuthority,
 } from "./bridgeSession.js";
 import type { DeviceAuthContext } from "./authContext.js";
@@ -43,6 +45,8 @@ const RBP_WSS_MAX_QUEUED_FRAMES = 256;
 const RBP_WSS_DEFAULT_SEND_COMPLETION_TIMEOUT_MS = 5_000;
 const RBP_WSS_MIN_SEND_COMPLETION_TIMEOUT_MS = 1;
 const RBP_WSS_MAX_SEND_COMPLETION_TIMEOUT_MS = 60_000;
+const RBP_DISPATCH_REVALIDATION_TIMEOUT_MS = 5_000;
+const RBP_DISPATCH_CLEANUP_TIMEOUT_MS = 250;
 const HTTP_SSE_GLOBAL_CONNECTION_LIMIT = 1_024;
 const HTTP_SSE_TENANT_CONNECTION_LIMIT = 128;
 const HTTP_SSE_DEVICE_CONNECTION_LIMIT = 8;
@@ -50,6 +54,87 @@ const HTTP_SSE_ATTACH_TTL_MS = 30_000;
 const HTTP_SSE_REGISTER_TTL_MS = 60_000;
 const HTTP_SSE_SWEEP_INTERVAL_MS = 5_000;
 const HTTP_SSE_DISPOSED_TOMBSTONE_TTL_MS = 60_000;
+const HTTP_SSE_DELIVERY_OBSERVATION_LIMIT = 256;
+const HTTP_SSE_DEFAULT_QUEUED_FRAMES = 32;
+const HTTP_SSE_MIN_QUEUED_FRAMES = 1;
+const HTTP_SSE_MAX_QUEUED_FRAMES = 256;
+const HTTP_SSE_DEFAULT_TEARDOWN_TIMEOUT_MS = RBP_WSS_DEFAULT_SEND_COMPLETION_TIMEOUT_MS;
+
+async function boundedDispatchRevalidate(
+  handoff: DispatchTransportHandoff,
+  controller: AbortController,
+  timeoutMs = RBP_DISPATCH_REVALIDATION_TIMEOUT_MS,
+  requestCancellation: () => Promise<DispatchPreStartCancellation> = () =>
+    rawDispatchCancellation(handoff),
+): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const revalidation = handoff.revalidate(controller.signal);
+  // An aborted producer may resolve/reject much later; observe it now so the
+  // next queue entry never inherits an unhandled rejection.
+  void revalidation.catch(() => undefined);
+  try {
+    await Promise.race([
+      revalidation,
+      new Promise<void>((_, reject) => {
+        timer = setTimeout(() => {
+          controller.abort();
+          reject(new Error("dispatch revalidation timed out before invocation"));
+        }, timeoutMs);
+      }),
+    ]);
+    if (controller.signal.aborted) {
+      throw new Error("dispatch revalidation cancelled before invocation");
+    }
+  } catch (error) {
+    controller.abort();
+    const settlement = await observeDispatchCancellation(requestCancellation());
+    if (settlement !== "settled_no_send") {
+      throw new Error("dispatch cancellation cleanup is uncertain; durable reservation remains frozen");
+    }
+    throw error;
+  } finally {
+    if (timer !== null) clearTimeout(timer);
+  }
+}
+
+/** The raw durable task is ownership truth; callers may separately observe it. */
+function rawDispatchCancellation(
+  handoff: DispatchTransportHandoff,
+): Promise<DispatchPreStartCancellation> {
+  const cleanup = handoff.cancelBeforeStart();
+  // Sink the producer immediately. The transformed task below still preserves
+  // the only useful carrier result without promoting a timeout into truth.
+  void cleanup.catch(() => undefined);
+  return cleanup.then(
+    (settled) => settled ? "settled_no_send" : "cancellation_pending",
+    () => "cancellation_pending",
+  );
+}
+
+/** Observe one shared cancellation task without turning a timeout into truth. */
+async function observeDispatchCancellation(
+  cleanup: Promise<DispatchPreStartCancellation>,
+): Promise<DispatchPreStartCancellation> {
+  // A late store completion must never create an unhandled rejection after a
+  // transport queue has advanced past this cancelled generation.
+  void cleanup.catch(() => undefined);
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  try {
+    const observed = await Promise.race([
+      cleanup,
+      new Promise<DispatchPreStartCancellation>((resolve) => {
+        // This is an observation bound, not a durable outcome. The shared
+        // handoff promise continues after connection detach/queue advance.
+        timer = setTimeout(() => resolve("cancellation_pending"), RBP_DISPATCH_CLEANUP_TIMEOUT_MS);
+      }),
+    ]);
+    return observed;
+  } catch {
+    return "cancellation_pending";
+  } finally {
+    if (timer !== null) clearTimeout(timer);
+  }
+}
 
 type WssConnectionState = "opening" | "open" | "closing" | "closed" | "faulted";
 type HttpConnectionState =
@@ -102,6 +187,14 @@ export interface RbpWssEgressConfig {
   readonly sendCompletionTimeoutMs?: number;
 }
 
+/** Internal carrier-only backpressure seam; it does not alter any RBP wire API. */
+export interface RbpHttpSseEgressConfig {
+  readonly queuedFrames?: number;
+  readonly queuedBytes?: number;
+  /** Internal carrier teardown watchdog; never wire-visible. */
+  readonly teardownTimeoutMs?: number;
+}
+
 /** Testable clock/scheduler seam; production always retains the frozen values. */
 export interface RbpHttpSseLifecycleRuntime {
   readonly clock?: () => number;
@@ -117,6 +210,25 @@ export interface RbpHttpSseLifecycleRuntime {
     readonly tenantAdmissions: number;
     readonly deviceAdmissions: number;
   }) => void;
+}
+
+export const RBP_HTTP_SSE_DELIVERY_OBSERVATION_CONTRACT =
+  "revagent.gateway-rbp-http-sse-delivery-observation/v1" as const;
+
+/**
+ * Value-free delivery boundary evidence for the real HTTP/SSE carrier.
+ * Connection ids are correlation handles, never credentials; payload and
+ * transport-error text are deliberately unrepresentable here.
+ */
+export interface RbpHttpSseDeliveryObservation {
+  readonly contractVersion: typeof RBP_HTTP_SSE_DELIVERY_OBSERVATION_CONTRACT;
+  readonly event: "gateway.rbp_http_sse_delivery_observation";
+  readonly timestamp: string;
+  readonly connectionId: string;
+  readonly frame: "rbp";
+  readonly action: "queued" | "write_callback" | "drain" | "flush" | "close" | "error";
+  readonly state: HttpConnectionState;
+  readonly reason: "none" | "stream_closed" | "write_failed" | "close_failed";
 }
 
 export const RBP_WSS_INTERNAL_DIAGNOSTIC_CONTRACT =
@@ -136,12 +248,16 @@ export interface ProductionRbpIngressOptions {
   readonly authority: GatewayBridgeSessionAuthority;
   readonly wssQueue?: RbpWssQueueConfig;
   readonly wssEgress?: RbpWssEgressConfig;
+  readonly httpSseEgress?: RbpHttpSseEgressConfig;
   readonly httpSseLifecycleRuntime?: RbpHttpSseLifecycleRuntime;
   readonly writeOpeningRefusalLog?: (serializedObservation: string) => void;
   readonly onOpeningRefusalObservation?: (
     observation: RbpOpeningRefusalObservation,
   ) => void;
   readonly onWssInternalDiagnostic?: (diagnostic: RbpWssInternalDiagnostic) => void;
+  readonly onHttpSseDeliveryObservation?: (
+    observation: RbpHttpSseDeliveryObservation,
+  ) => void;
 }
 
 interface PublicWssFault {
@@ -315,24 +431,134 @@ export interface ProductionRbpIngressHost extends RbpIngressHost {
   readonly authority: GatewayBridgeSessionAuthority;
 }
 
+/**
+ * Non-production carrier for the exact production ingress implementation.
+ *
+ * This deliberately does not subclass or reimplement any ingress lifecycle:
+ * the returned object forwards the production mount/start/upgrade/drain/close
+ * functions verbatim and changes only the deployment-admission kind.  That
+ * makes a conformance listener observable as such while keeping C28/C29 on
+ * the production RBP state machine.
+ */
+export interface ConformanceRbpIngressHost extends RbpIngressHost {
+  readonly kind: "conformance";
+  readonly enabled: true;
+  readonly authority: GatewayBridgeSessionAuthority;
+  readonly delegate: ProductionRbpIngressHost;
+}
+const CONFORMANCE_INGRESS_BRAND = new WeakSet<object>();
+
+/** Module-private nominal admission; shape-compatible caller objects never pass. */
+export function isFactoryConformanceRbpIngressHost(value: unknown): value is ConformanceRbpIngressHost {
+  return value !== null && typeof value === "object" && CONFORMANCE_INGRESS_BRAND.has(value);
+}
+
+export function createConformanceRbpIngressHost(
+  options: ProductionRbpIngressOptions,
+): ConformanceRbpIngressHost {
+  const delegate = createProductionRbpIngressHost(options);
+  const host: ConformanceRbpIngressHost = {
+    kind: "conformance" as const,
+    mountPrefix: delegate.mountPrefix,
+    enabled: true as const,
+    authority: delegate.authority,
+    delegate,
+    refuse: delegate.refuse,
+    start: delegate.start,
+    mount: delegate.mount,
+    handleUpgrade: delegate.handleUpgrade,
+    beginDrain: delegate.beginDrain,
+    close: delegate.close,
+  };
+  CONFORMANCE_INGRESS_BRAND.add(host);
+  return Object.freeze(host);
+}
+
+interface SsePendingDispatchEntry {
+    readonly serialized: string;
+    readonly handoff: DispatchTransportHandoff | null;
+    readonly controller: AbortController | null;
+    readonly generation: number;
+    readonly resolveStarted: (() => void) | null;
+    readonly rejectStarted: ((error: Error) => void) | null;
+    readonly resolveCompletion: (() => void) | null;
+    readonly rejectCompletion: ((error: Error) => void) | null;
+    readonly cancelled: () => boolean;
+    readonly cancelLocal: () => void;
+    readonly requestCancellation: (() => Promise<DispatchPreStartCancellation>) | null;
+}
+
 class HttpSseChannel implements BridgeConnectionChannel {
-  readonly #pending: string[] = [];
+  readonly #pending: SsePendingDispatchEntry[] = [];
+  readonly #inFlight = new Set<SsePendingDispatchEntry>();
+  /** Raw durable cancellation work, not the 250ms presentation observation. */
+  readonly #rawSettlements = new Set<Promise<DispatchPreStartCancellation>>();
   #response: ServerResponse | null = null;
   #pendingBytes = 0;
   #closed = false;
+  #connectionId: string | null = null;
+  #dispatchGeneration = 0;
 
-  public constructor(private readonly onClose: () => void) {}
+  public constructor(
+    private readonly onClose: () => void,
+    private readonly onDelivery: (
+      connectionId: string,
+      action: RbpHttpSseDeliveryObservation["action"],
+      reason: RbpHttpSseDeliveryObservation["reason"],
+    ) => void,
+    private readonly maxPendingFrames = HTTP_SSE_DEFAULT_QUEUED_FRAMES,
+    private readonly maxPendingBytes = MAX_PENDING_TRANSPORT_BYTES,
+    private readonly teardownTimeoutMs = HTTP_SSE_DEFAULT_TEARDOWN_TIMEOUT_MS,
+  ) {}
+
+  public bindConnection(connectionId: string): void {
+    this.#connectionId = connectionId;
+  }
+
+  #observe(
+    action: RbpHttpSseDeliveryObservation["action"],
+    reason: RbpHttpSseDeliveryObservation["reason"] = "none",
+  ): void {
+    if (this.#connectionId !== null) this.onDelivery(this.#connectionId, action, reason);
+  }
 
   public get closed(): boolean {
     return this.#closed;
   }
 
+  #ownCancellation(
+    handoff: DispatchTransportHandoff,
+  ): () => Promise<DispatchPreStartCancellation> {
+    let raw: Promise<DispatchPreStartCancellation> | null = null;
+    return (): Promise<DispatchPreStartCancellation> => {
+      if (raw !== null) return raw;
+      raw = rawDispatchCancellation(handoff);
+      this.#rawSettlements.add(raw);
+      // The set is the ownership boundary. Remove only when the raw durable
+      // task settles; a bounded observer is deliberately not allowed here.
+      void raw.then(() => {
+        this.#rawSettlements.delete(raw!);
+      });
+      return raw;
+    };
+  }
+
+  async #settleRawCancellations(): Promise<void> {
+    for (;;) {
+      const snapshot = [...this.#rawSettlements];
+      if (snapshot.length === 0) return;
+      await Promise.allSettled(snapshot);
+      if (this.#rawSettlements.size === 0) return;
+    }
+  }
+
   #fail(error: Error): never {
+    this.#observe("error", "write_failed");
     this.onClose();
     throw error;
   }
 
-  public attach(response: ServerResponse): void {
+  public async attach(response: ServerResponse): Promise<void> {
     if (this.#closed) {
       this.#fail(new GatewayRbpFault("auth", "SSE authority is revoked", 403, 4403));
     }
@@ -340,15 +566,53 @@ class HttpSseChannel implements BridgeConnectionChannel {
       throw new GatewayRbpFault("protocol", "SSE stream is already attached", 409, 4400);
     }
     this.#response = response;
+    // An HTTP/SSE stream carries the Gateway's registration authority.  Do
+    // not leave Nagle coalescing to decide whether the first lifecycle frame
+    // reaches the real HTTP client before its bounded startup deadline.
+    response.socket?.setNoDelay(true);
     response.once("close", this.onClose);
     response.once("error", this.onClose);
     if (response.destroyed || response.writableEnded) {
       this.#fail(new Error("SSE stream is closed"));
     }
+    const attachedPending = this.#pending.splice(0);
     try {
-      for (const serialized of this.#pending.splice(0)) {
-        if (!response.write(`event: rbp\ndata: ${serialized}\n\n`)) {
-          throw new Error("SSE stream applied backpressure while attaching");
+      for (let index = 0; index < attachedPending.length; index += 1) {
+        const pending = attachedPending[index]!;
+        this.#pendingBytes -= Buffer.byteLength(pending.serialized);
+        this.#inFlight.add(pending);
+        try {
+          if (pending.cancelled()) throw new Error("SSE dispatch queue cancelled before invocation");
+          // Queue entries retain only an opaque closure, never proof bytes.
+          if (pending.handoff !== null && pending.controller !== null) {
+            await boundedDispatchRevalidate(
+              pending.handoff,
+              pending.controller,
+              RBP_DISPATCH_REVALIDATION_TIMEOUT_MS,
+              pending.requestCancellation!,
+            );
+          }
+          if (pending.cancelled()) throw new Error("SSE dispatch queue cancelled before invocation");
+          // #writeFrame crosses response.write synchronously before returning
+          // its completion promise, so resolve started only after the actual
+          // transport invocation has occurred.
+          const write = this.#writeFrame(response, pending.serialized);
+          pending.resolveStarted?.();
+          await write;
+          pending.resolveCompletion?.();
+        } catch (error) {
+          const failure = error instanceof Error ? error : new Error(String(error));
+          pending.rejectStarted?.(failure);
+          pending.rejectCompletion?.(failure);
+          for (const remainder of attachedPending.slice(index + 1)) {
+            remainder.cancelLocal();
+            void remainder.requestCancellation?.();
+            remainder.rejectStarted?.(failure);
+            remainder.rejectCompletion?.(failure);
+          }
+          throw failure;
+        } finally {
+          this.#inFlight.delete(pending);
         }
       }
     } catch (error) {
@@ -363,19 +627,161 @@ class HttpSseChannel implements BridgeConnectionChannel {
     const response = this.#response;
     if (response === null) {
       const nextBytes = this.#pendingBytes + Buffer.byteLength(serialized);
-      if (nextBytes > MAX_PENDING_TRANSPORT_BYTES) {
+      if (this.#pending.length + 1 > this.maxPendingFrames || nextBytes > this.maxPendingBytes) {
         this.#fail(new Error("SSE attach backlog exceeds the bounded transport window"));
       }
       this.#pendingBytes = nextBytes;
-      this.#pending.push(serialized);
+      this.#pending.push({ serialized, handoff: null, controller: null, generation: 0, resolveStarted: null, rejectStarted: null, resolveCompletion: null, rejectCompletion: null, cancelled: () => false, cancelLocal: () => undefined, requestCancellation: null });
+      this.#observe("queued");
       return;
     }
     if (response.destroyed || response.writableEnded) {
       this.#fail(new Error("SSE stream is closed"));
     }
+    await this.#writeFrame(response, serialized);
+  }
+
+  public sendDispatchStarted(
+    serialized: string,
+    handoff: DispatchTransportHandoff,
+  ): { readonly started: Promise<void>; readonly completion: Promise<void>; cancel(): Promise<boolean> } {
+    let resolveStarted!: () => void;
+    let rejectStarted!: (error: Error) => void;
+    let resolveCompletion!: () => void;
+    let rejectCompletion!: (error: Error) => void;
+    const started = new Promise<void>((resolve, reject) => { resolveStarted = resolve; rejectStarted = reject; });
+    const completion = new Promise<void>((resolve, reject) => { resolveCompletion = resolve; rejectCompletion = reject; });
+    // Install sinks before returning the pair: a caller that times out after
+    // observing only `started` cannot turn a later attach/close failure into
+    // an unhandled rejection.
+    void started.catch(() => undefined);
+    void completion.catch(() => undefined);
+    let startedAtInvocation = false;
+    let cancelled = false;
+    let queued: SsePendingDispatchEntry | null = null;
+    let controller: AbortController | null = null;
+    const requestCancellation = this.#ownCancellation(handoff);
+    const cancelLocal = (): void => {
+      cancelled = true;
+      controller?.abort();
+    };
+    try {
+      if (this.#closed) throw new Error("SSE stream is closed");
+      const response = this.#response;
+      if (response === null) {
+        const nextBytes = this.#pendingBytes + Buffer.byteLength(serialized);
+        if (this.#pending.length + 1 > this.maxPendingFrames || nextBytes > this.maxPendingBytes) {
+          throw new Error("SSE attach backlog exceeds the bounded transport window");
+        }
+        this.#pendingBytes = nextBytes;
+        controller = new AbortController();
+        queued = { serialized, handoff, controller, generation: ++this.#dispatchGeneration, resolveStarted, rejectStarted, resolveCompletion, rejectCompletion, cancelled: () => cancelled, cancelLocal, requestCancellation };
+        this.#pending.push(queued);
+        this.#observe("queued");
+      } else {
+        if (response.destroyed || response.writableEnded) throw new Error("SSE stream is closed");
+        controller = new AbortController();
+        const inFlight: SsePendingDispatchEntry = {
+          serialized,
+          handoff,
+          controller,
+          generation: ++this.#dispatchGeneration,
+          resolveStarted,
+          rejectStarted,
+          resolveCompletion,
+          rejectCompletion,
+          cancelled: () => cancelled,
+          cancelLocal,
+          requestCancellation,
+        };
+        this.#inFlight.add(inFlight);
+        void (async () => {
+          try {
+            await boundedDispatchRevalidate(handoff, controller, RBP_DISPATCH_REVALIDATION_TIMEOUT_MS, requestCancellation);
+            if (cancelled) throw new Error("SSE dispatch queue cancelled before invocation");
+            // #writeFrame invokes response.write synchronously before it
+            // returns.  Keep this directly after the authoritative async
+            // revalidation: no intervening await may widen the revocation
+            // window.
+            const write = this.#writeFrame(response, serialized);
+            startedAtInvocation = true;
+            resolveStarted();
+            await write;
+            resolveCompletion();
+          } catch (error) {
+            const failure = error instanceof Error ? error : new Error(String(error));
+            rejectStarted(failure);
+            rejectCompletion(failure);
+          } finally {
+            this.#inFlight.delete(inFlight);
+          }
+        })();
+      }
+    } catch (error) {
+      const failure = error instanceof Error ? error : new Error(String(error));
+      rejectStarted(failure);
+      rejectCompletion(failure);
+    }
+    const cancel = async (): Promise<boolean> => {
+      if (startedAtInvocation) return false;
+      cancelLocal();
+      if (queued !== null) {
+        const index = this.#pending.indexOf(queued);
+        if (index >= 0) {
+          this.#pending.splice(index, 1);
+          this.#pendingBytes -= Buffer.byteLength(serialized);
+          queued = null;
+        }
+      }
+      const failure = new Error("SSE dispatch queue cancelled before invocation");
+      rejectStarted(failure);
+      rejectCompletion(failure);
+      return (await observeDispatchCancellation(requestCancellation())) === "settled_no_send";
+    };
+    return { started, completion, cancel };
+  }
+
+  /**
+   * Resolving `write()` is only queue acceptance.  The callback is Node's
+   * delivery boundary for ServerResponse; a `false` return additionally
+   * requires a drain before another RBP frame can be accepted.  Keeping both
+   * waits here makes attach backlog and normal live delivery identical.
+   */
+  async #writeFrame(response: ServerResponse, serialized: string): Promise<void> {
+    const frame = `event: rbp\ndata: ${serialized}\n\n`;
     let writable: boolean;
     try {
-      writable = response.write(`event: rbp\ndata: ${serialized}\n\n`);
+      writable = await new Promise<boolean>((resolve, reject) => {
+        let settled = false;
+        let accepted = false;
+        const finish = (error?: Error): void => {
+          if (settled) return;
+          settled = true;
+          response.off("close", onClose);
+          response.off("error", onError);
+          if (error === undefined) resolve(accepted);
+          else reject(error);
+        };
+        const onClose = (): void => finish(new Error("SSE stream closed before write callback"));
+        const onError = (error: Error): void => finish(error);
+        // The callback is the only success path: `write()` returning true is
+        // not proof that bytes crossed the ServerResponse boundary.
+        response.once("close", onClose);
+        response.once("error", onError);
+        try {
+          accepted = response.write(frame, (error?: Error | null) => {
+            if (error === undefined || error === null) this.#observe("write_callback");
+            finish(error === undefined || error === null ? undefined : error);
+          });
+          const flush = (response as unknown as { flush?: () => void }).flush;
+          // Compression middleware may buffer SSE chunks after write().  Its
+          // optional flush is part of the same delivery boundary.
+          flush?.call(response);
+          this.#observe("flush");
+        } catch (error) {
+          finish(error instanceof Error ? error : new Error(String(error)));
+        }
+      });
     } catch (error) {
       if (error instanceof Error) this.#fail(error);
       this.#fail(new Error(String(error)));
@@ -390,7 +796,10 @@ class HttpSseChannel implements BridgeConnectionChannel {
           response.off("close", onClose);
           response.off("error", onError);
           if (error !== undefined) this.onClose();
-          if (error === undefined) resolve();
+          if (error === undefined) {
+            this.#observe("drain");
+            resolve();
+          }
           else reject(error);
         };
         response.once("drain", onDrain);
@@ -403,17 +812,48 @@ class HttpSseChannel implements BridgeConnectionChannel {
   public async close(): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
-    let closeError: Error | null = null;
-    if (this.#response !== null && !this.#response.writableEnded) {
-      try {
-        this.#response.end();
-      } catch (error) {
-        closeError = error instanceof Error ? error : new Error(String(error));
-      }
+    const cancelled = new Error("SSE dispatch queue cancelled before invocation");
+    for (const pending of this.#pending.splice(0)) {
+      pending.cancelLocal();
+      void pending.requestCancellation?.();
+      pending.rejectStarted?.(cancelled);
+      pending.rejectCompletion?.(cancelled);
     }
-    this.#response = null;
-    this.#pending.length = 0;
+    for (const pending of this.#inFlight) {
+      pending.cancelLocal();
+      void pending.requestCancellation?.();
+      pending.rejectStarted?.(cancelled);
+      pending.rejectCompletion?.(cancelled);
+    }
+    this.#inFlight.clear();
     this.#pendingBytes = 0;
+    let closeError: Error | null = null;
+    const closeTransport = (): void => {
+      if (this.#response !== null && !this.#response.writableEnded) {
+        try {
+          this.#response.end();
+          this.#observe("close");
+        } catch (error) {
+          closeError = error instanceof Error ? error : new Error(String(error));
+          this.#observe("error", "close_failed");
+        }
+      }
+      this.#response = null;
+    };
+    // Raw settlement is ownership truth. The watchdog is the one bounded
+    // escape: it closes/detaches only after local abort, leaving the durable
+    // reservation/cancellation-pending state for recovery without asserting
+    // a no-send receipt.
+    let watchdogTimer: ReturnType<typeof setTimeout> | null = null;
+    const settled = await Promise.race([
+      this.#settleRawCancellations().then(() => true),
+      new Promise<boolean>((resolve) => {
+        watchdogTimer = setTimeout(() => resolve(false), this.teardownTimeoutMs);
+      }),
+    ]);
+    if (watchdogTimer !== null) clearTimeout(watchdogTimer);
+    if (!settled) this.#observe("error", "close_failed");
+    closeTransport();
     this.onClose();
     if (closeError !== null) throw closeError;
   }
@@ -535,6 +975,26 @@ export function createProductionRbpIngressHost(
     RBP_WSS_MAX_SEND_COMPLETION_TIMEOUT_MS,
     "wssEgress.sendCompletionTimeoutMs",
   );
+  const httpSseQueuedFrameLimit = clampedInteger(
+    options.httpSseEgress?.queuedFrames,
+    HTTP_SSE_DEFAULT_QUEUED_FRAMES,
+    HTTP_SSE_MIN_QUEUED_FRAMES,
+    HTTP_SSE_MAX_QUEUED_FRAMES,
+    "httpSseEgress.queuedFrames",
+  );
+  const httpSseQueuedByteLimit = clampedInteger(
+    options.httpSseEgress?.queuedBytes,
+    MAX_PENDING_TRANSPORT_BYTES,
+    1,
+    MAX_PENDING_TRANSPORT_BYTES,
+    "httpSseEgress.queuedBytes",
+  );
+  const httpSseTeardownTimeoutMs = boundedInteger(
+    options.httpSseEgress?.teardownTimeoutMs ?? HTTP_SSE_DEFAULT_TEARDOWN_TIMEOUT_MS,
+    RBP_WSS_MIN_SEND_COMPLETION_TIMEOUT_MS,
+    RBP_WSS_MAX_SEND_COMPLETION_TIMEOUT_MS,
+    "httpSseEgress.teardownTimeoutMs",
+  );
   const websocketServer = new WebSocketServer({
     noServer: true,
     maxPayload: MAX_HTTP_MESSAGE_BYTES,
@@ -545,6 +1005,7 @@ export function createProductionRbpIngressHost(
   const httpDeviceCounts = new Map<string, number>();
   let httpGlobalCount = 0;
   let httpAdmissionTail = Promise.resolve();
+  let httpSseDeliveryObservationCount = 0;
   let draining = false;
   let livenessTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -557,6 +1018,29 @@ export function createProductionRbpIngressHost(
         deviceAdmissions: httpDeviceCounts.size,
       }),
     );
+  };
+
+  const observeHttpSseDelivery = (
+    connectionId: string,
+    action: RbpHttpSseDeliveryObservation["action"],
+    reason: RbpHttpSseDeliveryObservation["reason"],
+  ): void => {
+    if (
+      options.onHttpSseDeliveryObservation === undefined ||
+      httpSseDeliveryObservationCount >= HTTP_SSE_DELIVERY_OBSERVATION_LIMIT
+    ) return;
+    httpSseDeliveryObservationCount += 1;
+    const entry = httpConnections.get(connectionId);
+    bestEffort(() => options.onHttpSseDeliveryObservation!(Object.freeze({
+      contractVersion: RBP_HTTP_SSE_DELIVERY_OBSERVATION_CONTRACT,
+      event: "gateway.rbp_http_sse_delivery_observation",
+      timestamp: new Date(httpSseClock()).toISOString(),
+      connectionId,
+      frame: "rbp",
+      action,
+      state: entry?.state ?? "created",
+      reason,
+    })));
   };
 
   const httpAdmission = async <T>(operation: () => Promise<T>): Promise<T> => {
@@ -813,9 +1297,15 @@ export function createProductionRbpIngressHost(
               reserveHttpAdmission(scope);
               let entry: HttpConnectionEntry | null = null;
               let openedConnectionId: string | null = null;
-              const channel = new HttpSseChannel(() => {
-                if (entry !== null) void disposeHttpConnection(entry);
-              });
+              const channel = new HttpSseChannel(
+                () => {
+                  if (entry !== null) void disposeHttpConnection(entry);
+                },
+                observeHttpSseDelivery,
+                httpSseQueuedFrameLimit,
+                httpSseQueuedByteLimit,
+                httpSseTeardownTimeoutMs,
+              );
               try {
                 const opening = await authority.openConnection({
                   deviceToken,
@@ -824,6 +1314,7 @@ export function createProductionRbpIngressHost(
                   channel,
                 });
                 openedConnectionId = opening.connectionId;
+                channel.bindConnection(opening.connectionId);
                 const boundConnection = await authority.assertConnectionCredential(
                   opening.connectionId,
                   deviceToken,
@@ -913,7 +1404,7 @@ export function createProductionRbpIngressHost(
               "X-Accel-Buffering": "no",
             });
             reply.raw.flushHeaders();
-            attachedEntry.channel.attach(reply.raw);
+            await attachedEntry.channel.attach(reply.raw);
             if (attachedEntry.state !== "registered") {
               attachedEntry.state = "sse_attached";
               attachedEntry.expiresAtMs = httpSseClock() + HTTP_SSE_ATTACH_TTL_MS;
@@ -1023,6 +1514,10 @@ export function createProductionRbpIngressHost(
           let detachTask: Promise<void> | null = null;
           let transportFinalized = false;
           const pendingSendCancellations = new Set<(error: Error) => void>();
+          const pendingDispatchCancellations = new Set<() => Promise<DispatchPreStartCancellation>>();
+          // These are the raw durable tasks. They are intentionally distinct
+          // from the 250ms caller observation used by the dispatch adapter.
+          const rawDispatchSettlements = new Set<Promise<DispatchPreStartCancellation>>();
 
           const internalFault = (error: unknown): GatewayRbpFault =>
             new GatewayRbpFault(
@@ -1068,6 +1563,36 @@ export function createProductionRbpIngressHost(
 
           const cancelPendingSends = (error: Error): void => {
             for (const cancel of [...pendingSendCancellations]) cancel(error);
+          };
+
+          const ownCancellation = (
+            handoff: DispatchTransportHandoff,
+          ): (() => Promise<DispatchPreStartCancellation>) => {
+            let raw: Promise<DispatchPreStartCancellation> | null = null;
+            return (): Promise<DispatchPreStartCancellation> => {
+              if (raw !== null) return raw;
+              raw = rawDispatchCancellation(handoff);
+              rawDispatchSettlements.add(raw);
+              void raw.then(() => {
+                rawDispatchSettlements.delete(raw!);
+              });
+              return raw;
+            };
+          };
+
+          const cancelPendingDispatches = (): void => {
+            for (const requestCancellation of [...pendingDispatchCancellations]) {
+              void requestCancellation();
+            }
+          };
+
+          const settleRawDispatchCancellations = async (): Promise<void> => {
+            for (;;) {
+              const snapshot = [...rawDispatchSettlements];
+              if (snapshot.length === 0) return;
+              await Promise.allSettled(snapshot);
+              if (rawDispatchSettlements.size === 0) return;
+            }
           };
 
           const sendRaw = async (serialized: string): Promise<void> => {
@@ -1138,6 +1663,127 @@ export function createProductionRbpIngressHost(
               applicationEgressFrames -= 1;
               applicationEgressBytes -= serializedBytes;
             }
+          };
+
+          const sendDispatchStarted = (
+            serialized: string,
+            handoff: DispatchTransportHandoff,
+          ): { readonly started: Promise<void>; readonly completion: Promise<void>; cancel(): Promise<boolean> } => {
+            let resolveStarted!: () => void;
+            let rejectStarted!: (error: Error) => void;
+            let startedSettled = false;
+            const started = new Promise<void>((resolve, reject) => {
+              resolveStarted = resolve;
+              rejectStarted = reject;
+            });
+            // Callers may stop waiting after the bounded-start race; retain
+            // both rejection observers here so a later close/error cannot
+            // become a process-level unhandled rejection.
+            void started.catch(() => undefined);
+            let cancelled = false;
+            // `startedSettled` means only that the caller was notified. A
+            // synchronous queue rejection also settles it, but has not
+            // crossed websocket.send(). Cancellation must remain eligible
+            // until that concrete invocation boundary.
+            let transportStarted = false;
+            const controller = new AbortController();
+            const requestCancellation = ownCancellation(handoff);
+            pendingDispatchCancellations.add(requestCancellation);
+            const rejectStart = (error: unknown): void => {
+              if (startedSettled) return;
+              startedSettled = true;
+              rejectStarted(error instanceof Error ? error : new Error(String(error)));
+            };
+            const serializedBytes = Buffer.byteLength(serialized);
+            const nextFrames = applicationEgressFrames + 1;
+            const nextBytes = applicationEgressBytes + serializedBytes;
+            if (
+              nextFrames > egressQueuedFrameLimit ||
+              nextBytes > egressQueuedByteLimit
+            ) {
+              // Register the raw durable task before teardown can detach the
+              // connection. The bounded observer below is presentation only.
+              const cancellation = requestCancellation();
+              pendingDispatchCancellations.delete(requestCancellation);
+              egressOverload();
+              const overloadError = new Error("WSS application egress queue overloaded");
+              rejectStart(overloadError);
+              const completion = Promise.reject<void>(overloadError);
+              void completion.catch(() => undefined);
+              // The queue rejected this dispatch before revalidation, but the
+              // Gateway has already persisted its reserved lease/pending
+              // record.  Do not claim a no-send outcome until that exact
+              // durable cancellation wins.  The promise is intentionally
+              // shared so a started-race cleanup and teardown cannot each
+              // invoke a new cancellation against a later lease.
+              const cancel = async (): Promise<boolean> => {
+                return (await observeDispatchCancellation(cancellation)) === "settled_no_send";
+              };
+              return { started, completion, cancel };
+            }
+            applicationEgressFrames = nextFrames;
+            applicationEgressBytes = nextBytes;
+            const completion = appendEgress(async () => {
+              if (cancelled) throw new Error("WSS dispatch queue cancelled before invocation");
+              if (terminalEgressClaimed || state === "closing" || state === "faulted" || state === "closed") {
+                void requestCancellation();
+                throw new Error("WSS dispatch egress is closed");
+              }
+              // The adapter bounds a stalled producer and observes its late
+              // rejection. No await follows successful validation before
+              // websocket.send below.
+              await boundedDispatchRevalidate(
+                handoff,
+                controller,
+                sendCompletionTimeoutMs,
+                requestCancellation,
+              );
+              if (cancelled) throw new Error("WSS dispatch queue cancelled before invocation");
+              if (websocket.readyState !== WebSocket.OPEN) throw new Error("WSS transport is not open");
+              await new Promise<void>((resolve, reject) => {
+                let settled = false;
+                const finish = (error?: unknown): void => {
+                  if (settled) return;
+                  settled = true;
+                  pendingSendCancellations.delete(cancel);
+                  if (error === undefined || error === null) resolve();
+                  else reject(error);
+                };
+                const cancel = (error: Error): void => finish(error);
+                pendingSendCancellations.add(cancel);
+                try {
+                  transportStarted = true;
+                  pendingDispatchCancellations.delete(requestCancellation);
+                  websocket.send(serialized, (error) => finish(error));
+                  if (!startedSettled) {
+                    startedSettled = true;
+                    resolveStarted();
+                  }
+                } catch (error) {
+                  finish(error);
+                }
+              });
+            }).finally(() => {
+              if (!transportStarted) {
+                void requestCancellation();
+              }
+              pendingDispatchCancellations.delete(requestCancellation);
+              applicationEgressFrames -= 1;
+              applicationEgressBytes -= serializedBytes;
+            });
+            void completion.catch((error: unknown) => rejectStart(error));
+            void completion.catch(() => undefined);
+            return {
+              started,
+              completion,
+              async cancel(): Promise<boolean> {
+                if (transportStarted) return false;
+                cancelled = true;
+                controller.abort();
+                rejectStart(new Error("WSS dispatch queue cancelled before invocation"));
+                return (await observeDispatchCancellation(requestCancellation())) === "settled_no_send";
+              },
+            };
           };
 
           const settleEgressForTeardown = async (
@@ -1249,6 +1895,7 @@ export function createProductionRbpIngressHost(
               watchdogTimer = setTimeout(() => {
                 watchdogFired = true;
                 cancelPendingSends(new Error("WSS teardown watchdog expired"));
+                cancelPendingDispatches();
                 observeDiagnostic(
                   "egress",
                   "internal",
@@ -1264,6 +1911,7 @@ export function createProductionRbpIngressHost(
             // This cancellation must happen before the cleanup is appended
             // behind serialTail: processFrame may itself be awaiting this send.
             cancelPendingSends(new Error("WSS send cancelled for teardown"));
+            cancelPendingDispatches();
             if (pendingAtClaim > 0) {
               void claimedEgressTail.then(() => {
                 if (accountingObserved) return;
@@ -1308,6 +1956,12 @@ export function createProductionRbpIngressHost(
                 terminalSerialized,
                 input.closeCode ?? 1011,
               );
+              if (watchdogFired) return;
+              // egressTail is quiescent before this snapshot. A cancellation
+              // created by its final failure path is therefore either present
+              // here or will be picked up by the stable-set loop. Do not close
+              // or detach before the raw durable task settles.
+              await settleRawDispatchCancellations();
               if (watchdogFired) return;
               if (egressResult === "timed_out") {
                 observeDiagnostic(
@@ -1449,6 +2103,7 @@ export function createProductionRbpIngressHost(
 
           const channel: BridgeConnectionChannel = {
             send: sendSerialized,
+            sendDispatchStarted,
             async close(code, reason): Promise<void> {
               observeDiagnostic(
                 "teardown",

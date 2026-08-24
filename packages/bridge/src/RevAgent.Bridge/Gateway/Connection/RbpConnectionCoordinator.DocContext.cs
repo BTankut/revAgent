@@ -1,5 +1,6 @@
 using System.Text.Json;
 using RevAgent.Bridge.Gateway.Protocol;
+using RevAgent.Bridge.Gateway.Storage;
 
 namespace RevAgent.Bridge.Gateway.Connection;
 
@@ -28,8 +29,8 @@ internal sealed partial class RbpConnectionCoordinator
         _docContextWatcher?.BeginWatch(
             rsid,
             local,
-            (payload, _) =>
-                TryEmitDocContextUpdateAsync(context, rsid, payload),
+            (payload, diagnosticPair, _) =>
+                TryEmitDocContextUpdateAsync(context, rsid, payload, diagnosticPair),
             context.Token);
     }
 
@@ -57,10 +58,13 @@ internal sealed partial class RbpConnectionCoordinator
     private async Task<bool> TryEmitDocContextUpdateAsync(
         ConnectionCycleContext context,
         string rsid,
-        JsonElement payload)
+        JsonElement payload,
+        RbpDocumentContextDiagnosticPair? diagnosticPair)
     {
         if (!IsCurrentContext(context))
         {
+            ObserveDocumentContext("failure", "stale_context", rsid, payload,
+                diagnosticPair: diagnosticPair);
             return false;
         }
 
@@ -82,11 +86,19 @@ internal sealed partial class RbpConnectionCoordinator
                 // RenewalRequired: the session has no usable transmit
                 // sequence until it resumes, so nothing durable happened
                 // and the watcher retries at its next tick.
+                ObserveDocumentContext("queue", "renewal_required", rsid, payload,
+                    diagnosticPair: diagnosticPair);
                 return false;
             }
 
+            TrackDocumentContextQueued(rsid, outbound.Sequence, diagnosticPair);
+            ObserveDocumentContext("queue", "durably_queued", rsid, payload,
+                outbound.Sequence, diagnosticPair);
+
             if (!context.IsDispatchAllowed(rsid))
             {
+                ObserveDocumentContext("send", "dispatch_not_allowed", rsid,
+                    payload, outbound.Sequence, diagnosticPair);
                 return true;
             }
 
@@ -95,10 +107,14 @@ internal sealed partial class RbpConnectionCoordinator
                 await context.Cycle
                     .SendAsync(CreateDataEnvelope(outbound), context.Token)
                     .ConfigureAwait(false);
+                ObserveDocumentContext("send", "sent", rsid, payload,
+                    outbound.Sequence, diagnosticPair);
             }
             catch (RbpGatewayTransportException)
             {
                 // Durably queued; retransmission owns delivery.
+                ObserveDocumentContext("failure", "send_deferred", rsid,
+                    payload, outbound.Sequence, diagnosticPair);
             }
 
             return true;
@@ -108,4 +124,98 @@ internal sealed partial class RbpConnectionCoordinator
             context.OutboundGate.Release();
         }
     }
+
+    private void TrackDocumentContextQueued(
+        string rsid,
+        long sequence,
+        RbpDocumentContextDiagnosticPair? diagnosticPair)
+    {
+        lock (_sync)
+        {
+            if (!_documentContextQueued.TryGetValue(rsid, out DocumentContextQueuedDiagnostic? prior) ||
+                sequence > prior.Sequence)
+            {
+                _documentContextQueued[rsid] = new DocumentContextQueuedDiagnostic(
+                    sequence,
+                    diagnosticPair);
+            }
+        }
+    }
+
+    private void ObserveDocumentContextAcknowledgements(
+        IReadOnlyList<RbpSessionAcknowledgement> acknowledgements)
+    {
+        foreach (RbpSessionAcknowledgement acknowledgement in acknowledgements)
+        {
+            DocumentContextQueuedDiagnostic? queued;
+            lock (_sync)
+            {
+                if (!_documentContextQueued.TryGetValue(
+                        acknowledgement.Rsid, out queued) ||
+                    acknowledgement.Sequence < queued.Sequence)
+                {
+                    continue;
+                }
+
+                _documentContextQueued.Remove(acknowledgement.Rsid);
+            }
+
+            ObserveDocumentContext("ack", "durably_acknowledged",
+                acknowledgement.Rsid, sequence: queued!.Sequence,
+                diagnosticPair: queued.DiagnosticPair);
+        }
+    }
+
+    private void ObserveDocumentContext(
+        string stage,
+        string outcome,
+        string rsid,
+        JsonElement? payload = null,
+        long? sequence = null,
+        RbpDocumentContextDiagnosticPair? diagnosticPair = null)
+    {
+        if (_onDocumentContextObservation is null)
+        {
+            return;
+        }
+
+        if (!RbpDocumentContextObservation.TryCreate(
+                stage,
+                outcome,
+                rsid,
+                payload,
+                sequence,
+                out RbpDocumentContextObservation? observation,
+                sourceRevision: diagnosticPair?.SourceRevision,
+                cacheIncarnationDigest: diagnosticPair?.CacheIncarnationDigest,
+                requireDiagnosticPair: payload is not null) ||
+            observation is null)
+        {
+            // Payload-bearing lifecycle diagnostics are admitted only with a
+            // canonical, domain-separated context digest. This is
+            // diagnostic-only: it does not affect the already chosen queue,
+            // send, retransmission, or authorization behavior.
+            return;
+        }
+
+        try
+        {
+            _ = _onDocumentContextObservation(
+                observation)
+                .AsTask().ContinueWith(
+                    completed => _ = completed.Exception,
+                    CancellationToken.None,
+                    TaskContinuationOptions.OnlyOnFaulted |
+                    TaskContinuationOptions.ExecuteSynchronously,
+                    TaskScheduler.Default);
+        }
+        catch
+        {
+            // Observation is diagnostic-only and cannot alter delivery.
+        }
+    }
+
+    private sealed record DocumentContextQueuedDiagnostic(
+        long Sequence,
+        RbpDocumentContextDiagnosticPair? DiagnosticPair);
 }

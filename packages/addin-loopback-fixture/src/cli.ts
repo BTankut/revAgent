@@ -56,6 +56,7 @@ async function main(): Promise<void> {
   process.stdout.write(
     `${JSON.stringify({
       ready: true,
+      component: "addin_loopback_fixture",
       contract: "addin-loopback/v1",
       controlVersion: FIXTURE_CONTROL_VERSION,
       maxControlLineBytes: MAX_CONTROL_LINE_BYTES,
@@ -68,6 +69,7 @@ async function main(): Promise<void> {
       ],
       host: address.host,
       port: address.port,
+      cacheIncarnationDigest: fixture.snapshotEvidence().documentContextEvidence.cacheIncarnationDigest,
     })}\n`,
   );
 }

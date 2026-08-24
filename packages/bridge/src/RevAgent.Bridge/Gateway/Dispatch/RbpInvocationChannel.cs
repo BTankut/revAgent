@@ -48,7 +48,11 @@ internal sealed record RbpAddinOutcome(
     string? Message = null,
     AddinErrorDetail? AddinError = null,
     IRbpDispatchLease? Lease = null,
-    bool? Retryable = null);
+    bool? Retryable = null,
+    // Internal-only signal for a resolver refusal before an add-in byte can
+    // be written.  It lets the document-context watcher distinguish route
+    // authority loss from a cache that is merely warming/not ready.
+    bool RouteFailure = false);
 
 /// <summary>
 /// Ownership of an add-in session for the duration of one invocation.

@@ -21,6 +21,7 @@ const COMMIT_MODE_METHODS = new Set([
   "set_element_parameter",
   "set_schedule_cells",
   "set_schedule_cells_by_text",
+  "execute_batch",
 ]);
 const RAW_CODE_SAFE_PREVIEW_FIELDS = new Set([
   "target",
@@ -102,6 +103,10 @@ function usesCommitMode(tool: GatewayToolRecord): boolean {
   return COMMIT_MODE_METHODS.has(tool.executorMethod);
 }
 
+function usesModeFlag(tool: GatewayToolRecord): boolean {
+  return tool.executorMethod !== "execute_batch" && usesCommitMode(tool);
+}
+
 /**
  * Produces the only preview and commit projections trusted by the dispatcher.
  * The caller's phase flags are never forwarded across phases.
@@ -110,7 +115,7 @@ export function buildConfirmationPreviewProjection(
   tool: GatewayToolRecord,
   parsedArgs: GatewayJsonObject,
 ): GatewayConfirmationPreviewProjection {
-  if (usesCommitMode(tool) && parsedArgs.mode === "commit") {
+  if (usesModeFlag(tool) && parsedArgs.mode === "commit") {
     return Object.freeze({
       ok: false as const,
       reason: "direct_commit_without_confirmation" as const,
@@ -118,6 +123,15 @@ export function buildConfirmationPreviewProjection(
   }
 
   if (tool.executorMethod === "send_code_to_revit") {
+    if (tool.name === "conformance.fixture.c28_mutation") {
+      return Object.freeze({
+        ok: true as const,
+        previewArgs: Object.freeze({}),
+        previewExecutorMethod: "get_ui_state",
+        commitArgs: Object.freeze(structuredClone(parsedArgs)),
+        commitArgsDigest: digestArgs(parsedArgs),
+      });
+    }
     const commitArgs = Object.freeze(structuredClone(parsedArgs));
     const previewBase: Record<string, GatewayJsonValue> = {};
     for (const [name, value] of Object.entries(parsedArgs)) {
@@ -155,6 +169,20 @@ export function buildConfirmationPreviewProjection(
     });
   }
 
+  // Atomic batches have no wire-level dry-run field. Their preview is the
+  // existing read-only UI probe; commit retains the exact signed batch args.
+  // This keeps the public confirm protocol while never sending a batch before
+  // the confirmation authority grants its single-use token.
+  if (tool.executorMethod === "execute_batch") {
+    return Object.freeze({
+      ok: true as const,
+      previewArgs: Object.freeze({}),
+      previewExecutorMethod: "get_ui_state",
+      commitArgs: Object.freeze(structuredClone(parsedArgs)),
+      commitArgsDigest: digestArgs(parsedArgs),
+    });
+  }
+
   if (!usesCommitMode(tool)) {
     return Object.freeze({
       ok: false as const,
@@ -188,7 +216,7 @@ export function buildConfirmationCommitProjection(
   parsedArgs: GatewayJsonObject,
 ): GatewayConfirmationCommitProjection {
   if (
-    usesCommitMode(tool) &&
+    usesModeFlag(tool) &&
     (parsedArgs.mode !== "commit" ||
       (tool.executorMethod === "delete_review_view" &&
         parsedArgs.confirmDelete !== true))

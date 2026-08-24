@@ -27,7 +27,8 @@
     "build:self": "node ../../node_modules/typescript/lib/tsc.js -p tsconfig.json",
     "lint": "eslint src tests",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "npm run build --workspace @revagent/protocol && node scripts/run-tests.mjs"
+    "test": "npm run build --workspace @revagent/protocol && node scripts/run-tests.mjs",
+    "test:real-trio": "node scripts/run-real-trio.mjs"
   },
   "engines": {
     "node": ">=20"

@@ -30,6 +30,7 @@ import {
   GATEWAY_RBP_UNREGISTER_NAMESPACE,
   GatewayBridgeSessionAuthority,
   type BridgeConnectionChannel,
+  type DispatchTransportHandoff,
 } from "./bridgeSession.js";
 import type {
   GatewayAtomicBatchExecutorRequest,
@@ -38,10 +39,12 @@ import type {
   GatewayJsonValue,
 } from "./dispatch.js";
 import { gatewayUuidV7 } from "./identifiers.js";
+import { createEffectiveMcpRequestScopeV1 } from "./invocationContext.js";
 import { createPreProductionRuntimeAdapters } from "./preProductionRuntimeAdapters.js";
 import {
   GatewayRecoveryAuthority,
   type GatewayBridgeEvidenceLookup,
+  type GatewayBridgeCumulativeAckReceipt,
   type GatewayDurableBridgeEvidencePort,
   type GatewayRecoveryPendingDispatch,
 } from "./recoveryAuthority.js";
@@ -68,6 +71,53 @@ const id = (): string => gatewayUuidV7(Date.now() + idOffset++);
 
 function tokenDigest(value: string): `sha256:${string}` {
   return `sha256:${createHash("sha256").update(value).digest("hex")}`;
+}
+
+/**
+ * RecoveryAuthority composition fixtures require a complete syntactic receipt
+ * when their subject is the downstream recovery protocol rather than the
+ * Bridge producer.  This helper is deliberately confined to the WP-10 import,
+ * retained-origin redelivery, and legacy-only clearance scenarios below;
+ * production binding, integrity, replay, and cross-scope tests must obtain
+ * acceptance from GatewayBridgeSessionAuthority.inspectDispatch instead.
+ */
+function syntacticRecoveryAcceptanceFixture(
+  pending: GatewayRecoveryPendingDispatch,
+  durableSequenceVersion: number,
+): GatewayBridgeCumulativeAckReceipt {
+  const correlationId = pending.envelope.type === "invoke"
+    ? pending.envelope.payload.invocation_id
+    : pending.envelope.payload.batch_id;
+  return {
+    source: "durable_rbp_sequence",
+    receiptVersion: 1,
+    tenantId: TENANT_ID,
+    rsid: pending.envelope.rsid,
+    sessionBindingId: pending.sessionBindingId,
+    acceptedConnectionId: pending.preparedConnectionId,
+    authorizedSessionVersion: pending.authorizedSessionVersion,
+    invocationId: correlationId,
+    correlationId,
+    proofDigest: makeParamsDigest({
+      kind: "test-cumulative-ack-proof",
+      envelopeDigest: pending.envelopeDigest,
+      gatewaySequence: pending.gatewaySequence,
+    }),
+    routeSnapshotDigest: makeParamsDigest({
+      kind: "test-cumulative-ack-route",
+      rsid: pending.envelope.rsid,
+      sessionBindingId: pending.sessionBindingId,
+      connectionId: pending.preparedConnectionId,
+    }),
+    egressEpoch: pending.gatewaySequence - 1,
+    leaseTicket: pending.gatewaySequence,
+    intent: "dispatch",
+    gatewaySequence: pending.gatewaySequence,
+    cumulativeAck: pending.gatewaySequence,
+    envelopeDigest: pending.envelopeDigest,
+    durableSequenceVersion,
+    acceptedAtMs: pending.preparedAtMs,
+  };
 }
 
 function identity(tenantId = TENANT_ID): IdentityPort {
@@ -201,6 +251,52 @@ function channel(
   };
 }
 
+function queuedDispatchChannel(input: {
+  readonly queued: Deferred<AbortSignal>;
+  readonly releaseRevalidate: Deferred<void>;
+  readonly cancelled: Deferred<void>;
+}): TestChannel {
+  const frames: RbpEnvelope[] = [];
+  return {
+    frames,
+    async send(serialized): Promise<void> {
+      frames.push(JSON.parse(serialized) as RbpEnvelope);
+    },
+    sendDispatchStarted(serialized: string, handoff: DispatchTransportHandoff) {
+      const started = deferred();
+      const completion = deferred();
+      const controller = new AbortController();
+      void (async () => {
+        input.queued.resolve(controller.signal);
+        try {
+          await input.releaseRevalidate.promise;
+          await handoff.revalidate(controller.signal);
+          if (controller.signal.aborted) throw new Error("test dispatch cancelled");
+          frames.push(JSON.parse(serialized) as RbpEnvelope);
+          started.resolve();
+          completion.resolve();
+        } catch (error) {
+          const failure = error instanceof Error ? error : new Error(String(error));
+          started.reject(failure);
+          completion.reject(failure);
+        }
+      })();
+      void started.promise.catch(() => undefined);
+      void completion.promise.catch(() => undefined);
+      return {
+        started: started.promise,
+        completion: completion.promise,
+        async cancel(): Promise<boolean> {
+          controller.abort();
+          input.cancelled.resolve();
+          return await handoff.cancelBeforeStart();
+        },
+      };
+    },
+    async close(): Promise<void> {},
+  };
+}
+
 function registeredFrame(channel: TestChannel): SessionRegisteredEnvelope {
   const frame = channel.frames.find(
     (candidate): candidate is SessionRegisteredEnvelope =>
@@ -279,6 +375,12 @@ function request(
   invocationId = id(),
 ): GatewayExecutorRequest {
   const args: GatewayJsonObject = { probe: "wp02-unregister" };
+  const effectiveMcpRequestScope = createEffectiveMcpRequestScopeV1({
+    principalKey: `${TENANT_ID}:${USER_ID}`,
+    transportMcpSessionId: "mcp-unregister",
+    identityMcpSessionId: null,
+    nowMs: Date.now(),
+  });
   return {
     toolName: mutating ? "core.set_parameter" : "core.get_status",
     toolVersion: "1.0.0",
@@ -296,6 +398,7 @@ function request(
       gatewaySessionId: "gateway-unregister",
       oauthClientId: "oauth-unregister",
       mcpSessionId: "mcp-unregister",
+      effectiveMcpRequestScope,
       rsid,
       toolName: mutating ? "core.set_parameter" : "core.get_status",
       toolVersion: "1.0.0",
@@ -1425,22 +1528,34 @@ describe("GatewayBridgeSessionAuthority durable unregister", () => {
 
   it("cancels a reserved mutation as known-not-dispatched without creating a hold", async () => {
     const store = new ControlledStoreHarness();
+    const queued = deferred<AbortSignal>();
+    const releaseRevalidate = deferred();
+    const cancelled = deferred();
+    const senderChannel = queuedDispatchChannel({ queued, releaseRevalidate, cancelled });
     const sender = new GatewayBridgeSessionAuthority(store.createPort(), identity());
     const revoker = new GatewayBridgeSessionAuthority(store.createPort(), identity());
     authorities.push(sender, revoker);
     await sender.open();
     await revoker.open();
-    const session = await register(sender);
+    const opened = await openConnection(sender, { channel: senderChannel });
+    await sender.receive(opened.connectionId, registration());
+    const registered = registeredFrame(senderChannel);
+    const session = { connectionId: opened.connectionId, channel: senderChannel, rsid: registered.payload.rsid };
     const revokerConnection = await openConnection(revoker);
-    const reservation = store.holdAfterCommit(leaseTransition("dispatch", "reserved"));
 
     const execution = sender.createExecutor().execute(request(session.rsid, true));
-    await reservation.entered;
+    const signal = await Promise.race([
+      queued.promise,
+      new Promise<AbortSignal>((_, reject) => setTimeout(() => reject(new Error("dispatch did not queue")), 1_000)),
+    ]);
+    expect(signal.aborted).toBe(false);
     await revoker.receive(
       revokerConnection.connectionId,
       unregister(session.rsid),
     );
-    reservation.release();
+    releaseRevalidate.resolve();
+    await cancelled.promise;
+    expect(signal.aborted).toBe(true);
 
     await expect(execution).resolves.toMatchObject({
       state: "failed",
@@ -1614,24 +1729,68 @@ describe("GatewayBridgeSessionAuthority durable unregister", () => {
       resumeConnection.connectionId,
       resume(session.rsid, session.resumeToken),
     );
-    await ackStarted.promise;
-    const revokerConnection = await openConnection(revoker);
-    const pendingCommit = store.holdAfterCommit(revocationPendingWrite);
-    const unregistering = revoker.receive(
-      revokerConnection.connectionId,
-      unregister(session.rsid),
-    );
-    await pendingCommit.entered;
-    expect(store.snapshot().some(
-      (record) => record.namespace === GATEWAY_RBP_UNREGISTER_NAMESPACE,
-    )).toBe(false);
-    pendingCommit.release();
-    ackRelease.resolve();
-    await resuming;
-    await unregistering;
-    expect(store.snapshot().some(
-      (record) => record.namespace === GATEWAY_RBP_UNREGISTER_NAMESPACE,
-    )).toBe(true);
+    const resumingFault = expect(resuming).rejects.toMatchObject({
+      name: "GatewayRbpFault",
+      code: "unavailable",
+      httpStatus: 503,
+      closeCode: 1011,
+      message: "dispatch completed after durable revocation",
+    });
+    let pendingCommit: ReturnType<ControlledStoreHarness["holdAfterCommit"]> | null = null;
+    let unregistering: Promise<void> | null = null;
+    let unregisteringResolution: Promise<unknown> | null = null;
+    try {
+      await ackStarted.promise;
+      const allowedStartedFrameCount = resumeChannel.frames.length;
+      expect(resumeChannel.frames.filter((frame) => frame.type === "resume_ack")).toHaveLength(1);
+      const revokerConnection = await openConnection(revoker);
+      pendingCommit = store.holdAfterCommit(revocationPendingWrite);
+      unregistering = revoker.receive(
+        revokerConnection.connectionId,
+        unregister(session.rsid),
+      );
+      unregisteringResolution = expect(unregistering).resolves.toBeUndefined();
+      await pendingCommit.entered;
+      expect(store.snapshot().some(
+        (record) => record.namespace === GATEWAY_RBP_UNREGISTER_NAMESPACE,
+      )).toBe(false);
+      pendingCommit.release();
+      ackRelease.resolve();
+      await resumingFault;
+      if (unregisteringResolution === null) {
+        throw new Error("unregister resolution was not captured");
+      }
+      await unregisteringResolution;
+      expect(store.snapshot().some(
+        (record) => record.namespace === GATEWAY_RBP_UNREGISTER_NAMESPACE,
+      )).toBe(true);
+      // The one ACK that started before durable revocation is permitted to
+      // drain; revocation must not emit any further resume frame.
+      expect(resumeChannel.frames).toHaveLength(allowedStartedFrameCount);
+      expect(resumeChannel.frames.filter((frame) => frame.type === "invoke")).toHaveLength(0);
+      expect(resumeChannel.frames.filter(
+        (frame) => frame.type === "result" || frame.type === "error",
+      )).toHaveLength(0);
+      expect((sessionForLegacyProof(store, session.rsid).egressFence as GatewayJsonObject).lease)
+        .toBeNull();
+      const restartChannel = channel();
+      const restarted = new GatewayBridgeSessionAuthority(store.createPort(), identity());
+      authorities.push(restarted);
+      await restarted.open();
+      const restartConnection = await openConnection(restarted, { channel: restartChannel });
+      await expect(
+        restarted.receive(restartConnection.connectionId, resume(session.rsid, session.resumeToken)),
+      ).rejects.toMatchObject({ closeCode: 4403 });
+      expect(resumeChannel.frames).toHaveLength(allowedStartedFrameCount);
+      expect(restartChannel.frames).toHaveLength(0);
+    } finally {
+      pendingCommit?.release();
+      ackRelease.resolve();
+      await Promise.allSettled([
+        resuming,
+        ...(unregistering === null ? [] : [unregistering]),
+      ]);
+    }
   });
 
   it("uses a fresh durable lease for a retransmit and lets revocation cancel it", async () => {
@@ -1691,30 +1850,83 @@ describe("GatewayBridgeSessionAuthority durable unregister", () => {
     const session = await register(original);
     const execution = original.createExecutor().execute(request(session.rsid, false));
     await new Promise((resolve) => setTimeout(resolve, 0));
+    const originalInvokeCount = session.channel.frames.filter((frame) => frame.type === "invoke").length;
+    expect(originalInvokeCount).toBe(1);
     await original.detach(session.connectionId);
     const resumeConnection = await openConnection(resumer, { channel: resumeChannel });
     const resuming = resumer.receive(
       resumeConnection.connectionId,
       resume(session.rsid, session.resumeToken),
     );
-    await retransmitStarted.promise;
-    const revokerConnection = await openConnection(revoker);
-    const pendingCommit = store.holdAfterCommit(revocationPendingWrite);
-    const unregistering = revoker.receive(
-      revokerConnection.connectionId,
-      unregister(session.rsid),
-    );
-    await pendingCommit.entered;
-    expect(store.snapshot().some(
-      (record) => record.namespace === GATEWAY_RBP_UNREGISTER_NAMESPACE,
-    )).toBe(false);
-    pendingCommit.release();
-    retransmitRelease.resolve();
-    await resuming;
-    await unregistering;
-    expect(store.snapshot().some(
-      (record) => record.namespace === GATEWAY_RBP_UNREGISTER_NAMESPACE,
-    )).toBe(true);
+    const resumingFault = expect(resuming).rejects.toMatchObject({
+      name: "GatewayRbpFault",
+      code: "unavailable",
+      httpStatus: 503,
+      closeCode: 1011,
+      message: "dispatch completed after durable revocation",
+    });
+    let pendingCommit: ReturnType<ControlledStoreHarness["holdAfterCommit"]> | null = null;
+    let unregistering: Promise<void> | null = null;
+    let unregisteringResolution: Promise<unknown> | null = null;
+    try {
+      await retransmitStarted.promise;
+      const retransmitInvokeCount = resumeChannel.frames.filter((frame) => frame.type === "invoke").length;
+      const allowedStartedFrameCount = resumeChannel.frames.length;
+      expect(retransmitInvokeCount).toBe(1);
+      const revokerConnection = await openConnection(revoker);
+      pendingCommit = store.holdAfterCommit(revocationPendingWrite);
+      unregistering = revoker.receive(
+        revokerConnection.connectionId,
+        unregister(session.rsid),
+      );
+      unregisteringResolution = expect(unregistering).resolves.toBeUndefined();
+      await pendingCommit.entered;
+      expect(store.snapshot().some(
+        (record) => record.namespace === GATEWAY_RBP_UNREGISTER_NAMESPACE,
+      )).toBe(false);
+      pendingCommit.release();
+      retransmitRelease.resolve();
+      await resumingFault;
+      if (unregisteringResolution === null) {
+        throw new Error("unregister resolution was not captured");
+      }
+      await unregisteringResolution;
+      expect(store.snapshot().some(
+        (record) => record.namespace === GATEWAY_RBP_UNREGISTER_NAMESPACE,
+      )).toBe(true);
+      expect(session.channel.frames.filter((frame) => frame.type === "invoke")).toHaveLength(
+        originalInvokeCount,
+      );
+      expect(resumeChannel.frames.filter((frame) => frame.type === "invoke")).toHaveLength(
+        retransmitInvokeCount,
+      );
+      expect(resumeChannel.frames).toHaveLength(allowedStartedFrameCount);
+      expect(resumeChannel.frames.filter(
+        (frame) => frame.type === "result" || frame.type === "error",
+      )).toHaveLength(0);
+      expect((sessionForLegacyProof(store, session.rsid).egressFence as GatewayJsonObject).lease)
+        .toBeNull();
+      const restartChannel = channel();
+      const restarted = new GatewayBridgeSessionAuthority(store.createPort(), identity());
+      authorities.push(restarted);
+      await restarted.open();
+      const restartConnection = await openConnection(restarted, { channel: restartChannel });
+      await expect(
+        restarted.receive(restartConnection.connectionId, resume(session.rsid, session.resumeToken)),
+      ).rejects.toMatchObject({ closeCode: 4403 });
+      expect(session.channel.frames.filter((frame) => frame.type === "invoke")).toHaveLength(
+        originalInvokeCount,
+      );
+      expect(resumeChannel.frames).toHaveLength(allowedStartedFrameCount);
+      expect(restartChannel.frames).toHaveLength(0);
+    } finally {
+      pendingCommit?.release();
+      retransmitRelease.resolve();
+      await Promise.allSettled([
+        resuming,
+        ...(unregistering === null ? [] : [unregistering]),
+      ]);
+    }
     await original.close();
     authorities.splice(authorities.indexOf(original), 1);
     await expect(execution).resolves.toMatchObject({ state: "failed" });
@@ -1788,7 +2000,13 @@ describe("GatewayBridgeSessionAuthority durable unregister", () => {
     )).toBe(false);
 
     sendRelease.resolve();
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await expect(execution).resolves.toMatchObject({ state: "failed" });
+    const releasedEgress = store.snapshot().find(
+      (record) =>
+        record.namespace === "gateway.rbp-session-egress/v2" &&
+        record.key === `${registered.payload.rsid}/egress`,
+    )?.value as GatewayJsonObject;
+    expect((releasedEgress.fence as GatewayJsonObject).lease).toBeNull();
     const restarted = new GatewayBridgeSessionAuthority(store.createPort(), identity(), {
       clock: () => nowMs,
       wait: async (milliseconds) => { nowMs += milliseconds; },
@@ -1805,7 +2023,6 @@ describe("GatewayBridgeSessionAuthority durable unregister", () => {
     )).toBe(true);
     await sender.close();
     authorities.splice(authorities.indexOf(sender), 1);
-    await expect(execution).resolves.toMatchObject({ state: "failed" });
   });
 
   it("reclaims only an expired reservation and rejects the stale promoter", async () => {
@@ -2278,18 +2495,9 @@ describe("GatewayBridgeSessionAuthority durable unregister", () => {
         return {
           kind: "found" as const,
           observation: {
-            acceptance: {
-              source: "durable_rbp_sequence" as const,
-              rsid: session.rsid,
-              sessionBindingId: retained.sessionBindingId,
-              acceptedConnectionId: retained.preparedConnectionId,
-              authorizedSessionVersion: retained.authorizedSessionVersion,
-              gatewaySequence: retained.gatewaySequence,
-              cumulativeAck: retained.gatewaySequence,
-              envelopeDigest: retained.envelopeDigest,
-              durableSequenceVersion: 1,
-              acceptedAtMs: Date.now(),
-            },
+            // This intentionally indeterminate observation has no committed
+            // Bridge ACK; custom recovery fixtures must not synthesize one.
+            acceptance: null,
             journal: {
               kind: "indeterminate" as const,
               rsid: session.rsid,
@@ -2682,18 +2890,6 @@ describe("GatewayBridgeSessionAuthority durable unregister", () => {
       rsid: session.rsid,
       attemptId,
     });
-    const receiptFor = (pending: GatewayRecoveryPendingDispatch, version: number) => ({
-      source: "durable_rbp_sequence" as const,
-      rsid: session.rsid,
-      sessionBindingId: pending.sessionBindingId,
-      acceptedConnectionId: pending.preparedConnectionId,
-      authorizedSessionVersion: pending.authorizedSessionVersion,
-      gatewaySequence: pending.gatewaySequence,
-      cumulativeAck: pending.gatewaySequence,
-      envelopeDigest: pending.envelopeDigest,
-      durableSequenceVersion: version,
-      acceptedAtMs: Date.now(),
-    });
     const installActive = async (
       scope: MutationScope,
       label: string,
@@ -2720,7 +2916,7 @@ describe("GatewayBridgeSessionAuthority durable unregister", () => {
       observations.set(prepared.dispatch.envelopeDigest, {
         kind: "found",
         observation: {
-          acceptance: receiptFor(prepared.dispatch, 1),
+          acceptance: syntacticRecoveryAcceptanceFixture(prepared.dispatch, 1),
           journal: {
             kind: "indeterminate",
             rsid: session.rsid,
@@ -2781,7 +2977,7 @@ describe("GatewayBridgeSessionAuthority durable unregister", () => {
     observations.set(verificationPrepared.dispatch.envelopeDigest, {
       kind: "found",
       observation: {
-        acceptance: receiptFor(verificationPrepared.dispatch, 2),
+        acceptance: syntacticRecoveryAcceptanceFixture(verificationPrepared.dispatch, 2),
         journal: {
           kind: "known_terminal",
           rsid: session.rsid,
@@ -2853,7 +3049,7 @@ describe("GatewayBridgeSessionAuthority durable unregister", () => {
     observations.set(clearancePrepared.dispatch.envelopeDigest, {
       kind: "found",
       observation: {
-        acceptance: receiptFor(clearancePrepared.dispatch, 3),
+        acceptance: syntacticRecoveryAcceptanceFixture(clearancePrepared.dispatch, 3),
         journal: {
           kind: "known_terminal",
           rsid: session.rsid,
@@ -3279,18 +3475,7 @@ describe("GatewayBridgeSessionAuthority durable unregister", () => {
         return {
           kind: "found" as const,
           observation: {
-            acceptance: {
-              source: "durable_rbp_sequence" as const,
-              rsid: session.rsid,
-              sessionBindingId: pending.sessionBindingId,
-              acceptedConnectionId: pending.preparedConnectionId,
-              authorizedSessionVersion: pending.authorizedSessionVersion,
-              gatewaySequence: pending.gatewaySequence,
-              cumulativeAck: pending.gatewaySequence,
-              envelopeDigest: pending.envelopeDigest,
-              durableSequenceVersion: 1,
-              acceptedAtMs: Date.now(),
-            },
+            acceptance: syntacticRecoveryAcceptanceFixture(pending, 1),
             journal: {
               kind: "indeterminate" as const,
               rsid: session.rsid,
@@ -3493,18 +3678,7 @@ describe("GatewayBridgeSessionAuthority durable unregister", () => {
     observations.set(originPrepared.dispatch.envelopeDigest, {
       kind: "found",
       observation: {
-        acceptance: {
-          source: "durable_rbp_sequence",
-          rsid: session.rsid,
-          sessionBindingId: originPrepared.dispatch.sessionBindingId,
-          acceptedConnectionId: originPrepared.dispatch.preparedConnectionId,
-          authorizedSessionVersion: originPrepared.dispatch.authorizedSessionVersion,
-          gatewaySequence: originPrepared.dispatch.gatewaySequence,
-          cumulativeAck: originPrepared.dispatch.gatewaySequence,
-          envelopeDigest: originPrepared.dispatch.envelopeDigest,
-          durableSequenceVersion: 1,
-          acceptedAtMs: Date.now(),
-        },
+        acceptance: syntacticRecoveryAcceptanceFixture(originPrepared.dispatch, 1),
         journal: {
           kind: "indeterminate",
           rsid: session.rsid,
@@ -3564,18 +3738,7 @@ describe("GatewayBridgeSessionAuthority durable unregister", () => {
     observations.set(verificationPrepared.dispatch.envelopeDigest, {
       kind: "found",
       observation: {
-        acceptance: {
-          source: "durable_rbp_sequence",
-          rsid: session.rsid,
-          sessionBindingId: verificationPrepared.dispatch.sessionBindingId,
-          acceptedConnectionId: verificationPrepared.dispatch.preparedConnectionId,
-          authorizedSessionVersion: verificationPrepared.dispatch.authorizedSessionVersion,
-          gatewaySequence: verificationPrepared.dispatch.gatewaySequence,
-          cumulativeAck: verificationPrepared.dispatch.gatewaySequence,
-          envelopeDigest: verificationPrepared.dispatch.envelopeDigest,
-          durableSequenceVersion: 2,
-          acceptedAtMs: Date.now(),
-        },
+        acceptance: syntacticRecoveryAcceptanceFixture(verificationPrepared.dispatch, 2),
         journal: {
           kind: "known_terminal",
           rsid: session.rsid,

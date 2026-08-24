@@ -24,6 +24,7 @@ import {
   assertPassingRunReport,
   validateRunReportStructure,
 } from "./validator.js";
+import { realTrioFailureDiagnostics } from "./realTrioSupervisor.js";
 import type { ParentStepExecutionEvidence } from "./parentStepEngine.js";
 import type {
   ArtifactEvidence,
@@ -457,7 +458,34 @@ function markCaseError(
     evidenceSha256: null,
     message: "case execution did not reach parent evaluation",
   }));
-  result.failure = { code: "supervised_case_error", message: error.message };
+  const diagnostics = realTrioFailureDiagnostics(error);
+  result.failure = {
+    code: "supervised_case_error",
+    message: error.message,
+    ...(diagnostics === null ? {} : {
+      diagnostics: {
+        schemaVersion: diagnostics.schemaVersion,
+        gatewayAudits: diagnostics.gatewayAudits.map((audit) => ({
+          sessionCount: audit.sessionCount as number,
+          namespaces: audit.namespaces as string[],
+          sessions: audit.sessions as Array<{
+            binding: string;
+            lifecyclePhase: string;
+            dispatchAllowed: boolean;
+            localKeyPresent: boolean;
+            created: boolean;
+            updated: boolean;
+          }>,
+        })),
+        bridgeTranscript: diagnostics.bridgeTranscript.map((record) => ({
+          stream: "stderr" as const,
+          at: record.at,
+          line: record.line,
+        })),
+        readinessTrace: diagnostics.readinessTrace.map((trace) => ({ ...trace })),
+      },
+    }),
+  };
 }
 
 /**

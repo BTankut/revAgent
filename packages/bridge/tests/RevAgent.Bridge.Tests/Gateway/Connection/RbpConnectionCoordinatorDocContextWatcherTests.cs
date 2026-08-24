@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Reflection;
 using System.Text;
 using System.Text.Json;
 using RevAgent.Bridge.AddinLoopback;
@@ -6,12 +7,268 @@ using RevAgent.Bridge.Gateway.Connection;
 using RevAgent.Bridge.Gateway.Dispatch;
 using RevAgent.Bridge.Gateway.Protocol;
 using RevAgent.Bridge.Gateway.Storage;
+using RevAgent.Bridge.Tests.Gateway.Protocol;
 using RevAgent.Bridge.Tests.Gateway.Storage;
 
 namespace RevAgent.Bridge.Tests.Gateway.Connection;
 
 public sealed partial class RbpConnectionCoordinatorTests
 {
+    [Fact]
+    public void DocumentContextDigestVectorsMatchPinnedRfc8785Canonicalization()
+    {
+        using JsonDocument fixture = LoadDocumentContextDigestFixture();
+        int count = 0;
+        foreach (JsonElement vector in fixture.RootElement
+                     .GetProperty("accepted")
+                     .EnumerateArray())
+        {
+            JsonElement payload = vector.GetProperty("payload");
+            string digest = RbpDocumentContextObservation.MakeContextDigest(
+                payload);
+
+            Assert.Equal(
+                vector.GetProperty("canonical").GetString(),
+                Rfc8785Json.Canonicalize(payload));
+            Assert.Equal(
+                vector.GetProperty("contextDigest").GetString(),
+                digest);
+            Assert.Matches("^[0-9a-f]{64}$", digest);
+            Assert.NotEqual(
+                vector.GetProperty("wrongDomainDigest").GetString(),
+                digest);
+            count++;
+        }
+
+        Assert.Equal(4, count);
+    }
+
+    [Fact]
+    public void DocumentContextDigestRejectionsOmitTheDiagnosticObservation()
+    {
+        using JsonDocument fixture = LoadDocumentContextDigestFixture();
+        int count = 0;
+        foreach (JsonElement vector in fixture.RootElement
+                     .GetProperty("rejected")
+                     .EnumerateArray())
+        {
+            string raw = vector.GetProperty("raw").GetString() ??
+                         throw new InvalidDataException(
+                             "Digest rejection vector is missing raw JSON.");
+            try
+            {
+                using JsonDocument payload = JsonDocument.Parse(raw);
+                Assert.False(RbpDocumentContextObservation.TryCreate(
+                    "snapshot",
+                    "ready",
+                    "rs-sensitive",
+                    payload.RootElement,
+                    sequence: 1,
+                    out RbpDocumentContextObservation? observation));
+                Assert.Null(observation);
+            }
+            catch (JsonException)
+            {
+                // Malformed JSON cannot produce a JsonElement, therefore it
+                // cannot produce a document-context diagnostic observation.
+            }
+
+            count++;
+        }
+
+        Assert.Equal(3, count);
+    }
+
+    [Fact]
+    public void DocumentContextDigestIsStableButObservationsRemainDistinctAndValueFree()
+    {
+        const string sensitiveTitle = "Confidential MEP Model";
+        const string sensitiveDocumentId = "doc-secret-017";
+        using JsonDocument payload = JsonDocument.Parse(
+            $$"""
+              {
+                "title":"{{sensitiveTitle}}",
+                "document_id":"{{sensitiveDocumentId}}",
+                "revision":7
+              }
+              """);
+
+        Assert.True(RbpDocumentContextObservation.TryCreate(
+            "snapshot",
+            "ready",
+            "rs-sensitive",
+            payload.RootElement,
+            sequence: 7,
+            out RbpDocumentContextObservation? first));
+        Assert.True(RbpDocumentContextObservation.TryCreate(
+            "queue",
+            "not_queued",
+            "rs-sensitive",
+            payload.RootElement,
+            sequence: 8,
+            out RbpDocumentContextObservation? second));
+
+        Assert.NotNull(first);
+        Assert.NotNull(second);
+        Assert.Equal(first.ContextDigest, second.ContextDigest);
+        Assert.NotEqual(first, second);
+        Assert.Matches("^[0-9a-f]{64}$", first.ContextDigest!);
+
+        string transcript = JsonSerializer.Serialize(new[] { first, second });
+        Assert.DoesNotContain(sensitiveTitle, transcript, StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            sensitiveDocumentId,
+            transcript,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain("rs-sensitive", transcript, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task CoordinatorPayloadObservationsFailClosedWithoutChangingWireOrAuthState()
+    {
+        await using var harness = await DocContextHarness.StartAsync(
+            DocContextLocalSession(8091, 1011));
+        await EventuallyAsync(
+            () => harness.SentDocContextUpdates().Length == 1);
+        await EventuallyAsync(() => harness.Observations.Count > 0);
+
+        int wireBefore = harness.SentDocContextUpdates().Length;
+        int callsBefore = harness.Channel.CallCount;
+        int observationsBefore = harness.Observations.Count;
+        using JsonDocument duplicate = JsonDocument.Parse(
+            "{\"outer\":{\"same\":1,\"same\":2}}");
+
+        foreach ((string Stage, string Outcome) in new[]
+                 {
+                     ("queue", "durably_queued"),
+                     ("send", "sent"),
+                     ("failure", "send_deferred"),
+                 })
+        {
+            InvokeCoordinatorObservation(
+                harness.Coordinator,
+                Stage,
+                Outcome,
+                duplicate.RootElement,
+                sequence: 41);
+        }
+
+        await Task.Delay(30);
+        Assert.Equal(observationsBefore, harness.Observations.Count);
+        Assert.Equal(wireBefore, harness.SentDocContextUpdates().Length);
+        Assert.Equal(callsBefore, harness.Channel.CallCount);
+
+        using JsonDocument valid = JsonDocument.Parse("{\"z\":2,\"a\":1}");
+        InvokeCoordinatorObservation(
+            harness.Coordinator,
+            "queue",
+            "durably_queued",
+            valid.RootElement,
+            sequence: 42,
+            sourceRevision: 42,
+            cacheIncarnationDigest:
+                "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc");
+        await EventuallyAsync(() => harness.Observations.Any(
+            observation => observation.Stage == "queue" &&
+                observation.Outcome == "durably_queued" &&
+                observation.Sequence == 42));
+
+        RbpDocumentContextObservation observed = harness.Observations.Single(
+            observation => observation.Stage == "queue" &&
+                observation.Outcome == "durably_queued" &&
+                observation.Sequence == 42);
+        Assert.Equal(
+            RbpDocumentContextObservation.MakeContextDigest(valid.RootElement),
+            observed.ContextDigest);
+        Assert.NotNull(observed.ContextDigest);
+        Assert.Equal(42, observed.SourceRevision);
+        Assert.Equal(
+            "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            observed.CacheIncarnationDigest);
+        Assert.Equal(wireBefore, harness.SentDocContextUpdates().Length);
+        Assert.Equal(callsBefore, harness.Channel.CallCount);
+    }
+
+    [Fact]
+    public async Task WatcherCoordinatorLifecycleKeepsOneValidatedPairAndWireMetadataFree()
+    {
+        const string incarnation =
+            "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
+        await using var harness = await DocContextHarness.StartAsync(
+            DocContextLocalSession(8095, 1015),
+            initialIncarnation: incarnation);
+        await EventuallyAsync(() => harness.SentDocContextUpdates().Length == 1);
+        await EventuallyAsync(() => harness.Observations.Any(
+            observation => observation.Stage == "send" && observation.Outcome == "sent"));
+
+        RbpEnvelope wire = Assert.Single(harness.SentDocContextUpdates());
+        Assert.False(wire.Payload.TryGetProperty("cache_incarnation_digest", out _));
+        Assert.DoesNotContain("cache_incarnation", wire.Payload.GetRawText(), StringComparison.Ordinal);
+
+        RbpDocumentContextObservation[] lifecycle = harness.Observations
+            .Where(observation =>
+                (observation.Stage == "snapshot" && observation.Outcome == "ready") ||
+                (observation.Stage == "queue" && observation.Outcome == "durably_queued") ||
+                (observation.Stage == "send" && observation.Outcome == "sent"))
+            .ToArray();
+        Assert.Contains(lifecycle, observation =>
+            observation.Stage == "snapshot" && observation.Sequence is null &&
+            observation.SourceRevision == 1 &&
+            observation.CacheIncarnationDigest == incarnation);
+        Assert.Contains(lifecycle, observation =>
+            observation.Stage == "queue" && observation.Sequence == wire.Sequence &&
+            observation.SourceRevision == 1 &&
+            observation.CacheIncarnationDigest == incarnation);
+        Assert.Contains(lifecycle, observation =>
+            observation.Stage == "send" && observation.Sequence == wire.Sequence &&
+            observation.SourceRevision == 1 &&
+            observation.CacheIncarnationDigest == incarnation);
+    }
+
+    [Fact]
+    public async Task ConcurrentCoordinatorLifecyclePairsRemainSequenceBoundAndMalformedPairsAreSuppressed()
+    {
+        const string firstDigest =
+            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        const string secondDigest =
+            "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        await using var harness = await DocContextHarness.StartAsync(
+            DocContextLocalSession(8096, 1016));
+        await EventuallyAsync(() => harness.SentDocContextUpdates().Length == 1);
+        int before = harness.Observations.Count;
+        using JsonDocument first = JsonDocument.Parse("{\"item\":\"first\"}");
+        using JsonDocument second = JsonDocument.Parse("{\"item\":\"second\"}");
+
+        await Task.WhenAll(
+            Task.Run(() => InvokeCoordinatorObservation(
+                harness.Coordinator, "queue", "durably_queued", first.RootElement,
+                51, 5, firstDigest)),
+            Task.Run(() => InvokeCoordinatorObservation(
+                harness.Coordinator, "failure", "send_deferred", first.RootElement,
+                51, 5, firstDigest)),
+            Task.Run(() => InvokeCoordinatorObservation(
+                harness.Coordinator, "queue", "durably_queued", second.RootElement,
+                52, 6, secondDigest)),
+            Task.Run(() => InvokeCoordinatorObservation(
+                harness.Coordinator, "send", "sent", second.RootElement,
+                52, 6, secondDigest)),
+            Task.Run(() => InvokeCoordinatorObservation(
+                harness.Coordinator, "send", "sent", first.RootElement,
+                53, 0, firstDigest)));
+
+        await EventuallyAsync(() => harness.Observations.Count >= before + 4);
+        RbpDocumentContextObservation[] observations = harness.Observations
+            .Where(observation => observation.Sequence is 51 or 52 or 53)
+            .ToArray();
+        Assert.Contains(observations, observation => observation.Sequence == 51 &&
+            observation.Stage == "failure" && observation.SourceRevision == 5 &&
+            observation.CacheIncarnationDigest == firstDigest);
+        Assert.Contains(observations, observation => observation.Sequence == 52 &&
+            observation.Stage == "send" && observation.SourceRevision == 6 &&
+            observation.CacheIncarnationDigest == secondDigest);
+        Assert.DoesNotContain(observations, observation => observation.Sequence == 53);
+    }
+
     [Fact]
     public async Task RegistrationTriggersImmediatePollAndEmitsUpdate()
     {
@@ -28,6 +285,7 @@ public sealed partial class RbpConnectionCoordinatorTests
         Assert.Equal(RbpEnvelopeScope.Data, update.Scope);
         Assert.Equal("rs-8080", update.Rsid);
         Assert.Equal(1, update.Sequence);
+        Assert.False(update.Payload.TryGetProperty("contextDigest", out _));
         JsonElement document = Assert.Single(
             update.Payload.GetProperty("documents").EnumerateArray());
         Assert.Equal(
@@ -70,6 +328,42 @@ public sealed partial class RbpConnectionCoordinatorTests
     }
 
     [Fact]
+    public async Task ProductionRevisionOnlyChurnWithAbsentIncarnationStaysSilent()
+    {
+        await using var harness = await DocContextHarness.StartAsync(
+            DocContextLocalSession(8093, 1013));
+        await EventuallyAsync(() => harness.SentDocContextUpdates().Length == 1);
+
+        harness.Channel.SetSnapshot(revision: 2, title: "Project A");
+        harness.Clock.Advance(TimeSpan.FromSeconds(15));
+        await EventuallyAsync(() => harness.Channel.CallCount >= 2);
+        await Task.Delay(30);
+
+        Assert.Single(harness.SentDocContextUpdates());
+    }
+
+    [Fact]
+    public async Task SameFixtureIncarnationRevisionOnlyChurnStaysSilent()
+    {
+        const string incarnation =
+            "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+        await using var harness = await DocContextHarness.StartAsync(
+            DocContextLocalSession(8094, 1014));
+        await EventuallyAsync(() => harness.SentDocContextUpdates().Length == 1);
+
+        harness.Channel.SetSnapshot(revision: 2, title: "Project A", incarnation);
+        harness.Clock.Advance(TimeSpan.FromSeconds(15));
+        await EventuallyAsync(() => harness.SentDocContextUpdates().Length == 2);
+
+        harness.Channel.SetSnapshot(revision: 3, title: "Project A", incarnation);
+        harness.Clock.Advance(TimeSpan.FromSeconds(15));
+        await EventuallyAsync(() => harness.Channel.CallCount >= 3);
+        await Task.Delay(30);
+
+        Assert.Equal(2, harness.SentDocContextUpdates().Length);
+    }
+
+    [Fact]
     public async Task ChangedSnapshotEmitsExactlyOneUpdate()
     {
         await using var harness = await DocContextHarness.StartAsync(
@@ -90,6 +384,37 @@ public sealed partial class RbpConnectionCoordinatorTests
                     second.Payload.GetProperty("documents").EnumerateArray())
                 .GetProperty("title")
                 .GetString());
+    }
+
+    [Fact]
+    public async Task ChangedFixtureIncarnationWithSameRevisionAndPayloadEmitsFreshMetadataFreeUpdate()
+    {
+        const string incarnation =
+            "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+        await using var harness = await DocContextHarness.StartAsync(
+            DocContextLocalSession(8092, 1021));
+        await EventuallyAsync(() => harness.SentDocContextUpdates().Length == 1);
+        RbpEnvelope first = harness.SentDocContextUpdates()[0];
+
+        harness.Channel.SetSnapshot(revision: 1, title: "Project A", incarnation);
+        harness.Clock.Advance(TimeSpan.FromSeconds(15));
+        await EventuallyAsync(() => harness.SentDocContextUpdates().Length == 2);
+
+        RbpEnvelope second = harness.SentDocContextUpdates()[1];
+        Assert.Equal(first.Payload.GetRawText(), second.Payload.GetRawText());
+        Assert.False(second.Payload.TryGetProperty("cache_incarnation_digest", out _));
+        Assert.DoesNotContain("cache_incarnation", second.Payload.GetRawText(), StringComparison.Ordinal);
+        Assert.Contains(harness.Observations, observation =>
+            observation.Stage == "snapshot" &&
+            observation.Outcome == "ready" &&
+            observation.SourceRevision == 1 &&
+            observation.CacheIncarnationDigest == incarnation);
+
+        // Same process/cache incarnation on the next poll stays deduped.
+        harness.Clock.Advance(TimeSpan.FromSeconds(15));
+        await EventuallyAsync(() => harness.Channel.CallCount >= 3);
+        await Task.Delay(30);
+        Assert.Equal(2, harness.SentDocContextUpdates().Length);
     }
 
     [Fact]
@@ -157,6 +482,24 @@ public sealed partial class RbpConnectionCoordinatorTests
         await EventuallyAsync(() => harness.Channel.CallCount == 2);
         await EventuallyAsync(
             () => harness.SentDocContextUpdates().Length == 1);
+    }
+
+    [Fact]
+    public async Task RouteFailureIsObservedSeparatelyFromSnapshotNotReady()
+    {
+        await using var harness = await DocContextHarness.StartAsync(
+            DocContextLocalSession(8089, 1009),
+            failFirstRoute: true);
+
+        await EventuallyAsync(() => harness.Channel.CallCount == 1);
+        await EventuallyAsync(() => harness.Observations.Any(
+            observation => observation.Stage == "failure" &&
+                observation.Outcome == "route_failure"));
+        Assert.DoesNotContain(
+            harness.Observations,
+            observation => observation.Stage == "snapshot" &&
+                observation.Outcome == "not_ready");
+        Assert.Empty(harness.SentDocContextUpdates());
     }
 
     [Fact]
@@ -239,6 +582,51 @@ public sealed partial class RbpConnectionCoordinatorTests
             Json("""{"active_task":null,"addin_reachable":true}"""));
     }
 
+    private static JsonDocument LoadDocumentContextDigestFixture()
+    {
+        string path = Path.Combine(
+            RbpFixtureReader.FindRepositoryRoot(),
+            "packages",
+            "bridge",
+            "tests",
+            "RevAgent.Bridge.Tests",
+            "Gateway",
+            "Connection",
+            "Fixtures",
+            "doc-context-digest.json");
+        return JsonDocument.Parse(File.ReadAllBytes(path));
+    }
+
+    private static void InvokeCoordinatorObservation(
+        RbpConnectionCoordinator coordinator,
+        string stage,
+        string outcome,
+        JsonElement payload,
+        long sequence,
+        long? sourceRevision = null,
+        string? cacheIncarnationDigest = null)
+    {
+        MethodInfo method = typeof(RbpConnectionCoordinator).GetMethod(
+            "ObserveDocumentContext",
+            BindingFlags.Instance | BindingFlags.NonPublic) ??
+            throw new MissingMethodException(
+                nameof(RbpConnectionCoordinator),
+                "ObserveDocumentContext");
+        _ = method.Invoke(
+            coordinator,
+            new object?[]
+            {
+                stage,
+                outcome,
+                "rs-8091",
+                payload,
+                sequence,
+                sourceRevision is { } revision && cacheIncarnationDigest is { } digest
+                    ? new RbpDocumentContextDiagnosticPair(revision, digest)
+                    : null,
+            });
+    }
+
     /// <summary>
     /// A scripted stand-in for the routed add-in invocation channel. It
     /// records every routed method name so the tests can prove the frozen
@@ -252,8 +640,10 @@ public sealed partial class RbpConnectionCoordinatorTests
         private readonly ConcurrentQueue<RecordingLease> _leases = new();
         private int _callCount;
         private int _failNextPolls;
+        private int _failNextRoutes;
         private long _revision = 1;
         private string _title = "Project A";
+        private string? _incarnation;
 
         internal int CallCount => Volatile.Read(ref _callCount);
 
@@ -265,12 +655,16 @@ public sealed partial class RbpConnectionCoordinatorTests
         internal void FailNextPoll() =>
             Interlocked.Increment(ref _failNextPolls);
 
-        internal void SetSnapshot(long revision, string title)
+        internal void FailNextRoute() =>
+            Interlocked.Increment(ref _failNextRoutes);
+
+        internal void SetSnapshot(long revision, string title, string? incarnation = null)
         {
             lock (_methods)
             {
                 _revision = revision;
                 _title = title;
+                _incarnation = incarnation;
             }
         }
 
@@ -282,6 +676,21 @@ public sealed partial class RbpConnectionCoordinatorTests
             cancellationToken.ThrowIfCancellationRequested();
             _methods.Enqueue(call.Method);
             Interlocked.Increment(ref _callCount);
+            if (Interlocked.CompareExchange(ref _failNextRoutes, 0, 0) > 0)
+            {
+                Interlocked.Decrement(ref _failNextRoutes);
+                return Task.FromResult(
+                    new RbpAddinOutcome(
+                        RbpAddinOutcomeKind.KnownNotDispatched,
+                        default,
+                        Array.Empty<byte>(),
+                        RequestBytes: 0,
+                        ResponseBytes: 0,
+                        FaultClass: "addin_unreachable",
+                        Message: "routed session unavailable",
+                        RouteFailure: true));
+            }
+
             if (Interlocked.CompareExchange(ref _failNextPolls, 0, 0) > 0)
             {
                 Interlocked.Decrement(ref _failNextPolls);
@@ -298,24 +707,30 @@ public sealed partial class RbpConnectionCoordinatorTests
 
             long revision;
             string title;
+            string? incarnation;
             lock (_methods)
             {
                 revision = _revision;
                 title = _title;
+                incarnation = _incarnation;
             }
 
             var lease = new RecordingLease();
             _leases.Enqueue(lease);
             return Task.FromResult(
-                DocContextOutcome(call, revision, title, lease));
+                DocContextOutcome(call, revision, title, incarnation, lease));
         }
 
         private static RbpAddinOutcome DocContextOutcome(
             AddinCall call,
             long revision,
             string title,
+            string? incarnation,
             IRbpDispatchLease lease)
         {
+            string incarnationProperty = incarnation == null
+                ? string.Empty
+                : ",\"cache_incarnation_digest\":\"" + incarnation + "\"";
             string result =
                 $$"""
                 {
@@ -342,7 +757,7 @@ public sealed partial class RbpConnectionCoordinatorTests
                     "type":"FloorPlan",
                     "level":"Level 2"
                   },
-                  "disciplineHint":"mech"
+                  "disciplineHint":"mech"{{incarnationProperty}}
                 }
                 """;
             byte[] raw = Encoding.UTF8.GetBytes(
@@ -384,6 +799,7 @@ public sealed partial class RbpConnectionCoordinatorTests
             MutableSessionCatalog catalog,
             FakeConnectionCycle cycle,
             ScriptedDocContextChannel channel,
+            ConcurrentQueue<RbpDocumentContextObservation> observations,
             RbpConnectionCoordinator coordinator)
         {
             _directory = directory;
@@ -392,6 +808,8 @@ public sealed partial class RbpConnectionCoordinatorTests
             Catalog = catalog;
             Cycle = cycle;
             Channel = channel;
+            Observations = observations;
+            Coordinator = coordinator;
             _run = coordinator.RunAsync(_stop.Token);
         }
 
@@ -403,6 +821,10 @@ public sealed partial class RbpConnectionCoordinatorTests
 
         internal ScriptedDocContextChannel Channel { get; }
 
+        internal ConcurrentQueue<RbpDocumentContextObservation> Observations { get; }
+
+        internal RbpConnectionCoordinator Coordinator { get; }
+
         internal RbpEnvelope[] SentDocContextUpdates() =>
             Cycle.Sent
                 .Where(envelope => envelope.Type == "doc_context_update")
@@ -411,7 +833,9 @@ public sealed partial class RbpConnectionCoordinatorTests
         internal static async Task<DocContextHarness> StartAsync(
             RbpLocalSessionSnapshot local,
             bool failFirstPoll = false,
-            Func<RbpJournalStore, Task>? seedAsync = null)
+            bool failFirstRoute = false,
+            Func<RbpJournalStore, Task>? seedAsync = null,
+            string? initialIncarnation = null)
         {
             var directory = new RbpJournalTestDirectory();
             var clock = new ManualCoordinatorClock();
@@ -422,15 +846,31 @@ public sealed partial class RbpConnectionCoordinatorTests
             }
 
             var channel = new ScriptedDocContextChannel();
+            if (initialIncarnation is not null)
+            {
+                channel.SetSnapshot(1, "Project A", initialIncarnation);
+            }
             if (failFirstPoll)
             {
                 channel.FailNextPoll();
+            }
+            if (failFirstRoute)
+            {
+                channel.FailNextRoute();
             }
 
             var responder = new ScriptedGatewayResponder(clock);
             var cycle = new FakeConnectionCycle(responder.Respond);
             var catalog = new MutableSessionCatalog(local);
-            var watcher = new RbpDocContextWatcher(channel, clock);
+            var observations = new ConcurrentQueue<RbpDocumentContextObservation>();
+            var watcher = new RbpDocContextWatcher(
+                channel,
+                clock,
+                onObservation: observation =>
+                {
+                    observations.Enqueue(observation);
+                    return ValueTask.CompletedTask;
+                });
             var coordinator = new RbpConnectionCoordinator(
                 new FakeConnectionCycleFactory(cycle),
                 store,
@@ -446,7 +886,12 @@ public sealed partial class RbpConnectionCoordinatorTests
                 inboundJournal: null,
                 clock,
                 new FixedRandomSource(0),
-                watcher);
+                watcher,
+                onDocumentContextObservation: observation =>
+                {
+                    observations.Enqueue(observation);
+                    return ValueTask.CompletedTask;
+                });
             return new DocContextHarness(
                 directory,
                 store,
@@ -454,6 +899,7 @@ public sealed partial class RbpConnectionCoordinatorTests
                 catalog,
                 cycle,
                 channel,
+                observations,
                 coordinator);
         }
 

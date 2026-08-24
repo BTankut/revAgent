@@ -16,6 +16,7 @@ using RevAgent.Bridge.Host.Hosting;
 using RevAgent.Bridge.Runtime;
 using RevAgent.Bridge.Tests.Gateway.Storage;
 using RevAgent.Contracts.AddinLoopback;
+using RevAgent.Contracts.Rbp;
 
 namespace RevAgent.Bridge.Tests.Gateway.Connection;
 
@@ -35,7 +36,7 @@ public sealed partial class RbpConnectionCoordinatorTests
         await using RbpJournalStore store = OpenStore(directory, clock);
         var responder = new ScriptedGatewayResponder(clock);
         var cycle = new FakeConnectionCycle(responder.Respond);
-        var routes = new RecordingRouteResolver();
+        var routes = new RecordingRouteAuthority();
         RbpConnectionCoordinator coordinator =
             WorkerGatewayComposition.CreateCoordinator(
                 new WorkerGatewayServices(
@@ -43,7 +44,10 @@ public sealed partial class RbpConnectionCoordinatorTests
                     store,
                     new MutableSessionCatalog(
                         WatchedLocalSession(8080, 1000)),
-                    CompositionOptions(),
+                    CompositionOptions() with
+                    {
+                        SessionRouteBindingAuthority = routes,
+                    },
                     new WorkerAddinDispatchSurface(
                         new AddinSessionRouter(
                             new NeverInvokedAddinTransport()),
@@ -76,6 +80,8 @@ public sealed partial class RbpConnectionCoordinatorTests
             // rsid proves the watcher is constructed and running.
             await EventuallyAsync(
                 () => routes.Resolved.Contains("rs-8080"));
+            Assert.Contains("rs-8080", routes.Bound);
+            Assert.Equal(0, routes.ResolveBeforeBindingCount);
 
             // The invocation dispatcher is composed too: an inbound invoke is
             // journaled, admitted, and answered rather than refused by the
@@ -348,6 +354,255 @@ public sealed partial class RbpConnectionCoordinatorTests
     }
 
     [Fact]
+    public async Task WorkerCompositionBindsResumeRouteBeforeWatching()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        var clock = new ManualCoordinatorClock();
+        await using RbpJournalStore store = OpenStore(directory, clock);
+        RbpLocalSessionSnapshot local = WatchedLocalSession(8080, 1000);
+        _ = await store.PersistRegisteredSessionAsync(
+            Registration(local, "rs-8080"));
+        var responder = new ScriptedGatewayResponder(clock);
+        var cycle = new FakeConnectionCycle(responder.Respond);
+        var routes = new RecordingRouteAuthority();
+        RbpConnectionCoordinator coordinator =
+            WorkerGatewayComposition.CreateCoordinator(
+                new WorkerGatewayServices(
+                    new FakeConnectionCycleFactory(cycle),
+                    store,
+                    new MutableSessionCatalog(local),
+                    CompositionOptions() with
+                    {
+                        SessionRouteBindingAuthority = routes,
+                    },
+                    new WorkerAddinDispatchSurface(
+                        new AddinSessionRouter(
+                            new NeverInvokedAddinTransport()),
+                        routes),
+                    clock,
+                    new FixedRandomSource(0)));
+        using var stop = new CancellationTokenSource();
+        Task run = coordinator.RunAsync(stop.Token);
+        try
+        {
+            await EventuallyAsync(() => routes.Resolved.Contains("rs-8080"));
+            Assert.Contains("rs-8080", routes.Bound);
+            Assert.Equal(0, routes.ResolveBeforeBindingCount);
+            Assert.Contains(cycle.Sent, envelope => envelope.Type == "session_resume");
+        }
+        finally
+        {
+            stop.Cancel();
+            await run.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+    }
+
+    [Fact]
+    public async Task WorkerCompositionDoesNotWatchSessionWithoutDocumentCapability()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        var clock = new ManualCoordinatorClock();
+        await using RbpJournalStore store = OpenStore(directory, clock);
+        var responder = new ScriptedGatewayResponder(clock);
+        var cycle = new FakeConnectionCycle(responder.Respond);
+        var routes = new RecordingRouteAuthority();
+        RbpConnectionCoordinator coordinator =
+            WorkerGatewayComposition.CreateCoordinator(
+                new WorkerGatewayServices(
+                    new FakeConnectionCycleFactory(cycle),
+                    store,
+                    new MutableSessionCatalog(LocalSession(8080, 1000)),
+                    CompositionOptions() with
+                    {
+                        SessionRouteBindingAuthority = routes,
+                    },
+                    new WorkerAddinDispatchSurface(
+                        new AddinSessionRouter(
+                            new NeverInvokedAddinTransport()),
+                        routes),
+                    clock,
+                    new FixedRandomSource(0)));
+        using var stop = new CancellationTokenSource();
+        Task run = coordinator.RunAsync(stop.Token);
+        try
+        {
+            await EventuallyAsync(
+                () => coordinator.GetSnapshot().ActiveRsids.Contains("rs-8080"));
+            await Task.Delay(75);
+            Assert.Contains("rs-8080", routes.Bound);
+            Assert.Empty(routes.Resolved);
+        }
+        finally
+        {
+            stop.Cancel();
+            await run.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+    }
+
+    [Fact]
+    public async Task WorkerRuntimePurgeUsesSevenDayJournalReleaseForSpoolCleanup()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        var clock = new ManualCoordinatorClock();
+        RbpJournalStore store = OpenStore(directory, clock);
+        RbpArtifactCarrierProducer producer =
+            RbpArtifactCarrierProducer.CreateProduction(directory.Path, store);
+        RbpCarrierEmission emission = Assert.IsType<RbpCarrierEmission>(
+            await producer.TryPrepareAsync(
+                "rs-sweep",
+                Json("""{"invocation_id":"sweep-carrier"}"""),
+                JsonSerializer.SerializeToElement(new
+                {
+                    payload = new string(
+                        'x', RbpArtifactCarrierProducer.MaximumChunkBytes + 1),
+                }),
+                CancellationToken.None));
+        _ = await store.PersistRegisteredSessionAsync(
+            RbpJournalTestData.Registration(
+                rsid: "rs-sweep",
+                expiresInHours: 24 * 365));
+        const string invocationId = "0197a3c2-0000-7000-8000-000000000412";
+        var identity = new RbpInvocationIdentity(
+            "rs-sweep", invocationId, "get_current_view_info", false, null,
+            "sha256:" + new string('a', 64), "{}", "[]");
+        _ = await store.AdmitInvocationAsync(identity);
+        await store.MarkInvocationExecutingAsync(identity.IdempotencyKey);
+        JsonElement prefixes = JsonSerializer.SerializeToElement(
+            emission.Prefixes.Select(value => new
+            {
+                type = value.Type,
+                payload = value.Payload,
+            }));
+        string prefixDigest = RbpArtifactCarrierProducer.Digest(
+            System.Text.Encoding.UTF8.GetBytes(prefixes.GetRawText()));
+        string terminalDigest = RbpArtifactCarrierProducer.Digest(
+            System.Text.Encoding.UTF8.GetBytes(
+                emission.TerminalPayload.GetRawText()));
+        _ = await store.PersistInvocationTerminalAsync(
+            identity.IdempotencyKey,
+            new RbpInvocationTerminal(
+                RbpInvocationState.Completed,
+                emission.TerminalPayload,
+                terminalDigest,
+                new RbpCarrierPlan(
+                    "sha256:" + new string('c', 64),
+                    emission.CarrierKey,
+                    emission.Prefixes.Select(value =>
+                        new RbpCarrierPlanFrame(value.Type, value.Payload))
+                        .ToArray(),
+                    emission.TerminalPayload,
+                    prefixDigest,
+                    terminalDigest)));
+        RbpQueueOutboundResult terminal = await store.QueueOutboundDataAsync(
+            "rs-sweep",
+            new RbpOutboundDataDraft(
+                "result", "sweep-terminal", emission.TerminalPayload));
+        long terminalSequence = Assert.IsType<RbpDataEnvelopeSnapshot>(
+            terminal.Envelope).Sequence;
+        await store.RecordCarrierTerminalQueuedAsync(
+            emission.CarrierKey, "rs-sweep", terminalSequence);
+        producer.RecordTerminalQueued(emission.CarrierKey, "rs-sweep", 1);
+        string carrierRoot = Path.Combine(
+            directory.Path, "artifact-spool", emission.CarrierKey);
+        Assert.Equal(1, terminalSequence);
+        IReadOnlyList<RbpReleasedCarrier> released =
+            await store.ApplyCarrierPlanAcknowledgementsAsync(
+            new[] { new RbpSessionAcknowledgement("rs-sweep", terminalSequence) });
+        producer.SweepExpired(released);
+        await store.ConfirmSpoolReleasedAsync(Assert.Single(released));
+        clock.Advance(TimeSpan.FromDays(8));
+
+        var responder = new ScriptedGatewayResponder(clock);
+        var cycle = new FakeConnectionCycle(responder.Respond);
+        RbpConnectionCoordinator coordinator = Coordinator(
+            new FakeConnectionCycleFactory(cycle),
+            store,
+            new MutableSessionCatalog(),
+            clock);
+        await using var runtime = new WorkerGatewayRuntime(
+            coordinator,
+            ownedJournal: store,
+            carrierProducer: producer,
+            carrierSweepInterval: TimeSpan.FromMilliseconds(10));
+        var service = new WorkerGatewayRuntimeService(
+            () => runtime,
+            new RuntimeLifetime(),
+            new RuntimeLog(),
+            new WorkerExitState());
+
+        await service.StartAsync(CancellationToken.None);
+        try
+        {
+            await EventuallyAsync(() => !Directory.Exists(carrierRoot));
+            Assert.Null(await store.GetInvocationAsync(identity.IdempotencyKey));
+        }
+        finally
+        {
+            await service.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task WorkerCarrierPumpReachesBoundedJournalRetention()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        var clock = new ManualCoordinatorClock();
+        RbpJournalStore store = OpenStore(directory, clock);
+        _ = await store.PersistRegisteredSessionAsync(
+            RbpJournalTestData.Registration(expiresInHours: 24 * 365));
+        const string invocationId = "0197a3c2-0000-7000-8000-000000000411";
+        var identity = new RbpInvocationIdentity(
+            "rs-test",
+            invocationId,
+            "get_current_view_info",
+            false,
+            null,
+            "sha256:" + new string('a', 64),
+            "{}",
+            "[]");
+        _ = await store.AdmitInvocationAsync(identity);
+        await store.MarkInvocationExecutingAsync(identity.IdempotencyKey);
+        _ = await store.PersistInvocationTerminalAsync(
+            identity.IdempotencyKey,
+            new RbpInvocationTerminal(
+                RbpInvocationState.Completed,
+                Json("""{"ok":true}"""),
+                "sha256:" + new string('b', 64)));
+        clock.Advance(TimeSpan.FromDays(8));
+
+        RbpArtifactCarrierProducer producer =
+            RbpArtifactCarrierProducer.CreateProduction(directory.Path, store);
+        var responder = new ScriptedGatewayResponder(clock);
+        var cycle = new FakeConnectionCycle(responder.Respond);
+        RbpConnectionCoordinator coordinator = Coordinator(
+            new FakeConnectionCycleFactory(cycle),
+            store,
+            new MutableSessionCatalog(),
+            clock);
+        await using var runtime = new WorkerGatewayRuntime(
+            coordinator,
+            ownedJournal: store,
+            carrierProducer: producer,
+            carrierSweepInterval: TimeSpan.FromMilliseconds(10));
+        var service = new WorkerGatewayRuntimeService(
+            () => runtime,
+            new RuntimeLifetime(),
+            new RuntimeLog(),
+            new WorkerExitState());
+
+        await service.StartAsync(CancellationToken.None);
+        try
+        {
+            await EventuallyAsync(async () =>
+                await store.GetInvocationAsync(identity.IdempotencyKey) is null);
+        }
+        finally
+        {
+            await service.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
     public async Task WorkerCatalogProjectsDiscoveryIntoFrozenRegistrations()
     {
         using var directory = new RbpJournalTestDirectory();
@@ -570,6 +825,150 @@ public sealed partial class RbpConnectionCoordinatorTests
     }
 
     [Fact]
+    public async Task WorkerCatalogBindRequiresTheCurrentAttestedHandle()
+    {
+        var transport = new ScriptedStatusTransport();
+        var router = new AddinSessionRouter(transport);
+        var catalog = new WorkerAddinSessionCatalog(
+            new AddinDiscovery(transport, new NoOpProcessAttestor()),
+            router,
+            ScanConfiguration(),
+            () => new FixedCredentialProvider(),
+            (rsid, _) => Task.FromResult<string?>(null),
+            "0.1.0-test",
+            "WS01");
+
+        Assert.False(catalog.TryBindRegisteredSession("rs-preflight", "key"));
+        RbpLocalSessionSnapshot active = Assert.Single(await catalog.ReadAsync());
+        Assert.True(catalog.TryBindRegisteredSession(
+            "rs-preflight", active.LocalSessionKey));
+        Assert.NotNull(catalog.Resolve("rs-preflight"));
+    }
+
+    [Fact]
+    public async Task WorkerCatalogRefreshPublishesNewHandleForBoundRsid()
+    {
+        string addinVersion = "2026.07.22.0";
+        var transport = new ScriptedStatusTransport(result =>
+            result["addinVersion"] = addinVersion);
+        var router = new AddinSessionRouter(transport);
+        var catalog = new WorkerAddinSessionCatalog(
+            new AddinDiscovery(transport, new NoOpProcessAttestor()),
+            router,
+            ScanConfiguration(),
+            () => new FixedCredentialProvider(),
+            (rsid, _) => Task.FromResult<string?>(null),
+            "0.1.0-test",
+            "WS01");
+
+        RbpLocalSessionSnapshot first = Assert.Single(await catalog.ReadAsync());
+        Assert.True(catalog.TryBindRegisteredSession("rs-refresh", first.LocalSessionKey));
+        AddinSessionRouter.SessionHandle before = Assert.IsType<AddinSessionRouter.SessionHandle>(
+            catalog.Resolve("rs-refresh"));
+
+        addinVersion = "2026.07.22.1";
+        _ = Assert.Single(await catalog.ReadAsync());
+
+        AddinSessionRouter.SessionHandle after = Assert.IsType<AddinSessionRouter.SessionHandle>(
+            catalog.Resolve("rs-refresh"));
+        Assert.NotSame(before, after);
+        Assert.True(after.Generation > before.Generation);
+    }
+
+    [Fact]
+    public async Task RoutedChannelFailsClosedWithRouteFailureAfterHandleRemoval()
+    {
+        bool listenerAvailable = true;
+        var transport = new ScriptedStatusTransport(
+            isAvailable: () => listenerAvailable);
+        var router = new AddinSessionRouter(transport);
+        var catalog = new WorkerAddinSessionCatalog(
+            new AddinDiscovery(transport, new NoOpProcessAttestor()),
+            router,
+            ScanConfiguration(),
+            () => new FixedCredentialProvider(),
+            (rsid, _) => Task.FromResult<string?>(null),
+            "0.1.0-test",
+            "WS01");
+        RbpLocalSessionSnapshot active = Assert.Single(await catalog.ReadAsync());
+        Assert.True(catalog.TryBindRegisteredSession("rs-removed", active.LocalSessionKey));
+        var channel = new RbpRoutedInvocationChannel(router, catalog);
+
+        listenerAvailable = false;
+        Assert.Empty(await catalog.ReadAsync());
+        RbpAddinOutcome outcome = await channel.InvokeAsync(
+            "rs-removed",
+            new AddinCall("route-removed", "get_document_context", new JObject(), TimeSpan.FromSeconds(1)),
+            CancellationToken.None);
+
+        Assert.Equal(RbpAddinOutcomeKind.KnownNotDispatched, outcome.Kind);
+        Assert.True(outcome.RouteFailure);
+        Assert.Equal(0, outcome.RequestBytes);
+    }
+
+    [Fact]
+    public async Task RoutedCatalogChannelInvokesCachedDocumentContextWithBoundHandle()
+    {
+        var transport = new ScriptedStatusTransport();
+        var router = new AddinSessionRouter(transport);
+        var catalog = new WorkerAddinSessionCatalog(
+            new AddinDiscovery(transport, new NoOpProcessAttestor()),
+            router,
+            ScanConfiguration(),
+            () => new FixedCredentialProvider(),
+            (rsid, _) => Task.FromResult<string?>(null),
+            "0.1.0-test",
+            "WS01");
+        RbpLocalSessionSnapshot active = Assert.Single(await catalog.ReadAsync());
+        Assert.True(catalog.TryBindRegisteredSession("rs-document", active.LocalSessionKey));
+        var channel = new RbpRoutedInvocationChannel(router, catalog);
+
+        RbpAddinOutcome outcome = await channel.InvokeAsync(
+            "rs-document",
+            new AddinCall("document-1", "get_document_context", new JObject(), TimeSpan.FromSeconds(1)),
+            CancellationToken.None);
+
+        try
+        {
+            Assert.Equal(RbpAddinOutcomeKind.Completed, outcome.Kind);
+            Assert.True(outcome.RequestBytes > 0);
+            Assert.True(outcome.ResponseBytes > 0);
+            AddinDocumentContextResponse response =
+                AddinDocumentContextParser.ParseResponse(
+                    System.Text.Encoding.UTF8.GetString(outcome.RawResponsePayload));
+            Assert.Equal("document-1", response.RequestId);
+            Assert.Equal(DocumentContextCacheState.Ready, response.Context.CacheState);
+        }
+        finally
+        {
+            outcome.Lease?.ReleaseAfterDurableDecision();
+        }
+    }
+
+    [Fact]
+    public async Task WorkerCatalogRejectsMismatchedOrDuplicateRouteBindings()
+    {
+        var transport = new ScriptedStatusTransport();
+        var router = new AddinSessionRouter(transport);
+        var catalog = new WorkerAddinSessionCatalog(
+            new AddinDiscovery(transport, new NoOpProcessAttestor()),
+            router,
+            ScanConfiguration(),
+            () => new FixedCredentialProvider(),
+            (rsid, _) => Task.FromResult<string?>(null),
+            "0.1.0-test",
+            "WS01");
+        RbpLocalSessionSnapshot active = Assert.Single(await catalog.ReadAsync());
+
+        Assert.False(catalog.TryBindRegisteredSession("rs-bind", "unknown"));
+        Assert.True(catalog.TryBindRegisteredSession(
+            "rs-bind", active.LocalSessionKey));
+        Assert.False(catalog.TryBindRegisteredSession(
+            "rs-bind", "other-local-session"));
+        Assert.NotNull(catalog.Resolve("rs-bind"));
+    }
+
+    [Fact]
     public async Task WorkerCatalogRejectsPairDriftUntilCredentialRotationBinds()
     {
         string currentToken = "token-0123456789ABCDEFGHIJKLMNOP";
@@ -678,8 +1077,16 @@ public sealed partial class RbpConnectionCoordinatorTests
                             ResponseBytesObserved: 0)));
             }
 
-            JObject result = LoadStatusFixtureResult();
-            _configure?.Invoke(result);
+            JObject result = string.Equals(
+                call.Method,
+                "get_document_context",
+                StringComparison.Ordinal)
+                ? DocumentContextResult()
+                : LoadStatusFixtureResult();
+            if (!string.Equals(call.Method, "get_document_context", StringComparison.Ordinal))
+            {
+                _configure?.Invoke(result);
+            }
             var envelope = new JObject
             {
                 ["jsonrpc"] = "2.0",
@@ -730,6 +1137,22 @@ public sealed partial class RbpConnectionCoordinatorTests
             return (JObject)((JObject)scenario["response"]!)["result"]!
                 .DeepClone();
         }
+
+        private static JObject DocumentContextResult() => JObject.Parse(
+            """
+            {
+              "resultContractVersion":2,
+              "documentContextContractVersion":1,
+              "capturedAtUtc":"2026-08-24T00:00:00.000Z",
+              "revision":1,
+              "cacheState":"ready",
+              "unavailableReason":null,
+              "documents":[],
+              "activeDocumentId":null,
+              "activeView":null,
+              "disciplineHint":null
+            }
+            """);
 
         private static string FindRepositoryRoot()
         {
@@ -865,6 +1288,52 @@ public sealed partial class RbpConnectionCoordinatorTests
         {
             Resolved.Enqueue(rsid);
             return null;
+        }
+    }
+
+    private sealed class RecordingRouteAuthority :
+        IRbpSessionRouteResolver,
+        IRbpSessionRouteBindingAuthority
+    {
+        private readonly ConcurrentDictionary<string, string> _bound =
+            new(StringComparer.Ordinal);
+        private int _resolveBeforeBindingCount;
+
+        internal ConcurrentQueue<string> Resolved { get; } = new();
+
+        internal ConcurrentQueue<string> Bound { get; } = new();
+
+        internal int ResolveBeforeBindingCount =>
+            Volatile.Read(ref _resolveBeforeBindingCount);
+
+        public AddinSessionRouter.SessionHandle? Resolve(string rsid)
+        {
+            Resolved.Enqueue(rsid);
+            if (!_bound.ContainsKey(rsid))
+            {
+                Interlocked.Increment(ref _resolveBeforeBindingCount);
+            }
+
+            return null;
+        }
+
+        public bool TryBindRegisteredSession(string rsid, string localSessionKey)
+        {
+            if (_bound.TryGetValue(rsid, out string? existing))
+            {
+                return string.Equals(
+                    existing,
+                    localSessionKey,
+                    StringComparison.Ordinal);
+            }
+
+            if (_bound.TryAdd(rsid, localSessionKey))
+            {
+                Bound.Enqueue(rsid);
+                return true;
+            }
+
+            return false;
         }
     }
 

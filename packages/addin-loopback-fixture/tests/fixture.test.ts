@@ -208,6 +208,7 @@ describe("add-in loopback fixture listener", () => {
       documentContextContractVersion: 1,
       cacheState: "ready",
       activeDocumentId: "fixture-document-1",
+      cache_incarnation_digest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u),
     });
     expect(fixture.getExecutionCount(id)).toBe(1);
   });
@@ -502,6 +503,10 @@ describe("add-in loopback fixture listener", () => {
       pollRequestCount: 2,
       externalEventRaiseCount: 0,
     });
+    expect((before.result as JsonObject).cache_incarnation_digest)
+      .toBe((after.result as JsonObject).cache_incarnation_digest);
+    expect((after.result as JsonObject).cache_incarnation_digest)
+      .toBe(evidence.cacheIncarnationDigest);
     expect(evidence.timeline.map((entry) => entry.kind)).toEqual([
       "cache_initialized",
       "cache_read",
@@ -512,6 +517,59 @@ describe("add-in loopback fixture listener", () => {
       expect(evidence.timeline[index]!.atMonotonicMs)
         .toBeGreaterThan(evidence.timeline[index - 1]!.atMonotonicMs);
     }
+  });
+
+  it("provides a value-free controlled document-context acknowledgement and probe", () => {
+    const fixture = new AddinLoopbackFixture();
+    const acknowledgement = fixture.applyDocumentContextControlEvent({
+      capturedAtUtc: "2026-07-22T10:15:00.000Z",
+      cacheState: "ready",
+      unavailableReason: null,
+      documents: [{
+        documentId: "control-only-document",
+        title: "Control-only Fixture Model",
+        pathDigest: null,
+        isWorkshared: false,
+        isActive: true,
+      }],
+      activeDocumentId: "control-only-document",
+      activeView: {
+        documentId: "control-only-document",
+        id: "2003",
+        name: "Control-only Fixture View",
+        type: "ThreeD",
+        level: null,
+      },
+      disciplineHint: "coordination",
+    });
+    const evidence = fixture.snapshotEvidence().documentContextEvidence;
+
+    expect(acknowledgement).toMatchObject({
+      action: "apply_document_context",
+      revision: 2,
+      cacheIncarnationDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u),
+      cachedContextHash: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u),
+      activeDocumentIdentityHash: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u),
+      acknowledgementHash: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u),
+    });
+    expect(evidence).toMatchObject({
+      currentRevision: acknowledgement.revision,
+      cachedContextHash: acknowledgement.cachedContextHash,
+      activeDocumentIdentityHash: acknowledgement.activeDocumentIdentityHash,
+      lastControlAcknowledgementHash: acknowledgement.acknowledgementHash,
+      cacheIncarnationDigest: acknowledgement.cacheIncarnationDigest,
+    });
+    expect(JSON.stringify(evidence)).not.toContain("control-only-document");
+    expect(JSON.stringify(evidence)).not.toContain("Control-only Fixture Model");
+  });
+
+  it("uses a new opaque cache incarnation for each fixture process lifetime", () => {
+    const first = new AddinLoopbackFixture().snapshotEvidence().documentContextEvidence;
+    const second = new AddinLoopbackFixture().snapshotEvidence().documentContextEvidence;
+    expect(first.cacheIncarnationDigest).toMatch(/^sha256:[0-9a-f]{64}$/u);
+    expect(second.cacheIncarnationDigest).toMatch(/^sha256:[0-9a-f]{64}$/u);
+    expect(first.cacheIncarnationDigest).not.toBe(second.cacheIncarnationDigest);
+    expect(JSON.stringify(first)).not.toMatch(/revagent:fixture-cache-incarnation|nonce/iu);
   });
 
   it("bounds document-context evidence while retaining monotonic totals", () => {

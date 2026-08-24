@@ -65,7 +65,8 @@ internal sealed record RbpStoredInvocation(
     string? LateResultDigest,
     long CreatedAtMilliseconds,
     long? StartedAtMilliseconds,
-    long? FinishedAtMilliseconds)
+    long? FinishedAtMilliseconds,
+    RbpCarrierPlan? CarrierPlan = null)
 {
     internal bool IsTerminal =>
         State is not (RbpInvocationState.Received or RbpInvocationState.Executing);
@@ -158,4 +159,21 @@ internal sealed record RbpVerificationHold(
 internal sealed record RbpInvocationTerminal(
     RbpInvocationState State,
     JsonElement Outcome,
-    string? ResultDigest);
+    string? ResultDigest,
+    RbpCarrierPlan? CarrierPlan = null);
+
+/// <summary>
+/// Immutable delivery material for a chunk/artifact carrier.  The journal owns
+/// this plan, not the socket: a reconnect must replay these exact prefix
+/// frames before the recorded terminal rather than attempting to regenerate
+/// output from a spool or add-in response.
+/// </summary>
+internal sealed record RbpCarrierPlan(
+    string PlanId,
+    string CarrierKey,
+    IReadOnlyList<RbpCarrierPlanFrame> OrderedPrefixes,
+    JsonElement TerminalPayload,
+    string PrefixDigest,
+    string TerminalDigest);
+
+internal sealed record RbpCarrierPlanFrame(string Type, JsonElement Payload);

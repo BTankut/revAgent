@@ -1,8 +1,10 @@
 using System.Text;
 using System.Text.Json;
+using System.Security.Cryptography;
 using Newtonsoft.Json.Linq;
 using RevAgent.Bridge.AddinLoopback;
 using RevAgent.Bridge.Gateway.Dispatch;
+using RevAgent.Bridge.Gateway.Protocol;
 using RevAgent.Contracts.Rbp;
 
 namespace RevAgent.Bridge.Gateway.Connection;
@@ -14,7 +16,189 @@ namespace RevAgent.Bridge.Gateway.Connection;
 /// </summary>
 internal delegate Task<bool> RbpDocContextEmit(
     JsonElement payload,
+    RbpDocumentContextDiagnosticPair? diagnosticPair,
     CancellationToken cancellationToken);
+
+/// <summary>
+/// Local-only, value-free correlation carried from one validated add-in
+/// snapshot through its queue/send lifecycle. It is never an RBP payload,
+/// envelope, or journal field.
+/// </summary>
+internal sealed record RbpDocumentContextDiagnosticPair(
+    long SourceRevision,
+    string CacheIncarnationDigest)
+{
+    internal static bool TryCreate(
+        long? sourceRevision,
+        string? cacheIncarnationDigest,
+        out RbpDocumentContextDiagnosticPair? pair)
+    {
+        if (sourceRevision is null || sourceRevision <= 0 ||
+            cacheIncarnationDigest is null ||
+            cacheIncarnationDigest.Length != "sha256:".Length + 64 ||
+            !cacheIncarnationDigest.StartsWith("sha256:", StringComparison.Ordinal))
+        {
+            pair = null;
+            return false;
+        }
+
+        foreach (char character in cacheIncarnationDigest.AsSpan("sha256:".Length))
+        {
+            if ((character < '0' || character > '9') &&
+                (character < 'a' || character > 'f'))
+            {
+                pair = null;
+                return false;
+            }
+        }
+
+        pair = new RbpDocumentContextDiagnosticPair(
+            sourceRevision.Value,
+            cacheIncarnationDigest);
+        return true;
+    }
+}
+
+/// <summary>
+/// Value-free WP-12 diagnostic seam. It deliberately carries only fixed
+/// classifications, a sequence and SHA-256 identities; document titles,
+/// paths, payloads, RSIDs and exception text never leave the coordinator.
+/// </summary>
+internal sealed record RbpDocumentContextObservation(
+    string ContractVersion,
+    string Event,
+    string Stage,
+    string Outcome,
+    string RsidHash,
+    string? PayloadHash,
+    string? ContextDigest,
+    long? Sequence,
+    long? SourceRevision,
+    string? CacheIncarnationDigest)
+{
+    internal const string CurrentContractVersion =
+        "revagent.rbp-document-context-observation/v1";
+    private const string ContextDigestDomain =
+        "revagent:doc-context-payload:v1\n";
+    private static readonly UTF8Encoding StrictUtf8 = new(
+        encoderShouldEmitUTF8Identifier: false,
+        throwOnInvalidBytes: true);
+
+    internal static RbpDocumentContextObservation Create(
+        string stage,
+        string outcome,
+        string rsid,
+        JsonElement? payload = null,
+        long? sequence = null,
+        long? sourceRevision = null,
+        string? cacheIncarnationDigest = null)
+        => new(
+            CurrentContractVersion,
+            "bridge.document_context_observation",
+            stage,
+            outcome,
+            Hash(rsid),
+            payload is { } value ? Hash(value.GetRawText()) : null,
+            payload is { } context ? TryMakeContextDigest(context) : null,
+            sequence,
+            RbpDocumentContextDiagnosticPair.TryCreate(
+                sourceRevision, cacheIncarnationDigest, out _)
+                ? sourceRevision
+                : null,
+            RbpDocumentContextDiagnosticPair.TryCreate(
+                sourceRevision, cacheIncarnationDigest, out _)
+                ? cacheIncarnationDigest
+                : null);
+
+    /// <summary>
+    /// Creates an observation only when the document-context payload can be
+    /// proven canonical. A diagnostic failure must never disclose a raw
+    /// document payload or weaken delivery of the unchanged RBP payload.
+    /// </summary>
+    internal static bool TryCreate(
+        string stage,
+        string outcome,
+        string rsid,
+        JsonElement? payload,
+        long? sequence,
+        out RbpDocumentContextObservation? observation,
+        long? sourceRevision = null,
+        string? cacheIncarnationDigest = null,
+        bool requireDiagnosticPair = false)
+    {
+        if (payload is not { } value)
+        {
+            observation = Create(stage, outcome, rsid, sequence: sequence);
+            return true;
+        }
+
+        try
+        {
+            bool hasPair = RbpDocumentContextDiagnosticPair.TryCreate(
+                sourceRevision,
+                cacheIncarnationDigest,
+                out RbpDocumentContextDiagnosticPair? pair);
+            if (requireDiagnosticPair && !hasPair)
+            {
+                observation = null;
+                return false;
+            }
+            observation = new RbpDocumentContextObservation(
+                CurrentContractVersion,
+                "bridge.document_context_observation",
+                stage,
+                outcome,
+                Hash(rsid),
+                Hash(value.GetRawText()),
+                MakeContextDigest(value),
+                sequence,
+                hasPair ? pair!.SourceRevision : null,
+                hasPair ? pair!.CacheIncarnationDigest : null);
+            return true;
+        }
+        catch
+        {
+            // Duplicate keys, non-finite values, malformed Unicode, or a
+            // canonicalizer failure have no safe diagnostic representation.
+            observation = null;
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Derives the diagnostic-only correlate for a document-context payload
+    /// using the pinned RFC 8785 canonicalizer. The result is bare lowercase
+    /// SHA-256 hexadecimal and is never added to the RBP wire payload.
+    /// </summary>
+    internal static string MakeContextDigest(JsonElement payload)
+    {
+        byte[] domain = StrictUtf8.GetBytes(ContextDigestDomain);
+        byte[] canonical = StrictUtf8.GetBytes(
+            Rfc8785Json.Canonicalize(payload));
+        byte[] material = new byte[domain.Length + canonical.Length];
+        Buffer.BlockCopy(domain, 0, material, 0, domain.Length);
+        Buffer.BlockCopy(canonical, 0, material, domain.Length, canonical.Length);
+        return Convert.ToHexString(SHA256.HashData(material)).ToLowerInvariant();
+    }
+
+    private static string? TryMakeContextDigest(JsonElement payload)
+    {
+        try
+        {
+            return MakeContextDigest(payload);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static string Hash(string value) =>
+        "sha256:" + Convert.ToHexString(
+            SHA256.HashData(Encoding.UTF8.GetBytes(value)))
+            .ToLowerInvariant();
+
+}
 
 /// <summary>
 /// The Section 14 standing document-context watcher (P3-T7, RES-3).
@@ -55,6 +239,8 @@ internal sealed class RbpDocContextWatcher
     private readonly IRbpInvocationChannel _channel;
     private readonly IRbpCoordinatorClock _clock;
     private readonly TimeSpan _pollTimeout;
+    private readonly Func<RbpDocumentContextObservation, ValueTask>?
+        _onObservation;
     private readonly Dictionary<string, EmittedContext> _emitted =
         new(StringComparer.Ordinal);
     private readonly Dictionary<string, WatchLoop> _loops =
@@ -63,7 +249,9 @@ internal sealed class RbpDocContextWatcher
     internal RbpDocContextWatcher(
         IRbpInvocationChannel channel,
         IRbpCoordinatorClock? clock = null,
-        TimeSpan? pollTimeout = null)
+        TimeSpan? pollTimeout = null,
+        Func<RbpDocumentContextObservation, ValueTask>?
+            onObservation = null)
     {
         _channel = channel ??
             throw new ArgumentNullException(nameof(channel));
@@ -74,6 +262,7 @@ internal sealed class RbpDocContextWatcher
         }
 
         _pollTimeout = pollTimeout ?? DefaultPollTimeout;
+        _onObservation = onObservation;
     }
 
     /// <summary>
@@ -141,6 +330,8 @@ internal sealed class RbpDocContextWatcher
         }
 
         replaced?.Stop();
+        Observe(RbpDocumentContextObservation.Create(
+            "probe", started is null ? "capability_absent" : "started", rsid));
         started?.Start(
             RunWatchAsync(rsid, emitAsync, started.Token));
     }
@@ -192,10 +383,10 @@ internal sealed class RbpDocContextWatcher
         RbpDocContextEmit emitAsync,
         CancellationToken token)
     {
-        AddinDocumentContextSnapshot? snapshot;
+        SnapshotRead snapshotRead;
         try
         {
-            snapshot = await ReadSnapshotAsync(rsid, token)
+            snapshotRead = await ReadSnapshotAsync(rsid, token)
                 .ConfigureAwait(false);
         }
         catch (OperationCanceledException)
@@ -206,28 +397,31 @@ internal sealed class RbpDocContextWatcher
         {
             // Add-in or transport failure: no emission, and the bounded
             // retry is the next 15-second tick rather than a hot loop.
+            Observe(RbpDocumentContextObservation.Create(
+                "failure", "snapshot_failed", rsid));
             return;
         }
 
+        if (snapshotRead.RouteFailure)
+        {
+            // Route authority loss is distinct from an add-in cache state.
+            // The observation is value-free; in particular it exposes no
+            // local key, handle generation, route detail or add-in error.
+            Observe(RbpDocumentContextObservation.Create(
+                "failure", "route_failure", rsid));
+            return;
+        }
+
+        AddinDocumentContextSnapshot? snapshot = snapshotRead.Snapshot;
         if (snapshot is null ||
             snapshot.CacheState != DocumentContextCacheState.Ready)
         {
             // A warming/unavailable cache carries no documents (A.3); it is
             // cache status, not document context, so nothing is emitted and
             // the last ready context is not clobbered.
+            Observe(RbpDocumentContextObservation.Create(
+                "snapshot", "not_ready", rsid));
             return;
-        }
-
-        lock (_sync)
-        {
-            if (_emitted.TryGetValue(rsid, out EmittedContext? current) &&
-                current.Revision == snapshot.Revision)
-            {
-                // The add-in revision is the primary change signal: an
-                // unchanged revision proves an unchanged normalized
-                // snapshot without re-serializing it.
-                return;
-            }
         }
 
         string normalized =
@@ -238,14 +432,20 @@ internal sealed class RbpDocContextWatcher
                 string.Equals(
                     current.Normalized,
                     normalized,
+                    StringComparison.Ordinal) &&
+                string.Equals(
+                    current.CacheIncarnationDigest,
+                    snapshot.CacheIncarnationDigest,
                     StringComparison.Ordinal))
             {
-                // Revision moved but the normalized payload is identical;
-                // Section 14 sends doc_context_update only when the
-                // normalized snapshot differs.
+                // Revision is a cache freshness signal, not a delivery
+                // identity. Retain it atomically for the accepted unchanged
+                // snapshot, so production and same-incarnation revision churn
+                // remain silent on later polls/reconnects.
                 _emitted[rsid] = new EmittedContext(
                     snapshot.Revision,
-                    normalized);
+                    normalized,
+                    snapshot.CacheIncarnationDigest);
                 return;
             }
         }
@@ -255,11 +455,19 @@ internal sealed class RbpDocContextWatcher
         {
             payload = document.RootElement.Clone();
         }
+        ObservePayload("snapshot", "ready", rsid, payload, snapshot);
 
         bool emitted;
         try
         {
-            emitted = await emitAsync(payload, token).ConfigureAwait(false);
+            RbpDocumentContextDiagnosticPair? pair =
+                RbpDocumentContextDiagnosticPair.TryCreate(
+                    snapshot.Revision,
+                    snapshot.CacheIncarnationDigest,
+                    out RbpDocumentContextDiagnosticPair? validatedPair)
+                    ? validatedPair
+                    : null;
+            emitted = await emitAsync(payload, pair, token).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
@@ -269,6 +477,7 @@ internal sealed class RbpDocContextWatcher
         {
             // The update was not durably queued; keep the previous emitted
             // state so the change is retried at the next tick.
+            ObservePayload("failure", "queue_failed", rsid, payload, snapshot);
             return;
         }
 
@@ -278,12 +487,62 @@ internal sealed class RbpDocContextWatcher
             {
                 _emitted[rsid] = new EmittedContext(
                     snapshot.Revision,
-                    normalized);
+                    normalized,
+                    snapshot.CacheIncarnationDigest);
             }
+        }
+        else
+        {
+            ObservePayload("queue", "not_queued", rsid, payload, snapshot);
         }
     }
 
-    private async Task<AddinDocumentContextSnapshot?> ReadSnapshotAsync(
+    private void ObservePayload(
+        string stage,
+        string outcome,
+        string rsid,
+        JsonElement payload,
+        AddinDocumentContextSnapshot? snapshot = null)
+    {
+        if (RbpDocumentContextObservation.TryCreate(
+                stage,
+                outcome,
+                rsid,
+                payload,
+                sequence: null,
+                out RbpDocumentContextObservation? observation,
+                sourceRevision: snapshot?.Revision,
+                cacheIncarnationDigest: snapshot?.CacheIncarnationDigest,
+                requireDiagnosticPair: true) &&
+            observation is not null)
+        {
+            Observe(observation);
+        }
+    }
+
+    private void Observe(RbpDocumentContextObservation observation)
+    {
+        if (_onObservation is null)
+        {
+            return;
+        }
+
+        try
+        {
+            _ = _onObservation(observation).AsTask().ContinueWith(
+                completed => _ = completed.Exception,
+                CancellationToken.None,
+                TaskContinuationOptions.OnlyOnFaulted |
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+        }
+        catch
+        {
+            // Diagnostics never own document-context delivery.
+        }
+    }
+
+    private async Task<SnapshotRead> ReadSnapshotAsync(
         string rsid,
         CancellationToken token)
     {
@@ -302,18 +561,20 @@ internal sealed class RbpDocContextWatcher
         {
             if (outcome.Kind != RbpAddinOutcomeKind.Completed)
             {
-                return null;
+                return new SnapshotRead(null, outcome.RouteFailure);
             }
 
             AddinDocumentContextResponse response =
                 AddinDocumentContextParser.ParseResponse(
                     Encoding.UTF8.GetString(outcome.RawResponsePayload));
-            return string.Equals(
+            return new SnapshotRead(
+                string.Equals(
                     response.RequestId,
                     call.InvocationId,
                     StringComparison.Ordinal)
-                ? response.Context
-                : null;
+                    ? response.Context
+                    : null,
+                RouteFailure: false);
         }
         finally
         {
@@ -324,7 +585,14 @@ internal sealed class RbpDocContextWatcher
         }
     }
 
-    private sealed record EmittedContext(long Revision, string Normalized);
+    private sealed record SnapshotRead(
+        AddinDocumentContextSnapshot? Snapshot,
+        bool RouteFailure);
+
+    private sealed record EmittedContext(
+        long Revision,
+        string Normalized,
+        string? CacheIncarnationDigest);
 
     private sealed class WatchLoop
     {

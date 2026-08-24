@@ -63,8 +63,6 @@ public sealed class RbpHelloFactoryTests
     }
 
     [Theory]
-    [InlineData("chunked_results")]
-    [InlineData("artifact_result_v1")]
     [InlineData("partial_progress")]
     [InlineData("batch_atomic")]
     [InlineData("doc_context_cached_v1")]
@@ -91,6 +89,30 @@ public sealed class RbpHelloFactoryTests
         Assert.Equal(
             new[] { "journal_v1", "transport_streamable_http" },
             profile.Capabilities);
+    }
+
+    [Fact]
+    public void HelloMayDeclareCarrierCapabilitiesOnlyWhenProducerInstalled()
+    {
+        var profile = RbpHelloProfile.Production(
+            "0.1.0-test",
+            Array.Empty<string>(),
+            new[]
+            {
+                "journal_v1",
+                "chunked_results",
+                "artifact_result_v1",
+            });
+
+        Assert.Equal(
+            new[]
+            {
+                "journal_v1",
+                "chunked_results",
+                "artifact_result_v1",
+            },
+            profile.Capabilities);
+        Assert.DoesNotContain("partial_progress", profile.Capabilities);
     }
 
     [Fact]

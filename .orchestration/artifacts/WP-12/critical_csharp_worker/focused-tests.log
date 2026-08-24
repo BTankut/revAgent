@@ -1,0 +1,14 @@
+  RevAgent.Bridge.Bootstrap -> C:\Users\BT\Projects\revAgent-worktrees\wp12-csharp\packages\bridge\src\RevAgent.Bridge.Bootstrap\bin\Debug\net8.0\RevAgent.Bridge.Bootstrap.dll
+  RevAgent.Contracts -> C:\Users\BT\Projects\revAgent-worktrees\wp12-csharp\packages\bridge\src\RevAgent.Contracts\bin\Debug\netstandard2.0\RevAgent.Contracts.dll
+  RevAgent.Bridge.Host -> C:\Users\BT\Projects\revAgent-worktrees\wp12-csharp\packages\bridge\src\RevAgent.Bridge.Host\bin\Debug\net8.0\revagent-bridge-host.dll
+  RevAgent.Bridge -> C:\Users\BT\Projects\revAgent-worktrees\wp12-csharp\packages\bridge\src\RevAgent.Bridge\bin\Debug\net8.0\revagent-bridge.dll
+  RevAgent.Bridge.Tests -> C:\Users\BT\Projects\revAgent-worktrees\wp12-csharp\packages\bridge\tests\RevAgent.Bridge.Tests\bin\Debug\net8.0\RevAgent.Bridge.Tests.dll
+C:\Users\BT\Projects\revAgent-worktrees\wp12-csharp\packages\bridge\tests\RevAgent.Bridge.Tests\bin\Debug\net8.0\RevAgent.Bridge.Tests.dll (.NETCoreApp,Version=v8.0) için test çalıştırması
+VSTest sürümü 17.12.0 (x64)
+
+Test yürütmesi başlatılıyor, lütfen bekleyin...
+Toplam 1 test dosyası belirtilen desenle eşleşti.
+
+Başarılı!  - Başarısız:     0, Başarılı:    17, Atlanan:     0, Toplam:    17, Süre: 531 ms - RevAgent.Bridge.Tests.dll (net8.0)
+
+İş yükü güncelleştirmeleri var. Daha fazla bilgi için `dotnet workload list` çalıştırın.

@@ -60,6 +60,7 @@ import type {
 import { gatewayUuidV7, isGatewayUuidV7 } from "./identifiers.js";
 import type {
   GatewayBridgeEvidenceLookup,
+  GatewayBridgeNoSendReceipt,
   GatewayBridgeResumeAuthorization,
   GatewayDurableBridgeEvidencePort,
   GatewayDurableDispatchObservation,
@@ -72,6 +73,7 @@ import type {
 import { GATEWAY_RECOVERY_NAMESPACE } from "./recoveryAuthority.js";
 import type {
   GatewayProtocolStore,
+  ObjectStorePort,
   StoreExpectation,
   StoreOutcome,
   StoreTransaction,
@@ -81,7 +83,18 @@ import type {
   EffectiveMcpRequestScopeV1,
   GatewayInvocationRoute,
 } from "./invocationContext.js";
+import { createGatewayDispatchProofAuthority } from "./invocationContext.js";
+import {
+  BridgeCarrierTerminalAborted,
+  BRIDGE_CARRIER_COMMIT_OK,
+} from "./resourceAuthority.js";
+import {
+  documentContextDigest,
+  isDocumentContextDigest,
+} from "./documentContextDigest.js";
 import type {
+  BridgeCarrierCommitResult,
+  BridgeCarrierCommitMode,
   GatewayResourceAuthority,
   GatewayResourceScope,
 } from "./resourceAuthority.js";
@@ -111,6 +124,14 @@ const GATEWAY_RBP_SESSION_V2_EGRESS_NAMESPACE =
 const GATEWAY_RBP_SESSION_V2_CONFLICT_INDEX_NAMESPACE =
   "gateway.rbp-session-conflict-index/v2" as const;
 export const GATEWAY_MUTATION_RESOLUTION_NAMESPACE = "gateway.mutation-resolution/v1" as const;
+/**
+ * Terminal carriers that arrive after durable unregister authority are kept in
+ * this append-only, digest-only lane.  It is deliberately outside the normal
+ * session aggregate: revocation must never be "re-opened" merely to record a
+ * late carrier observation.
+ */
+const GATEWAY_RBP_LATE_TERMINAL_NAMESPACE =
+  "gateway.rbp-late-terminal/v1" as const;
 /** Test-only observer for prequeue carrier-admission ordering. */
 export const TEST_RSID_CARRIER_RECEIVE_TAIL_OBSERVER = Symbol(
   "revagent.gateway.test.rsid-carrier-receive-tail-observer",
@@ -278,6 +299,23 @@ type CarrierReceiveTailObserver = (event: {
   readonly queuedBytes: number;
 }) => void;
 
+/**
+ * Value-free test/diagnostic seam. It is deliberately limited to the outcome
+ * stage and inbound sequence: no rsid, payload, identity, or route detail is
+ * ever exposed through this callback.
+ */
+export type GatewayDocumentContextObservation = Readonly<{
+  /** Only accepted payloads are correlated; rejection has no durable route. */
+  readonly stage: "accepted";
+  readonly sequence: number;
+  /** Bare lower-case SHA-256, matching the real C# worker observation. */
+  readonly contextDigest: string;
+}>;
+
+type GatewayDocumentContextObserver = (
+  observation: GatewayDocumentContextObservation,
+) => void;
+
 interface DurablePendingDispatch {
   readonly envelopeDigest: `sha256:${string}`;
   readonly gatewaySequence: number;
@@ -286,6 +324,24 @@ interface DurablePendingDispatch {
   /** Optional only for true pre-WP-02 rows; journal bindings are the fallback. */
   readonly mutationEntries?: readonly DurablePendingMutation[];
   readonly journalRecords: readonly InvocationJournalRecord[];
+  /**
+   * Gateway-authored coordinates retained before the adapter invocation
+   * boundary. They are audit material only: absence on an older row is never
+   * authority to replay that row after a restart.
+   */
+  readonly dispatchReceipt?: {
+    readonly version: 1;
+    readonly tenantId: string;
+    readonly invocationId: string;
+    readonly correlationId: string;
+    readonly proofDigest: `sha256:${string}`;
+    readonly routeSnapshotDigest: `sha256:${string}`;
+    readonly egressEpoch: number;
+    readonly leaseTicket: number;
+    readonly intent: "dispatch";
+  } | null;
+  /** Reservation-time Gateway authority; never supplied by carrier/receipt. */
+  readonly expectedNoSendAuthorityDigest?: `sha256:${string}` | null;
   /** Exact immutable north ingress scope; absent only on pre-WP-11 rows. */
   readonly effectiveMcpRequestScope?: EffectiveMcpRequestScopeV1;
 }
@@ -302,7 +358,20 @@ interface DurableDispatchEvidence {
   readonly journal: GatewayVerifiedBridgeJournalEvidence | null;
   /** Terminal truth is retained even when identity revocation suppresses delivery. */
   readonly terminalTruth?: DurableTerminalTruth | null;
+  /** Domain-separated terminal admission digest for exact CAS replay proof. */
+  readonly terminalDigest?: `sha256:${string}` | null;
+  readonly terminalCarrierDigest?: `sha256:${string}` | null;
+  /**
+   * Gateway-authored proof that a particular reserved dispatch was cancelled
+   * before the carrier invocation boundary.  This deliberately contains
+   * digests and durable lease coordinates only; no executable payload or
+   * dispatch proof object is retained.
+   */
+  readonly noSendReceipt?: DurableNoSendReceipt | null;
+  readonly noSendAuthorityDigest?: `sha256:${string}` | null;
 }
+
+type DurableNoSendReceipt = GatewayBridgeNoSendReceipt;
 
 interface DurableTerminalTruth {
   readonly state: "completed" | "guarded" | "failed";
@@ -311,10 +380,42 @@ interface DurableTerminalTruth {
   readonly payloadRetained: boolean;
 }
 
+interface DurableLateTerminalEvidence {
+  readonly schema: typeof GATEWAY_RBP_LATE_TERMINAL_NAMESPACE;
+  readonly tenantId: string;
+  readonly rsid: string;
+  readonly sessionBindingId: string;
+  readonly connectionId: string;
+  readonly correlationId: string;
+  readonly terminalSequence: number;
+  readonly terminalCarrierDigest: `sha256:${string}`;
+  readonly terminalDigest: `sha256:${string}`;
+  readonly dispatchReceiptDigest: `sha256:${string}`;
+  readonly terminalTruth: DurableTerminalTruth;
+  readonly recordedAtMs: number;
+}
+
+interface TerminalAdmission {
+  readonly tenantId: string;
+  readonly rsid: string;
+  readonly sessionBindingId: string;
+  readonly connectionId: string;
+  readonly correlationId: string;
+  readonly terminalSequence: number;
+  readonly pendingEnvelopeDigest: `sha256:${string}`;
+  readonly pendingGatewaySequence: number;
+  readonly dispatchReceiptDigest: `sha256:${string}`;
+  readonly terminalCarrierDigest: `sha256:${string}`;
+  readonly terminalDigest: `sha256:${string}`;
+  readonly terminalTruth: DurableTerminalTruth;
+}
+
 interface DurableLiveDocumentRoute {
   readonly sessionDocumentId: string;
   readonly observedConnectionId: string;
   readonly observedSequence: number;
+  /** Diagnostic-only correlate for the admitted payload, never north input. */
+  readonly contextDigest: string;
 }
 
 interface DurableRbpSession {
@@ -425,6 +526,10 @@ interface DurableEgressLease {
   readonly connectionId: string;
   readonly operation: DurableEgressOperation;
   readonly envelopeDigest: `sha256:${string}`;
+  /** v2 only: a Gateway-owned nominal dispatch proof, never wire material. */
+  readonly proofDigest?: `sha256:${string}` | null;
+  /** v2 only: binds the exact route snapshot independently of the envelope. */
+  readonly routeSnapshotDigest?: `sha256:${string}` | null;
   readonly phase: "reserved" | "started";
   readonly reservedAtMs: number;
   readonly reserveExpiresAtMs: number;
@@ -443,13 +548,29 @@ interface DurableEgressRevocation {
   readonly drainDeadlineAtMs: number;
 }
 
+/**
+ * A cancellation intent is deliberately durable and value-free.  It pins the
+ * exact reserved lease and the Gateway-authored no-send authority digest
+ * before a queue/connection is allowed to report a pre-send outcome.  The
+ * receipt itself is written only by the second CAS below.
+ */
+interface DurableEgressCancellation {
+  readonly leaseId: string;
+  readonly leaseTicket: number;
+  readonly envelopeDigest: `sha256:${string}`;
+  readonly expectedNoSendAuthorityDigest: `sha256:${string}`;
+  readonly receiptIntentDigest: `sha256:${string}`;
+  readonly requestedAtMs: number;
+}
+
 interface DurableEgressFence {
   readonly version: 1;
-  readonly state: "open" | "revocation_pending";
+  readonly state: "open" | "cancellation_pending" | "revocation_pending";
   readonly epoch: number;
   readonly nextTicket: number;
   readonly lease: DurableEgressLease | null;
   readonly revocation: DurableEgressRevocation | null;
+  readonly cancellation: DurableEgressCancellation | null;
 }
 
 interface DurableNormalizedConflictIndex {
@@ -585,6 +706,12 @@ interface LiveConnection {
   readonly grantedCapabilities: readonly string[];
   readonly lifecycle: ConnectionLifecycleState;
   send(serialized: string): Promise<void>;
+  sendDispatchStarted?(serialized: string, handoff: DispatchTransportHandoff): {
+    readonly started: Promise<void>;
+    readonly completion: Promise<void>;
+    /** true only if the carrier has definitely not invoked transport. */
+    cancel(): Promise<boolean>;
+  };
   close(code: number, reason: string): Promise<void>;
 }
 
@@ -607,7 +734,95 @@ interface DurableEgressReservation {
   readonly rsid: string;
   readonly lease: DurableEgressLease;
   readonly record: DurableRbpSession;
+  /** In-memory only; must never be serialized into a lease or envelope. */
+  readonly dispatchProof?: object;
 }
+
+/**
+ * A dispatch carrier has two distinct pre-transport transitions: the durable
+ * reservation may be promoted, or the reservation may be cancelled.  These
+ * operations deliberately race on the same durable CAS fence, but callers
+ * must never race two in-memory cleanups around that fence.  In particular,
+ * a slow queue cancellation is allowed to make the caller unavailable while
+ * its one exact cleanup remains in flight; it is not allowed to reopen the
+ * route or to start a second cleanup for a newer lease.
+ *
+ * This is module-private on purpose.  The coordinator carries no wire data
+ * and its identity is one-shot for one `#sendWithDurableReservation` call.
+ */
+class PreStartCancellationCoordinator {
+  #cancelRequested = false;
+  #cancellation: Promise<DispatchPreStartCancellation> | null = null;
+  #promotion: Promise<DurableEgressReservation> | null = null;
+
+  public constructor(
+    private readonly releaseReserved: () => Promise<DispatchPreStartCancellation>,
+  ) {}
+
+  public requestCancel(): Promise<DispatchPreStartCancellation> {
+    this.#cancelRequested = true;
+    if (this.#cancellation === null) {
+      this.#cancellation = this.releaseReserved();
+    }
+    return this.#cancellation;
+  }
+
+  public async promote(
+    promoteReserved: () => Promise<DurableEgressReservation>,
+  ): Promise<DurableEgressReservation> {
+    if (this.#cancelRequested) {
+      throw new GatewayRbpFault(
+        "unavailable",
+        "dispatch carrier cancelled before promotion",
+        503,
+        1011,
+      );
+    }
+    if (this.#promotion === null) {
+      this.#promotion = (async () => {
+        // Do not put a timer or a caller-wait bound here.  The durable
+        // promotion/cancellation CAS determines truth; a bound only governs
+        // when a caller stops awaiting that truth.
+        if (this.#cancelRequested) {
+          throw new GatewayRbpFault(
+            "unavailable",
+            "dispatch carrier cancelled before promotion",
+            503,
+            1011,
+          );
+        }
+        const promoted = await promoteReserved();
+        if (this.#cancelRequested) {
+          // Promotion won (or its post-commit state is all we can observe).
+          // Never release a started/uncertain lease from a cancellation path.
+          throw new GatewayRbpFault(
+            "unavailable",
+            "dispatch carrier cancellation lost durable promotion",
+            503,
+            1011,
+          );
+        }
+        return promoted;
+      })();
+    }
+    return await this.#promotion;
+  }
+}
+
+/** In-memory-only dispatch handoff; no proof or lease data crosses the carrier. */
+export interface DispatchTransportHandoff {
+  readonly revalidate: (signal: AbortSignal) => Promise<void>;
+  /**
+   * True is only a local adapter observation. The authority rechecks the
+   * exact durable no-send receipt before treating it as semantic settlement.
+   */
+  readonly cancelBeforeStart: () => Promise<boolean>;
+}
+
+export type DispatchPreStartCancellation =
+  | "settled_no_send"
+  | "cancellation_pending"
+  | "promotion_won";
 
 interface ReservedResumeAck extends DurableEgressReservation {
   readonly serialized: string;
@@ -628,6 +843,12 @@ interface TrustedRecoveryAdmission {
 
 export interface BridgeConnectionChannel {
   send(serialized: string): Promise<void>;
+  /** Dispatch-only two-promise handoff; lifecycle traffic remains on send(). */
+  sendDispatchStarted?(serialized: string, handoff: DispatchTransportHandoff): {
+    readonly started: Promise<void>;
+    readonly completion: Promise<void>;
+    cancel(): Promise<boolean>;
+  };
   close(code: number, reason: string): Promise<void>;
 }
 
@@ -641,6 +862,23 @@ export interface GatewayBridgeSessionLifecycleSnapshot {
   readonly protocolStore: BridgeLifecycleResourceState;
   readonly identity: BridgeLifecycleResourceState;
   readonly protocolStoreManagedBy: "bridge" | "identity";
+}
+
+/**
+ * Value-free, read-only current-route evidence.  It is intentionally not a
+ * dispatch route and contains no RSID, connection ID, document ID, or session
+ * binding value.  The conformance host may read it only to join a C# emitted
+ * context digest to the Gateway's already-authoritative current route.
+ */
+export interface GatewayCurrentDocumentRouteAuditSnapshot {
+  readonly rsidHash: `sha256:${string}`;
+  readonly observedSequence: number;
+  readonly contextDigest: string;
+  readonly routeDigest: `sha256:${string}`;
+  readonly recordDigest: `sha256:${string}`;
+  readonly sessionBindingDigest: `sha256:${string}`;
+  readonly connectionDigest: `sha256:${string}`;
+  readonly sessionRecordVersion: number;
 }
 
 export class GatewayRbpFault extends Error {
@@ -892,6 +1130,7 @@ function openEgressFence(): DurableEgressFence {
     nextTicket: 1,
     lease: null,
     revocation: null,
+    cancellation: null,
   };
 }
 
@@ -900,7 +1139,7 @@ function emptyNormalizedConflictIndex(): DurableNormalizedConflictIndex {
 }
 
 function parseEgressLease(value: unknown): DurableEgressLease {
-  if (!isRecord(value) || !hasExactKeys(value, [
+  const legacyKeys = [
     "leaseId",
     "ticket",
     "holderInstanceId",
@@ -911,7 +1150,9 @@ function parseEgressLease(value: unknown): DurableEgressLease {
     "reservedAtMs",
     "reserveExpiresAtMs",
     "startedAtMs",
-  ])) {
+  ] as const;
+  const v2Keys = [...legacyKeys, "proofDigest", "routeSnapshotDigest"] as const;
+  if (!isRecord(value) || (!hasExactKeys(value, legacyKeys) && !hasExactKeys(value, v2Keys))) {
     throw new Error("malformed egress lease");
   }
   const phase = value.phase;
@@ -927,6 +1168,10 @@ function parseEgressLease(value: unknown): DurableEgressLease {
       value.operation !== "resume_retransmit") ||
     typeof value.envelopeDigest !== "string" ||
     !DIGEST_PATTERN.test(value.envelopeDigest) ||
+    (Object.hasOwn(value, "proofDigest") &&
+      (typeof value.proofDigest !== "string" || !DIGEST_PATTERN.test(value.proofDigest))) ||
+    (Object.hasOwn(value, "routeSnapshotDigest") &&
+      (typeof value.routeSnapshotDigest !== "string" || !DIGEST_PATTERN.test(value.routeSnapshotDigest))) ||
     (phase !== "reserved" && phase !== "started") ||
     !isSafeNonNegativeInteger(value.reservedAtMs) ||
     !isSafeNonNegativeInteger(value.reserveExpiresAtMs) ||
@@ -970,20 +1215,50 @@ function parseEgressRevocation(value: unknown): DurableEgressRevocation {
   return value as unknown as DurableEgressRevocation;
 }
 
-function parseEgressFence(value: unknown): DurableEgressFence {
+function parseEgressCancellation(value: unknown): DurableEgressCancellation {
   if (!isRecord(value) || !hasExactKeys(value, [
+    "leaseId",
+    "leaseTicket",
+    "envelopeDigest",
+    "expectedNoSendAuthorityDigest",
+    "receiptIntentDigest",
+    "requestedAtMs",
+  ])) {
+    throw new Error("malformed egress cancellation");
+  }
+  if (
+    !isBoundedNonEmptyString(value.leaseId) ||
+    !isGatewayUuidV7(value.leaseId) ||
+    !isSafePositiveInteger(value.leaseTicket) ||
+    typeof value.envelopeDigest !== "string" ||
+    !DIGEST_PATTERN.test(value.envelopeDigest) ||
+    typeof value.expectedNoSendAuthorityDigest !== "string" ||
+    !DIGEST_PATTERN.test(value.expectedNoSendAuthorityDigest) ||
+    typeof value.receiptIntentDigest !== "string" ||
+    !DIGEST_PATTERN.test(value.receiptIntentDigest) ||
+    !isSafeNonNegativeInteger(value.requestedAtMs)
+  ) {
+    throw new Error("malformed egress cancellation");
+  }
+  return value as unknown as DurableEgressCancellation;
+}
+
+function parseEgressFence(value: unknown): DurableEgressFence {
+  const legacyKeys = [
     "version",
     "state",
     "epoch",
     "nextTicket",
     "lease",
     "revocation",
-  ])) {
+  ] as const;
+  const cancellationKeys = [...legacyKeys, "cancellation"] as const;
+  if (!isRecord(value) || (!hasExactKeys(value, legacyKeys) && !hasExactKeys(value, cancellationKeys))) {
     throw new Error("malformed egress fence");
   }
   if (
     value.version !== 1 ||
-    (value.state !== "open" && value.state !== "revocation_pending") ||
+    (value.state !== "open" && value.state !== "cancellation_pending" && value.state !== "revocation_pending") ||
     !isSafeNonNegativeInteger(value.epoch) ||
     !isSafePositiveInteger(value.nextTicket)
   ) {
@@ -993,15 +1268,25 @@ function parseEgressFence(value: unknown): DurableEgressFence {
   const revocation = value.revocation === null
     ? null
     : parseEgressRevocation(value.revocation);
+  const cancellation = Object.hasOwn(value, "cancellation")
+    ? value.cancellation === null ? null : parseEgressCancellation(value.cancellation)
+    : null;
   if (
-    (value.state === "open" && revocation !== null) ||
+    (value.state === "open" && (revocation !== null || cancellation !== null)) ||
+    (value.state === "cancellation_pending" && (revocation !== null || cancellation === null)) ||
     (value.state === "revocation_pending" && revocation === null) ||
+    (value.state === "revocation_pending" && cancellation !== null) ||
     (value.state === "revocation_pending" && lease?.phase === "reserved") ||
+    (value.state === "cancellation_pending" &&
+      (lease === null || lease.phase !== "reserved" ||
+        lease.leaseId !== cancellation?.leaseId ||
+        lease.ticket !== cancellation?.leaseTicket ||
+        lease.envelopeDigest !== cancellation?.envelopeDigest)) ||
     (lease !== null && lease.ticket >= value.nextTicket)
   ) {
     throw new Error("malformed egress fence");
   }
-  return { ...value, lease, revocation } as DurableEgressFence;
+  return { ...value, lease, revocation, cancellation } as DurableEgressFence;
 }
 
 function parseNormalizedConflictIndex(
@@ -2053,7 +2338,11 @@ function liveDocumentRouteFrom(
   payload: DocContextUpdate,
   connectionId: string,
   sequence: number,
+  contextDigest: string,
 ): DurableLiveDocumentRoute | null {
+  if (!isDocumentContextDigest(contextDigest)) {
+    throw new GatewayRbpFault("protocol", "document context digest is invalid", 400, 4400);
+  }
   const documentIds = new Set<string>();
   const activeDocuments: string[] = [];
   for (const document of payload.documents) {
@@ -2098,6 +2387,7 @@ function liveDocumentRouteFrom(
     sessionDocumentId: payload.active_document,
     observedConnectionId: connectionId,
     observedSequence: sequence,
+    contextDigest,
   };
 }
 
@@ -2272,6 +2562,93 @@ function durableTerminalTruth(
   });
 }
 
+function terminalCorrelationId(
+  envelope: Extract<RbpEnvelope, { type: "result" | "error" }>,
+): string | null {
+  if (envelope.type === "error") return envelope.payload.invocation_id ?? null;
+  return envelope.payload.kind === "invocation"
+    ? envelope.payload.invocation_id
+    : envelope.payload.batch_id;
+}
+
+/** A terminal identity is never inferred from mutable route or pending state. */
+function terminalAdmissionFor(
+  record: DurableRbpSession,
+  connectionId: string,
+  envelope: Extract<RbpEnvelope, { type: "result" | "error" }>,
+): TerminalAdmission {
+  const pending = record.pending;
+  const correlationId = terminalCorrelationId(envelope);
+  const receipt = pending?.dispatchReceipt ?? null;
+  const terminalSequence = envelope.seq;
+  if (
+    pending === null ||
+    correlationId === null ||
+    pending.invocationId !== correlationId ||
+    record.connectionId !== connectionId ||
+    receipt === null ||
+    receipt.version !== 1 ||
+    receipt.tenantId !== record.tenantId ||
+    receipt.invocationId !== pending.invocationId ||
+    receipt.correlationId !== pending.invocationId ||
+    receipt.intent !== "dispatch" ||
+    !DIGEST_PATTERN.test(receipt.proofDigest) ||
+    !DIGEST_PATTERN.test(receipt.routeSnapshotDigest) ||
+    !Number.isSafeInteger(receipt.egressEpoch) ||
+    receipt.egressEpoch < 0 ||
+    !Number.isSafeInteger(receipt.leaseTicket) ||
+    receipt.leaseTicket < 1 ||
+    !isSafePositiveInteger(terminalSequence)
+  ) {
+    throw new Error("carrier terminal lacks an exact original dispatch admission");
+  }
+  const terminalCarrierDigest = immutableEnvelopeDigest(envelope);
+  const dispatchReceiptDigest = digest(canonicalizeJson({
+    domain: "revagent.gateway.dispatch-receipt/v1",
+    tenantId: receipt.tenantId,
+    invocationId: receipt.invocationId,
+    correlationId: receipt.correlationId,
+    proofDigest: receipt.proofDigest,
+    routeSnapshotDigest: receipt.routeSnapshotDigest,
+    egressEpoch: receipt.egressEpoch,
+    leaseTicket: receipt.leaseTicket,
+    intent: receipt.intent,
+  } as unknown as JsonValue));
+  const terminalTruth = durableTerminalTruth(envelope);
+  const terminalDigest = digest(canonicalizeJson({
+    domain: "revagent.gateway.terminal-persistence/v1",
+    tenantId: record.tenantId,
+    rsid: record.rsid,
+    sessionBindingId: record.sessionBindingId,
+    connectionId,
+    correlationId,
+    terminalSequence,
+    pendingEnvelopeDigest: pending.envelopeDigest,
+    pendingGatewaySequence: pending.gatewaySequence,
+    dispatchReceiptDigest,
+    terminalCarrierDigest,
+    terminalTruth,
+  } as unknown as JsonValue));
+  return Object.freeze({
+    tenantId: record.tenantId,
+    rsid: record.rsid,
+    sessionBindingId: record.sessionBindingId,
+    connectionId,
+    correlationId,
+    terminalSequence,
+    pendingEnvelopeDigest: pending.envelopeDigest,
+    pendingGatewaySequence: pending.gatewaySequence,
+    dispatchReceiptDigest,
+    terminalCarrierDigest,
+    terminalDigest,
+    terminalTruth,
+  });
+}
+
+function lateTerminalKey(admission: TerminalAdmission): string {
+  return `${admission.rsid}:${admission.terminalDigest.slice("sha256:".length)}`;
+}
+
 function terminalJournalRecords(
   records: readonly InvocationJournalRecord[],
   envelope: Extract<RbpEnvelope, { type: "result" | "error" }>,
@@ -2371,6 +2748,147 @@ function terminalJournalRecords(
     );
   }
   return records;
+}
+
+function noSendAuthorityDigest(input: Omit<DurableNoSendReceipt, "authorityDigest" | "recordedAtMs"> & {
+  readonly binding: BindingKind;
+}): `sha256:${string}` {
+  return digest(canonicalizeJson({
+    domain: "revagent.gateway.no-send-authority/v1",
+    ...input,
+  } as unknown as JsonValue));
+}
+
+function noSendReceipt(input: {
+  readonly record: DurableRbpSession;
+  readonly fence: DurableEgressFence;
+  readonly lease: DurableEgressLease;
+  readonly recordedAtMs: number;
+}): DurableNoSendReceipt {
+  const pending = input.record.pending;
+  const receipt = pending?.dispatchReceipt ?? null;
+  if (
+    pending === null ||
+    receipt === null ||
+    input.fence.lease === null ||
+    !sameJson(input.fence.lease, input.lease) ||
+    input.lease.operation !== "dispatch" ||
+    input.lease.phase !== "reserved" ||
+    input.lease.proofDigest === undefined ||
+    input.lease.proofDigest === null ||
+    input.lease.routeSnapshotDigest === undefined ||
+    input.lease.routeSnapshotDigest === null ||
+    pending.envelopeDigest !== input.lease.envelopeDigest ||
+    receipt.version !== 1 ||
+    receipt.tenantId !== input.record.tenantId ||
+    receipt.invocationId !== pending.invocationId ||
+    receipt.correlationId !== pending.invocationId ||
+    receipt.proofDigest !== input.lease.proofDigest ||
+    receipt.routeSnapshotDigest !== input.lease.routeSnapshotDigest ||
+    receipt.egressEpoch !== input.fence.epoch ||
+    receipt.leaseTicket !== input.lease.ticket ||
+    receipt.intent !== "dispatch" ||
+    pending.effectiveMcpRequestScope === undefined ||
+    pending.expectedNoSendAuthorityDigest === undefined ||
+    pending.expectedNoSendAuthorityDigest === null
+  ) {
+    throw new Error("no-send receipt lacks exact dispatch lease authority");
+  }
+  const scope = pending.effectiveMcpRequestScope;
+  const effectiveScopeDigest = digest(canonicalizeJson(scope as unknown as JsonValue));
+  const intentDigest = digest(canonicalizeJson({
+    correlationId: pending.invocationId,
+    envelopeDigest: pending.envelopeDigest,
+    intent: receipt.intent,
+    invocationId: pending.invocationId,
+    scopeDigest: effectiveScopeDigest,
+  }));
+  const coordinates = {
+    schema: "gateway.dispatch-no-send/v1",
+    tenantId: input.record.tenantId,
+    rsid: input.record.rsid,
+    effectiveMcpSessionId: scope.effectiveMcpSessionId,
+    principalKey: scope.principalKey,
+    effectiveScopeDigest,
+    sessionBindingId: input.record.sessionBindingId,
+    acceptedConnectionId: input.record.connectionId,
+    durableSessionVersion: input.record.sessionVersion,
+    invocationId: pending.invocationId,
+    correlationId: pending.invocationId,
+    envelopeDigest: pending.envelopeDigest,
+    gatewaySequence: pending.gatewaySequence,
+    durableSequenceVersion: input.record.sessionVersion,
+    egressEpoch: input.fence.epoch,
+    leaseVersion: 1,
+    leaseTicket: input.lease.ticket,
+    leaseHolderInstanceId: input.lease.holderInstanceId,
+    proofDigest: input.lease.proofDigest,
+    routeSnapshotDigest: input.lease.routeSnapshotDigest,
+    intentDigest,
+    transportStarted: false,
+    cumulativeAck: null,
+  } as const;
+  const authorityDigest = noSendAuthorityDigest({
+    ...coordinates,
+    binding: input.record.binding,
+  });
+  if (authorityDigest !== pending.expectedNoSendAuthorityDigest) {
+    throw new Error("no-send receipt authority digest does not match reservation");
+  }
+  return Object.freeze({ ...coordinates, authorityDigest, recordedAtMs: input.recordedAtMs });
+}
+
+/**
+ * A process that is resuming a session did not own a pre-existing dispatch
+ * lease. A reserved lease is consequently a proved pre-invocation orphan: no
+ * adapter call can have occurred before the durable promotion to `started`.
+ * A started lease is the opposite. It remains fenced and is classified
+ * fail-closed below; it is never handed to the generic retransmit outbox.
+ */
+function orphanReservedNoSendEvidence(input: {
+  readonly tenantId: string;
+  readonly record: DurableRbpSession;
+  readonly lease: DurableEgressLease;
+  readonly nowMs: number;
+}): DurableDispatchEvidence | null {
+  const pending = input.record.pending;
+  if (
+    pending === null ||
+    input.lease.operation !== "dispatch" ||
+    input.lease.phase !== "reserved" ||
+    pending.envelopeDigest !== input.lease.envelopeDigest
+  ) {
+    return null;
+  }
+  const journals = pending.journalRecords.map((journal) =>
+    handleJournalSessionUnregister(journal, true, null).record,
+  );
+  if (journals.length === 0) return null;
+  const existing = input.record.evidence.find(
+    (candidate) => candidate.envelopeDigest === pending.envelopeDigest,
+  );
+  return {
+    envelopeDigest: pending.envelopeDigest,
+    acceptance: null,
+    journal: {
+      kind: "known_terminal",
+      rsid: input.record.rsid,
+      sessionBindingId: input.record.sessionBindingId,
+      envelopeDigest: pending.envelopeDigest,
+      journalRecords: journals,
+      batchTerminal: null,
+      durableJournalVersion: input.record.sessionVersion,
+      recordedAtMs: input.nowMs,
+    },
+    terminalTruth: existing?.terminalTruth ?? null,
+    noSendAuthorityDigest: pending.expectedNoSendAuthorityDigest ?? null,
+    noSendReceipt: noSendReceipt({
+      record: input.record,
+      fence: sessionEgressFence(input.record),
+      lease: input.lease,
+      recordedAtMs: input.nowMs,
+    }),
+  };
 }
 
 function sessionV2EvidenceChildren(record: DurableRbpSession): readonly {
@@ -2770,6 +3288,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
   readonly #receiveTails = new Map<string, Promise<void>>();
   readonly #rsidCarrierReceiveTailBytes = new Map<string, number>();
   readonly #carrierReceiveTailObserver: CarrierReceiveTailObserver | undefined;
+  readonly #documentContextObserver: GatewayDocumentContextObserver | undefined;
   readonly #sessionAuthorizationTails = new Map<string, Promise<void>>();
   readonly #tenantIdentityTails = new Map<string, Promise<void>>();
   readonly #tenantRevocationTails = new Map<string, Promise<void>>();
@@ -2803,6 +3322,8 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
   readonly #productionIdentity: ProductionIdentityAuthority | null;
   readonly #clock: () => number;
   readonly #instanceId: string;
+  /** Private per-process authority; no proof object leaves this class. */
+  readonly #dispatchProofAuthority = createGatewayDispatchProofAuthority();
   readonly #wait: (milliseconds: number) => Promise<void>;
   readonly #maxActiveSeatReassignments: number;
   readonly #seatReassignmentTimeoutMs: number;
@@ -2829,6 +3350,8 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       readonly seatReassignmentCloseDrainTimeoutMs?: number;
       /** Optional until a composition has proved one shared store/object store. */
       readonly resourceAuthority?: GatewayResourceAuthority;
+      /** Value-free diagnostic only; never participates in route authority. */
+      readonly onDocumentContextObservation?: GatewayDocumentContextObserver;
     } = {},
   ) {
     this.#sessionRepository = new SessionAggregateRepository(store);
@@ -2839,6 +3362,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     )?.value;
     this.#carrierReceiveTailObserver =
       typeof carrierTailObserver === "function" ? carrierTailObserver : undefined;
+    this.#documentContextObserver = options.onDocumentContextObservation;
     this.#productionIdentity = asProductionIdentityAuthority(identity);
     this.#clock = options.clock ?? Date.now;
     this.#instanceId = options.instanceId ?? gatewayUuidV7(this.#clock());
@@ -2887,6 +3411,19 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
 
   #carrierReady(): boolean {
     return this.#resourceAuthority?.isBridgeCarrierReady(this.store) === true;
+  }
+
+  /**
+   * Composition-only identity check.  Carrier capabilities must be backed by
+   * the one protocol/object-store pair installed in the host, never merely by
+   * a similarly configured authority.
+   */
+  public hasExactCarrierComposition(
+    resourceAuthority: GatewayResourceAuthority,
+    objectStore: ObjectStorePort,
+  ): boolean {
+    return this.#resourceAuthority === resourceAuthority &&
+      resourceAuthority.isBridgeCarrierReady(this.store, objectStore);
   }
 
   #carrierScope(record: DurableRbpSession): {
@@ -5675,6 +6212,11 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       async send(serialized): Promise<void> {
         await input.channel.send(serialized);
       },
+      ...(input.channel.sendDispatchStarted === undefined ? {} : {
+        sendDispatchStarted(serialized: string, handoff: DispatchTransportHandoff) {
+          return input.channel.sendDispatchStarted!(serialized, handoff);
+        },
+      }),
       async close(code, reason): Promise<void> {
         await input.channel.close(code, reason);
       },
@@ -5907,13 +6449,26 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
             4400,
           );
         }
-        await this.#withSessionAuthorization(envelope.rsid, async () =>
-          this.#acceptData(
-            connection,
-            envelope as Extract<RbpEnvelope, { rsid: string }>,
-            authorityTicket,
-          ),
-        );
+        try {
+          await this.#withSessionAuthorization(envelope.rsid, async () =>
+            this.#acceptData(
+              connection,
+              envelope as Extract<RbpEnvelope, { rsid: string }>,
+              authorityTicket,
+            ),
+          );
+          if (envelope.type === "doc_context_update") {
+            // Production RBP ingress has already parsed this payload through
+            // parseRbpFrame, including recursive duplicate-key rejection.
+            // Never compute a correlate from a last-wins JSON.parse value at
+            // an unguarded admission boundary.
+            this.#observeDocumentContext(envelope.seq, documentContextDigest(
+              envelope.payload as unknown as JsonValue,
+            ));
+          }
+        } catch (error) {
+          throw error;
+        }
         return;
       case "manifest_check":
         return;
@@ -5924,6 +6479,22 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
           400,
           4400,
         );
+    }
+  }
+
+  #observeDocumentContext(
+    sequence: number,
+    contextDigest: string,
+  ): void {
+    if (!isDocumentContextDigest(contextDigest)) return;
+    try {
+      this.#documentContextObserver?.(Object.freeze({
+        stage: "accepted",
+        sequence,
+        contextDigest,
+      }));
+    } catch {
+      // Diagnostic sinks cannot affect protocol acceptance or acknowledgement.
     }
   }
 
@@ -5988,6 +6559,53 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
 
   public createExecutor(): GatewayExecutor {
     return new BridgeSessionExecutor(this);
+  }
+
+  /**
+   * Returns one current, already-authorized route in digest-only form for the
+   * conformance audit join. This method cannot create, select, dispatch, or
+   * recover a route: ambiguity and liveness loss return null.
+   */
+  public readCurrentDocumentRouteAuditSnapshot(input: {
+    readonly tenantId: string;
+  }): GatewayCurrentDocumentRouteAuditSnapshot | null {
+    const candidates = [...this.#active.values()].filter((active) => {
+      const record = active.record;
+      const connection = this.#connections.get(record.connectionId);
+      return record.tenantId === input.tenantId &&
+        this.#connectionIsCurrentlyAuthorized(connection) &&
+        record.sessionLifecycle.dispatchAllowed &&
+        (record.connectionLifecycle.phase === "steady" ||
+          record.connectionLifecycle.phase === "degraded") &&
+        record.liveDocumentRoute !== null &&
+        record.liveDocumentRoute !== undefined &&
+        record.liveDocumentRoute.observedConnectionId === record.connectionId;
+    });
+    if (candidates.length !== 1) return null;
+    const record = candidates[0]!.record;
+    const route = record.liveDocumentRoute!;
+    if (!isDocumentContextDigest(route.contextDigest) ||
+        !isSafePositiveInteger(record.recordVersion)) return null;
+    try {
+      return Object.freeze({
+        rsidHash: digest(record.rsid),
+        observedSequence: route.observedSequence,
+        contextDigest: route.contextDigest,
+        routeDigest: digest(canonicalizeJson(route as unknown as JsonValue)),
+        recordDigest: digest(canonicalizeJson(record as unknown as JsonValue)),
+        sessionBindingDigest: digest(canonicalizeJson({
+          sessionBindingId: record.sessionBindingId,
+          sessionVersion: record.sessionVersion,
+        })),
+        connectionDigest: digest(canonicalizeJson({
+          binding: record.binding,
+          connectionId: record.connectionId,
+        })),
+        sessionRecordVersion: record.recordVersion,
+      });
+    } catch {
+      return null;
+    }
   }
 
   /**
@@ -6196,6 +6814,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       correlationId: request.context.invocationId,
       mutating: request.context.mutating,
       effectiveMcpRequestScope: request.context.effectiveMcpRequestScope,
+      dispatchContext: request.context,
       recoveryDispatch: prepared ?? null,
       envelope: prepared?.envelope ?? draft!.envelope,
       journalRecords: prepared?.journalRecords ?? [],
@@ -6219,6 +6838,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       correlationId: request.batchId,
       mutating: request.steps.some((step) => step.context.mutating),
       effectiveMcpRequestScope: first.context.effectiveMcpRequestScope,
+      dispatchContext: first.context,
       recoveryDispatch: prepared,
       envelope: prepared.envelope,
       journalRecords: prepared.journalRecords,
@@ -6231,6 +6851,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     readonly correlationId: string;
     readonly mutating: boolean;
     readonly effectiveMcpRequestScope: EffectiveMcpRequestScopeV1 | undefined;
+    readonly dispatchContext: GatewayExecutorRequest["context"];
     readonly recoveryDispatch: GatewayRecoveryPendingDispatch | null;
     readonly envelope: unknown;
     readonly journalRecords: readonly InvocationJournalRecord[];
@@ -6261,7 +6882,11 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     const started = await this.#withSessionAuthorization(input.rsid, async () =>
       this.#beginDispatch(input, connection, authorityTicket),
     );
-    return await started.outcome;
+    // The per-rsid authorization tail protects selection/authentication and
+    // the durable reservation commit only.  Carrier start can await a bounded
+    // queue/revalidation and must not prevent this same authority from
+    // unregistering that exact reserved lease.
+    return await started.start();
   }
 
   async #beginDispatch(
@@ -6271,16 +6896,17 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       readonly correlationId: string;
       readonly mutating: boolean;
       readonly effectiveMcpRequestScope: EffectiveMcpRequestScopeV1 | undefined;
+      readonly dispatchContext: GatewayExecutorRequest["context"];
       readonly recoveryDispatch: GatewayRecoveryPendingDispatch | null;
       readonly envelope: unknown;
       readonly journalRecords: readonly InvocationJournalRecord[];
     },
     connection: LiveConnection,
     authorityTicket: TenantAuthorityTicket,
-  ): Promise<{ readonly outcome: Promise<GatewayExecutorOutcome> }> {
+  ): Promise<{ readonly start: () => Promise<GatewayExecutorOutcome> }> {
     const active = this.#active.get(input.rsid);
     if (active === undefined || active.tenantId !== input.tenantId) {
-      return { outcome: Promise.resolve({ state: "failed", error: { code: "executor_unavailable", message: "registered rsid is not active" } }) };
+      return { start: async () => ({ state: "failed", error: { code: "executor_unavailable", message: "registered rsid is not active" } }) };
     }
     try {
       this.#assertAuthorityTicket(authorityTicket, connection, {
@@ -6288,7 +6914,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       });
     } catch {
       return {
-        outcome: Promise.resolve({
+        start: async () => ({
           state: "failed",
           error: {
             code: "executor_unavailable",
@@ -6329,6 +6955,52 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       expectedDigest,
       input.mutating,
     );
+    // A dispatch proof is minted only after the authenticated connection,
+    // immutable effective scope, and current live route have all been
+    // selected.  It is process-local object identity; only these digests are
+    // persisted, never proof material.
+    if (
+      input.effectiveMcpRequestScope === undefined
+    ) {
+      return { start: async () => ({ state: "failed", error: {
+        code: "executor_unavailable",
+        message: "dispatch lacks an authoritative effective scope",
+      } }) };
+    }
+    const effectiveMcpRequestScope = input.effectiveMcpRequestScope;
+    const proofPolicy: JsonValue = {
+      class: input.dispatchContext.policyClass,
+      decision: input.dispatchContext.policyDecision,
+      confirmation_id: input.dispatchContext.confirmationId,
+      preview_invocation_id: input.dispatchContext.originatingPreviewInvocationId,
+    };
+    const dispatchProof = this.#dispatchProofAuthority.mint({
+      tenantId: input.tenantId,
+      rsid: input.rsid,
+      effectiveMcpSessionId: input.effectiveMcpRequestScope.effectiveMcpSessionId,
+      sessionBindingId: active.record.sessionBindingId,
+      connectionId: active.record.connectionId,
+      routeSnapshot: {
+        live: active.record.liveDocumentRoute,
+        document: input.dispatchContext.documentIdentity,
+      } as unknown as JsonValue,
+      documentHash: digest(canonicalizeJson(input.dispatchContext.documentIdentity as unknown as JsonValue)),
+      documentSequence: active.record.liveDocumentRoute?.observedSequence ?? active.record.sequence.lastRxSeq,
+      documentAck: active.record.sequence.lastRxSeq,
+      gatewayProcessEpoch: this.#instanceId,
+      gatewayProcessOrdinal: sessionEgressFence(active.record).epoch,
+      effectiveScope: input.effectiveMcpRequestScope as unknown as JsonValue,
+      invocationId: input.correlationId,
+      correlationId: input.correlationId,
+      envelopeDigest: expectedDigest,
+      toolName: input.dispatchContext.toolName,
+      toolVersion: input.dispatchContext.toolVersion,
+      argsDigest: input.dispatchContext.paramsDigest,
+      policy: proofPolicy,
+      confirmationId: input.dispatchContext.confirmationId,
+    });
+    const proofDigest = this.#dispatchProofAuthority.digest(dispatchProof);
+    const routeSnapshotDigest = this.#dispatchProofAuthority.routeSnapshotDigest(dispatchProof);
     const leaseId = gatewayUuidV7(this.#clock());
     let reservation: DurableEgressReservation | null = null;
     for (let attempt = 0; attempt < MAX_AUTHORIZATION_CAS_ATTEMPTS; attempt += 1) {
@@ -6414,6 +7086,8 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
           connectionId: record.connectionId,
           operation: "dispatch",
           envelopeDigest: expectedDigest,
+          proofDigest,
+          routeSnapshotDigest,
           phase: "reserved",
           reservedAtMs: nowMs,
           reserveExpiresAtMs: nowMs + SEND_RESERVATION_TTL_MS,
@@ -6435,6 +7109,49 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
                 : { effectiveMcpRequestScope: input.effectiveMcpRequestScope }),
               mutationEntries,
               journalRecords: journals,
+              dispatchReceipt: {
+                version: 1,
+                tenantId: input.tenantId,
+                invocationId: input.correlationId,
+                correlationId: input.correlationId,
+                proofDigest,
+                routeSnapshotDigest,
+                egressEpoch: fence.epoch + 1,
+                leaseTicket: lease.ticket,
+                intent: "dispatch",
+              },
+              expectedNoSendAuthorityDigest: noSendAuthorityDigest({
+                schema: "gateway.dispatch-no-send/v1",
+                tenantId: input.tenantId,
+                rsid: input.rsid,
+                effectiveMcpSessionId: effectiveMcpRequestScope.effectiveMcpSessionId,
+                principalKey: effectiveMcpRequestScope.principalKey,
+                effectiveScopeDigest: digest(canonicalizeJson(effectiveMcpRequestScope as unknown as JsonValue)),
+                sessionBindingId: record.sessionBindingId,
+                acceptedConnectionId: record.connectionId,
+                durableSessionVersion: record.sessionVersion,
+                invocationId: input.correlationId,
+                correlationId: input.correlationId,
+                envelopeDigest: expectedDigest,
+                gatewaySequence: envelope.seq,
+                durableSequenceVersion: record.sessionVersion,
+                egressEpoch: fence.epoch + 1,
+                leaseVersion: 1,
+                leaseTicket: lease.ticket,
+                leaseHolderInstanceId: lease.holderInstanceId,
+                proofDigest,
+                routeSnapshotDigest,
+                intentDigest: digest(canonicalizeJson({
+                  correlationId: input.correlationId,
+                  envelopeDigest: expectedDigest,
+                  intent: "dispatch",
+                  invocationId: input.correlationId,
+                  scopeDigest: digest(canonicalizeJson(effectiveMcpRequestScope as unknown as JsonValue)),
+                })),
+                transportStarted: false,
+                cumulativeAck: null,
+                binding: record.binding,
+              }),
             },
             egressFence: {
               version: 1,
@@ -6443,6 +7160,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
               nextTicket: fence.nextTicket + 1,
               lease,
               revocation: null,
+              cancellation: null,
             },
           },
           nowMs,
@@ -6458,13 +7176,14 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       });
       if (persisted.ok) {
         if (persisted.value.kind === "blocked") {
-          return { outcome: Promise.resolve({ state: "failed", error: { code: "executor_unavailable", message: "registered rsid has unresolved durable authority" } }) };
+          return { start: async () => ({ state: "failed", error: { code: "executor_unavailable", message: "registered rsid has unresolved durable authority" } }) };
         }
         reservation = {
           tenantId: input.tenantId,
           rsid: input.rsid,
           record: persisted.value.record,
           lease: persisted.value.lease,
+          dispatchProof,
         };
         break;
       }
@@ -6478,6 +7197,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
             rsid: input.rsid,
             record: parseStoredSession(readBack, input.tenantId, input.rsid),
             lease: evidence.lease,
+            dispatchProof,
           };
           break;
         }
@@ -6501,10 +7221,11 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     }
     active.record = reservation.record;
 
-    const outcome: { current: Promise<GatewayExecutorOutcome> | null } = {
-      current: null,
-    };
-    try {
+    return { start: async (): Promise<GatewayExecutorOutcome> => {
+      const outcome: { current: Promise<GatewayExecutorOutcome> | null } = {
+        current: null,
+      };
+      try {
       await this.#sendWithDurableReservation(
         connection,
         reservation,
@@ -6527,38 +7248,37 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
           });
         },
       );
-    } catch {
-      if (outcome.current === null) {
-        await this.#settleLocalFinalTombstoneIfPresent(
-          input.tenantId,
-          input.rsid,
-        );
-        return {
-          outcome: Promise.resolve({
+      } catch {
+        if (outcome.current === null) {
+          await this.#settleLocalFinalTombstoneIfPresent(
+            input.tenantId,
+            input.rsid,
+          );
+          return {
             state: "failed",
             error: {
               code: "executor_unavailable",
               message: "dispatch did not begin before durable revocation",
             },
-          }),
-        };
+          };
+        }
+        const waiter = this.#waiters.get(input.correlationId);
+        if (waiter !== undefined) {
+          clearTimeout(waiter.timer);
+          this.#waiters.delete(input.correlationId);
+          waiter.resolve(this.#indeterminateOutcome(input.mutating));
+        }
       }
-      const waiter = this.#waiters.get(input.correlationId);
-      if (waiter !== undefined) {
-        clearTimeout(waiter.timer);
-        this.#waiters.delete(input.correlationId);
-        waiter.resolve(this.#indeterminateOutcome(input.mutating));
+      if (outcome.current === null) {
+        throw new GatewayRbpFault(
+          "unavailable",
+          "dispatch send did not install its waiter",
+          503,
+          1011,
+        );
       }
-    }
-    if (outcome.current === null) {
-      throw new GatewayRbpFault(
-        "unavailable",
-        "dispatch send did not install its waiter",
-        503,
-        1011,
-      );
-    }
-    return { outcome: outcome.current };
+      return await outcome.current;
+    } };
   }
 
   async #promoteEgressReservation(
@@ -6603,6 +7323,9 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
             fence.revocation !== null ||
             lease === null ||
             lease.phase !== "reserved" ||
+            (lease.operation === "dispatch" &&
+              (lease.proofDigest === undefined || lease.proofDigest === null ||
+                lease.routeSnapshotDigest === undefined || lease.routeSnapshotDigest === null)) ||
             lease.reserveExpiresAtMs <= nowMs ||
             !sameJson(lease, reservation.lease)
           ) {
@@ -6774,6 +7497,340 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     );
   }
 
+  /**
+   * A carrier that is cancelled before its invocation boundary has not
+   * performed any transport I/O.  Release only the exact still-reserved
+   * fence: the durable outbound sequence/pending record remains the recovery
+   * authority and must never be guessed or replayed from an in-memory queue.
+   */
+  async #markReservedEgressCancellationPending(
+    reservation: DurableEgressReservation,
+  ): Promise<"marked" | "cancellation_pending" | "promotion_won"> {
+    if (reservation.lease.operation !== "dispatch") return "marked";
+    for (let attempt = 0; attempt < MAX_AUTHORIZATION_CAS_ATTEMPTS; attempt += 1) {
+      const attempted: { current: {
+        readonly prior: StoredRecord<GatewayJsonValue>;
+        readonly next: DurableRbpSession;
+      } | null } = { current: null };
+      const marked = await this.#sessionRepository.transact(
+        { tenantId: reservation.tenantId },
+        async (tx) => {
+          const stored = await tx.read<GatewayJsonValue>(
+            GATEWAY_RBP_SESSION_NAMESPACE,
+            reservation.rsid,
+          );
+          if (stored === null) return { kind: "cancellation_pending" as const };
+          const record = parseStoredSession(stored, reservation.tenantId, reservation.rsid);
+          const fence = sessionEgressFence(record);
+          const pending = record.pending;
+          const exactLease = fence.lease !== null &&
+            fence.lease.phase === "reserved" &&
+            sameJson(fence.lease, reservation.lease) &&
+            fence.lease.holderInstanceId === this.#instanceId;
+          const exactPending = pending !== null &&
+            pending.envelopeDigest === reservation.lease.envelopeDigest &&
+            pending.expectedNoSendAuthorityDigest !== undefined &&
+            pending.expectedNoSendAuthorityDigest !== null;
+          if (!exactLease || !exactPending) {
+            // A changed lease/pending/authority is never evidence that this
+            // cancellation won.  In particular, do not reopen a fence after a
+            // racing promotion or a foreign durable writer.
+            return {
+              kind: fence.lease?.phase === "started" ? "promotion_won" as const : "cancellation_pending" as const,
+            };
+          }
+          const expectedNoSendAuthorityDigest = pending.expectedNoSendAuthorityDigest!;
+          if (fence.state === "cancellation_pending") {
+            const existing = fence.cancellation;
+            return existing !== null &&
+              existing.leaseId === reservation.lease.leaseId &&
+              existing.leaseTicket === reservation.lease.ticket &&
+              existing.envelopeDigest === reservation.lease.envelopeDigest &&
+              existing.expectedNoSendAuthorityDigest === expectedNoSendAuthorityDigest
+              ? { kind: "pending" as const }
+              : { kind: "cancellation_pending" as const };
+          }
+          if (fence.state !== "open" || fence.revocation !== null || fence.cancellation !== null) {
+            return { kind: "cancellation_pending" as const };
+          }
+          const cancellation: DurableEgressCancellation = {
+            leaseId: reservation.lease.leaseId,
+            leaseTicket: reservation.lease.ticket,
+            envelopeDigest: reservation.lease.envelopeDigest,
+            expectedNoSendAuthorityDigest,
+            receiptIntentDigest: digest(canonicalizeJson({
+              domain: "revagent.gateway.dispatch-cancellation-intent/v1",
+              rsid: reservation.rsid,
+              leaseId: reservation.lease.leaseId,
+              leaseTicket: reservation.lease.ticket,
+              envelopeDigest: reservation.lease.envelopeDigest,
+              expectedNoSendAuthorityDigest,
+              invocationId: pending.invocationId,
+            })),
+            requestedAtMs: this.#clock(),
+          };
+          const next = nextSessionRecord(
+            stored,
+            record,
+            {
+              ...record,
+              // Phase one is an irreversible promotion fence.  Preserve the
+              // lease epoch so the already-minted receipt authority remains
+              // exact; the versioned session row records cancellation intent.
+              egressFence: {
+                ...fence,
+                state: "cancellation_pending",
+                cancellation,
+              },
+            },
+            this.#clock(),
+          );
+          attempted.current = { prior: stored, next };
+          tx.stage({
+            namespace: GATEWAY_RBP_SESSION_NAMESPACE,
+            key: reservation.rsid,
+            value: asJson(next),
+            expect: { kind: "version", version: stored.version },
+          });
+          return { kind: "marked" as const, next };
+        },
+      );
+      if (marked.ok) {
+        if (marked.value.kind !== "marked" && marked.value.kind !== "pending") {
+          return marked.value.kind;
+        }
+        if (marked.value.kind === "marked") this.#syncActiveRecord(marked.value.next);
+        return "marked";
+      }
+      if (marked.code === "conflict") continue;
+      if (marked.code === "durability_uncertain" && attempted.current !== null) {
+        const evidence = attempted.current;
+        const readBack = await this.#readStoredSession(reservation.tenantId, reservation.rsid);
+        if (readBack !== null && sameJson(readBack.value, evidence.next)) {
+          this.#syncActiveRecord(parseStoredSession(readBack, reservation.tenantId, reservation.rsid));
+          return "marked";
+        }
+        // Durability uncertainty is not a conflict retry. The durable fence
+        // stays fail-closed until a later recovery/resume can prove it.
+        return "cancellation_pending";
+      }
+      return "cancellation_pending";
+    }
+    return "cancellation_pending";
+  }
+
+  async #settleReservedEgressCancellation(
+    reservation: DurableEgressReservation,
+  ): Promise<DispatchPreStartCancellation> {
+    for (let attempt = 0; attempt < MAX_AUTHORIZATION_CAS_ATTEMPTS; attempt += 1) {
+      const attempted: { current: {
+        readonly prior: StoredRecord<GatewayJsonValue>;
+        readonly next: DurableRbpSession;
+      } | null } = { current: null };
+      const released = await this.#sessionRepository.transact(
+        { tenantId: reservation.tenantId },
+        async (tx) => {
+          const stored = await tx.read<GatewayJsonValue>(
+            GATEWAY_RBP_SESSION_NAMESPACE,
+            reservation.rsid,
+          );
+          if (stored === null) return { kind: "cancellation_pending" as const };
+          const record = parseStoredSession(stored, reservation.tenantId, reservation.rsid);
+          const fence = sessionEgressFence(record);
+          const cancellation = fence.cancellation;
+          if (
+            fence.lease === null ||
+            fence.lease.phase !== "reserved" ||
+            !sameJson(fence.lease, reservation.lease) ||
+            fence.lease.holderInstanceId !== this.#instanceId ||
+            (reservation.lease.operation === "dispatch" &&
+              (fence.state !== "cancellation_pending" ||
+                cancellation === null ||
+                cancellation.leaseId !== reservation.lease.leaseId ||
+                cancellation.leaseTicket !== reservation.lease.ticket ||
+                cancellation.envelopeDigest !== reservation.lease.envelopeDigest ||
+                cancellation.expectedNoSendAuthorityDigest !==
+                  record.pending?.expectedNoSendAuthorityDigest ||
+                cancellation.receiptIntentDigest !== digest(canonicalizeJson({
+                  domain: "revagent.gateway.dispatch-cancellation-intent/v1",
+                  rsid: reservation.rsid,
+                  leaseId: reservation.lease.leaseId,
+                  leaseTicket: reservation.lease.ticket,
+                  envelopeDigest: reservation.lease.envelopeDigest,
+                  expectedNoSendAuthorityDigest:
+                    record.pending?.expectedNoSendAuthorityDigest ?? null,
+                  invocationId: record.pending?.invocationId ?? null,
+                })))) ||
+            (reservation.lease.operation !== "dispatch" && fence.state !== "open")
+          ) return {
+            kind: fence.lease?.phase === "started" ? "promotion_won" as const : "cancellation_pending" as const,
+          };
+          const cancelledPending =
+            record.pending?.envelopeDigest === reservation.lease.envelopeDigest
+              ? record.pending
+              : null;
+          const nowMs = this.#clock();
+          const cancelledEvidence: DurableDispatchEvidence | null =
+            cancelledPending === null
+              ? null
+              : (() => {
+                  const journals = cancelledPending.journalRecords.map(
+                    (journal) =>
+                      handleJournalSessionUnregister(journal, true, null).record,
+                  );
+                  const existing = record.evidence.find(
+                    (candidate) =>
+                      candidate.envelopeDigest === cancelledPending.envelopeDigest,
+                  );
+                  return {
+                    envelopeDigest: cancelledPending.envelopeDigest,
+                    // No carrier byte crossed the invocation boundary, so an
+                    // inbound bridge acknowledgement can never authorize this
+                    // cancellation receipt.
+                    acceptance: null,
+                    journal:
+                      journals.length === 0
+                        ? null
+                        : {
+                            kind: "known_terminal",
+                            rsid: record.rsid,
+                            sessionBindingId: record.sessionBindingId,
+                            envelopeDigest: cancelledPending.envelopeDigest,
+                            journalRecords: journals,
+                            batchTerminal: null,
+                            durableJournalVersion: record.sessionVersion,
+                            recordedAtMs: nowMs,
+                          },
+                    terminalTruth: existing?.terminalTruth ?? null,
+                    noSendAuthorityDigest:
+                      cancelledPending.expectedNoSendAuthorityDigest ?? null,
+                    noSendReceipt: noSendReceipt({
+                      record,
+                      fence,
+                      lease: reservation.lease,
+                      recordedAtMs: nowMs,
+                    }),
+                  };
+                })();
+          const next = nextSessionRecord(
+            stored,
+            record,
+            {
+              ...record,
+              // A proved pre-start cancellation has no transport ambiguity:
+              // clear only the pending record bound to this exact lease
+              // envelope. A different/newer pending dispatch remains fenced.
+              pending:
+                cancelledPending === null ? record.pending : null,
+              evidence:
+                cancelledEvidence === null
+                  ? record.evidence
+                  : [
+                      ...record.evidence.filter(
+                        (candidate) =>
+                          candidate.envelopeDigest !==
+                          cancelledEvidence.envelopeDigest,
+                      ),
+                      cancelledEvidence,
+                    ],
+              egressFence: {
+                ...fence,
+                state: "open",
+                epoch: fence.epoch + 1,
+                lease: null,
+                cancellation: null,
+              },
+            },
+            nowMs,
+          );
+          attempted.current = { prior: stored, next };
+          tx.stage({
+            namespace: GATEWAY_RBP_SESSION_NAMESPACE,
+            key: reservation.rsid,
+            value: asJson(next),
+            expect: { kind: "version", version: stored.version },
+          });
+          return { kind: "released" as const, next };
+        },
+      );
+      if (released.ok) {
+        if (released.value.kind !== "released") return released.value.kind;
+        this.#syncActiveRecord(released.value.next);
+        return "settled_no_send";
+      }
+      if (released.code === "conflict") continue;
+      if (released.code === "durability_uncertain" && attempted.current !== null) {
+        const evidence = attempted.current;
+        const readBack = await this.#readStoredSession(reservation.tenantId, reservation.rsid);
+        if (readBack !== null && sameJson(readBack.value, evidence.next)) {
+          this.#syncActiveRecord(parseStoredSession(readBack, reservation.tenantId, reservation.rsid));
+          return "settled_no_send";
+        }
+        // A reservation whose release cannot be proven is an unavailable
+        // dispatch path, never a license to retry or replay it in memory.
+      }
+      return "cancellation_pending";
+    }
+    return "cancellation_pending";
+  }
+
+  async #releaseReservedEgressLease(
+    reservation: DurableEgressReservation,
+  ): Promise<DispatchPreStartCancellation> {
+    // Phase one must complete before the no-send receipt may be minted. A
+    // caller's timeout is only an observation bound; this shared promise
+    // continues through phase two in the background coordinator.
+    const marked = await this.#markReservedEgressCancellationPending(reservation);
+    if (marked === "promotion_won" || marked === "cancellation_pending") return marked;
+    return await this.#settleReservedEgressCancellation(reservation);
+  }
+
+  /**
+   * A legacy adapter Boolean is only an observation about its local queue.
+   * Treat it as settled only after the durable v2 row proves the exact
+   * receipt/journal/fence transition; otherwise retain the fail-closed
+   * cancellation-pending outcome for recovery.
+   */
+  async #confirmNoSendCancellation(
+    reservation: DurableEgressReservation,
+  ): Promise<DispatchPreStartCancellation> {
+    const stored = await this.#readStoredSession(reservation.tenantId, reservation.rsid);
+    if (stored === null) return "cancellation_pending";
+    let record: DurableRbpSession;
+    try {
+      record = parseStoredSession(stored, reservation.tenantId, reservation.rsid);
+    } catch {
+      return "cancellation_pending";
+    }
+    const fence = sessionEgressFence(record);
+    if (fence.lease?.phase === "started") return "promotion_won";
+    const evidence = record.evidence.find(
+      (candidate) => candidate.envelopeDigest === reservation.lease.envelopeDigest,
+    );
+    const receipt = evidence?.noSendReceipt ?? null;
+    if (
+      fence.state !== "open" ||
+      fence.lease !== null ||
+      fence.cancellation !== null ||
+      record.pending !== null ||
+      evidence?.acceptance !== null ||
+      evidence?.journal?.kind !== "known_terminal" ||
+      receipt === null ||
+      receipt.envelopeDigest !== reservation.lease.envelopeDigest ||
+      receipt.leaseTicket !== reservation.lease.ticket ||
+      receipt.leaseHolderInstanceId !== reservation.lease.holderInstanceId ||
+      receipt.transportStarted !== false ||
+      receipt.cumulativeAck !== null ||
+      evidence.noSendAuthorityDigest !== receipt.authorityDigest
+    ) {
+      return "cancellation_pending";
+    }
+    const { authorityDigest: _authorityDigest, recordedAtMs: _recordedAtMs, ...coordinates } = receipt;
+    return noSendAuthorityDigest({ ...coordinates, binding: record.binding }) === receipt.authorityDigest
+      ? "settled_no_send"
+      : "cancellation_pending";
+  }
+
   async #sendWithDurableReservation(
     connection: LiveConnection,
     reservation: DurableEgressReservation,
@@ -6791,29 +7848,112 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       }
       throw error;
     }
-    const started = await this.#promoteEgressReservation(reservation);
     let sendFailure: unknown = null;
     let releaseFailure: unknown = null;
     let sendBegan = false;
+    let completedAndVerified = false;
+    let cancellationOutcome: DispatchPreStartCancellation | null = null;
+    let started: DurableEgressReservation | null = null;
+    const preStartCancellation = new PreStartCancellationCoordinator(
+      async () => await this.#releaseReservedEgressLease(reservation),
+    );
     try {
-      this.#assertAuthorityTicket(authorityTicket, connection, {
-        session: started.record,
+      const startedDispatch = connection.sendDispatchStarted?.(serialized, {
+        revalidate: async (signal: AbortSignal) => {
+          if (signal.aborted) {
+            await preStartCancellation.requestCancel();
+            throw new GatewayRbpFault("unavailable", "dispatch carrier cancelled before promotion", 503, 1011);
+          }
+          // This closure remains nominal/in-memory only.  It is run by the
+          // adapter immediately before websocket.send()/response.write(), not
+          // when the dispatch was merely queued.  The next source statement in
+          // the adapter invokes the transport after this promise resolves.
+          started = await preStartCancellation.promote(
+            async () => await this.#promoteEgressReservation(reservation),
+          );
+          if (signal.aborted) {
+            // At this point promotion has won.  The started lease stays
+            // fenced for terminal/recovery handling rather than being
+            // incorrectly released as a no-send dispatch.
+            throw new GatewayRbpFault("unavailable", "dispatch carrier cancelled after promotion", 503, 1011);
+          }
+          await this.#assertDispatchReservationCurrent(connection, started, authorityTicket);
+          if (signal.aborted) throw new GatewayRbpFault("unavailable", "dispatch carrier cancelled before invocation", 503, 1011);
+          this.#assertAuthorityTicket(authorityTicket, connection, { session: started.record });
+        },
+        cancelBeforeStart: async () =>
+          (await preStartCancellation.requestCancel()) === "settled_no_send",
       });
-      // Do not insert an await between the successful durable promotion and
-      // invoking the transport: the started lease is the cross-process proof
-      // that any final tombstone must wait for this send call to begin.
-      beforeSend?.();
-      this.#assertAuthorityTicket(authorityTicket, connection, {
-        session: started.record,
-      });
-      sendBegan = true;
-      const sendOperation = connection.send(serialized);
-      await sendOperation;
+      if (startedDispatch === undefined) {
+        started = await this.#promoteEgressReservation(reservation);
+        await this.#assertDispatchReservationCurrent(connection, started, authorityTicket);
+        this.#assertAuthorityTicket(authorityTicket, connection, { session: started.record });
+        const sendOperation = connection.send(serialized);
+        sendBegan = true;
+        beforeSend?.();
+        await sendOperation;
+      } else {
+        // `started` is resolved only by the concrete WSS/SSE invocation, not
+        // by enqueueing. Thus a cancelled or starving queue cannot acquire a
+        // waiter or a mutation-indeterminate result.
+        let startTimer: ReturnType<typeof setTimeout> | null = null;
+        try {
+        await Promise.race([
+            startedDispatch.started,
+            new Promise<void>((_, reject) => {
+              startTimer = setTimeout(
+                () => reject(new GatewayRbpFault("unavailable", "dispatch carrier start timed out", 503, 1011)),
+                SEND_RESERVATION_TTL_MS,
+              );
+            }),
+          ]);
+        } catch (error) {
+          // cancel() is linearized with the adapter invocation boundary.  A
+          // true result proves no bytes were handed to transport; a false
+          // result means the outcome is already started/indeterminate.
+          const cancellation = await startedDispatch.cancel();
+          cancellationOutcome = cancellation
+            ? await this.#confirmNoSendCancellation(reservation)
+            : "cancellation_pending";
+          throw error;
+        } finally {
+          if (startTimer !== null) clearTimeout(startTimer);
+        }
+        sendBegan = true;
+        beforeSend?.();
+        await startedDispatch.completion;
+      }
+      if (started === null) {
+        throw new GatewayRbpFault("unavailable", "dispatch carrier resolved without a started lease", 503, 1011);
+      }
+      const completionAuthority = await this.#assertDispatchReservationCurrent(
+        connection,
+        started,
+        authorityTicket,
+        { allowRevocationAfterStart: true },
+      );
+      completedAndVerified = true;
+      if (completionAuthority === "revoked_after_start") {
+        throw new GatewayRbpFault(
+          "unavailable",
+          "dispatch completed after durable revocation",
+          503,
+          1011,
+        );
+      }
     } catch (error) {
       sendFailure = error;
     } finally {
       try {
-        await this.#releaseStartedEgressLease(started);
+        // Only a successfully completed and post-send verified transport can
+        // release a started lease.  Completion failure, timeout, uncertain
+        // cancellation, or a changed route retains the fence/pending record
+        // for terminal/recovery handling; mutating work remains held.
+        if (started !== null && completedAndVerified) {
+          await this.#releaseStartedEgressLease(started);
+        } else if (started === null && cancellationOutcome === "settled_no_send") {
+          // cancelBeforeStart already performed the exact durable release.
+        }
       } catch (error) {
         releaseFailure = error;
       }
@@ -6827,6 +7967,69 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       await this.#revokeStaleAuthorizedSession(connection, reservation.rsid);
     }
     if (sendFailure !== null) throw sendFailure;
+  }
+
+  /** Re-checks the exact durable reservation immediately around transport I/O. */
+  async #assertDispatchReservationCurrent(
+    connection: LiveConnection,
+    reservation: DurableEgressReservation,
+    authorityTicket: TenantAuthorityTicket,
+    options: { readonly allowRevocationAfterStart?: boolean } = {},
+  ): Promise<"current" | "revoked_after_start"> {
+    const active = this.#active.get(reservation.rsid);
+    const stored = await this.#readStoredSession(reservation.tenantId, reservation.rsid);
+    if (active === undefined || active.tenantId !== reservation.tenantId ||
+        active.record.connectionId !== connection.connectionId || stored === null) {
+      throw new GatewayRbpFault("unavailable", "dispatch route changed during reserved send", 503, 1011);
+    }
+    const record = parseStoredSession(stored, reservation.tenantId, reservation.rsid);
+    const lease = sessionEgressFence(record).lease;
+    if (lease?.operation === "dispatch") {
+      if (reservation.dispatchProof === undefined) {
+        throw new GatewayRbpFault("unavailable", "dispatch proof is unavailable after reservation", 503, 1011);
+      }
+      this.#dispatchProofAuthority.assert(reservation.dispatchProof);
+      if (
+        lease.proofDigest !== this.#dispatchProofAuthority.digest(reservation.dispatchProof) ||
+        lease.routeSnapshotDigest !== this.#dispatchProofAuthority.routeSnapshotDigest(reservation.dispatchProof)
+      ) {
+        throw new GatewayRbpFault("unavailable", "dispatch proof no longer matches durable route authority", 503, 1011);
+      }
+    }
+    const fence = sessionEgressFence(record);
+    const revokedAfterStart =
+      options.allowRevocationAfterStart === true &&
+      fence.state === "revocation_pending" &&
+      fence.revocation !== null &&
+      lease !== null &&
+      lease.phase === "started" &&
+      sameJson(lease, reservation.lease) &&
+      record.connectionId === connection.connectionId &&
+      record.sessionBindingId === reservation.record.sessionBindingId;
+    if (revokedAfterStart) {
+      // Bytes already crossed the adapter's invocation boundary. Preserve the
+      // exact durable lease long enough to release it by CAS, then let the
+      // pending unregister finalize as indeterminate rather than replaying.
+      return "revoked_after_start";
+    }
+    if (record.connectionId !== connection.connectionId ||
+        record.sessionBindingId !== reservation.record.sessionBindingId ||
+        !record.sessionLifecycle.dispatchAllowed ||
+        // Public north routing never creates a reservation without a live
+        // route. Keep old internal lifecycle tests distinct: they may have
+        // no north route, but can never carry a north proof into this path.
+        (reservation.record.liveDocumentRoute !== null &&
+          (record.liveDocumentRoute === null ||
+            !sameJson(record.liveDocumentRoute, reservation.record.liveDocumentRoute))) ||
+        lease === null || lease.phase !== "started" ||
+        (lease.operation === "dispatch" &&
+          (lease.proofDigest === undefined || lease.proofDigest === null ||
+            lease.routeSnapshotDigest === undefined || lease.routeSnapshotDigest === null)) ||
+        !sameJson(lease, reservation.lease)) {
+      throw new GatewayRbpFault("unavailable", "dispatch reservation no longer authorizes its route", 503, 1011);
+    }
+    this.#assertAuthorityTicket(authorityTicket, connection, { session: record });
+    return "current";
   }
 
   async #revokeStaleAuthorizedSession(
@@ -6884,28 +8087,167 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         if (stored === null) return { kind: "blocked" as const };
         const record = parseStoredSession(stored, tenantId, payload.rsid);
         this.#assertAuthorityTicket(authorityTicket, connection);
-        const fence = sessionEgressFence(record);
+        const initialFence = sessionEgressFence(record);
         const nowMs = this.#clock();
+        let recovered = record;
+        let fence = initialFence;
+
+        if (
+          initialFence.lease?.operation === "dispatch" &&
+          initialFence.lease.phase === "reserved"
+        ) {
+          let noSend: DurableDispatchEvidence | null;
+          try {
+            noSend = orphanReservedNoSendEvidence({
+              tenantId,
+              record,
+              lease: initialFence.lease,
+              nowMs,
+            });
+          } catch {
+            // A legacy/malformed proof receipt is not a substitute for the
+            // exact Gateway-authored receipt. Keep it fenced and fail closed.
+            return { kind: "recovery_blocked" as const };
+          }
+          if (noSend === null) {
+            return { kind: "recovery_blocked" as const };
+          }
+          recovered = {
+            ...record,
+            pending: null,
+            evidence: [
+              ...record.evidence.filter(
+                (candidate) =>
+                  candidate.envelopeDigest !== noSend.envelopeDigest,
+              ),
+              noSend,
+            ],
+            egressFence: {
+              ...initialFence,
+              state: "open",
+              epoch: initialFence.epoch + 1,
+              lease: null,
+              cancellation: null,
+            },
+          };
+          fence = sessionEgressFence(recovered);
+        }
+
+        if (
+          initialFence.lease?.operation === "dispatch" &&
+          initialFence.lease.phase === "started"
+        ) {
+          const pending = record.pending;
+          if (
+            pending === null ||
+            pending.envelopeDigest !== initialFence.lease.envelopeDigest
+          ) {
+            return { kind: "recovery_blocked" as const };
+          }
+          let candidates: readonly NormalizedHoldCandidate[];
+          try {
+            candidates = pending.mutating
+              ? normalizedHoldCandidates(
+                  record.rsid,
+                  durablePendingMutationEntries(record),
+                )
+              : [];
+            if (
+              (pending.mutating && candidates.length === 0) ||
+              candidates.length > MAX_RECOVERABLE_MUTATION_SCOPES ||
+              !hasRecoverableMutationCapacity(record, candidates)
+            ) {
+              return { kind: "recovery_blocked" as const };
+            }
+            for (const candidate of candidates) {
+              await this.#ensureNormalizedConflictPair(
+                tx,
+                tenantId,
+                record.rsid,
+                candidate,
+                nowMs,
+              );
+            }
+            const journals = pending.journalRecords.map((journal) => {
+              const holdId = journal.binding.mutating
+                ? candidates.find(
+                    (candidate) =>
+                      candidate.mutationScopeJcs ===
+                      mutationScopeKey(journal.binding.mutationScope!),
+                  )?.holdId ?? null
+                : null;
+              return handleJournalSessionUnregister(journal, false, holdId)
+                .record;
+            });
+            const evidence: DurableDispatchEvidence = {
+              envelopeDigest: pending.envelopeDigest,
+              acceptance:
+                record.evidence.find(
+                  (candidate) =>
+                    candidate.envelopeDigest === pending.envelopeDigest,
+                )?.acceptance ?? null,
+              journal: {
+                kind: candidates.length > 0 ? "indeterminate" : "known_terminal",
+                rsid: record.rsid,
+                sessionBindingId: record.sessionBindingId,
+                envelopeDigest: pending.envelopeDigest,
+                journalRecords: journals,
+                batchTerminal: null,
+                durableJournalVersion: record.sessionVersion,
+                recordedAtMs: nowMs,
+              },
+            };
+            recovered = {
+              ...record,
+              // Keep the exact started lease and pending dispatch fenced. The
+              // retained journal/hold evidence is enough for recovery, but no
+              // resumed transport may replay this ambiguous invocation.
+              evidence: [
+                ...record.evidence.filter(
+                  (candidate) =>
+                    candidate.envelopeDigest !== pending.envelopeDigest,
+                ),
+                evidence,
+              ],
+              normalizedConflictIndex: extendConflictIndex(
+                sessionConflictIndex(record),
+                candidates.map((candidate) =>
+                  conflictScopeDigest(candidate.mutationScopeJcs),
+                ),
+              ),
+            };
+          } catch {
+            return { kind: "recovery_blocked" as const };
+          }
+          const next = nextSessionRecord(stored, record, recovered, nowMs);
+          tx.stage({
+            namespace: GATEWAY_RBP_SESSION_NAMESPACE,
+            key: payload.rsid,
+            value: asJson(next),
+            expect: { kind: "version", version: stored.version },
+          });
+          return { kind: "recovery_blocked" as const };
+        }
         if (
           fence.state !== "open" ||
           fence.revocation !== null ||
           fence.lease?.phase === "started" ||
           (fence.lease?.phase === "reserved" &&
             fence.lease.reserveExpiresAtMs > nowMs) ||
-          record.deviceId !== connection.auth.actor.deviceId ||
-          record.userId !== connection.auth.actor.userId ||
-          record.seatId !== connection.auth.actor.seatId ||
+          recovered.deviceId !== connection.auth.actor.deviceId ||
+          recovered.userId !== connection.auth.actor.userId ||
+          recovered.seatId !== connection.auth.actor.seatId ||
           !sameDurableIdentityAuthority(
             connection.auth,
-            record.identityAuthority,
+            recovered.identityAuthority,
           ) ||
-          record.resumeTokenDigest !== digest(payload.resume_token) ||
-          record.resumeExpiresAtMs <= nowMs ||
-          !record.sessionLifecycle.resumeAllowed
+          recovered.resumeTokenDigest !== digest(payload.resume_token) ||
+          recovered.resumeExpiresAtMs <= nowMs ||
+          !recovered.sessionLifecycle.resumeAllowed
         ) {
           return { kind: "blocked" as const };
         }
-        const acknowledged = applyCumulativeAck(record.sequence, payload.last_rx_seq);
+        const acknowledged = applyCumulativeAck(recovered.sequence, payload.last_rx_seq);
         if (acknowledged.kind === "protocol_fault") {
           throw new Error(`resume cumulative ack rejected: ${acknowledged.reason}`);
         }
@@ -6916,18 +8258,18 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
           type: "resume_complete",
         });
         const disconnectedLifecycle =
-          record.sessionLifecycle.phase === "disconnected"
-            ? record.sessionLifecycle
-            : sessionTransition(record.sessionLifecycle, { type: "connection_lost" });
+          recovered.sessionLifecycle.phase === "disconnected"
+            ? recovered.sessionLifecycle
+            : sessionTransition(recovered.sessionLifecycle, { type: "connection_lost" });
         let sessionLifecycle = sessionTransition(disconnectedLifecycle, {
           type: "resume_requested",
         });
         sessionLifecycle = sessionTransition(sessionLifecycle, { type: "resumed" });
         const resumed: DurableRbpSession = {
-          ...record,
+          ...recovered,
           connectionId: connection.connectionId,
           binding: connection.binding,
-          sessionVersion: record.sessionVersion + 1,
+          sessionVersion: recovered.sessionVersion + 1,
           sequence: acknowledged.state,
           liveDocumentRoute: null,
           connectionLifecycle,
@@ -6970,6 +8312,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
               nextTicket: fence.nextTicket + 1,
               lease,
               revocation: null,
+              cancellation: null,
             },
           },
           nowMs,
@@ -6984,6 +8327,14 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         return { kind: "reserved" as const, record: next, lease, serialized };
       });
       if (reserved.ok) {
+        if (reserved.value.kind === "recovery_blocked") {
+          throw new GatewayRbpFault(
+            "unavailable",
+            "orphaned dispatch remains durably fenced for recovery",
+            503,
+            1011,
+          );
+        }
         if (reserved.value.kind === "blocked") {
           throw new GatewayRbpFault(
             "auth",
@@ -7111,6 +8462,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
               nextTicket: fence.nextTicket + 1,
               lease,
               revocation: null,
+              cancellation: null,
             },
           },
           nowMs,
@@ -7193,17 +8545,47 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       (candidate) => candidate.envelopeDigest === expected.envelopeDigest,
     );
     if (evidence === undefined) return { kind: "not_durable_yet" };
-    if (
+    const expectedJournalBindingsPresent = evidence.journal === null ||
+      !expected.invocationBindings.some((binding) =>
+        !evidence.journal!.journalRecords.some(
+          (record) =>
+            record.bindingDigest === binding.bindingDigest &&
+            `${record.binding.rsid}/${record.binding.invocationId}` ===
+              binding.idempotencyKey,
+        ),
+      );
+    const noSend = evidence.noSendReceipt ?? null;
+    if (noSend !== null) {
+      // No-send is a distinct terminal proof, not an ACK with a null value.
+      // It must bind the exact public recovery coordinates and retain the
+      // no-invocation facts; acceptance is prohibited on this branch.
+      if (
+        evidence.acceptance !== null ||
+        evidence.journal?.kind !== "known_terminal" ||
+        noSend.gatewaySequence !== expected.gatewaySequence ||
+        noSend.envelopeDigest !== expected.envelopeDigest ||
+        noSend.sessionBindingId !== expected.sessionBindingId ||
+        noSend.transportStarted !== false ||
+        noSend.cumulativeAck !== null ||
+        !expectedJournalBindingsPresent
+      ) {
+        return { kind: "protocol_fault", reason: "dispatch_evidence_mismatch" };
+      }
+      if (
+        evidence.noSendAuthorityDigest === undefined ||
+        evidence.noSendAuthorityDigest === null ||
+        evidence.noSendAuthorityDigest !== noSend.authorityDigest ||
+        (() => {
+          const { authorityDigest: _authorityDigest, recordedAtMs: _recordedAtMs, ...coordinates } = noSend;
+          return noSendAuthorityDigest({ ...coordinates, binding: session.binding }) !==
+            noSend.authorityDigest;
+        })()
+      ) {
+        return { kind: "protocol_fault", reason: "no_send_authority_mismatch" };
+      }
+    } else if (
       evidence.acceptance?.gatewaySequence !== expected.gatewaySequence ||
-      (evidence.journal !== null &&
-        expected.invocationBindings.some((binding) =>
-          !evidence.journal!.journalRecords.some(
-            (record) =>
-              record.bindingDigest === binding.bindingDigest &&
-              `${record.binding.rsid}/${record.binding.invocationId}` ===
-                binding.idempotencyKey,
-          ),
-        ))
+      !expectedJournalBindingsPresent
     ) {
       return { kind: "protocol_fault", reason: "dispatch_evidence_mismatch" };
     }
@@ -7212,6 +8594,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       observation: {
         acceptance: evidence.acceptance,
         journal: evidence.journal,
+        noSend: evidence.noSendReceipt ?? null,
       },
     };
   }
@@ -7423,35 +8806,13 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     payload: { readonly rsid: string; readonly resume_token: string; readonly last_rx_seq: number },
     authorityTicket: TenantAuthorityTicket,
   ): Promise<void> {
-    await this.#withSessionAuthorization(payload.rsid, async () =>
-      this.#resumeNow(connection, payload, authorityTicket),
+    // Keep the rsid tail only through the authoritative resume transition and
+    // durable reservation.  The returned continuation is immutable and the
+    // exact durable lease remains the race linearizer while transport waits.
+    const reservedAck = await this.#withSessionAuthorization(
+      payload.rsid,
+      async () => await this.#resumeNow(connection, payload, authorityTicket),
     );
-  }
-
-  async #resumeNow(
-    connection: LiveConnection,
-    payload: { readonly rsid: string; readonly resume_token: string; readonly last_rx_seq: number },
-    authorityTicket: TenantAuthorityTicket,
-  ): Promise<void> {
-    this.#assertAuthorityTicket(authorityTicket, connection);
-    let reservedAck: ReservedResumeAck;
-    try {
-      reservedAck = await this.#reserveResumeAck(
-        connection,
-        payload,
-        authorityTicket,
-      );
-    } catch (error: unknown) {
-      try {
-        this.#assertAuthorityTicket(authorityTicket, connection);
-      } catch {
-        if (this.#ticketScopeIsRevokedOrBlocked(authorityTicket)) {
-          await this.#revokeStaleAuthorizedSession(connection, payload.rsid);
-        }
-      }
-      throw error;
-    }
-    await this.#activate(reservedAck.record);
     try {
       await this.#sendWithDurableReservation(
         connection,
@@ -7475,13 +8836,19 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       ts: nowIso(this.#clock()),
     })) {
       const serialized = JSON.stringify(retained);
-      const reservation = await this.#reserveResumeRetransmit(
-        reservedAck.tenantId,
-        reservedAck.rsid,
-        connection.connectionId,
-        serialized,
-        connection,
-        authorityTicket,
+      // Each retransmit obtains a new durable lease under the tail, then
+      // releases it before transport. A phase-one unregister therefore either
+      // rejects this reservation or drains this exact started lease.
+      const reservation = await this.#withSessionAuthorization(
+        payload.rsid,
+        async () => await this.#reserveResumeRetransmit(
+          reservedAck.tenantId,
+          reservedAck.rsid,
+          connection.connectionId,
+          serialized,
+          connection,
+          authorityTicket,
+        ),
       );
       await this.#sendWithDurableReservation(
         connection,
@@ -7492,17 +8859,42 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     }
   }
 
+  async #resumeNow(
+    connection: LiveConnection,
+    payload: { readonly rsid: string; readonly resume_token: string; readonly last_rx_seq: number },
+    authorityTicket: TenantAuthorityTicket,
+  ): Promise<ReservedResumeAck> {
+    this.#assertAuthorityTicket(authorityTicket, connection);
+    let reservedAck: ReservedResumeAck;
+    try {
+      reservedAck = await this.#reserveResumeAck(
+        connection,
+        payload,
+        authorityTicket,
+      );
+    } catch (error: unknown) {
+      try {
+        this.#assertAuthorityTicket(authorityTicket, connection);
+      } catch {
+        if (this.#ticketScopeIsRevokedOrBlocked(authorityTicket)) {
+          await this.#revokeStaleAuthorizedSession(connection, payload.rsid);
+        }
+      }
+      throw error;
+    }
+    await this.#activate(reservedAck.record);
+    return reservedAck;
+  }
+
   async #unregister(
     connection: LiveConnection,
     payload: SessionUnregister,
     authorityTicket: TenantAuthorityTicket,
   ): Promise<void> {
-    await this.#withSessionAuthorization(payload.rsid, async () =>
-      {
-        this.#assertAuthorityTicket(authorityTicket, connection);
-        return this.#unregisterNow(connection, payload);
-      },
-    );
+    this.#assertAuthorityTicket(authorityTicket, connection);
+    // The exact repository CAS, not a tail held across transport, linearizes
+    // phase-one revocation against a concurrently reserved/started carrier.
+    await this.#unregisterNow(connection, payload);
   }
 
   async #unregisterNow(
@@ -7582,9 +8974,14 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
           fence.lease.operation === "dispatch" &&
           pendingBeforeRevocation !== null &&
           fence.lease.envelopeDigest === pendingBeforeRevocation.envelopeDigest;
+        const cancellationLease = fence.lease;
         let pending = pendingBeforeRevocation;
         let evidence = record.evidence;
-        if (canceledBeforeSend && pendingBeforeRevocation !== null) {
+        if (
+          canceledBeforeSend &&
+          pendingBeforeRevocation !== null &&
+          cancellationLease !== null
+        ) {
           const journals = pendingBeforeRevocation.journalRecords.map((journal) =>
             handleJournalSessionUnregister(journal, true, null).record,
           );
@@ -7596,11 +8993,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
               ),
               {
                 envelopeDigest: pendingBeforeRevocation.envelopeDigest,
-                acceptance:
-                  record.evidence.find(
-                    (candidate) =>
-                      candidate.envelopeDigest === pendingBeforeRevocation.envelopeDigest,
-                  )?.acceptance ?? null,
+                acceptance: null,
                 journal: {
                   kind: "known_terminal",
                   rsid: record.rsid,
@@ -7611,6 +9004,14 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
                   durableJournalVersion: record.sessionVersion,
                   recordedAtMs: nowMs,
                 },
+                noSendAuthorityDigest:
+                  pendingBeforeRevocation.expectedNoSendAuthorityDigest ?? null,
+                noSendReceipt: noSendReceipt({
+                  record,
+                  fence,
+                  lease: cancellationLease,
+                  recordedAtMs: nowMs,
+                }),
               },
             ];
           }
@@ -7662,6 +9063,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
               nextTicket: fence.nextTicket,
               lease: fence.lease?.phase === "started" ? fence.lease : null,
               revocation,
+              cancellation: null,
             },
             normalizedConflictIndex: unclassifiable
               ? {
@@ -8133,15 +9535,81 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     connection: LiveConnection,
     envelope: Extract<RbpEnvelope, { rsid: string; type: "result" }>,
     authorityTicket: TenantAuthorityTicket,
+    admission: TerminalAdmission,
+    mode: BridgeCarrierCommitMode,
     committed: { current: DurableRbpSession | null },
     completion: { current: GatewayExecutorOutcome | null },
-  ): Promise<void> {
+  ): Promise<BridgeCarrierCommitResult> {
+    // Re-read final unregister authority in the *shared* resource Tx-C before
+    // staging any session, ACK, or activation row.  A matching tombstone is a
+    // normal terminal abort; a mismatched tombstone is never attributable to
+    // this carrier and remains an auth failure.
+    const tombstoneStored = await tx.read<GatewayJsonValue>(
+      GATEWAY_RBP_UNREGISTER_NAMESPACE,
+      admission.rsid,
+    );
+    if (tombstoneStored !== null) {
+      const tombstone = parseUnregisterTombstone(tombstoneStored.value, {
+        tenantId: admission.tenantId,
+        rsid: admission.rsid,
+        stored: tombstoneStored,
+      });
+      if (
+        tombstone.sessionBindingId === admission.sessionBindingId &&
+        tombstone.acceptedConnectionId === admission.connectionId
+      ) {
+        return { kind: "aborted", reason: "terminal_revoked" };
+      }
+      throw new Error("carrier terminal tombstone does not match admission");
+    }
+    const preflightStored = await this.#sessionRepository.readAuthoritative(
+      tx,
+      admission.tenantId,
+      admission.rsid,
+    );
+    if (preflightStored === null) throw new Error("carrier terminal session is missing");
+    const preflight = parseStoredSession(preflightStored, admission.tenantId, admission.rsid);
+    const preflightFence = sessionEgressFence(preflight);
+    if (preflightFence.state === "revocation_pending") {
+      if (
+        preflight.sessionBindingId === admission.sessionBindingId &&
+        preflight.connectionId === admission.connectionId
+      ) {
+        return { kind: "aborted", reason: "terminal_revoked" };
+      }
+      throw new Error("carrier terminal revoked session does not match admission");
+    }
+    if (preflightFence.state !== "open") throw new Error("carrier terminal session is not open");
+    if (preflight.pending === null) {
+      const accepted = acceptInboundData(preflight.sequence, envelope as DataEnvelopeSnapshot);
+      const replay = preflight.evidence.some((entry) =>
+        entry.terminalCarrierDigest === admission.terminalCarrierDigest &&
+        entry.terminalDigest === admission.terminalDigest &&
+        sameJson(entry.terminalTruth ?? null, admission.terminalTruth),
+      );
+      if (!replay || accepted.kind !== "duplicate") {
+        throw new Error("carrier terminal no longer matches the active exact dispatch");
+      }
+      committed.current = preflight;
+      completion.current = terminalOutcome(envelope);
+      return BRIDGE_CARRIER_COMMIT_OK;
+    }
+    if (mode === "verify") {
+      throw new Error("carrier activation exists without its exact Bridge terminal");
+    }
+    const preflightAdmission = terminalAdmissionFor(preflight, connection.connectionId, envelope);
+    if (!sameJson(preflightAdmission, admission)) {
+      throw new Error("carrier terminal admission changed before stage C");
+    }
     committed.current = await this.#sessionRepository.stageAuthoritativeOnRaw(
       tx,
       active.tenantId,
       active.rsid,
       (stored, record) => {
         this.#assertAuthorityTicket(authorityTicket, connection, { session: record });
+        if (sessionEgressFence(record).state !== "open") {
+          throw new Error("carrier terminal session was revoked during stage C");
+        }
         const accepted = acceptInboundData(record.sequence, envelope as DataEnvelopeSnapshot);
         if (accepted.kind === "protocol_fault" || accepted.kind === "gap") {
           throw new Error("carrier terminal sequence is not acceptable");
@@ -8151,7 +9619,47 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         if (pending === null || pending.invocationId !== envelope.payload.invocation_id) {
           throw new Error("carrier terminal does not match the active invocation");
         }
+        const currentAdmission = terminalAdmissionFor(record, connection.connectionId, envelope);
+        if (!sameJson(currentAdmission, admission)) {
+          throw new Error("carrier terminal admission changed during stage C");
+        }
         const existing = record.evidence.find((candidate) => candidate.envelopeDigest === pending.envelopeDigest);
+        const dispatchReceipt = pending.dispatchReceipt ?? null;
+        const acceptance = envelope.ack !== undefined && envelope.ack >= pending.gatewaySequence
+          ? (() => {
+              if (
+                dispatchReceipt === null ||
+                dispatchReceipt.version !== 1 ||
+                dispatchReceipt.tenantId !== record.tenantId ||
+                dispatchReceipt.invocationId !== pending.invocationId ||
+                dispatchReceipt.correlationId !== pending.invocationId ||
+                dispatchReceipt.intent !== "dispatch"
+              ) {
+                throw new Error("legacy or malformed dispatch receipt cannot authorize terminal acknowledgement");
+              }
+              return {
+                source: "durable_rbp_sequence" as const,
+                receiptVersion: 1 as const,
+                tenantId: dispatchReceipt.tenantId,
+                rsid: record.rsid,
+                sessionBindingId: record.sessionBindingId,
+                acceptedConnectionId: record.connectionId,
+                authorizedSessionVersion: record.sessionVersion,
+                invocationId: dispatchReceipt.invocationId,
+                correlationId: dispatchReceipt.correlationId,
+                proofDigest: dispatchReceipt.proofDigest,
+                routeSnapshotDigest: dispatchReceipt.routeSnapshotDigest,
+                egressEpoch: dispatchReceipt.egressEpoch,
+                leaseTicket: dispatchReceipt.leaseTicket,
+                intent: "dispatch" as const,
+                gatewaySequence: pending.gatewaySequence,
+                cumulativeAck: envelope.ack,
+                envelopeDigest: pending.envelopeDigest,
+                durableSequenceVersion: record.sessionVersion,
+                acceptedAtMs: this.#clock(),
+              };
+            })()
+          : existing?.acceptance ?? null;
         const journals = terminalJournalRecords(pending.journalRecords, envelope);
         const journal: GatewayVerifiedBridgeJournalEvidence | null = journals.length === 0
           ? null
@@ -8162,9 +9670,11 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
             };
         const evidence: DurableDispatchEvidence = {
           envelopeDigest: pending.envelopeDigest,
-          acceptance: existing?.acceptance ?? null,
+          acceptance,
           journal,
-          terminalTruth: durableTerminalTruth(envelope),
+          terminalTruth: admission.terminalTruth,
+          terminalDigest: admission.terminalDigest,
+          terminalCarrierDigest: admission.terminalCarrierDigest,
         };
         completion.current = terminalOutcome(envelope);
         return nextSessionRecord(stored, record, {
@@ -8178,6 +9688,237 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         }, this.#clock());
       },
     );
+    return BRIDGE_CARRIER_COMMIT_OK;
+  }
+
+  /**
+   * Terminal persistence is a separate CAS domain from delivery.  In
+   * particular, unregister may win after the carrier was admitted but before
+   * its terminal CAS.  Retrying only a version conflict is safe; all other
+   * uncertainty remains fail-closed.
+   */
+  async #commitTerminalWithRevocationCas(
+    active: ActiveSession,
+    connection: LiveConnection,
+    envelope: Extract<RbpEnvelope, { rsid: string; type: "result" | "error" }>,
+    authorityTicket: TenantAuthorityTicket,
+  ): Promise<
+    | { readonly kind: "committed"; readonly record: DurableRbpSession; readonly completion: GatewayExecutorOutcome }
+    | { readonly kind: "suppressed" }
+  > {
+    const terminalCarrierDigest = immutableEnvelopeDigest(envelope);
+    if (active.record.pending === null) {
+      const accepted = acceptInboundData(active.record.sequence, envelope as DataEnvelopeSnapshot);
+      const replay = active.record.evidence.some((entry) =>
+        entry.terminalCarrierDigest === terminalCarrierDigest &&
+        sameJson(entry.terminalTruth ?? null, durableTerminalTruth(envelope)),
+      );
+      if (replay && accepted.kind === "duplicate") {
+        return { kind: "committed", record: active.record, completion: terminalOutcome(envelope) };
+      }
+      throw new GatewayRbpFault("auth", "terminal admission has no active exact dispatch", 403, 4403);
+    }
+    const original = terminalAdmissionFor(active.record, connection.connectionId, envelope);
+    for (let attempt = 0; attempt < MAX_AUTHORIZATION_CAS_ATTEMPTS; attempt += 1) {
+      const attempted: { current: { readonly prior: StoredRecord<GatewayJsonValue>; readonly next: DurableRbpSession } | null } = { current: null };
+      const persisted = await this.#sessionRepository.transact({ tenantId: original.tenantId }, async (tx) => {
+        const tombstone = await tx.read<GatewayJsonValue>(GATEWAY_RBP_UNREGISTER_NAMESPACE, original.rsid);
+        if (tombstone !== null) {
+          const parsed = parseUnregisterTombstone(tombstone.value, {
+            tenantId: original.tenantId, rsid: original.rsid, stored: tombstone,
+          });
+          if (
+            parsed.sessionBindingId !== original.sessionBindingId ||
+            parsed.acceptedConnectionId !== original.connectionId
+          ) return { kind: "rejected" as const };
+          return { kind: "revoked" as const };
+        }
+        const stored = await tx.read<GatewayJsonValue>(GATEWAY_RBP_SESSION_NAMESPACE, original.rsid);
+        if (stored === null) return { kind: "rejected" as const };
+        const record = parseStoredSession(stored, original.tenantId, original.rsid);
+        const fence = sessionEgressFence(record);
+        if (fence.state === "revocation_pending") {
+          if (
+            record.sessionBindingId !== original.sessionBindingId ||
+            record.connectionId !== original.connectionId
+          ) return { kind: "rejected" as const };
+          return { kind: "revoked" as const };
+        }
+        if (fence.state !== "open") return { kind: "rejected" as const };
+        if (record.pending === null) {
+          const accepted = acceptInboundData(record.sequence, envelope as DataEnvelopeSnapshot);
+          const replay = record.evidence.some((entry) =>
+            entry.terminalCarrierDigest === terminalCarrierDigest &&
+            sameJson(entry.terminalTruth ?? null, original.terminalTruth),
+          );
+          return replay && accepted.kind === "duplicate"
+            ? { kind: "committed" as const, record }
+            : { kind: "rejected" as const };
+        }
+        const admission = terminalAdmissionFor(record, connection.connectionId, envelope);
+        if (!sameJson(admission, original)) return { kind: "rejected" as const };
+        this.#assertAuthorityTicket(authorityTicket, connection, { session: record });
+        const accepted = acceptInboundData(record.sequence, envelope as DataEnvelopeSnapshot);
+        if (accepted.kind === "protocol_fault" || accepted.kind === "gap") {
+          return { kind: "rejected" as const };
+        }
+        if (accepted.kind === "duplicate") {
+          return { kind: "rejected" as const };
+        }
+        const existing = record.evidence.find((candidate) => candidate.envelopeDigest === record.pending!.envelopeDigest);
+        const receipt = record.pending!.dispatchReceipt!;
+        const acceptance = envelope.ack !== undefined && envelope.ack >= record.pending!.gatewaySequence
+          ? {
+              source: "durable_rbp_sequence" as const,
+              receiptVersion: 1 as const,
+              tenantId: receipt.tenantId,
+              rsid: record.rsid,
+              sessionBindingId: record.sessionBindingId,
+              acceptedConnectionId: record.connectionId,
+              authorizedSessionVersion: record.sessionVersion,
+              invocationId: receipt.invocationId,
+              correlationId: receipt.correlationId,
+              proofDigest: receipt.proofDigest,
+              routeSnapshotDigest: receipt.routeSnapshotDigest,
+              egressEpoch: receipt.egressEpoch,
+              leaseTicket: receipt.leaseTicket,
+              intent: "dispatch" as const,
+              gatewaySequence: record.pending!.gatewaySequence,
+              cumulativeAck: envelope.ack,
+              envelopeDigest: record.pending!.envelopeDigest,
+              durableSequenceVersion: record.sessionVersion,
+              acceptedAtMs: this.#clock(),
+            }
+          : existing?.acceptance ?? null;
+        const journals = terminalJournalRecords(record.pending!.journalRecords, envelope);
+        const batchTerminal = envelope.type === "result" && envelope.payload.kind === "batch"
+          ? { result: structuredClone(envelope.payload) as BatchResult, resultDigest: makeParamsDigest(envelope.payload as unknown as JsonValue) }
+          : null;
+        const journal: GatewayVerifiedBridgeJournalEvidence | null = journals.length === 0 ? null : {
+          kind: "known_terminal", rsid: record.rsid, sessionBindingId: record.sessionBindingId,
+          envelopeDigest: record.pending!.envelopeDigest, journalRecords: journals, batchTerminal,
+          durableJournalVersion: record.sessionVersion, recordedAtMs: this.#clock(),
+        };
+        const next = nextSessionRecord(stored, record, {
+          ...record,
+          sequence: accepted.state,
+          pending: null,
+          evidence: [
+            ...record.evidence.filter((candidate) => candidate.envelopeDigest !== record.pending!.envelopeDigest),
+            {
+              envelopeDigest: record.pending!.envelopeDigest,
+              acceptance,
+              journal,
+              terminalTruth: original.terminalTruth,
+              terminalDigest: original.terminalDigest,
+              terminalCarrierDigest: original.terminalCarrierDigest,
+            },
+          ],
+        }, this.#clock());
+        attempted.current = { prior: stored, next };
+        tx.stage({
+          namespace: GATEWAY_RBP_SESSION_NAMESPACE, key: original.rsid, value: asJson(next),
+          expect: { kind: "version", version: stored.version },
+        });
+        // Keep the committed evidence visible to the raw-store test seam that
+        // deliberately interleaves post-commit revocation before readback.
+        return { kind: "committed" as const, record: next, evidence: next.evidence };
+      });
+      if (persisted.ok) {
+        if (persisted.value.kind === "committed") {
+          return { kind: "committed", record: persisted.value.record, completion: terminalOutcome(envelope) };
+        }
+        if (persisted.value.kind === "revoked") {
+          await this.#persistLateTerminalEvidence(original);
+          return { kind: "suppressed" };
+        }
+        throw new GatewayRbpFault("auth", "terminal admission no longer matches its original dispatch", 403, 4403);
+      }
+      if (persisted.code === "conflict") continue;
+      if (persisted.code === "durability_uncertain" && attempted.current !== null) {
+        const readBack = await this.#readStoredSession(original.tenantId, original.rsid);
+        if (readBack !== null) {
+          const record = parseStoredSession(readBack, original.tenantId, original.rsid);
+          const exact = record.evidence.some((entry) =>
+            entry.envelopeDigest === original.pendingEnvelopeDigest &&
+            entry.terminalDigest === original.terminalDigest &&
+            sameJson(entry.terminalTruth ?? null, original.terminalTruth),
+          );
+          if (exact && record.pending === null) {
+            return { kind: "committed", record, completion: terminalOutcome(envelope) };
+          }
+          if (sessionEgressFence(record).state === "revocation_pending") {
+            await this.#persistLateTerminalEvidence(original);
+            return { kind: "suppressed" };
+          }
+        }
+      }
+      throw new GatewayRbpFault("unavailable", persisted.message, 503, 1011);
+    }
+    throw new GatewayRbpFault("unavailable", "terminal persistence CAS retry bound was exhausted", 503, 1011);
+  }
+
+  async #persistLateTerminalEvidence(admission: TerminalAdmission): Promise<void> {
+    const value: DurableLateTerminalEvidence = Object.freeze({
+      schema: GATEWAY_RBP_LATE_TERMINAL_NAMESPACE,
+      tenantId: admission.tenantId,
+      rsid: admission.rsid,
+      sessionBindingId: admission.sessionBindingId,
+      connectionId: admission.connectionId,
+      correlationId: admission.correlationId,
+      terminalSequence: admission.terminalSequence,
+      terminalCarrierDigest: admission.terminalCarrierDigest,
+      terminalDigest: admission.terminalDigest,
+      dispatchReceiptDigest: admission.dispatchReceiptDigest,
+      terminalTruth: admission.terminalTruth,
+      recordedAtMs: this.#clock(),
+    });
+    const key = lateTerminalKey(admission);
+    for (let attempt = 0; attempt < MAX_AUTHORIZATION_CAS_ATTEMPTS; attempt += 1) {
+      const persisted = await this.#sessionRepository.transact({ tenantId: admission.tenantId }, async (tx) => {
+        const tombstoneStored = await tx.read<GatewayJsonValue>(GATEWAY_RBP_UNREGISTER_NAMESPACE, admission.rsid);
+        const sessionStored = await tx.read<GatewayJsonValue>(GATEWAY_RBP_SESSION_NAMESPACE, admission.rsid);
+        if (sessionStored === null) return "rejected" as const;
+        const session = parseStoredSession(sessionStored, admission.tenantId, admission.rsid);
+        const tombstone = tombstoneStored === null ? null : parseUnregisterTombstone(tombstoneStored.value, {
+          tenantId: admission.tenantId, rsid: admission.rsid, stored: tombstoneStored,
+        });
+        if (
+          (tombstone === null && sessionEgressFence(session).state !== "revocation_pending") ||
+          session.sessionBindingId !== admission.sessionBindingId ||
+          session.connectionId !== admission.connectionId ||
+          (tombstone !== null &&
+            (tombstone.sessionBindingId !== admission.sessionBindingId ||
+              tombstone.acceptedConnectionId !== admission.connectionId))
+        ) return "rejected" as const;
+        const prior = await tx.read<GatewayJsonValue>(GATEWAY_RBP_LATE_TERMINAL_NAMESPACE, key);
+        if (prior !== null) {
+          const existing = prior.value as unknown as Partial<DurableLateTerminalEvidence>;
+          return (
+            existing.schema === value.schema &&
+            existing.tenantId === value.tenantId &&
+            existing.rsid === value.rsid &&
+            existing.sessionBindingId === value.sessionBindingId &&
+            existing.connectionId === value.connectionId &&
+            existing.correlationId === value.correlationId &&
+            existing.terminalSequence === value.terminalSequence &&
+            existing.terminalCarrierDigest === value.terminalCarrierDigest &&
+            existing.terminalDigest === value.terminalDigest &&
+            existing.dispatchReceiptDigest === value.dispatchReceiptDigest &&
+            sameJson(existing.terminalTruth ?? null, value.terminalTruth)
+          ) ? "replay" as const : "rejected" as const;
+        }
+        tx.stage({ namespace: GATEWAY_RBP_LATE_TERMINAL_NAMESPACE, key, value: asJson(value), expect: { kind: "absent" } });
+        return "created" as const;
+      });
+      if (persisted.ok && (persisted.value === "created" || persisted.value === "replay")) return;
+      if (persisted.ok) {
+        throw new GatewayRbpFault("auth", "late terminal no longer matches revoked session authority", 403, 4403);
+      }
+      if (persisted.code === "conflict") continue;
+      throw new GatewayRbpFault("unavailable", persisted.message, 503, 1011);
+    }
+    throw new GatewayRbpFault("unavailable", "late terminal persistence CAS retry bound was exhausted", 503, 1011);
   }
 
   async #acceptData(
@@ -8231,55 +9972,109 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         throw new GatewayRbpFault("unsupported", "result carrier was not granted", 403, 4403);
       }
       const { scope, effective } = this.#carrierScope(active.record);
+      // Freeze immutable admission and resource scope before Stage C.  Retries
+      // reuse this exact proof; they never rerun the Bridge or mint handles.
+      const admission = terminalAdmissionFor(active.record, connection.connectionId, envelope);
       const committed: { current: DurableRbpSession | null } = { current: null };
       const completion: { current: GatewayExecutorOutcome | null } = { current: null };
-      if (manifest === null) {
-        const chunked = envelope.payload as typeof envelope.payload & {
-          readonly stream_id: "result";
-          readonly content_type: string;
-          readonly total_chunks: number;
-          readonly total_size: number;
-          readonly sha256: string;
-        };
-        const carrierResult = await this.#resourceAuthority.acceptBridgeChunkedResultTerminal({
-          scope,
-          effectiveMcpRequestScope: effective,
-          rsid: active.rsid,
-          invocationId: envelope.payload.invocation_id,
-          manifest: {
-            kind: "chunked_result",
-            descriptor: {
-              stream_id: chunked.stream_id,
-              content_type: chunked.content_type,
-              total_chunks: chunked.total_chunks,
-              total_size: chunked.total_size,
-              sha256: chunked.sha256,
+      try {
+        if (manifest === null) {
+          const chunked = envelope.payload as typeof envelope.payload & {
+            readonly stream_id: "result";
+            readonly content_type: string;
+            readonly total_chunks: number;
+            readonly total_size: number;
+            readonly sha256: string;
+          };
+          const carrierResult = await this.#resourceAuthority.acceptBridgeChunkedResultTerminal({
+            scope,
+            effectiveMcpRequestScope: effective,
+            rsid: active.rsid,
+            invocationId: envelope.payload.invocation_id,
+            manifest: {
+              kind: "chunked_result",
+              descriptor: {
+                stream_id: chunked.stream_id,
+                content_type: chunked.content_type,
+                total_chunks: chunked.total_chunks,
+                total_size: chunked.total_size,
+                sha256: chunked.sha256,
+              },
             },
-          },
-          commitBridge: async (tx) => await this.#commitCarrierTerminal(tx, active, connection, envelope, authorityTicket, committed, completion),
-        });
-        completion.current = envelope.payload.status === "guarded"
-          ? { state: "guarded", reason: envelope.payload.guarded_reason, result: carrierResult }
-          : { state: "completed", result: carrierResult };
-      } else {
-        await this.#resourceAuthority.acceptBridgeTerminal({
-          scope,
-          effectiveMcpRequestScope: effective,
-          rsid: active.rsid,
-          invocationId: envelope.payload.invocation_id,
-          manifest,
-          commitBridge: async (tx) => await this.#commitCarrierTerminal(tx, active, connection, envelope, authorityTicket, committed, completion),
-        });
+            commitBridge: async (tx, mode) => await this.#commitCarrierTerminal(tx, active, connection, envelope, authorityTicket, admission, mode, committed, completion),
+          });
+          completion.current = envelope.payload.status === "guarded"
+            ? { state: "guarded", reason: envelope.payload.guarded_reason, result: carrierResult }
+            : { state: "completed", result: carrierResult };
+        } else {
+          await this.#resourceAuthority.acceptBridgeTerminal({
+            scope,
+            effectiveMcpRequestScope: effective,
+            rsid: active.rsid,
+            invocationId: envelope.payload.invocation_id,
+            manifest,
+            commitBridge: async (tx, mode) => await this.#commitCarrierTerminal(tx, active, connection, envelope, authorityTicket, admission, mode, committed, completion),
+          });
+        }
+      } catch (error: unknown) {
+        if (error instanceof BridgeCarrierTerminalAborted) {
+          await this.#persistLateTerminalEvidence(admission);
+          return;
+        }
+        throw error;
       }
       if (committed.current === null || completion.current === null) {
         throw new GatewayRbpFault("unavailable", "carrier terminal commit was not observable", 503, 1011);
       }
       active.record = committed.current;
+      let deliveryAuthorized = true;
+      try {
+        this.#assertAuthorityTicket(authorityTicket, connection, { session: committed.current });
+      } catch {
+        deliveryAuthorized = false;
+      }
+      if (!deliveryAuthorized && this.#ticketScopeIsRevokedOrBlocked(authorityTicket)) {
+        await this.#revokeStaleAuthorizedSession(connection, envelope.rsid);
+      }
       const waiter = this.#waiters.get(envelope.payload.invocation_id);
       if (waiter !== undefined) {
         clearTimeout(waiter.timer);
         this.#waiters.delete(envelope.payload.invocation_id);
-        waiter.resolve(completion.current);
+        waiter.resolve(deliveryAuthorized
+          ? completion.current
+          : { state: "failed", error: { code: "executor_unavailable", message: "identity revocation suppressed terminal delivery" } });
+      }
+      return;
+    }
+    if (
+      (envelope.type === "error" || envelope.type === "result") &&
+      !(envelope.type === "result" && envelope.payload.kind === "invocation" && envelope.payload.chunked === true)
+    ) {
+      const terminal = await this.#commitTerminalWithRevocationCas(
+        active,
+        connection,
+        envelope,
+        authorityTicket,
+      );
+      if (terminal.kind === "suppressed") return;
+      active.record = terminal.record;
+      let deliveryAuthorized = true;
+      try {
+        this.#assertAuthorityTicket(authorityTicket, connection, { session: terminal.record });
+      } catch {
+        deliveryAuthorized = false;
+      }
+      if (!deliveryAuthorized && this.#ticketScopeIsRevokedOrBlocked(authorityTicket)) {
+        await this.#revokeStaleAuthorizedSession(connection, envelope.rsid);
+      }
+      const terminalWaiterId = terminalCorrelationId(envelope) ?? "";
+      const waiter = this.#waiters.get(terminalWaiterId);
+      if (waiter !== undefined) {
+        clearTimeout(waiter.timer);
+        this.#waiters.delete(terminalWaiterId);
+        waiter.resolve(deliveryAuthorized
+          ? terminal.completion
+          : { state: "failed", error: { code: "executor_unavailable", message: "identity revocation suppressed terminal delivery" } });
       }
       return;
     }
@@ -8289,10 +10084,9 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
             envelope.payload,
             connection.connectionId,
             envelope.seq,
+            documentContextDigest(envelope.payload as unknown as JsonValue),
           )
         : undefined;
-    let completed: GatewayExecutorOutcome | null = null;
-    let completedInvocationId: string | null = null;
     const updated = await this.#updateSession(active.tenantId, active.rsid, (record) => {
       this.#assertAuthorityTicket(authorityTicket, connection, {
         session: active.record,
@@ -8318,15 +10112,41 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       let pending = record.pending;
       let evidence = [...record.evidence];
       if (pending !== null && envelope.ack !== undefined && envelope.ack >= pending.gatewaySequence) {
+        const receipt = pending.dispatchReceipt ?? null;
+        if (
+          receipt === null ||
+          receipt.version !== 1 ||
+          receipt.tenantId !== record.tenantId ||
+          receipt.invocationId !== pending.invocationId ||
+          receipt.correlationId !== pending.invocationId ||
+          receipt.intent !== "dispatch" ||
+          receipt.proofDigest.length !== 71 ||
+          receipt.routeSnapshotDigest.length !== 71 ||
+          receipt.egressEpoch < 0 ||
+          !Number.isSafeInteger(receipt.egressEpoch) ||
+          receipt.leaseTicket < 1 ||
+          !Number.isSafeInteger(receipt.leaseTicket)
+        ) {
+          throw new Error("legacy or malformed dispatch receipt cannot authorize acknowledgement");
+        }
         const existing = evidence.find(
           (candidate) => candidate.envelopeDigest === pending!.envelopeDigest,
         );
         const acceptance = {
           source: "durable_rbp_sequence" as const,
+          receiptVersion: 1 as const,
+          tenantId: receipt.tenantId,
           rsid: record.rsid,
           sessionBindingId: record.sessionBindingId,
           acceptedConnectionId: record.connectionId,
           authorizedSessionVersion: record.sessionVersion,
+          invocationId: receipt.invocationId,
+          correlationId: receipt.correlationId,
+          proofDigest: receipt.proofDigest,
+          routeSnapshotDigest: receipt.routeSnapshotDigest,
+          egressEpoch: receipt.egressEpoch,
+          leaseTicket: receipt.leaseTicket,
+          intent: "dispatch" as const,
           gatewaySequence: pending.gatewaySequence,
           cumulativeAck: envelope.ack,
           envelopeDigest: pending.envelopeDigest,
@@ -8345,61 +10165,6 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
           ),
           next,
         ];
-      }
-      if (pending !== null && (envelope.type === "result" || envelope.type === "error")) {
-        const correlationId =
-          envelope.type === "result" && envelope.payload.kind === "invocation"
-            ? envelope.payload.invocation_id
-            : envelope.type === "result" && envelope.payload.kind === "batch"
-              ? envelope.payload.batch_id
-            : envelope.type === "error"
-              ? envelope.payload.invocation_id ?? null
-              : null;
-        if (correlationId !== pending.invocationId) {
-          throw new Error("terminal envelope does not match the active invocation");
-        }
-        const journals = terminalJournalRecords(pending.journalRecords, envelope);
-        const durableTerminalOutcome = terminalOutcome(envelope);
-        const terminalTruth = durableTerminalTruth(envelope);
-        const existing = evidence.find(
-          (candidate) => candidate.envelopeDigest === pending!.envelopeDigest,
-        );
-        const batchTerminal =
-          envelope.type === "result" && envelope.payload.kind === "batch"
-            ? {
-                result: structuredClone(envelope.payload) as BatchResult,
-                resultDigest: makeParamsDigest(
-                  envelope.payload as unknown as JsonValue,
-                ),
-              }
-            : null;
-        const journal: GatewayVerifiedBridgeJournalEvidence | null =
-          journals.length === 0
-            ? null
-            : {
-                kind: "known_terminal",
-                rsid: record.rsid,
-                sessionBindingId: record.sessionBindingId,
-                envelopeDigest: pending.envelopeDigest,
-                journalRecords: journals,
-                batchTerminal,
-                durableJournalVersion: record.sessionVersion,
-                recordedAtMs: this.#clock(),
-              };
-        evidence = [
-          ...evidence.filter(
-            (candidate) => candidate.envelopeDigest !== pending!.envelopeDigest,
-          ),
-          {
-            envelopeDigest: pending.envelopeDigest,
-            acceptance: existing?.acceptance ?? null,
-            journal,
-            terminalTruth,
-          },
-        ];
-        completed = durableTerminalOutcome;
-        completedInvocationId = pending.invocationId;
-        pending = null;
       }
       return {
         ...record,
@@ -8427,29 +10192,6 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       this.#ticketScopeIsRevokedOrBlocked(authorityTicket)
     ) {
       await this.#revokeStaleAuthorizedSession(connection, envelope.rsid);
-    }
-    if (completedInvocationId !== null && completed !== null) {
-      if (!deliveryAuthorized) {
-        const waiter = this.#waiters.get(completedInvocationId);
-        if (waiter !== undefined) {
-          clearTimeout(waiter.timer);
-          this.#waiters.delete(completedInvocationId);
-          waiter.resolve({
-            state: "failed",
-            error: {
-              code: "executor_unavailable",
-              message: "identity revocation suppressed terminal delivery",
-            },
-          });
-        }
-        return;
-      }
-      const waiter = this.#waiters.get(completedInvocationId);
-      if (waiter !== undefined) {
-        clearTimeout(waiter.timer);
-        this.#waiters.delete(completedInvocationId);
-        waiter.resolve(completed);
-      }
     }
     if (!deliveryAuthorized) {
       throw new GatewayRbpFault(

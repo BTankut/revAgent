@@ -13,15 +13,19 @@ internal sealed class SseRbpEventReader
             throwOnInvalidBytes: true);
 
     private readonly Stream _stream;
+    private readonly Action<string>? _onStage;
     private readonly byte[] _readBuffer = new byte[16 * 1024];
     private int _readOffset;
     private int _readLength;
     private int _pendingByte = -1;
     private bool _firstLine = true;
 
-    internal SseRbpEventReader(Stream stream)
+    internal SseRbpEventReader(
+        Stream stream,
+        Action<string>? onStage = null)
     {
         _stream = stream ?? throw new ArgumentNullException(nameof(stream));
+        _onStage = onStage;
     }
 
     internal async Task<byte[]> ReadAsync(
@@ -36,6 +40,7 @@ internal sealed class SseRbpEventReader
                     .ConfigureAwait(false);
             if (lineBytes is null)
             {
+                Observe("stream_end");
                 throw new RbpGatewayTransportException(
                     RbpGatewayFailureKind.RemoteClosed,
                     "The fallback SSE stream reached EOF.");
@@ -48,6 +53,7 @@ internal sealed class SseRbpEventReader
             }
             catch (DecoderFallbackException exception)
             {
+                Observe("parser_error");
                 throw RbpHttpBindingProtocol.Protocol(
                     "The fallback SSE stream is not valid UTF-8.",
                     exception);
@@ -64,6 +70,7 @@ internal sealed class SseRbpEventReader
 
             if (line.Length == 0)
             {
+                Observe("blank_terminator");
                 if (eventName is null && data is null)
                 {
                     continue;
@@ -110,6 +117,7 @@ internal sealed class SseRbpEventReader
                     }
 
                     eventName = value;
+                    Observe("event_line");
                     break;
                 case "data":
                     if (data is not null)
@@ -119,6 +127,7 @@ internal sealed class SseRbpEventReader
                     }
 
                     data = StrictUtf8.GetBytes(value);
+                    Observe("data_line");
                     if (data.Length >
                         RbpProtocolLimits.MaximumWireFrameBytes)
                     {
@@ -137,6 +146,18 @@ internal sealed class SseRbpEventReader
                     // have no authority and are ignored.
                     break;
             }
+        }
+    }
+
+    private void Observe(string stage)
+    {
+        try
+        {
+            _onStage?.Invoke(stage);
+        }
+        catch
+        {
+            // Parser evidence cannot affect the receive state machine.
         }
     }
 

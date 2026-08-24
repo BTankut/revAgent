@@ -1,0 +1,11 @@
+  RevAgent.Contracts -> C:\Users\BT\Projects\revAgent-worktrees\wp12-csharp\packages\bridge\src\RevAgent.Contracts\bin\Debug\netstandard2.0\RevAgent.Contracts.dll
+  RevAgent.Bridge.Bootstrap -> C:\Users\BT\Projects\revAgent-worktrees\wp12-csharp\packages\bridge\src\RevAgent.Bridge.Bootstrap\bin\Debug\net8.0\RevAgent.Bridge.Bootstrap.dll
+  RevAgent.Bridge -> C:\Users\BT\Projects\revAgent-worktrees\wp12-csharp\packages\bridge\src\RevAgent.Bridge\bin\Debug\net8.0\revagent-bridge.dll
+
+Oluşturma başarılı oldu.
+    0 Uyarı
+    0 Hata
+
+Geçen Süre 00:00:00.68
+
+İş yükü güncelleştirmeleri var. Daha fazla bilgi için `dotnet workload list` çalıştırın.

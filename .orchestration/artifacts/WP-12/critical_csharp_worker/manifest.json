@@ -1,0 +1,28 @@
+{
+  "schema": "revagent-remediation-artifact-manifest/v1",
+  "workPackage": "WP-12",
+  "worker": "critical_csharp_worker_surrogate",
+  "base": "473a83cc53498b2959cbdda5fbf6a97d395fa990",
+  "gates": [
+    {
+      "file": "build.log",
+      "exit": 0,
+      "bytes": 678,
+      "sha256": "f630717636d7698ea62af6c62e980465dfbad0a203246458d0a7d91d773a4ec2"
+    },
+    {
+      "file": "focused-tests.log",
+      "exit": 0,
+      "tests": 17,
+      "bytes": 1402,
+      "sha256": "3e3d00da4a28551fbead8184cb87dabae2754c2798b46c1858461801f445997e"
+    },
+    {
+      "file": "format.log",
+      "exit": 0,
+      "bytes": 167,
+      "sha256": "8192040d2167b285829243e5e05ad53b2ee73ca9bba79c32249a79a7e5d5f147"
+    }
+  ],
+  "knownNonGate": "Full Bridge harness requires an independently provisioned clean worktree; this worktree's seeded dependencies expose pre-existing protocol AJV/type mismatches and the direct test invocation lacks the PowerCutHarness executable."
+}

@@ -12,7 +12,8 @@ public sealed class RbpPrimaryFallbackConnectionCycleFactoryTests
             Failure(
                 RbpGatewayFailureKind.Network,
                 fallbackEligible: true));
-        var fallback = new RecordingFactory();
+        var fallback = new RecordingFactory(
+            RbpConnectionBindingKind.StreamableHttpSse);
         var factory = new RbpPrimaryFallbackConnectionCycleFactory(
             primary,
             fallback,
@@ -25,6 +26,9 @@ public sealed class RbpPrimaryFallbackConnectionCycleFactoryTests
         Assert.Same(fallback.Cycle, cycle);
         Assert.Equal(1, primary.OpenCount);
         Assert.Equal(1, fallback.OpenCount);
+        Assert.Equal(
+            Uri.UriSchemeHttps,
+            fallback.LastEndpoint!.Scheme);
     }
 
     [Theory]
@@ -45,7 +49,8 @@ public sealed class RbpPrimaryFallbackConnectionCycleFactoryTests
         RbpGatewayTransportException expected =
             Failure((RbpGatewayFailureKind)kind, openingEligible);
         var primary = new ThrowingFactory(expected);
-        var fallback = new RecordingFactory();
+        var fallback = new RecordingFactory(
+            RbpConnectionBindingKind.StreamableHttpSse);
         var factory = new RbpPrimaryFallbackConnectionCycleFactory(
             primary,
             fallback,
@@ -68,7 +73,8 @@ public sealed class RbpPrimaryFallbackConnectionCycleFactoryTests
     public async Task AnOpenedPrimaryNeverSwitchesInPlace()
     {
         var primary = new RecordingFactory();
-        var fallback = new RecordingFactory();
+        var fallback = new RecordingFactory(
+            RbpConnectionBindingKind.StreamableHttpSse);
         var factory = new RbpPrimaryFallbackConnectionCycleFactory(
             primary,
             fallback,
@@ -100,7 +106,9 @@ public sealed class RbpPrimaryFallbackConnectionCycleFactoryTests
             "fallback");
         var factory = new RbpPrimaryFallbackConnectionCycleFactory(
             new ThrowingFactory(primaryFailure),
-            new ThrowingFactory(fallbackFailure),
+            new ThrowingFactory(
+                fallbackFailure,
+                RbpConnectionBindingKind.StreamableHttpSse),
             new[] { RbpTransportCapabilities.StreamableHttp });
 
         RbpGatewayTransportException actual =
@@ -130,7 +138,8 @@ public sealed class RbpPrimaryFallbackConnectionCycleFactoryTests
             new ThrowingFactory(
                 new RbpGatewayTransportException(
                     RbpGatewayFailureKind.Network,
-                    "fallback")),
+                    "fallback"),
+                RbpConnectionBindingKind.StreamableHttpSse),
             new[] { RbpTransportCapabilities.StreamableHttp });
 
         RbpGatewayTransportException actual =
@@ -190,13 +199,20 @@ public sealed class RbpPrimaryFallbackConnectionCycleFactoryTests
     private sealed class ThrowingFactory : IRbpConnectionCycleFactory
     {
         private readonly Exception _exception;
+        private readonly RbpConnectionBindingKind _bindingKind;
 
-        internal ThrowingFactory(Exception exception)
+        internal ThrowingFactory(
+            Exception exception,
+            RbpConnectionBindingKind bindingKind =
+                RbpConnectionBindingKind.Wss)
         {
             _exception = exception;
+            _bindingKind = bindingKind;
         }
 
         internal int OpenCount { get; private set; }
+
+        public RbpConnectionBindingKind BindingKind => _bindingKind;
 
         public Task<IRbpConnectionCycle> OpenAsync(
             Uri endpoint,
@@ -213,16 +229,29 @@ public sealed class RbpPrimaryFallbackConnectionCycleFactoryTests
 
     private sealed class RecordingFactory : IRbpConnectionCycleFactory
     {
+        private readonly RbpConnectionBindingKind _bindingKind;
+
+        internal RecordingFactory(
+            RbpConnectionBindingKind bindingKind =
+                RbpConnectionBindingKind.Wss)
+        {
+            _bindingKind = bindingKind;
+        }
+
         internal RecordingCycle Cycle { get; } = new();
 
         internal int OpenCount { get; private set; }
+
+        internal Uri? LastEndpoint { get; private set; }
+
+        public RbpConnectionBindingKind BindingKind => _bindingKind;
 
         public Task<IRbpConnectionCycle> OpenAsync(
             Uri endpoint,
             RbpHelloProfile profile,
             CancellationToken cancellationToken = default)
         {
-            _ = endpoint;
+            LastEndpoint = endpoint;
             _ = profile;
             cancellationToken.ThrowIfCancellationRequested();
             OpenCount++;

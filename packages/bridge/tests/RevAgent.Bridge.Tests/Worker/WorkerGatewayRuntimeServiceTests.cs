@@ -305,6 +305,9 @@ public sealed class WorkerGatewayRuntimeServiceTests
 
     private sealed class ParkedRuntimeGate : IRbpConnectionCycleFactory
     {
+        public RbpConnectionBindingKind BindingKind =>
+            RbpConnectionBindingKind.Wss;
+
         public Task<IRbpConnectionCycle> OpenAsync(
             Uri endpoint,
             RbpHelloProfile profile,

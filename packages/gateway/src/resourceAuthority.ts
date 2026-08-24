@@ -247,7 +247,38 @@ export interface StageCarrierChunkInput {
  * that records its carrier acknowledgement.  It is intentionally an internal
  * integration seam, not a north-facing resource operation.
  */
-export type BridgeCarrierCommit = (tx: StoreTransaction) => Promise<void> | void;
+/**
+ * Stage-C callers can decline admission without throwing through the storage
+ * adapter.  This is deliberately a value, rather than an exception: adapters
+ * correctly collapse callback exceptions into generic storage failures, which
+ * would make a revocation abort indistinguishable from durability loss.
+ */
+export type BridgeCarrierCommitResult =
+  | { readonly kind: "committed" }
+  | { readonly kind: "aborted"; readonly reason: "terminal_revoked" };
+
+export const BRIDGE_CARRIER_COMMIT_OK: BridgeCarrierCommitResult = Object.freeze({
+  kind: "committed",
+});
+
+/** A typed, non-retryable result from Tx-C; no north-facing rows committed. */
+export class BridgeCarrierTerminalAborted extends Error {
+  public constructor() {
+    super("carrier terminal admission was revoked before stage C");
+    this.name = "BridgeCarrierTerminalAborted";
+  }
+}
+
+export type BridgeCarrierCommitMode = "activate" | "verify";
+
+export type BridgeCarrierCommit = (
+  tx: StoreTransaction,
+  mode: BridgeCarrierCommitMode,
+) => Promise<void | BridgeCarrierCommitResult> | void | BridgeCarrierCommitResult;
+
+function bridgeCommitAborted(result: void | BridgeCarrierCommitResult): boolean {
+  return result !== undefined && result.kind === "aborted";
+}
 
 export interface BridgeCarrierChunkInput {
   readonly scope: GatewayResourceScope;
@@ -759,8 +790,13 @@ export class GatewayResourceAuthority {
    * and has a non-stub object-store port.  No serving path calls this as a
    * production readiness assertion.
    */
-  public isBridgeCarrierReady(protocolStore: GatewayProtocolStore): boolean {
-    return this.#protocolStore === protocolStore && this.#objectStore.kind !== "unavailable";
+  public isBridgeCarrierReady(
+    protocolStore: GatewayProtocolStore,
+    objectStore?: ObjectStorePort,
+  ): boolean {
+    return this.#protocolStore === protocolStore &&
+      (objectStore === undefined || this.#objectStore === objectStore) &&
+      this.#objectStore.kind !== "unavailable";
   }
 
   /** Durable receipt/ack plus Bridge inbound sequence in one Tx-B commit. */
@@ -1286,7 +1322,7 @@ export class GatewayResourceAuthority {
       const ackKey = carrierAckKey(scope, rsid, String(input.sequence)); const ack = await tx.read(CARRIER_ACK_NAMESPACE, ackKey);
       if (ack === null) tx.stage({ namespace: CARRIER_ACK_NAMESPACE, key: ackKey, value: { schemaVersion: "revagent-gateway-carrier/v1", setId, rsid, invocationId, seq: input.sequence, chunkIdentity: identity, tenantId: scope.tenantId, principalKey: scope.principalKey, effectiveMcpSessionId: scope.mcpSessionId, state: "chunk_durable" } as unknown as GatewayJsonValue, expect: { kind: "absent" } });
       else { const value = ack.value as { setId?: string; invocationId?: string; chunkIdentity?: string; state?: string; tenantId?: string; principalKey?: string; effectiveMcpSessionId?: string }; if (value.setId !== setId || value.invocationId !== invocationId || value.chunkIdentity !== identity || value.state !== "chunk_durable" || value.tenantId !== scope.tenantId || value.principalKey !== scope.principalKey || value.effectiveMcpSessionId !== scope.mcpSessionId) return false; }
-      await commitBridge?.(tx);
+      await commitBridge?.(tx, "activate");
       return true;
     });
     if (!durable.ok || !durable.value) fail("storage_unavailable", "carrier chunk durability acknowledgement was not accepted");
@@ -1364,6 +1400,10 @@ export class GatewayResourceAuthority {
       if (setRow === null) return false;
       const current = setRow.value as unknown as CarrierSetRecord;
       if (current.tenantId !== scope.tenantId || current.principalKey !== scope.principalKey || current.effectiveMcpSessionId !== scope.mcpSessionId || (current.state !== "declared" && current.state !== "active")) return false;
+      // The Bridge admission is the sole revocation-sensitive authority.  It
+      // must run before *any* Stage-C write is staged, so an abort leaves the
+      // set and private receipt objects invisible and GC-safe.
+      if (bridgeCommitAborted(await commitBridge(tx, current.state === "active" ? "verify" : "activate"))) return "aborted" as const;
       const ackKey = carrierAckKey(scope, current.rsid, "terminal");
       const ack = await tx.read<GatewayJsonValue>(CARRIER_ACK_NAMESPACE, ackKey);
       if (ack === null) {
@@ -1372,10 +1412,10 @@ export class GatewayResourceAuthority {
         return false;
       }
       if (current.state === "declared") tx.stage({ namespace: RESOURCE_SET_NAMESPACE, key: setRow.key, value: { ...current, state: "active" } as unknown as GatewayJsonValue, expect: { kind: "version", version: setRow.version } });
-      await commitBridge(tx);
-      return true;
+      return "committed" as const;
     });
-    if (!committed.ok || !committed.value) fail("storage_unavailable", committed.ok ? "chunked result stage C was not accepted" : committed.message);
+    if (committed.ok && committed.value === "aborted") throw new BridgeCarrierTerminalAborted();
+    if (!committed.ok || committed.value !== "committed") fail("storage_unavailable", committed.ok ? "chunked result stage C was not accepted" : committed.message);
     return result;
   }
 
@@ -1509,10 +1549,13 @@ export class GatewayResourceAuthority {
           const record = stored === null ? null : asJsonRecord(stored.value);
           if (record === null || record.kind !== "artifact_ref" || record.lifecycle !== "active" || record.refId !== member.refId || record.storageKey !== member.storageKey || record.digest !== member.digest || record.byteSize !== member.byteSize || record.carrierSetId !== setId) return false;
         }
-        await commitBridge?.(tx);
+        if (commitBridge !== undefined && bridgeCommitAborted(await commitBridge(tx, "verify"))) return null;
         return members.map(({ member }) => this.#carrierRef(scope, member, set.expiresAtMs));
       }
       if (set.state !== "verified" || members.length < 1 || members.some(({ member }) => member.state !== "verified")) return false;
+      // This callback owns the revocation-sensitive session terminal.  Run it
+      // before staging resource activation, terminal ACK, or set visibility.
+      if (commitBridge !== undefined && bridgeCommitAborted(await commitBridge(tx, "activate"))) return null;
       for (const { row, member } of members) {
         const record: ArtifactRecord = { schemaVersion: "revagent-gateway-resource/v1", kind: "artifact_ref", refId: member.refId, actorId: scope.actorId, principalKey: scope.principalKey, mcpSessionId: scope.mcpSessionId, createdAtMs: this.#now(), expiresAtMs: set.expiresAtMs, filename: member.filename, contentType: member.contentType, byteSize: member.byteSize, digest: member.digest, storageKey: member.storageKey, quarantineStatus: "released", source: "rbp_output", invocationId: set.invocationId, artifactIndex: member.memberIndex, carrierSetId: setId, lifecycle: "active" };
         tx.stage({ namespace: RESOURCE_NAMESPACE, key: recordKey(scope, "artifact_ref", member.refId), value: record as unknown as GatewayJsonValue, expect: { kind: "absent" } });
@@ -1522,10 +1565,22 @@ export class GatewayResourceAuthority {
       if (ack === null) tx.stage({ namespace: CARRIER_ACK_NAMESPACE, key: ackKey, value: { schemaVersion: "revagent-gateway-carrier/v1", setId, rsid: set.rsid, invocationId: set.invocationId, seq: "terminal", tenantId: scope.tenantId, principalKey: scope.principalKey, effectiveMcpSessionId: scope.mcpSessionId, state: "terminal_accepted" } as unknown as GatewayJsonValue, expect: { kind: "absent" } });
       else { const value = ack.value as { setId?: string; rsid?: string; invocationId?: string; seq?: string; tenantId?: string; principalKey?: string; effectiveMcpSessionId?: string; state?: string }; if (value.setId !== setId || value.rsid !== set.rsid || value.invocationId !== set.invocationId || value.seq !== "terminal" || value.tenantId !== scope.tenantId || value.principalKey !== scope.principalKey || value.effectiveMcpSessionId !== scope.mcpSessionId || value.state !== "terminal_accepted") return false; }
       tx.stage({ namespace: RESOURCE_SET_NAMESPACE, key: setRow.key, value: { ...set, state: "active" } as unknown as GatewayJsonValue, expect: { kind: "version", version: setRow.version } });
-      await commitBridge?.(tx);
       return members.map(({ member }) => this.#carrierRef(scope, member, set.expiresAtMs));
     });
-    if (activated.ok && activated.value !== false) return Object.freeze(activated.value);
+    if (activated.ok) {
+      if (activated.value === null) throw new BridgeCarrierTerminalAborted();
+      if (activated.value !== false) {
+        const refs: readonly GatewayArtifactRef[] = activated.value;
+        return Object.freeze(refs);
+      }
+    }
+    // A durability-uncertain Tx-C is never recovered from a resource-only
+    // readback: that cannot prove the paired Bridge terminal.  Keep the
+    // invocation fail-closed; only a definitive competing CAS can have a
+    // coherent already-active winner.
+    if (!activated.ok && activated.code !== "conflict") {
+      fail("storage_unavailable", activated.message);
+    }
     // A concurrent identical replay may have won stage C's absent-CAS for
     // every north row.  Re-read only an already-active, fully bound set.
     const winner = await this.#protocolStore.transact({ tenantId: scope.tenantId }, async (tx) => {

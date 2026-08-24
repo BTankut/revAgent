@@ -42,7 +42,8 @@ internal sealed class RbpRoutedInvocationChannel(
             // orchestrator.
             return NotDispatched(
                 "addin_unreachable",
-                "No add-in session is currently routable for this RBP session.");
+                "No add-in session is currently routable for this RBP session.",
+                routeFailure: true);
         }
 
         AddinSessionRouter.InvocationLease lease;
@@ -52,11 +53,18 @@ internal sealed class RbpRoutedInvocationChannel(
                 .InvokeAsync(handle, call, cancellationToken)
                 .ConfigureAwait(false);
         }
-        catch (Exception exception)
+        catch (AddinSessionRouter.RouteException exception)
         {
             // The router refused before dispatch: an invalid or stale handle,
             // an unavailable session, or its own single-flight gate. None of
             // these write an add-in byte.
+            return NotDispatched(
+                exception.FaultClass ?? "addin_unreachable",
+                exception.Message,
+                routeFailure: true);
+        }
+        catch (Exception exception)
+        {
             return NotDispatched("addin_unreachable", exception.Message);
         }
 
@@ -194,7 +202,8 @@ internal sealed class RbpRoutedInvocationChannel(
 
     private static RbpAddinOutcome NotDispatched(
         string faultClass,
-        string message) =>
+        string message,
+        bool routeFailure = false) =>
         new(
             RbpAddinOutcomeKind.KnownNotDispatched,
             default,
@@ -202,7 +211,8 @@ internal sealed class RbpRoutedInvocationChannel(
             RequestBytes: 0,
             ResponseBytes: 0,
             FaultClass: faultClass,
-            Message: message);
+            Message: message,
+            RouteFailure: routeFailure);
 
     /// <summary>
     /// Reads the add-in's guard signal. Section 10.3 keeps a guarded answer a
@@ -263,4 +273,15 @@ internal sealed class RbpRoutedInvocationChannel(
 internal interface IRbpSessionRouteResolver
 {
     AddinSessionRouter.SessionHandle? Resolve(string rsid);
+}
+
+/// <summary>
+/// Publishes a just-attested local add-in session as the only route for a
+/// Gateway-issued RBP session id. This is deliberately synchronous: the
+/// registration control path must either make the route available before it
+/// arms follow-on work, or fail the connection without dispatching anything.
+/// </summary>
+internal interface IRbpSessionRouteBindingAuthority
+{
+    bool TryBindRegisteredSession(string rsid, string localSessionKey);
 }

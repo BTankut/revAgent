@@ -266,6 +266,10 @@ internal sealed partial class RbpJournalStore
         {
             RequireSha256(terminal.ResultDigest, nameof(terminal));
         }
+        if (terminal.CarrierPlan is not null)
+        {
+            ValidateCarrierPlan(terminal.CarrierPlan);
+        }
 
         // An indeterminate mutation carries no caller-supplied body: the store
         // mints it below, together with the hold it must reference.
@@ -275,6 +279,16 @@ internal sealed partial class RbpJournalStore
         string outcomeJson = storeMintsOutcome
             ? string.Empty
             : Rfc8785Json.Canonicalize(terminal.Outcome);
+        if (terminal.CarrierPlan is { } suppliedPlan &&
+            !string.Equals(
+                Rfc8785Json.Canonicalize(suppliedPlan.TerminalPayload),
+                outcomeJson,
+                StringComparison.Ordinal))
+        {
+            throw new RbpJournalException(
+                RbpJournalErrorCode.IntegrityCheckFailed,
+                "Carrier plan terminal disagrees with its durable outcome.");
+        }
         string? resultDigest = terminal.ResultDigest;
         long now = NowMilliseconds();
         return ExecuteImmediateAsync<string?>(
@@ -307,6 +321,11 @@ internal sealed partial class RbpJournalStore
                         "A terminal invocation outcome is immutable.");
                 }
 
+                if (terminal.CarrierPlan is { } carrierPlan)
+                {
+                    InsertCarrierPlan(context, idempotencyKey, carrierPlan, now);
+                }
+
                 string? holdId = null;
                 if (terminal.State == RbpInvocationState.Indeterminate &&
                     existing.Identity.Mutating)
@@ -336,6 +355,7 @@ internal sealed partial class RbpJournalStore
                         result_digest=$digest,
                         verification_hold_id=
                           COALESCE($hold,verification_hold_id),
+                        carrier_plan_id=$carrier_plan_id,
                         finished_at_ms=$now
                     WHERE idempotency_key=$key
                       AND state IN ('received','executing');
@@ -350,6 +370,9 @@ internal sealed partial class RbpJournalStore
                 update.Parameters.AddWithValue(
                     "$hold",
                     (object?)holdId ?? DBNull.Value);
+                update.Parameters.AddWithValue(
+                    "$carrier_plan_id",
+                    (object?)terminal.CarrierPlan?.PlanId ?? DBNull.Value);
                 update.Parameters.AddWithValue("$now", now);
                 update.Parameters.AddWithValue("$key", idempotencyKey);
                 if (update.ExecuteNonQuery() != 1)
@@ -364,6 +387,77 @@ internal sealed partial class RbpJournalStore
             },
             cancellationToken);
     }
+
+    private static void ValidateCarrierPlan(RbpCarrierPlan plan)
+    {
+        RequireSha256(plan.PlanId, nameof(plan));
+        RequireSha256(plan.PrefixDigest, nameof(plan));
+        RequireSha256(plan.TerminalDigest, nameof(plan));
+        if (plan.CarrierKey.Length != 64 || plan.CarrierKey.Any(value =>
+                !Uri.IsHexDigit(value) || char.IsUpper(value)))
+        {
+            throw new ArgumentException("Carrier plan key is malformed.", nameof(plan));
+        }
+        if (plan.OrderedPrefixes.Count == 0 ||
+            plan.OrderedPrefixes.Any(frame =>
+                !string.Equals(frame.Type, "partial", StringComparison.Ordinal) ||
+                frame.Payload.ValueKind is JsonValueKind.Undefined))
+        {
+            throw new ArgumentException("Carrier plan frames are malformed.", nameof(plan));
+        }
+        if (plan.TerminalPayload.ValueKind is JsonValueKind.Undefined)
+        {
+            throw new ArgumentException("Carrier plan terminal is missing.", nameof(plan));
+        }
+    }
+
+    private static void InsertCarrierPlan(
+        RbpJournalWriteContext context,
+        string idempotencyKey,
+        RbpCarrierPlan plan,
+        long now)
+    {
+        JsonElement prefixes = JsonSerializer.SerializeToElement(
+            plan.OrderedPrefixes.Select(frame => new
+            {
+                type = frame.Type,
+                payload = frame.Payload,
+            }));
+        string prefixesJcs = prefixes.GetRawText();
+        string terminalJcs = plan.TerminalPayload.GetRawText();
+        if (!string.Equals(RawJsonDigest(prefixesJcs), plan.PrefixDigest,
+                StringComparison.Ordinal) ||
+            !string.Equals(RawJsonDigest(terminalJcs),
+                plan.TerminalDigest, StringComparison.Ordinal))
+        {
+            throw new RbpJournalException(RbpJournalErrorCode.IntegrityCheckFailed,
+                "Carrier plan digest does not cover its durable material.");
+        }
+        using SqliteCommand insert = context.CreateCommand("""
+            INSERT INTO rbp_carrier_plans(
+              plan_id,idempotency_key,carrier_key,prefixes_jcs,prefix_digest,
+              terminal_jcs,terminal_digest,created_at_ms
+            ) VALUES($plan_id,$key,$carrier_key,$prefixes,$prefix_digest,
+              $terminal,$terminal_digest,$now);
+            """);
+        insert.Parameters.AddWithValue("$plan_id", plan.PlanId);
+        insert.Parameters.AddWithValue("$key", idempotencyKey);
+        insert.Parameters.AddWithValue("$carrier_key", plan.CarrierKey);
+        insert.Parameters.AddWithValue("$prefixes", prefixesJcs);
+        insert.Parameters.AddWithValue("$prefix_digest", plan.PrefixDigest);
+        insert.Parameters.AddWithValue("$terminal", terminalJcs);
+        insert.Parameters.AddWithValue("$terminal_digest", plan.TerminalDigest);
+        insert.Parameters.AddWithValue("$now", now);
+        if (insert.ExecuteNonQuery() != 1)
+        {
+            throw new RbpJournalException(RbpJournalErrorCode.IntegrityCheckFailed,
+                "Carrier plan could not be persisted before its terminal.");
+        }
+    }
+
+    private static string RawJsonDigest(string json) => "sha256:" +
+        Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+            System.Text.Encoding.UTF8.GetBytes(json))).ToLowerInvariant();
 
     /// <summary>
     /// Reads a durable invocation row by canonical key, for answer-from-journal

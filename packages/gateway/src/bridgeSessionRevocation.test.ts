@@ -26,6 +26,7 @@ import {
   type BridgeConnectionChannel,
 } from "./bridgeSession.js";
 import { gatewayUuidV7 } from "./identifiers.js";
+import { createEffectiveMcpRequestScopeV1 } from "./invocationContext.js";
 import {
   createPreProductionIdentityAuthority,
   type PreProductionDeviceRevocation,
@@ -688,12 +689,13 @@ async function openAndRegister(input: {
   readonly deviceId: string;
   readonly deviceToken: string;
   readonly fingerprint: string;
+  readonly channel?: CapturingChannel;
 }): Promise<{
   readonly connectionId: string;
   readonly channel: CapturingChannel;
   readonly registered: SessionRegisteredEnvelope;
 }> {
-  const openedChannel = channel();
+  const openedChannel = input.channel ?? channel();
   const opened = await input.authority.openConnection({
     deviceToken: input.deviceToken,
     binding: "wss",
@@ -720,6 +722,12 @@ function executorRequest(
 ): GatewayExecutorRequest {
   const args: GatewayJsonObject = { probe: "wp06-terminal" };
   const invocationId = id();
+  const effectiveMcpRequestScope = createEffectiveMcpRequestScopeV1({
+    principalKey: `${TENANT_A}:${userId}`,
+    transportMcpSessionId: "mcp-wp06",
+    identityMcpSessionId: null,
+    nowMs: Date.now(),
+  });
   return {
     toolName: "core.get_status",
     toolVersion: "1.0.0",
@@ -735,6 +743,7 @@ function executorRequest(
       gatewaySessionId: "gateway-wp06",
       oauthClientId: "oauth-wp06",
       mcpSessionId: "mcp-wp06",
+      effectiveMcpRequestScope,
       rsid,
       toolName: "core.get_status",
       toolVersion: "1.0.0",
@@ -1375,11 +1384,20 @@ describe("WP-06 Gateway identity composition and active revocation", () => {
       deviceToken: multi.tokens.get(DEVICE_A)!,
       fingerprint: FINGERPRINT_A,
     });
+    const invokeSent = deferred<Extract<RbpEnvelope, { type: "invoke" }>>();
+    const channelB = channel();
+    const sendB = channelB.send.bind(channelB);
+    channelB.send = async (serialized): Promise<void> => {
+      await sendB(serialized);
+      const frame = channelB.frames.at(-1);
+      if (frame?.type === "invoke") invokeSent.resolve(frame);
+    };
     const sessionB = await openAndRegister({
       authority,
       deviceId: DEVICE_B,
       deviceToken: multi.tokens.get(DEVICE_B)!,
       fingerprint: FINGERPRINT_B,
+      channel: channelB,
     });
     const request = executorRequest(sessionB.registered.payload.rsid, USER_B);
     const gate = gated.holdAfterCommit(
@@ -1396,20 +1414,15 @@ describe("WP-06 Gateway identity composition and active revocation", () => {
     await gate.entered;
     const revokedA = multi.identity.revokeDevice(DEVICE_A);
     if (!revokedA.ok) throw new Error(revokedA.message);
-    await bounded(
-      authority.revokeIdentityAuthority(
-        deviceRevocationScope(revokedA.value, SEAT_A),
-      ),
-      "device A revoke during device B dispatch",
+    const revocation = authority.revokeIdentityAuthority(
+      deviceRevocationScope(revokedA.value, SEAT_A),
     );
-    gate.release();
-    while (!sessionB.channel.frames.some((frame) => frame.type === "invoke")) {
-      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    try {
+      await waitForOutboundFence(authority, sessionA.connectionId);
+    } finally {
+      gate.release();
     }
-    const invoke = sessionB.channel.frames.find(
-      (frame): frame is Extract<RbpEnvelope, { type: "invoke" }> =>
-        frame.type === "invoke",
-    )!;
+    const invoke = await bounded(invokeSent.promise, "device B invoke after A fence");
     await authority.receive(
       sessionB.connectionId,
       terminalResult({
@@ -1422,6 +1435,7 @@ describe("WP-06 Gateway identity composition and active revocation", () => {
       state: "completed",
       result: { retained: true },
     });
+    await bounded(revocation, "device A revoke during device B dispatch");
     expect(sessionB.channel.closes).toEqual([]);
     expect(
       fixture.snapshot().records.some(
@@ -2978,12 +2992,13 @@ describe("WP-06 Gateway identity composition and active revocation", () => {
     const revocation = authority.revokeIdentityAuthority(
       deviceRevocationScope(revoked.value, SEAT_A),
     );
-    await waitForOutboundFence(authority, session.connectionId);
-    gate.release();
-    const [executionResult, revokeResult] = await bounded(
-      Promise.all([execution, revocation]),
-      "dispatch versus revoke",
-    );
+    try {
+      await waitForOutboundFence(authority, session.connectionId);
+    } finally {
+      gate.release();
+    }
+    const executionResult = await bounded(execution, "dispatch cancellation after revoke");
+    const revokeResult = await bounded(revocation, "dispatch revoke completion");
     expect(executionResult).toMatchObject({
       state: "failed",
       error: { code: "executor_unavailable" },
@@ -3114,13 +3129,15 @@ describe("WP-06 Gateway identity composition and active revocation", () => {
       fingerprint: FINGERPRINT_A,
     });
     const request = executorRequest(session.registered.payload.rsid);
+    const invokeSent = deferred<Extract<RbpEnvelope, { type: "invoke" }>>();
+    const send = session.channel.send.bind(session.channel);
+    session.channel.send = async (serialized): Promise<void> => {
+      await send(serialized);
+      const frame = session.channel.frames.at(-1);
+      if (frame?.type === "invoke") invokeSent.resolve(frame);
+    };
     const execution = authority.execute(request);
-    await new Promise<void>((resolve) => setTimeout(resolve, 0));
-    const invoke = session.channel.frames.find(
-      (frame): frame is Extract<RbpEnvelope, { type: "invoke" }> =>
-        frame.type === "invoke",
-    );
-    if (invoke === undefined) throw new Error("invoke was not emitted");
+    const invoke = await bounded(invokeSent.promise, "terminal delivery invoke");
     holdTerminalReadback = true;
     const terminalReceive = authority.receive(
       session.connectionId,
@@ -3135,15 +3152,11 @@ describe("WP-06 Gateway identity composition and active revocation", () => {
     tenant.generation += 1;
     tenant.cursorBlocked = true;
     const revocation = authority.synchronizeIdentityRevocations(TENANT_A);
-    while (true) {
-      try {
-        authority.assertConnectionOutbound(session.connectionId);
-        await new Promise<void>((resolve) => setTimeout(resolve, 0));
-      } catch {
-        break;
-      }
+    try {
+      await waitForOutboundFence(authority, session.connectionId);
+    } finally {
+      releaseTerminalReadback.resolve();
     }
-    releaseTerminalReadback.resolve();
     await terminalReceive;
     await revocation;
     await expect(execution).resolves.toMatchObject({
@@ -3189,6 +3202,8 @@ describe("WP-06 Gateway identity composition and active revocation", () => {
         errorCode: null,
         payloadRetained: true,
       },
+      terminalDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u),
+      terminalCarrierDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u),
     });
     expect(root.childRefs).toEqual(
       expect.arrayContaining([

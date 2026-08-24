@@ -8,6 +8,7 @@ import {
 import {
   createReceivedJournalRecord,
   dataEnvelopeImmutableDigest,
+  makeParamsDigest,
   RBP_MAX_DECODED_CHUNK_BYTES,
   RBP_MAX_INLINE_RESULT_BYTES,
   RBP_MAX_INVOCATION_PARAMS_BYTES,
@@ -28,17 +29,21 @@ import {
   GatewayBridgeSessionAuthority,
   GatewayRbpFault,
   type BridgeConnectionChannel,
+  type DispatchTransportHandoff,
 } from "./bridgeSession.js";
 import type {
   GatewayExecutorRequest,
   GatewayJsonObject,
 } from "./dispatch.js";
 import { gatewayUuidV7 } from "./identifiers.js";
+import { createEffectiveMcpRequestScopeV1 } from "./invocationContext.js";
 import type { GatewayRecoveryPendingDispatch } from "./recoveryAuthority.js";
 import {
   RBP_OPENING_REFUSAL_OBSERVER_CONTRACT,
+  RBP_HTTP_SSE_DELIVERY_OBSERVATION_CONTRACT,
   RBP_WSS_INTERNAL_DIAGNOSTIC_CONTRACT,
   createProductionRbpIngressHost,
+  type RbpHttpSseDeliveryObservation,
   type RbpOpeningRefusalObservation,
   type RbpWssInternalDiagnostic,
 } from "./rbpIngress.js";
@@ -166,6 +171,12 @@ function request(
   const method = options.method ?? "get_revit_mcp_status";
   const toolName = options.toolName ?? "core.get_revit_status";
   const mutating = options.mutating ?? false;
+  const effectiveMcpRequestScope = createEffectiveMcpRequestScopeV1({
+    principalKey: "tenant-gw12:user-gw12",
+    transportMcpSessionId: "mcp-session-gw12",
+    identityMcpSessionId: null,
+    nowMs: Date.now(),
+  });
   return {
     toolName,
     toolVersion: "1.0.0",
@@ -181,6 +192,7 @@ function request(
       gatewaySessionId: "gateway-session-gw12",
       oauthClientId: "oauth-client-gw12",
       mcpSessionId: "mcp-session-gw12",
+      effectiveMcpRequestScope,
       rsid,
       toolName,
       toolVersion: "1.0.0",
@@ -192,7 +204,7 @@ function request(
       mutating,
       executor: "bridge",
       documentIdentity: { kind: "live", session_document_id: "doc-gw12" },
-      paramsDigest: `sha256:${"1".repeat(64)}`,
+      paramsDigest: makeParamsDigest(args as unknown as Parameters<typeof makeParamsDigest>[0]),
       mutationScope: mutating ? { kind: "session" } : null,
       startedAtMs: Date.now(),
     },
@@ -1072,6 +1084,233 @@ describe("GW-12 production RBP ingress", () => {
     expect(closed).toMatchObject({ code: 1013, reason: "RBP application egress overloaded" });
     expect(held.callbacks).toHaveLength(0);
     held.restore();
+  });
+
+  it("routes a WSS dispatch overload through one shared pre-start cleanup", async () => {
+    const restartable = createRestartableTestStore();
+    const activeIdentity = identity();
+    const authority = new GatewayBridgeSessionAuthority(restartable.store, activeIdentity);
+    let channel!: BridgeConnectionChannel;
+    const originalOpen = authority.openConnection.bind(authority);
+    vi.spyOn(authority, "openConnection").mockImplementation(async (input) => {
+      channel = input.channel;
+      return originalOpen(input);
+    });
+    const accepted = captureNextServerSocket();
+    const server = await startGatewayServer({
+      config,
+      ports: {
+        ...createFailClosedPorts(),
+        identity: activeIdentity,
+        protocolStore: restartable.store,
+        rbpIngress: createProductionRbpIngressHost({
+          authority,
+          wssEgress: { queuedFrames: 1, sendCompletionTimeoutMs: 100 },
+        }),
+      },
+    });
+    handles.push(server);
+    const client = await openRawWss(server.port);
+    const serverSocket = await accepted.promise;
+    client.socket.send(JSON.stringify(hello()));
+    await vi.waitFor(() => expect(client.messages[0]?.type).toBe("hello_ack"));
+    const held = holdWebSocketSendCallbacks(serverSocket);
+    const occupying = channel.send(JSON.stringify({ occupying: true }));
+    await vi.waitFor(() => expect(held.callbacks).toHaveLength(1));
+    const cancelBeforeStart = vi.fn(async (): Promise<boolean> => true);
+    const handoff: DispatchTransportHandoff = {
+      revalidate: vi.fn(async (): Promise<void> => undefined),
+      cancelBeforeStart,
+    };
+    if (channel.sendDispatchStarted === undefined) {
+      throw new Error("production WSS channel lacks dispatch-start carrier");
+    }
+    const sendsBeforeOverload = vi.mocked(serverSocket.send).mock.calls.length;
+    const overloaded = channel.sendDispatchStarted(
+      JSON.stringify({ reserved: "must-not-send" }),
+      handoff,
+    );
+    await expect(overloaded.started).rejects.toThrow("application egress queue overloaded");
+    await expect(overloaded.completion).rejects.toThrow("application egress queue overloaded");
+    await expect(Promise.all([overloaded.cancel(), overloaded.cancel()]))
+      .resolves.toStrictEqual([true, true]);
+    expect(cancelBeforeStart).toHaveBeenCalledTimes(1);
+    expect(handoff.revalidate).not.toHaveBeenCalled();
+    expect(vi.mocked(serverSocket.send).mock.calls).toHaveLength(sendsBeforeOverload);
+    held.callbacks.shift()!();
+    await occupying.catch(() => undefined);
+    const closed = await client.closed;
+    expect(closed).toMatchObject({ code: 1013, reason: "RBP application egress overloaded" });
+    held.restore();
+  });
+
+  it("records an exact no-send cancellation when a real WSS dispatch loses a capacity-one race", async () => {
+    const restartable = createRestartableTestStore();
+    const phaseOneCommitted = deferred();
+    const releasePhaseOne = deferred();
+    const originalTransact = restartable.store.transact.bind(restartable.store);
+    let heldPhaseOne = false;
+    vi.spyOn(restartable.store, "transact").mockImplementation((async (...args) => {
+      const outcome = await originalTransact(...args);
+      if (!heldPhaseOne && JSON.stringify(restartable.snapshot().records).includes("cancellation_pending")) {
+        heldPhaseOne = true;
+        phaseOneCommitted.resolve();
+        await releasePhaseOne.promise;
+      }
+      return outcome;
+    }) as typeof restartable.store.transact);
+    const activeIdentity = identity();
+    const authority = new GatewayBridgeSessionAuthority(restartable.store, activeIdentity);
+    let channel!: BridgeConnectionChannel;
+    const originalOpen = authority.openConnection.bind(authority);
+    vi.spyOn(authority, "openConnection").mockImplementation(async (input) => {
+      channel = input.channel;
+      return originalOpen(input);
+    });
+    const accepted = captureNextServerSocket();
+    const server = await startGatewayServer({
+      config,
+      ports: {
+        ...createFailClosedPorts(),
+        identity: activeIdentity,
+        protocolStore: restartable.store,
+        rbpIngress: createProductionRbpIngressHost({
+          authority,
+          wssEgress: { queuedFrames: 1, sendCompletionTimeoutMs: 500 },
+        }),
+      },
+    });
+    handles.push(server);
+    const client = await openRawWss(server.port);
+    const serverSocket = await accepted.promise;
+    client.socket.send(JSON.stringify(hello()));
+    await vi.waitFor(() => expect(client.messages[0]?.type).toBe("hello_ack"));
+    client.socket.send(JSON.stringify(registration()));
+    await vi.waitFor(() => expect(client.messages.some((frame) => frame.type === "session_registered")).toBe(true));
+    const registered = client.messages.find(
+      (frame): frame is SessionRegisteredEnvelope => frame.type === "session_registered",
+    );
+    if (registered === undefined) throw new Error("WSS registration evidence unavailable");
+
+    const held = holdWebSocketSendCallbacks(serverSocket);
+    try {
+      const occupying = channel.send(JSON.stringify({ occupying: true }));
+      // The real overload closes the carrier synchronously; observe this
+      // transport promise now so its expected teardown rejection is not an
+      // unhandled process event while durable cancellation is still settling.
+      void occupying.catch(() => undefined);
+      await vi.waitFor(() => expect(held.callbacks).toHaveLength(1));
+      const sendsBeforeDispatch = vi.mocked(serverSocket.send).mock.calls.length;
+      const invocation = request(registered.payload.rsid, { mutating: true });
+      const executor = authority.createExecutor();
+      const draft = executor.buildMutationDispatch!(invocation);
+      const envelope = draft.envelope as Extract<RbpEnvelope, { type: "invoke" }>;
+      const journal = createReceivedJournalRecord(draft.expected.bindings[0]!);
+      const prepared: GatewayRecoveryPendingDispatch = {
+        kind: "mutation",
+        envelope,
+        envelopeDigest: dataEnvelopeImmutableDigest(envelope as DataEnvelopeSnapshot),
+        gatewaySequence: envelope.seq,
+        sessionBindingId: draft.sessionBindingId,
+        preparedConnectionId: draft.connectionId,
+        authorizedSessionVersion: 1,
+        requiredSessionCapabilities: [],
+        mutationEntries: [{
+          invocationId: invocation.context.invocationId,
+          idempotencyKey: invocation.context.idempotencyKey,
+          mutationScope: { kind: "session" },
+          journalBindingDigest: journal.bindingDigest,
+        }],
+        journalRecords: [journal],
+        journalAttestation: null,
+        batchTerminal: null,
+        recoveryHoldIds: [],
+        recoveryClearances: [],
+        verificationHoldId: null,
+        originRedelivery: false,
+        bridgeAcceptance: null,
+        preparedAtMs: Date.now(),
+      };
+
+      const cancellation = executor.executePreparedMutation!(invocation, prepared);
+      await phaseOneCommitted.promise;
+      // Phase one is durably visible before the controlled adapter allows
+      // phase two to mint the exact no-send receipt and clear the lease.
+      const phaseOne = JSON.stringify(restartable.snapshot().records);
+      expect(phaseOne).toContain("cancellation_pending");
+      expect(phaseOne).toContain("reserved");
+      releasePhaseOne.resolve();
+      await expect(cancellation).resolves.toMatchObject({
+        state: "failed",
+        error: { code: "executor_unavailable" },
+      });
+      // The capacity-one carrier rejected before its transport invocation
+      // boundary; only the occupying real websocket.send is observable.
+      expect(vi.mocked(serverSocket.send).mock.calls).toHaveLength(sendsBeforeDispatch);
+      // The caller's bounded cancellation observation is not semantic
+      // settlement. Phase two owns the durable receipt, while the public
+      // executor keeps its frozen unavailable/failed journal mapping.
+      await vi.waitFor(() => {
+        const durable = JSON.stringify(restartable.snapshot().records);
+        expect(durable).toContain("gateway.dispatch-no-send/v1");
+        expect(durable).toContain('"transportStarted":false');
+        expect(durable).toContain('"state":"failed"');
+        expect(durable).toContain("addin_unreachable");
+        expect(durable).not.toContain("cancellation_pending");
+        expect(durable).not.toContain('"phase":"reserved"');
+      });
+
+      held.callbacks.shift()!();
+      await occupying.catch(() => undefined);
+      await expect(client.closed).resolves.toMatchObject({ code: 1013 });
+      await vi.waitFor(() => {
+        const settled = JSON.stringify(restartable.snapshot().records);
+        expect(settled).not.toContain("cancellation_pending");
+        expect(settled).toContain("gateway.dispatch-no-send/v1");
+        expect(settled).toContain('"transportStarted":false');
+        expect(settled).toContain('"state":"failed"');
+        expect(settled).toContain("addin_unreachable");
+      });
+      await authority.close();
+      const restarted = new GatewayBridgeSessionAuthority(restartable.restart(), activeIdentity);
+      await restarted.open();
+      try {
+        const resumedFrames: RbpEnvelope[] = [];
+        const resumed = await restarted.openConnection({
+          deviceToken: "device-token",
+          binding: "wss",
+          hello: hello(),
+          channel: {
+            async send(serialized) {
+              resumedFrames.push(JSON.parse(serialized) as RbpEnvelope);
+            },
+            async close() {},
+          },
+        });
+        await restarted.receive(resumed.connectionId, {
+          v: 1,
+          type: "session_resume",
+          id: id(),
+          ts: new Date().toISOString(),
+          payload: {
+            rsid: registered.payload.rsid,
+            resume_token: registered.payload.resume_token,
+            last_rx_seq: 0,
+          },
+        });
+        // The no-send receipt proves the original transport was never invoked,
+        // but the frozen failed/addin_unreachable journal remains recoverable;
+        // restart therefore retransmits the still-unacknowledged invoke.
+        expect(resumedFrames.map((frame) => frame.type)).toStrictEqual(["resume_ack", "invoke"]);
+      } finally {
+        await restarted.close();
+      }
+    } finally {
+      releasePhaseOne.resolve();
+      while (held.callbacks.length > 0) held.callbacks.shift()!();
+      held.restore();
+      if (client.socket.readyState !== WebSocket.CLOSED) client.socket.terminate();
+    }
   });
 
   it("bounds concurrent application egress bytes at exact F and rejects plus one", async () => {
@@ -2064,6 +2303,94 @@ describe("GW-12 production RBP ingress", () => {
     });
   }
 
+  it("delivers the exact HTTP/SSE session_registered frame before the lifecycle POST settles", async () => {
+    const restartable = createRestartableTestStore();
+    const activeIdentity = identity(undefined, {
+      grantedConnectionCapabilities: ["transport_streamable_http"],
+    });
+    const authority = new GatewayBridgeSessionAuthority(restartable.store, activeIdentity);
+    const delivery: RbpHttpSseDeliveryObservation[] = [];
+    const server = await startGatewayServer({
+      config,
+      ports: {
+        ...createFailClosedPorts(),
+        identity: activeIdentity,
+        protocolStore: restartable.store,
+        rbpIngress: createProductionRbpIngressHost({
+          authority,
+          onHttpSseDeliveryObservation: (observation) => delivery.push(observation),
+        }),
+      },
+    });
+    handles.push(server);
+    const baseUrl = `http://127.0.0.1:${String(server.port)}`;
+    const headers = {
+      Authorization: "Bearer device-token",
+      Accept: "application/json",
+      "Content-Type": "application/json",
+      "X-RBP-Versions": "1",
+    };
+    const created = await fetch(`${baseUrl}/bridge/v1/http/connections`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(hello()),
+    });
+    expect(created.status).toBe(201);
+    const connectionId = created.headers.get("RBP-Connection-Id");
+    if (connectionId === null) throw new Error("HTTP create omitted connection id");
+    const events = await fetch(
+      `${baseUrl}/bridge/v1/http/connections/${encodeURIComponent(connectionId)}/events`,
+      { headers: { Authorization: headers.Authorization, Accept: "text/event-stream" } },
+    );
+    expect(events.status).toBe(200);
+    if (events.body === null) throw new Error("SSE response omitted its body");
+    const reader = events.body.getReader();
+    const lifecyclePost = fetch(
+      `${baseUrl}/bridge/v1/http/connections/${encodeURIComponent(connectionId)}/messages`,
+      { method: "POST", headers, body: JSON.stringify(registration()) },
+    );
+    const deadline = Date.now() + 2_000;
+    const decoder = new TextDecoder();
+    let frame = "";
+    while (!frame.includes("\n\n")) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) throw new Error("session_registered SSE frame missed lifecycle deadline");
+      const next = await Promise.race([
+        reader.read(),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error("session_registered SSE frame missed lifecycle deadline")), remaining),
+        ),
+      ]);
+      expect(next.done).toBe(false);
+      frame += decoder.decode(next.value, { stream: true });
+    }
+    frame = frame.slice(0, frame.indexOf("\n\n") + 2);
+    expect(frame).toMatch(/^event: rbp\ndata: \{.+\}\n\n$/u);
+    expect(JSON.parse(frame.slice("event: rbp\ndata: ".length).trim()) as RbpEnvelope)
+      .toMatchObject({ type: "session_registered" });
+    expect((await lifecyclePost).status).toBe(202);
+    expect(delivery).toContainEqual(expect.objectContaining({
+      contractVersion: RBP_HTTP_SSE_DELIVERY_OBSERVATION_CONTRACT,
+      connectionId,
+      frame: "rbp",
+      action: "write_callback",
+      reason: "none",
+    }));
+    expect(delivery).toContainEqual(expect.objectContaining({
+      connectionId,
+      action: "flush",
+      state: "sse_attached",
+    }));
+    for (const observation of delivery) {
+      expect(Object.keys(observation).sort()).toEqual([
+        "action", "connectionId", "contractVersion", "event", "frame", "reason", "state", "timestamp",
+      ]);
+      expect(JSON.stringify(observation)).not.toContain("device-token");
+      expect(JSON.stringify(observation)).not.toContain("session_registered");
+    }
+    await reader.cancel();
+  });
+
   it("closes and removes an active HTTP/SSE binding on identity revoke, then returns 410", async () => {
     const restartable = createRestartableTestStore();
     let revoked = false;
@@ -2331,7 +2658,7 @@ describe("GW-12 production RBP ingress", () => {
     await expect(create()).resolves.toMatchObject({ status: 201 });
   });
 
-  it("disposes registered no-SSE overflow immediately and contains later terminal paths", async () => {
+  it("applies the internal HTTP/SSE test queue limit, disposes overflow, and contains later terminal paths", async () => {
     const restartable = createRestartableTestStore();
     const activeIdentity = identity(undefined, {
       grantedConnectionCapabilities: ["transport_streamable_http"],
@@ -2344,7 +2671,10 @@ describe("GW-12 production RBP ingress", () => {
       return await originalOpen(input);
     });
     const detach = vi.spyOn(authority, "detach");
-    const ingress = createProductionRbpIngressHost({ authority });
+    const ingress = createProductionRbpIngressHost({
+      authority,
+      httpSseEgress: { queuedFrames: 1, queuedBytes: 1_024 },
+    });
     const server = await startGatewayServer({
       config,
       ports: {
@@ -2377,7 +2707,7 @@ describe("GW-12 production RBP ingress", () => {
         body: JSON.stringify(registration()),
       }),
     ).resolves.toMatchObject({ status: 202 });
-    await expect((channel as unknown as BridgeConnectionChannel).send("x".repeat(1024 * 1024 + 1))).rejects.toThrow(
+    await expect((channel as unknown as BridgeConnectionChannel).send("x".repeat(1_025))).rejects.toThrow(
       "SSE attach backlog exceeds the bounded transport window",
     );
     await vi.waitFor(() => expect(detach).toHaveBeenCalledTimes(1));
@@ -2947,103 +3277,151 @@ describe("GW-12 production RBP ingress", () => {
     await authority.close();
   });
 
-  it("exposes only committed bridge acceptance and terminal journal evidence", async () => {
-    const restartable = createRestartableTestStore();
-    const authority = new GatewayBridgeSessionAuthority(restartable.store, identity());
-    await authority.open();
-    const sent: RbpEnvelope[] = [];
-    const opening = await authority.openConnection({
-      deviceToken: "device-token",
-      binding: "wss",
-      hello: hello(),
-      channel: {
-        async send(serialized) {
-          sent.push(JSON.parse(serialized) as RbpEnvelope);
+  it.each(["wss", "http_sse"] as const)(
+    "exposes only committed bridge acceptance and terminal journal evidence over %s",
+    async (kind) => {
+      const restartable = createRestartableTestStore();
+      const activeIdentity = identity(undefined, {
+        grantedConnectionCapabilities: ["transport_streamable_http"],
+      });
+      const authority = new GatewayBridgeSessionAuthority(restartable.store, activeIdentity);
+      const server = await startGatewayServer({
+        config,
+        ports: {
+          ...createFailClosedPorts(),
+          identity: activeIdentity,
+          protocolStore: restartable.store,
+          rbpIngress: createProductionRbpIngressHost({ authority }),
         },
-        async close() {},
-      },
-    });
-    await authority.receive(opening.connectionId, registration());
-    const registered = sent.pop() as SessionRegisteredEnvelope;
-    const invocation = request(registered.payload.rsid, { mutating: true });
-    const executor = authority.createExecutor();
-    const draft = executor.buildMutationDispatch!(invocation);
-    const envelope = draft.envelope as Extract<RbpEnvelope, { type: "invoke" }>;
-    const journal = createReceivedJournalRecord(draft.expected.bindings[0]!);
-    const envelopeDigest = dataEnvelopeImmutableDigest(
-      envelope as DataEnvelopeSnapshot,
-    );
-    const prepared: GatewayRecoveryPendingDispatch = {
-      kind: "mutation",
-      envelope,
-      envelopeDigest,
-      gatewaySequence: envelope.seq,
-      sessionBindingId: draft.sessionBindingId,
-      preparedConnectionId: draft.connectionId,
-      authorizedSessionVersion: 1,
-      requiredSessionCapabilities: [],
-      mutationEntries: [
-        {
+      });
+      handles.push(server);
+      const binding: GatewayBinding =
+        kind === "wss"
+          ? new WssGatewayBinding({
+              baseUrl: `ws://127.0.0.1:${String(server.port)}/bridge/v1`,
+              deviceToken: "device-token",
+              endpointPolicy: "loopback_test_readiness",
+            })
+          : new HttpSseGatewayBinding({
+              baseUrl: `http://127.0.0.1:${String(server.port)}/bridge/v1/http/connections`,
+              deviceToken: "device-token",
+              endpointPolicy: "loopback_test_readiness",
+            });
+      bindings.push(binding);
+
+      await binding.open(hello());
+      await binding.send(registration());
+      const registered = (await next(binding)) as SessionRegisteredEnvelope;
+      const invocation = request(registered.payload.rsid, { mutating: true });
+      const executor = authority.createExecutor();
+      const draft = executor.buildMutationDispatch!(invocation);
+      const envelope = draft.envelope as Extract<RbpEnvelope, { type: "invoke" }>;
+      const journal = createReceivedJournalRecord(draft.expected.bindings[0]!);
+      const envelopeDigest = dataEnvelopeImmutableDigest(envelope as DataEnvelopeSnapshot);
+      const expected = {
+        rsid: registered.payload.rsid,
+        sessionBindingId: draft.sessionBindingId,
+        gatewaySequence: envelope.seq,
+        envelopeDigest,
+        invocationBindings: [{
+          idempotencyKey: invocation.context.idempotencyKey,
+          bindingDigest: journal.bindingDigest,
+        }],
+      } as const;
+      const prepared: GatewayRecoveryPendingDispatch = {
+        kind: "mutation",
+        envelope,
+        envelopeDigest,
+        gatewaySequence: envelope.seq,
+        sessionBindingId: draft.sessionBindingId,
+        preparedConnectionId: draft.connectionId,
+        authorizedSessionVersion: 1,
+        requiredSessionCapabilities: [],
+        mutationEntries: [{
           invocationId: invocation.context.invocationId,
           idempotencyKey: invocation.context.idempotencyKey,
           mutationScope: { kind: "session" },
           journalBindingDigest: journal.bindingDigest,
-        },
-      ],
-      journalRecords: [journal],
-      journalAttestation: null,
-      batchTerminal: null,
-      recoveryHoldIds: [],
-      recoveryClearances: [],
-      verificationHoldId: null,
-      originRedelivery: false,
-      bridgeAcceptance: null,
-      preparedAtMs: Date.now(),
-    };
-    const pending = executor.executePreparedMutation!(invocation, prepared);
-    while (sent.length === 0) {
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    }
-    const dispatched = sent.shift() as Extract<RbpEnvelope, { type: "invoke" }>;
-    await authority.receive(
-      opening.connectionId,
-      terminal(
-        registered.payload.rsid,
-        invocation.context.invocationId,
-        1,
-        dispatched.seq,
-      ),
-    );
-    await expect(pending).resolves.toMatchObject({ state: "completed" });
+        }],
+        journalRecords: [journal],
+        journalAttestation: null,
+        batchTerminal: null,
+        recoveryHoldIds: [],
+        recoveryClearances: [],
+        verificationHoldId: null,
+        originRedelivery: false,
+        bridgeAcceptance: null,
+        preparedAtMs: Date.now(),
+      };
+      const pending = executor.executePreparedMutation!(invocation, prepared);
+      const dispatched = (await next(binding)) as Extract<RbpEnvelope, { type: "invoke" }>;
+      expect(dispatched).toMatchObject({
+        rsid: registered.payload.rsid,
+        seq: envelope.seq,
+        payload: { invocation_id: invocation.context.invocationId },
+      });
 
-    const lookup = await restartable.store.transact(
-      { tenantId: "tenant-gw12" },
-      async (tx) =>
-        authority.inspectDispatch(tx, {
-          rsid: registered.payload.rsid,
-          sessionBindingId: draft.sessionBindingId,
-          gatewaySequence: dispatched.seq,
-          envelopeDigest,
-          invocationBindings: [
-            {
-              idempotencyKey: invocation.context.idempotencyKey,
-              bindingDigest: journal.bindingDigest,
+      const beforeCommit = await restartable.store.transact(
+        { tenantId: "tenant-gw12" },
+        async (tx) => authority.inspectDispatch(tx, expected),
+      );
+      expect(beforeCommit).toStrictEqual({ ok: true, value: { kind: "not_durable_yet" } });
+
+      await binding.send(
+        terminal(
+          registered.payload.rsid,
+          invocation.context.invocationId,
+          1,
+          dispatched.seq,
+        ),
+      );
+      await expect(pending).resolves.toMatchObject({ state: "completed" });
+
+      const lookup = await restartable.store.transact(
+        { tenantId: "tenant-gw12" },
+        async (tx) => authority.inspectDispatch(tx, expected),
+      );
+      expect(lookup).toMatchObject({
+        ok: true,
+        value: {
+          kind: "found",
+          observation: {
+            acceptance: {
+              source: "durable_rbp_sequence",
+              rsid: registered.payload.rsid,
+              sessionBindingId: draft.sessionBindingId,
+              acceptedConnectionId: binding.connectionId,
+              invocationId: invocation.context.invocationId,
+              correlationId: invocation.context.invocationId,
+              gatewaySequence: dispatched.seq,
+              cumulativeAck: dispatched.seq,
+              envelopeDigest,
             },
-          ],
-        }),
-    );
-    expect(lookup).toMatchObject({
-      ok: true,
-      value: {
-        kind: "found",
-        observation: {
-          acceptance: { cumulativeAck: dispatched.seq },
-          journal: { kind: "known_terminal" },
+            journal: { kind: "known_terminal" },
+          },
         },
-      },
-    });
-    await authority.close();
-  });
+      });
+      const crossBinding = await restartable.store.transact(
+        { tenantId: "tenant-gw12" },
+        async (tx) => authority.inspectDispatch(tx, { ...expected, sessionBindingId: id() }),
+      );
+      expect(crossBinding).toStrictEqual({
+        ok: true,
+        value: { kind: "protocol_fault", reason: "session_binding_mismatch" },
+      });
+      const forgedSequence = await restartable.store.transact(
+        { tenantId: "tenant-gw12" },
+        async (tx) => authority.inspectDispatch(tx, {
+          ...expected,
+          gatewaySequence: dispatched.seq + 1,
+        }),
+      );
+      expect(forgedSequence).toStrictEqual({
+        ok: true,
+        value: { kind: "protocol_fault", reason: "dispatch_evidence_mismatch" },
+      });
+    },
+  );
 
   it("uses the frozen heartbeat thresholds for degraded and disconnected dispatch", async () => {
     let nowMs = 0;

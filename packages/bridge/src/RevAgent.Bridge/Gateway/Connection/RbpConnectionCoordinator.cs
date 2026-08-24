@@ -46,6 +46,7 @@ internal sealed partial class RbpConnectionCoordinator
     /// so silence here would strand the Gateway's window forever.
     /// </summary>
     private readonly RbpBatchCoordinator? _batchCoordinator;
+    private readonly RbpArtifactCarrierProducer? _carrierProducer;
 
     /// <summary>
     /// Bounded, non-secret dispatch trace. The batch path has several silent
@@ -57,6 +58,10 @@ internal sealed partial class RbpConnectionCoordinator
     private readonly Action<string>? _onDispatchDiagnostic;
     private readonly Func<RbpConnectionFailureObservation, ValueTask>?
         _onConnectionFailureObservation;
+    private readonly Func<RbpLifecycleTimeoutObservation, ValueTask>?
+        _onLifecycleTimeoutObservation;
+    private readonly Func<RbpDocumentContextObservation, ValueTask>?
+        _onDocumentContextObservation;
     private readonly SemaphoreSlim _retryConditionSignal = new(0, 1);
     private RbpConnectionLifecycleState _lifecycle =
         RbpConnectionReducer.CreateConnectionLifecycle();
@@ -66,6 +71,8 @@ internal sealed partial class RbpConnectionCoordinator
     private int _connectionAuthorityPoisoned;
     private int _ownedBackgroundTasks;
     private int _activeInvocations;
+    private readonly Dictionary<string, DocumentContextQueuedDiagnostic> _documentContextQueued =
+        new(StringComparer.Ordinal);
 
     internal RbpConnectionCoordinator(
         IRbpConnectionCycleFactory cycleFactory,
@@ -80,11 +87,19 @@ internal sealed partial class RbpConnectionCoordinator
         RbpBatchCoordinator? batchCoordinator = null,
         Action<string>? onDispatchDiagnostic = null,
         Func<RbpConnectionFailureObservation, ValueTask>?
-            onConnectionFailureObservation = null)
+            onConnectionFailureObservation = null,
+        RbpArtifactCarrierProducer? carrierProducer = null,
+        Func<RbpLifecycleTimeoutObservation, ValueTask>?
+            onLifecycleTimeoutObservation = null,
+        Func<RbpDocumentContextObservation, ValueTask>?
+            onDocumentContextObservation = null)
     {
         _batchCoordinator = batchCoordinator;
+        _carrierProducer = carrierProducer;
         _onDispatchDiagnostic = onDispatchDiagnostic;
         _onConnectionFailureObservation = onConnectionFailureObservation;
+        _onLifecycleTimeoutObservation = onLifecycleTimeoutObservation;
+        _onDocumentContextObservation = onDocumentContextObservation;
         _invocationDispatcher = invocationDispatcher ??
             throw new ArgumentNullException(nameof(invocationDispatcher));
         _cycleFactory = cycleFactory ??
@@ -101,7 +116,7 @@ internal sealed partial class RbpConnectionCoordinator
         _identifiers = new RbpUuidV7(
             new CoordinatorTimeProvider(_clock),
             _random);
-        ValidateOptions(options);
+        ValidateOptions(cycleFactory, options);
     }
 
     internal RbpConnectionCoordinatorSnapshot GetSnapshot()
@@ -286,6 +301,20 @@ internal sealed partial class RbpConnectionCoordinator
     private async Task RunOneConnectionAsync(
         CancellationToken serviceCancellationToken)
     {
+        // Each fresh transport cycle starts from durable fences. This covers
+        // both process startup and reconnect after a crash between the ACK
+        // transaction and spool cleanup; no spool directory is discovered.
+        if (_carrierProducer is not null)
+        {
+            RbpCarrierRecovery carrierRecovery =
+                await _carrierProducer.RehydrateFencesAsync(serviceCancellationToken)
+                .ConfigureAwait(false);
+            await CompleteCarrierSpoolReleasesAsync(
+                    carrierRecovery.PendingReleases,
+                    serviceCancellationToken)
+                .ConfigureAwait(false);
+        }
+
         IRbpConnectionCycle cycle = await _cycleFactory
             .OpenAsync(
                 _options.Endpoint,
@@ -320,6 +349,7 @@ internal sealed partial class RbpConnectionCoordinator
                 this,
                 cycle,
                 generation,
+                cycle.Acknowledgement.GrantedCapabilities,
                 serviceCancellationToken);
             SetActiveContext(context);
 

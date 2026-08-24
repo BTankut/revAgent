@@ -1,0 +1,38 @@
+{
+  "contract": "revagent.doc-context-digest/v1",
+  "accepted": [
+    {
+      "name": "key-ordering",
+      "payload": { "z": 2, "a": 1 },
+      "canonical": "{\"a\":1,\"z\":2}",
+      "contextDigest": "c9a7b9ac2de552b3e2fa9057e121b7da4eb3f06bd1a5c5997ce170616484fc29",
+      "wrongDomainDigest": "cb452338a9cb3230f4d0417251560b09d1870d8d517767c35e1891827b0f316d"
+    },
+    {
+      "name": "unicode-escapes",
+      "payload": { "z": "€$\u000f\nA'B\"\\/", "a": "😀" },
+      "canonical": "{\"a\":\"😀\",\"z\":\"€$\\u000f\\nA'B\\\"\\\\/\"}",
+      "contextDigest": "e0958a6819d346735ace88edf753ef7b811c1785f880ebfc1410849a98248f7f",
+      "wrongDomainDigest": "876549309fbfbcdc306eb69577081762e50bd61ee171cdbbeceacb743ce0e789"
+    },
+    {
+      "name": "nested-arrays-objects",
+      "payload": { "outer": [{ "b": true, "a": null }, ["x", { "z": 0, "a": -12 }]], "empty": {} },
+      "canonical": "{\"empty\":{},\"outer\":[{\"a\":null,\"b\":true},[\"x\",{\"a\":-12,\"z\":0}]]}",
+      "contextDigest": "db7561129a96cb04ddb3106c1ed2cbf0733785eb6ee6b9c7aaec25f16d545147",
+      "wrongDomainDigest": "cceb8481f09f056b551ced3eb0e942ad2919a5de7b8d3d31809dc328f45f4b07"
+    },
+    {
+      "name": "numeric-edges",
+      "payload": { "large": 1e30, "minusZero": -0, "small": 2e-3, "tiny": 1e-27, "integer": 9007199254740991 },
+      "canonical": "{\"integer\":9007199254740991,\"large\":1e+30,\"minusZero\":0,\"small\":0.002,\"tiny\":1e-27}",
+      "contextDigest": "fb31043e771bed97d2797acef718068b67541acd263f1f672d2fc0652072d875",
+      "wrongDomainDigest": "3415448207e32f7fe14594f7a75e1619d3d1f173de5115e100695d0e24d9cf83"
+    }
+  ],
+  "rejected": [
+    { "name": "duplicate-keys", "raw": "{\"outer\":{\"same\":1,\"same\":2}}" },
+    { "name": "non-finite", "raw": "{\"value\":1e400}" },
+    { "name": "malformed", "raw": "{\"value\":" }
+  ]
+}

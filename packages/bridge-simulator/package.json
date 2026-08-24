@@ -33,7 +33,7 @@
   "dependencies": {
     "@revagent/addin-loopback-fixture": "0.0.0",
     "@revagent/protocol": "0.0.0",
-    "better-sqlite3": "12.9.0",
+    "better-sqlite3": "13.0.3",
     "ws": "^8.20.0"
   },
   "devDependencies": {

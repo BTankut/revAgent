@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Runtime.ExceptionServices;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using RevAgent.Bridge.Gateway.Dispatch;
 using RevAgent.Bridge.Gateway.Protocol;
 using RevAgent.Bridge.Gateway.Storage;
 
@@ -427,6 +428,22 @@ internal sealed partial class RbpConnectionCoordinator
                         fence,
                         context.Token)
                     .ConfigureAwait(false);
+            ObserveDocumentContextAcknowledgements(acknowledgements);
+            IReadOnlyList<RbpReleasedCarrier> releasedCarriers =
+                await _journal.ApplyCarrierPlanAcknowledgementsAsync(
+                        acknowledgements,
+                        context.Token)
+                    .ConfigureAwait(false);
+            if (releasedCarriers.Count > 0)
+            {
+                // The journal release is the authority. The producer owns the
+                // spool and independently rechecks its terminal fence before
+                // deleting any bytes; it is never called on send.
+                await CompleteCarrierSpoolReleasesAsync(
+                        releasedCarriers,
+                        context.Token)
+                    .ConfigureAwait(false);
+            }
             foreach (string rsid in applied.ConfirmedUnregisterRsids)
             {
                 context.MarkUnregisterConfirmed(rsid);
@@ -442,6 +459,26 @@ internal sealed partial class RbpConnectionCoordinator
         {
             context.FailHeartbeatFlight(flight, exception);
             throw;
+        }
+    }
+
+    private async Task CompleteCarrierSpoolReleasesAsync(
+        IReadOnlyList<RbpReleasedCarrier> releases,
+        CancellationToken cancellationToken)
+    {
+        if (releases.Count == 0 || _carrierProducer is null)
+        {
+            return;
+        }
+
+        // Cleanup first, confirmation second: a crash in between retains a
+        // pending token that startup/reconnect reissues. The spool operation
+        // itself is absent-safe only after a successful prior release.
+        _carrierProducer.SweepExpired(releases);
+        foreach (RbpReleasedCarrier release in releases)
+        {
+            await _journal.ConfirmSpoolReleasedAsync(release, cancellationToken)
+                .ConfigureAwait(false);
         }
     }
 

@@ -299,11 +299,17 @@ internal sealed partial class RbpConnectionCoordinator
         new(RbpCoordinatorErrorCode.InvalidControlPayload, message);
 
     private static void ValidateOptions(
+        IRbpConnectionCycleFactory cycleFactory,
         RbpConnectionCoordinatorOptions options)
     {
+        ArgumentNullException.ThrowIfNull(cycleFactory);
         ArgumentNullException.ThrowIfNull(options.Endpoint);
         ArgumentNullException.ThrowIfNull(options.HelloProfile);
-        if (options.Endpoint.Scheme != Uri.UriSchemeWss ||
+        if (!options.Endpoint.IsAbsoluteUri ||
+            !string.Equals(
+                options.Endpoint.Scheme,
+                cycleFactory.ExpectedEndpointScheme,
+                StringComparison.OrdinalIgnoreCase) ||
             options.EffectiveHeartbeatAcknowledgementTimeout !=
                 TimeSpan.FromSeconds(10) ||
             options.EffectiveWakeGapThreshold !=
@@ -317,8 +323,8 @@ internal sealed partial class RbpConnectionCoordinator
             options.EffectiveCloseTimeout <= TimeSpan.Zero)
         {
             throw new ArgumentException(
-                "Coordinator options require WSS and positive bounded " +
-                "timeouts.",
+                "Coordinator options require the selected binding endpoint " +
+                "scheme and positive bounded timeouts.",
                 nameof(options));
         }
     }

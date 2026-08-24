@@ -15,6 +15,7 @@ internal sealed class StreamableHttpRbpConnectionCycle :
     private readonly Uri _messagesUri;
     private readonly RbpDeviceCredential _credential;
     private readonly TimeProvider _timeProvider;
+    private readonly Action<RbpSseReceiveObservation>? _onSseReceiveObservation;
     private readonly CancellationTokenSource _lifetime = new();
     private readonly SemaphoreSlim _receiveGate = new(1, 1);
     private readonly SemaphoreSlim _lifecycleGate = new(1, 1);
@@ -32,14 +33,18 @@ internal sealed class StreamableHttpRbpConnectionCycle :
         Uri messagesUri,
         RbpDeviceCredential credential,
         RbpHelloAckPayload acknowledgement,
-        TimeProvider timeProvider)
+        TimeProvider timeProvider,
+        Action<RbpSseReceiveObservation>? onSseReceiveObservation = null)
     {
         _client = client ?? throw new ArgumentNullException(nameof(client));
         _eventsResponse = eventsResponse ??
             throw new ArgumentNullException(nameof(eventsResponse));
         _eventsStream = eventsStream ??
             throw new ArgumentNullException(nameof(eventsStream));
-        _events = new SseRbpEventReader(_eventsStream);
+        _onSseReceiveObservation = onSseReceiveObservation;
+        _events = new SseRbpEventReader(
+            _eventsStream,
+            stage => ObserveSseReceive(stage));
         _messagesUri = messagesUri ??
             throw new ArgumentNullException(nameof(messagesUri));
         _credential = credential ??
@@ -108,6 +113,7 @@ internal sealed class StreamableHttpRbpConnectionCycle :
             }
             catch (RbpGatewayTransportException exception)
             {
+                ObserveSseReceive("parser_error", outcome: "error");
                 Terminate(exception);
                 throw;
             }
@@ -116,6 +122,7 @@ internal sealed class StreamableHttpRbpConnectionCycle :
                     IOException or
                     ObjectDisposedException)
             {
+                ObserveSseReceive("stream_end", outcome: "error");
                 if (Volatile.Read(ref _terminalFailure) is { } terminal)
                 {
                     throw terminal;
@@ -131,10 +138,17 @@ internal sealed class StreamableHttpRbpConnectionCycle :
 
             try
             {
-                return RbpEnvelopeCodec.Decode(frame);
+                RbpEnvelope envelope = RbpEnvelopeCodec.Decode(frame);
+                ObserveSseReceive(
+                    "method_kind",
+                    string.Equals(envelope.Type, "session_registered", StringComparison.Ordinal)
+                        ? "session_registered"
+                        : "other");
+                return envelope;
             }
             catch (RbpFrameException exception)
             {
+                ObserveSseReceive("parser_error", outcome: "error");
                 RbpGatewayTransportException failure =
                     RbpHttpBindingProtocol.Protocol(
                         "The fallback SSE event contained invalid RBP.",
@@ -318,4 +332,20 @@ internal sealed class StreamableHttpRbpConnectionCycle :
             RbpGatewayFailureKind.RemoteClosed,
             "The fallback connection cycle ended.",
             innerException: innerException);
+
+    private void ObserveSseReceive(
+        string stage,
+        string methodKind = "other",
+        string outcome = "observed")
+    {
+        try
+        {
+            _onSseReceiveObservation?.Invoke(
+                RbpSseReceiveObservation.Create(stage, methodKind, outcome));
+        }
+        catch
+        {
+            // Observation is never a transport owner.
+        }
+    }
 }

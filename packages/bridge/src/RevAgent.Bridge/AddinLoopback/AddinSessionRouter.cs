@@ -8,13 +8,29 @@ internal sealed class AddinSessionRouter
 {
     private readonly object _sync = new();
     private readonly IAddinTransport _transport;
+    private readonly IAddinProcessAttestor _processAttestor;
     private readonly List<SessionSlot> _slots = new();
     private long _latestIssuedRefreshGeneration;
     private long _lastAppliedRefreshGeneration;
 
     internal AddinSessionRouter(IAddinTransport transport)
+        : this(transport, new WindowsAddinProcessAttestor())
+    {
+    }
+
+    /// <summary>
+    /// The attestor is injected only for a composition that owns a stricter
+    /// process identity source (for example, the supervised real-worker test
+    /// host). Every routed data-plane invoke still wraps it in the discovered
+    /// expected identity, so a changed PID/start-time/image fails closed.
+    /// </summary>
+    internal AddinSessionRouter(
+        IAddinTransport transport,
+        IAddinProcessAttestor processAttestor)
     {
         _transport = transport ?? throw new ArgumentNullException(nameof(transport));
+        _processAttestor = processAttestor ??
+            throw new ArgumentNullException(nameof(processAttestor));
     }
 
     internal enum LifecycleChangeKind
@@ -377,7 +393,7 @@ internal sealed class AddinSessionRouter
                 preDispatchCancellationToken,
                 transportShutdownToken,
                 new ExpectedAddinProcessAttestor(
-                    new WindowsAddinProcessAttestor(),
+                    _processAttestor,
                     expectedProcessAttestation)).ConfigureAwait(false);
             return new InvocationLease(slot, result, failure: null);
         }

@@ -4,6 +4,7 @@ using RevAgent.Bridge.Bootstrap;
 using RevAgent.Bridge.Bootstrap.Configuration;
 using RevAgent.Bridge.Enrollment;
 using RevAgent.Bridge.Gateway.Connection;
+using RevAgent.Bridge.Gateway.Dispatch;
 using RevAgent.Bridge.Gateway.Storage;
 
 namespace RevAgent.Bridge.Runtime;
@@ -39,28 +40,47 @@ internal sealed class WorkerGatewayRuntime : IAsyncDisposable
     internal static readonly TimeSpan DefaultBindingRefreshInterval =
         TimeSpan.FromMilliseconds(250);
 
+    /// <summary>
+    /// The carrier producer's constructor sweep is recovery-only.  This pump
+    /// keeps the seven-day terminal-fenced expiry policy alive for a long-lived
+    /// worker without making any send path a cleanup authority.
+    /// </summary>
+    internal static readonly TimeSpan DefaultCarrierSweepInterval =
+        TimeSpan.FromHours(1);
+
     private readonly RbpConnectionCoordinator _coordinator;
     private readonly IRbpSessionRouteBinder? _binder;
     private readonly RbpJournalStore? _ownedJournal;
+    private readonly RbpArtifactCarrierProducer? _carrierProducer;
     private readonly TimeSpan _bindingRefreshInterval;
+    private readonly TimeSpan _carrierSweepInterval;
     private int _disposed;
 
     internal WorkerGatewayRuntime(
         RbpConnectionCoordinator coordinator,
         IRbpSessionRouteBinder? binder = null,
         RbpJournalStore? ownedJournal = null,
-        TimeSpan? bindingRefreshInterval = null)
+        TimeSpan? bindingRefreshInterval = null,
+        RbpArtifactCarrierProducer? carrierProducer = null,
+        TimeSpan? carrierSweepInterval = null)
     {
         _coordinator = coordinator ??
             throw new ArgumentNullException(nameof(coordinator));
         _binder = binder;
         _ownedJournal = ownedJournal;
+        _carrierProducer = carrierProducer;
         _bindingRefreshInterval =
             bindingRefreshInterval ?? DefaultBindingRefreshInterval;
+        _carrierSweepInterval =
+            carrierSweepInterval ?? DefaultCarrierSweepInterval;
         if (_bindingRefreshInterval <= TimeSpan.Zero)
         {
             throw new ArgumentOutOfRangeException(
                 nameof(bindingRefreshInterval));
+        }
+        if (_carrierSweepInterval <= TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(nameof(carrierSweepInterval));
         }
     }
 
@@ -92,6 +112,19 @@ internal sealed class WorkerGatewayRuntime : IAsyncDisposable
             var credentialClaims = new RbpCredentialClaimBinding(
                 WorkerGatewayComposition.CreateEnrollmentStateProvider(
                     layout));
+            RbpArtifactCarrierProducer? carrierProducer = null;
+            try
+            {
+                carrierProducer = RbpArtifactCarrierProducer.CreateProduction(
+                    layout.StateRoot,
+                    journal);
+            }
+            catch (RbpArtifactCarrierException)
+            {
+                // A missing or unsafe spool never becomes a degraded carrier:
+                // keep the existing inline-only posture and omit the carrier
+                // capabilities from hello. The journal remains usable.
+            }
             var transport = new AddinTcpTransport();
             var router = new AddinSessionRouter(transport);
             var catalog = new WorkerAddinSessionCatalog(
@@ -119,20 +152,27 @@ internal sealed class WorkerGatewayRuntime : IAsyncDisposable
                             configuration.GatewayUri,
                             RbpHelloProfile.Production(
                                 bridgeVersion,
-                                Array.Empty<string>()),
-                            CredentialClaimInvalidator: credentialClaims),
+                                Array.Empty<string>(),
+                                carrierProducer is null
+                                    ? null
+                                    : RbpArtifactCarrierProducer
+                                        .ConnectionCapabilities),
+                            CredentialClaimInvalidator: credentialClaims,
+                            SessionRouteBindingAuthority: catalog),
                         new WorkerAddinDispatchSurface(router, catalog),
                         Clock: null,
                         Random: null,
                         OnDispatchDiagnostic: onDispatchDiagnostic,
                         OnConnectionFailureObservation:
-                            onConnectionFailureObservation));
+                            onConnectionFailureObservation,
+                        CarrierProducer: carrierProducer));
 
             return new WorkerGatewayRuntime(
                 coordinator,
                 catalog,
                 journal,
-                bindingRefreshInterval);
+                bindingRefreshInterval,
+                carrierProducer);
         }
         catch
         {
@@ -161,6 +201,9 @@ internal sealed class WorkerGatewayRuntime : IAsyncDisposable
         Task pump = _binder is null
             ? Task.CompletedTask
             : RunBindingPumpAsync(pumpCancellation.Token);
+        Task carrierSweep = _carrierProducer is null
+            ? Task.CompletedTask
+            : RunCarrierSweepAsync(pumpCancellation.Token);
         try
         {
             await _coordinator.RunAsync(cancellationToken)
@@ -170,6 +213,7 @@ internal sealed class WorkerGatewayRuntime : IAsyncDisposable
         {
             pumpCancellation.Cancel();
             await pump.ConfigureAwait(false);
+            await carrierSweep.ConfigureAwait(false);
         }
     }
 
@@ -214,6 +258,62 @@ internal sealed class WorkerGatewayRuntime : IAsyncDisposable
             try
             {
                 await Task.Delay(_bindingRefreshInterval, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+        }
+    }
+
+    private async Task RunCarrierSweepAsync(CancellationToken cancellationToken)
+    {
+        RbpArtifactCarrierProducer producer = _carrierProducer!;
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            try
+            {
+                if (_ownedJournal is not null)
+                {
+                    RbpJournalRetentionResult retained =
+                        await _ownedJournal.ApplyRetentionAsync(
+                            RbpJournalStore.MinimumRetentionPeriod,
+                            cancellationToken)
+                            .ConfigureAwait(false);
+                    // Retention yields only journal-fenced, expired carriers.
+                    // The sequential loop awaits this entire pass, so no two
+                    // cleanup passes overlap and cancellation reaches the
+                    // journal boundary before any next pass can begin.
+                    if (retained.ExactReleasedCarriers.Count > 0)
+                    {
+                        producer.SweepExpired(retained.ExactReleasedCarriers);
+                    }
+                }
+            }
+            catch (OperationCanceledException)
+                when (cancellationToken.IsCancellationRequested)
+            {
+                return;
+            }
+            catch (RbpArtifactCarrierException)
+            {
+                // A fenced spool cleanup error leaves evidence intact and is
+                // retried later. It must not terminate a live connection.
+            }
+            catch (IOException)
+            {
+                // Same posture for transient filesystem contention.
+            }
+            catch (RbpJournalException)
+            {
+                // Retention is bounded maintenance. A failed sweep leaves the
+                // replay plan intact and retries on the next serialized pass.
+            }
+
+            try
+            {
+                await Task.Delay(_carrierSweepInterval, cancellationToken)
                     .ConfigureAwait(false);
             }
             catch (OperationCanceledException)
