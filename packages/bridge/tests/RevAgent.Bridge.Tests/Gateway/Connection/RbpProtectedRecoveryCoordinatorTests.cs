@@ -58,6 +58,19 @@ public sealed partial class RbpConnectionCoordinatorTests
             SHA256.HashData(RbpEnvelopeCodec.Encode(partial))).ToLowerInvariant());
         Assert.Empty((await store.LoadSequenceAsync(reservation.Rsid)).Outbox);
 
+        // A second same-cycle dispatcher completion observes the already sent
+        // reservation and cannot emit a second byte-identical carrier frame.
+        cycle.Deliver(DataEnvelope(
+            "invoke", Id(9704), reservation.Rsid, 2,
+            Json($$"""{"invocation_id":"{{reservation.RecoveryInvocationId}}"}""")));
+        await EventuallyAsync(async () =>
+            (await store.GetReceiveFrontierAsync(reservation.Rsid))
+                .LastJournaledSequence == 2);
+        await Task.Delay(25);
+        _ = Assert.Single(cycle.Sent, item =>
+            item.Scope == RbpEnvelopeScope.Data &&
+            item.Id == reservation.RecoveryInvocationId);
+
         stop.Cancel();
         await run.WaitAsync(TimeSpan.FromSeconds(5));
     }

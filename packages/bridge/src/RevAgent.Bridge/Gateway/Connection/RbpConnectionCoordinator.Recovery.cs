@@ -28,55 +28,74 @@ internal sealed partial class RbpConnectionCoordinator
             !string.Equals(started.Rsid, reservation.Rsid,
                 StringComparison.Ordinal)) return;
 
-        RbpRecoveryCarrierMaterializedFrame? materialized =
-            await _recoveryCarrierMaterializer.MaterializeCurrentAsync(
-                    started.RecoveryInvocationId,
-                    started.Rsid,
-                    context.Token)
-                .ConfigureAwait(false);
-        if (materialized is null ||
-            materialized.ReservedSequence != started.CurrentReservedSequence ||
-            materialized.PlanVersion != started.PlanVersion) return;
+        var claim = new RecoveryCarrierCycleKey(
+            context,
+            started.RecoveryInvocationId,
+            started.CurrentReservedSequence,
+            started.PlanVersion);
+        if (!TryAcquireRecoveryCarrierClaim(claim)) return;
+        bool retainClaim = false;
+        try
+        {
+
+            RbpRecoveryCarrierMaterializedFrame? materialized =
+                await _recoveryCarrierMaterializer.MaterializeCurrentAsync(
+                        started.RecoveryInvocationId,
+                        started.Rsid,
+                        context.Token)
+                    .ConfigureAwait(false);
+            if (materialized is null ||
+                materialized.ReservedSequence != started.CurrentReservedSequence ||
+                materialized.PlanVersion != started.PlanVersion) return;
 
         // All outer fields are reproducible from durable metadata.  A retry
         // therefore re-encodes identical bytes without retaining a raw frame,
         // base64 carrier, or payload outside the protected journal source.
-        var snapshot = new RbpDataEnvelopeSnapshot(
-            Type: materialized.Answer.Type,
-            Id: started.RecoveryInvocationId,
-            Rsid: started.Rsid,
-            Sequence: materialized.ReservedSequence,
-            Payload: materialized.Answer.Payload,
-            Acknowledgement: started.AcknowledgementCursor,
-            Timestamp: DateTimeOffset
-                .FromUnixTimeMilliseconds(started.CreatedAtMilliseconds)
-                .ToString("O", CultureInfo.InvariantCulture));
-        RbpEnvelope envelope = CreateDataEnvelope(snapshot);
-        byte[] outerBytes = RbpEnvelopeCodec.Encode(envelope);
-        try
-        {
-            string outerDigest = "sha256:" + Convert.ToHexString(
-                SHA256.HashData(outerBytes)).ToLowerInvariant();
-            bool confirmed = await _journal
-                .ConfirmRecoveryCarrierMaterializationAsync(
-                    started.RecoveryInvocationId,
-                    started.Rsid,
-                    started.PlanVersion,
-                    materialized.ReservedSequence,
-                    materialized.PayloadDigest,
-                    outerDigest,
-                    context.Token)
-                .ConfigureAwait(false);
-            if (!confirmed || !context.IsDispatchAllowed(started.Rsid)) return;
+            var snapshot = new RbpDataEnvelopeSnapshot(
+                Type: materialized.Answer.Type,
+                Id: started.RecoveryInvocationId,
+                Rsid: started.Rsid,
+                Sequence: materialized.ReservedSequence,
+                Payload: materialized.Answer.Payload,
+                Acknowledgement: started.AcknowledgementCursor,
+                Timestamp: DateTimeOffset
+                    .FromUnixTimeMilliseconds(started.CreatedAtMilliseconds)
+                    .ToString("O", CultureInfo.InvariantCulture));
+            RbpEnvelope envelope = CreateDataEnvelope(snapshot);
+            byte[] outerBytes = RbpEnvelopeCodec.Encode(envelope);
+            try
+            {
+                string outerDigest = "sha256:" + Convert.ToHexString(
+                    SHA256.HashData(outerBytes)).ToLowerInvariant();
+                bool confirmed = await _journal
+                    .ConfirmRecoveryCarrierMaterializationAsync(
+                        started.RecoveryInvocationId,
+                        started.Rsid,
+                        started.PlanVersion,
+                        materialized.ReservedSequence,
+                        materialized.PayloadDigest,
+                        outerDigest,
+                        context.Token)
+                    .ConfigureAwait(false);
+                if (!confirmed || !context.IsDispatchAllowed(started.Rsid)) return;
 
-            // The only recovery-carrier socket write.  Do not route through
-            // QueueOutboundDataAsync, generic outbox/spool, or diagnostics.
-            await context.Cycle.SendAsync(envelope, context.Token)
-                .ConfigureAwait(false);
+                // The only recovery-carrier socket write.  Do not route through
+                // QueueOutboundDataAsync, generic outbox/spool, or diagnostics.
+                await context.Cycle.SendAsync(envelope, context.Token)
+                    .ConfigureAwait(false);
+                retainClaim = true;
+            }
+            finally
+            {
+                CryptographicOperations.ZeroMemory(outerBytes);
+            }
         }
         finally
         {
-            CryptographicOperations.ZeroMemory(outerBytes);
+            if (!retainClaim)
+            {
+                ReleaseRecoveryCarrierClaim(claim);
+            }
         }
     }
 
@@ -99,12 +118,20 @@ internal sealed partial class RbpConnectionCoordinator
                 .ConfigureAwait(false);
             if (applied?.Phase == RbpRecoveryCarrierPhase.Tombstoned)
             {
+                ReleaseRecoveryCarrierClaims(context, acknowledgement.Rsid,
+                    applied.RecoveryInvocationId, long.MaxValue);
                 // The journal has durably blocked this RSID.  Abort the
                 // transport before generic acknowledgement can advance across
                 // the fault; normal reconnect lifecycle owns its close path.
                 throw new RbpCoordinatorException(
                     RbpCoordinatorErrorCode.UnexpectedControl,
                     "Recovery carrier acknowledgement violated its durable fence.");
+            }
+            if (applied is { Phase: RbpRecoveryCarrierPhase.Completed or
+                RbpRecoveryCarrierPhase.Reserved })
+            {
+                ReleaseRecoveryCarrierClaims(context, acknowledgement.Rsid,
+                    applied.RecoveryInvocationId, acknowledgement.Sequence);
             }
         }
     }
@@ -133,4 +160,51 @@ internal sealed partial class RbpConnectionCoordinator
             }
         }
     }
+
+    private bool TryAcquireRecoveryCarrierClaim(RecoveryCarrierCycleKey claim)
+    {
+        lock (_recoveryCarrierClaimSync)
+        {
+            return _recoveryCarrierClaims.Add(claim);
+        }
+    }
+
+    private void ReleaseRecoveryCarrierClaim(RecoveryCarrierCycleKey claim)
+    {
+        lock (_recoveryCarrierClaimSync)
+        {
+            _recoveryCarrierClaims.Remove(claim);
+        }
+    }
+
+    private void ReleaseRecoveryCarrierClaims(
+        ConnectionCycleContext context,
+        string rsid,
+        string recoveryInvocationId,
+        long throughSequence)
+    {
+        lock (_recoveryCarrierClaimSync)
+        {
+            _recoveryCarrierClaims.RemoveWhere(claim =>
+                ReferenceEquals(claim.Context, context) &&
+                string.Equals(claim.RecoveryInvocationId, recoveryInvocationId,
+                    StringComparison.Ordinal) &&
+                claim.ReservedSequence <= throughSequence);
+        }
+    }
+
+    private void ClearRecoveryCarrierClaims(ConnectionCycleContext context)
+    {
+        lock (_recoveryCarrierClaimSync)
+        {
+            _recoveryCarrierClaims.RemoveWhere(claim =>
+                ReferenceEquals(claim.Context, context));
+        }
+    }
+
+    private sealed record RecoveryCarrierCycleKey(
+        ConnectionCycleContext Context,
+        string RecoveryInvocationId,
+        long ReservedSequence,
+        int PlanVersion);
 }

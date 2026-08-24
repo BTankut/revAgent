@@ -75,6 +75,8 @@ internal sealed partial class RbpConnectionCoordinator
     private int _activeInvocations;
     private readonly Dictionary<string, DocumentContextQueuedDiagnostic> _documentContextQueued =
         new(StringComparer.Ordinal);
+    private readonly object _recoveryCarrierClaimSync = new();
+    private readonly HashSet<RecoveryCarrierCycleKey> _recoveryCarrierClaims = new();
 
     internal RbpConnectionCoordinator(
         IRbpConnectionCycleFactory cycleFactory,
@@ -408,6 +410,7 @@ internal sealed partial class RbpConnectionCoordinator
         {
             if (context is not null)
             {
+                ClearRecoveryCarrierClaims(context);
                 bool serviceShutdown =
                     serviceCancellationToken.IsCancellationRequested;
                 if (serviceShutdown)
