@@ -54,6 +54,9 @@ const HTTP_SSE_REGISTER_TTL_MS = 60_000;
 const HTTP_SSE_SWEEP_INTERVAL_MS = 5_000;
 const HTTP_SSE_DISPOSED_TOMBSTONE_TTL_MS = 60_000;
 const HTTP_SSE_DELIVERY_OBSERVATION_LIMIT = 256;
+const HTTP_SSE_DEFAULT_QUEUED_FRAMES = 32;
+const HTTP_SSE_MIN_QUEUED_FRAMES = 1;
+const HTTP_SSE_MAX_QUEUED_FRAMES = 256;
 
 async function boundedDispatchRevalidate(
   handoff: DispatchTransportHandoff,
@@ -163,6 +166,12 @@ export interface RbpWssEgressConfig {
   readonly sendCompletionTimeoutMs?: number;
 }
 
+/** Internal carrier-only backpressure seam; it does not alter any RBP wire API. */
+export interface RbpHttpSseEgressConfig {
+  readonly queuedFrames?: number;
+  readonly queuedBytes?: number;
+}
+
 /** Testable clock/scheduler seam; production always retains the frozen values. */
 export interface RbpHttpSseLifecycleRuntime {
   readonly clock?: () => number;
@@ -216,6 +225,7 @@ export interface ProductionRbpIngressOptions {
   readonly authority: GatewayBridgeSessionAuthority;
   readonly wssQueue?: RbpWssQueueConfig;
   readonly wssEgress?: RbpWssEgressConfig;
+  readonly httpSseEgress?: RbpHttpSseEgressConfig;
   readonly httpSseLifecycleRuntime?: RbpHttpSseLifecycleRuntime;
   readonly writeOpeningRefusalLog?: (serializedObservation: string) => void;
   readonly onOpeningRefusalObservation?: (
@@ -469,6 +479,8 @@ class HttpSseChannel implements BridgeConnectionChannel {
       action: RbpHttpSseDeliveryObservation["action"],
       reason: RbpHttpSseDeliveryObservation["reason"],
     ) => void,
+    private readonly maxPendingFrames = HTTP_SSE_DEFAULT_QUEUED_FRAMES,
+    private readonly maxPendingBytes = MAX_PENDING_TRANSPORT_BYTES,
   ) {}
 
   public bindConnection(connectionId: string): void {
@@ -554,7 +566,7 @@ class HttpSseChannel implements BridgeConnectionChannel {
     const response = this.#response;
     if (response === null) {
       const nextBytes = this.#pendingBytes + Buffer.byteLength(serialized);
-      if (nextBytes > MAX_PENDING_TRANSPORT_BYTES) {
+      if (this.#pending.length + 1 > this.maxPendingFrames || nextBytes > this.maxPendingBytes) {
         this.#fail(new Error("SSE attach backlog exceeds the bounded transport window"));
       }
       this.#pendingBytes = nextBytes;
@@ -592,7 +604,9 @@ class HttpSseChannel implements BridgeConnectionChannel {
       const response = this.#response;
       if (response === null) {
         const nextBytes = this.#pendingBytes + Buffer.byteLength(serialized);
-        if (nextBytes > MAX_PENDING_TRANSPORT_BYTES) throw new Error("SSE attach backlog exceeds the bounded transport window");
+        if (this.#pending.length + 1 > this.maxPendingFrames || nextBytes > this.maxPendingBytes) {
+          throw new Error("SSE attach backlog exceeds the bounded transport window");
+        }
         this.#pendingBytes = nextBytes;
         controller = new AbortController();
         queued = { serialized, handoff, controller, generation: ++this.#dispatchGeneration, resolveStarted, rejectStarted, resolveCompletion, rejectCompletion, cancelled: () => cancelled };
@@ -877,6 +891,20 @@ export function createProductionRbpIngressHost(
     RBP_WSS_MIN_SEND_COMPLETION_TIMEOUT_MS,
     RBP_WSS_MAX_SEND_COMPLETION_TIMEOUT_MS,
     "wssEgress.sendCompletionTimeoutMs",
+  );
+  const httpSseQueuedFrameLimit = clampedInteger(
+    options.httpSseEgress?.queuedFrames,
+    HTTP_SSE_DEFAULT_QUEUED_FRAMES,
+    HTTP_SSE_MIN_QUEUED_FRAMES,
+    HTTP_SSE_MAX_QUEUED_FRAMES,
+    "httpSseEgress.queuedFrames",
+  );
+  const httpSseQueuedByteLimit = clampedInteger(
+    options.httpSseEgress?.queuedBytes,
+    MAX_PENDING_TRANSPORT_BYTES,
+    1,
+    MAX_PENDING_TRANSPORT_BYTES,
+    "httpSseEgress.queuedBytes",
   );
   const websocketServer = new WebSocketServer({
     noServer: true,
@@ -1185,6 +1213,8 @@ export function createProductionRbpIngressHost(
                   if (entry !== null) void disposeHttpConnection(entry);
                 },
                 observeHttpSseDelivery,
+                httpSseQueuedFrameLimit,
+                httpSseQueuedByteLimit,
               );
               try {
                 const opening = await authority.openConnection({

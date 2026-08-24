@@ -2480,7 +2480,7 @@ describe("GW-12 production RBP ingress", () => {
     await expect(create()).resolves.toMatchObject({ status: 201 });
   });
 
-  it("disposes registered no-SSE overflow immediately and contains later terminal paths", async () => {
+  it("applies the internal HTTP/SSE test queue limit, disposes overflow, and contains later terminal paths", async () => {
     const restartable = createRestartableTestStore();
     const activeIdentity = identity(undefined, {
       grantedConnectionCapabilities: ["transport_streamable_http"],
@@ -2493,7 +2493,10 @@ describe("GW-12 production RBP ingress", () => {
       return await originalOpen(input);
     });
     const detach = vi.spyOn(authority, "detach");
-    const ingress = createProductionRbpIngressHost({ authority });
+    const ingress = createProductionRbpIngressHost({
+      authority,
+      httpSseEgress: { queuedFrames: 1, queuedBytes: 1_024 },
+    });
     const server = await startGatewayServer({
       config,
       ports: {
@@ -2526,7 +2529,7 @@ describe("GW-12 production RBP ingress", () => {
         body: JSON.stringify(registration()),
       }),
     ).resolves.toMatchObject({ status: 202 });
-    await expect((channel as unknown as BridgeConnectionChannel).send("x".repeat(1024 * 1024 + 1))).rejects.toThrow(
+    await expect((channel as unknown as BridgeConnectionChannel).send("x".repeat(1_025))).rejects.toThrow(
       "SSE attach backlog exceeds the bounded transport window",
     );
     await vi.waitFor(() => expect(detach).toHaveBeenCalledTimes(1));

@@ -492,13 +492,29 @@ interface DurableEgressRevocation {
   readonly drainDeadlineAtMs: number;
 }
 
+/**
+ * A cancellation intent is deliberately durable and value-free.  It pins the
+ * exact reserved lease and the Gateway-authored no-send authority digest
+ * before a queue/connection is allowed to report a pre-send outcome.  The
+ * receipt itself is written only by the second CAS below.
+ */
+interface DurableEgressCancellation {
+  readonly leaseId: string;
+  readonly leaseTicket: number;
+  readonly envelopeDigest: `sha256:${string}`;
+  readonly expectedNoSendAuthorityDigest: `sha256:${string}`;
+  readonly receiptIntentDigest: `sha256:${string}`;
+  readonly requestedAtMs: number;
+}
+
 interface DurableEgressFence {
   readonly version: 1;
-  readonly state: "open" | "revocation_pending";
+  readonly state: "open" | "cancellation_pending" | "revocation_pending";
   readonly epoch: number;
   readonly nextTicket: number;
   readonly lease: DurableEgressLease | null;
   readonly revocation: DurableEgressRevocation | null;
+  readonly cancellation: DurableEgressCancellation | null;
 }
 
 interface DurableNormalizedConflictIndex {
@@ -1033,6 +1049,7 @@ function openEgressFence(): DurableEgressFence {
     nextTicket: 1,
     lease: null,
     revocation: null,
+    cancellation: null,
   };
 }
 
@@ -1117,20 +1134,50 @@ function parseEgressRevocation(value: unknown): DurableEgressRevocation {
   return value as unknown as DurableEgressRevocation;
 }
 
-function parseEgressFence(value: unknown): DurableEgressFence {
+function parseEgressCancellation(value: unknown): DurableEgressCancellation {
   if (!isRecord(value) || !hasExactKeys(value, [
+    "leaseId",
+    "leaseTicket",
+    "envelopeDigest",
+    "expectedNoSendAuthorityDigest",
+    "receiptIntentDigest",
+    "requestedAtMs",
+  ])) {
+    throw new Error("malformed egress cancellation");
+  }
+  if (
+    !isBoundedNonEmptyString(value.leaseId) ||
+    !isGatewayUuidV7(value.leaseId) ||
+    !isSafePositiveInteger(value.leaseTicket) ||
+    typeof value.envelopeDigest !== "string" ||
+    !DIGEST_PATTERN.test(value.envelopeDigest) ||
+    typeof value.expectedNoSendAuthorityDigest !== "string" ||
+    !DIGEST_PATTERN.test(value.expectedNoSendAuthorityDigest) ||
+    typeof value.receiptIntentDigest !== "string" ||
+    !DIGEST_PATTERN.test(value.receiptIntentDigest) ||
+    !isSafeNonNegativeInteger(value.requestedAtMs)
+  ) {
+    throw new Error("malformed egress cancellation");
+  }
+  return value as unknown as DurableEgressCancellation;
+}
+
+function parseEgressFence(value: unknown): DurableEgressFence {
+  const legacyKeys = [
     "version",
     "state",
     "epoch",
     "nextTicket",
     "lease",
     "revocation",
-  ])) {
+  ] as const;
+  const cancellationKeys = [...legacyKeys, "cancellation"] as const;
+  if (!isRecord(value) || (!hasExactKeys(value, legacyKeys) && !hasExactKeys(value, cancellationKeys))) {
     throw new Error("malformed egress fence");
   }
   if (
     value.version !== 1 ||
-    (value.state !== "open" && value.state !== "revocation_pending") ||
+    (value.state !== "open" && value.state !== "cancellation_pending" && value.state !== "revocation_pending") ||
     !isSafeNonNegativeInteger(value.epoch) ||
     !isSafePositiveInteger(value.nextTicket)
   ) {
@@ -1140,15 +1187,25 @@ function parseEgressFence(value: unknown): DurableEgressFence {
   const revocation = value.revocation === null
     ? null
     : parseEgressRevocation(value.revocation);
+  const cancellation = Object.hasOwn(value, "cancellation")
+    ? value.cancellation === null ? null : parseEgressCancellation(value.cancellation)
+    : null;
   if (
-    (value.state === "open" && revocation !== null) ||
+    (value.state === "open" && (revocation !== null || cancellation !== null)) ||
+    (value.state === "cancellation_pending" && (revocation !== null || cancellation === null)) ||
     (value.state === "revocation_pending" && revocation === null) ||
+    (value.state === "revocation_pending" && cancellation !== null) ||
     (value.state === "revocation_pending" && lease?.phase === "reserved") ||
+    (value.state === "cancellation_pending" &&
+      (lease === null || lease.phase !== "reserved" ||
+        lease.leaseId !== cancellation?.leaseId ||
+        lease.ticket !== cancellation?.leaseTicket ||
+        lease.envelopeDigest !== cancellation?.envelopeDigest)) ||
     (lease !== null && lease.ticket >= value.nextTicket)
   ) {
     throw new Error("malformed egress fence");
   }
-  return { ...value, lease, revocation } as DurableEgressFence;
+  return { ...value, lease, revocation, cancellation } as DurableEgressFence;
 }
 
 function parseNormalizedConflictIndex(
@@ -6875,6 +6932,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
               nextTicket: fence.nextTicket + 1,
               lease,
               revocation: null,
+              cancellation: null,
             },
           },
           nowMs,
@@ -7217,7 +7275,112 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
    * fence: the durable outbound sequence/pending record remains the recovery
    * authority and must never be guessed or replayed from an in-memory queue.
    */
-  async #releaseReservedEgressLease(
+  async #markReservedEgressCancellationPending(
+    reservation: DurableEgressReservation,
+  ): Promise<boolean> {
+    if (reservation.lease.operation !== "dispatch") return true;
+    for (let attempt = 0; attempt < MAX_AUTHORIZATION_CAS_ATTEMPTS; attempt += 1) {
+      const attempted: { current: {
+        readonly prior: StoredRecord<GatewayJsonValue>;
+        readonly next: DurableRbpSession;
+      } | null } = { current: null };
+      const marked = await this.#sessionRepository.transact(
+        { tenantId: reservation.tenantId },
+        async (tx) => {
+          const stored = await tx.read<GatewayJsonValue>(
+            GATEWAY_RBP_SESSION_NAMESPACE,
+            reservation.rsid,
+          );
+          if (stored === null) return { kind: "not_reserved" as const };
+          const record = parseStoredSession(stored, reservation.tenantId, reservation.rsid);
+          const fence = sessionEgressFence(record);
+          const pending = record.pending;
+          const exactLease = fence.lease !== null &&
+            fence.lease.phase === "reserved" &&
+            sameJson(fence.lease, reservation.lease) &&
+            fence.lease.holderInstanceId === this.#instanceId;
+          const exactPending = pending !== null &&
+            pending.envelopeDigest === reservation.lease.envelopeDigest &&
+            pending.expectedNoSendAuthorityDigest !== undefined &&
+            pending.expectedNoSendAuthorityDigest !== null;
+          if (!exactLease || !exactPending) return { kind: "not_reserved" as const };
+          const expectedNoSendAuthorityDigest = pending.expectedNoSendAuthorityDigest!;
+          if (fence.state === "cancellation_pending") {
+            const existing = fence.cancellation;
+            return existing !== null &&
+              existing.leaseId === reservation.lease.leaseId &&
+              existing.leaseTicket === reservation.lease.ticket &&
+              existing.envelopeDigest === reservation.lease.envelopeDigest &&
+              existing.expectedNoSendAuthorityDigest === expectedNoSendAuthorityDigest
+              ? { kind: "pending" as const }
+              : { kind: "not_reserved" as const };
+          }
+          if (fence.state !== "open" || fence.revocation !== null || fence.cancellation !== null) {
+            return { kind: "not_reserved" as const };
+          }
+          const cancellation: DurableEgressCancellation = {
+            leaseId: reservation.lease.leaseId,
+            leaseTicket: reservation.lease.ticket,
+            envelopeDigest: reservation.lease.envelopeDigest,
+            expectedNoSendAuthorityDigest,
+            receiptIntentDigest: digest(canonicalizeJson({
+              domain: "revagent.gateway.dispatch-cancellation-intent/v1",
+              rsid: reservation.rsid,
+              leaseId: reservation.lease.leaseId,
+              leaseTicket: reservation.lease.ticket,
+              envelopeDigest: reservation.lease.envelopeDigest,
+              expectedNoSendAuthorityDigest,
+              invocationId: pending.invocationId,
+            })),
+            requestedAtMs: this.#clock(),
+          };
+          const next = nextSessionRecord(
+            stored,
+            record,
+            {
+              ...record,
+              // Phase one is an irreversible promotion fence.  Preserve the
+              // lease epoch so the already-minted receipt authority remains
+              // exact; the versioned session row records cancellation intent.
+              egressFence: {
+                ...fence,
+                state: "cancellation_pending",
+                cancellation,
+              },
+            },
+            this.#clock(),
+          );
+          attempted.current = { prior: stored, next };
+          tx.stage({
+            namespace: GATEWAY_RBP_SESSION_NAMESPACE,
+            key: reservation.rsid,
+            value: asJson(next),
+            expect: { kind: "version", version: stored.version },
+          });
+          return { kind: "marked" as const, next };
+        },
+      );
+      if (marked.ok) {
+        if (marked.value.kind === "not_reserved") return false;
+        if (marked.value.kind === "marked") this.#syncActiveRecord(marked.value.next);
+        return true;
+      }
+      if (marked.code === "conflict") continue;
+      if (marked.code === "durability_uncertain" && attempted.current !== null) {
+        const evidence = attempted.current;
+        const readBack = await this.#readStoredSession(reservation.tenantId, reservation.rsid);
+        if (readBack !== null && sameJson(readBack.value, evidence.next)) {
+          this.#syncActiveRecord(parseStoredSession(readBack, reservation.tenantId, reservation.rsid));
+          return true;
+        }
+        if (readBack !== null && readBack.version === evidence.prior.version && sameJson(readBack.value, evidence.prior.value)) continue;
+      }
+      throw new GatewayRbpFault("unavailable", marked.message, 503, 1011);
+    }
+    return false;
+  }
+
+  async #settleReservedEgressCancellation(
     reservation: DurableEgressReservation,
   ): Promise<boolean> {
     for (let attempt = 0; attempt < MAX_AUTHORIZATION_CAS_ATTEMPTS; attempt += 1) {
@@ -7235,11 +7398,31 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
           if (stored === null) return { kind: "not_reserved" as const };
           const record = parseStoredSession(stored, reservation.tenantId, reservation.rsid);
           const fence = sessionEgressFence(record);
+          const cancellation = fence.cancellation;
           if (
             fence.lease === null ||
             fence.lease.phase !== "reserved" ||
             !sameJson(fence.lease, reservation.lease) ||
-            fence.lease.holderInstanceId !== this.#instanceId
+            fence.lease.holderInstanceId !== this.#instanceId ||
+            (reservation.lease.operation === "dispatch" &&
+              (fence.state !== "cancellation_pending" ||
+                cancellation === null ||
+                cancellation.leaseId !== reservation.lease.leaseId ||
+                cancellation.leaseTicket !== reservation.lease.ticket ||
+                cancellation.envelopeDigest !== reservation.lease.envelopeDigest ||
+                cancellation.expectedNoSendAuthorityDigest !==
+                  record.pending?.expectedNoSendAuthorityDigest ||
+                cancellation.receiptIntentDigest !== digest(canonicalizeJson({
+                  domain: "revagent.gateway.dispatch-cancellation-intent/v1",
+                  rsid: reservation.rsid,
+                  leaseId: reservation.lease.leaseId,
+                  leaseTicket: reservation.lease.ticket,
+                  envelopeDigest: reservation.lease.envelopeDigest,
+                  expectedNoSendAuthorityDigest:
+                    record.pending?.expectedNoSendAuthorityDigest ?? null,
+                  invocationId: record.pending?.invocationId ?? null,
+                })))) ||
+            (reservation.lease.operation !== "dispatch" && fence.state !== "open")
           ) return { kind: "not_reserved" as const };
           const cancelledPending =
             record.pending?.envelopeDigest === reservation.lease.envelopeDigest
@@ -7309,7 +7492,13 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
                       ),
                       cancelledEvidence,
                     ],
-              egressFence: { ...fence, epoch: fence.epoch + 1, lease: null },
+              egressFence: {
+                ...fence,
+                state: "open",
+                epoch: fence.epoch + 1,
+                lease: null,
+                cancellation: null,
+              },
             },
             nowMs,
           );
@@ -7342,6 +7531,16 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       throw new GatewayRbpFault("unavailable", released.message, 503, 1011);
     }
     return false;
+  }
+
+  async #releaseReservedEgressLease(
+    reservation: DurableEgressReservation,
+  ): Promise<boolean> {
+    // Phase one must complete before the no-send receipt may be minted. A
+    // caller's timeout is only an observation bound; this shared promise
+    // continues through phase two in the background coordinator.
+    if (!(await this.#markReservedEgressCancellationPending(reservation))) return false;
+    return await this.#settleReservedEgressCancellation(reservation);
   }
 
   async #sendWithDurableReservation(
@@ -7602,8 +7801,10 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
             ],
             egressFence: {
               ...initialFence,
+              state: "open",
               epoch: initialFence.epoch + 1,
               lease: null,
+              cancellation: null,
             },
           };
           fence = sessionEgressFence(recovered);
@@ -7788,6 +7989,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
               nextTicket: fence.nextTicket + 1,
               lease,
               revocation: null,
+              cancellation: null,
             },
           },
           nowMs,
@@ -7937,6 +8139,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
               nextTicket: fence.nextTicket + 1,
               lease,
               revocation: null,
+              cancellation: null,
             },
           },
           nowMs,
@@ -8512,6 +8715,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
               nextTicket: fence.nextTicket,
               lease: fence.lease?.phase === "started" ? fence.lease : null,
               revocation,
+              cancellation: null,
             },
             normalizedConflictIndex: unclassifiable
               ? {
