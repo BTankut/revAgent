@@ -1234,3 +1234,179 @@ describe("Gateway dispatch proof nominal authority", () => {
       .not.toBe(first.digest(proof));
   });
 });
+
+describe("Gateway omitted-payload recovery admission", () => {
+  it("denies an inline terminal without an explicit omission marker", async () => {
+    const fixture = createRestartableTestStore();
+    const created = new GatewayBridgeSessionAuthority(fixture.store, identity());
+    await created.open();
+    try {
+      const opened = await openConnection(created);
+      await created.receive(opened.connectionId, registration("inline-terminal"));
+      const session = registeredFrame(opened.channel);
+      const invocationId = id();
+      const originResultDigest = `sha256:${"c".repeat(64)}` as const;
+      const outcome = created.createExecutor().execute(bridgeRequest(session.payload.rsid, invocationId));
+      const invoke = await emittedInvoke(opened.channel);
+      await created.receive(opened.connectionId, {
+        v: 1, type: "result", id: id(), rsid: session.payload.rsid, seq: 1, ack: invoke.seq,
+        ts: new Date().toISOString(),
+        payload: {
+          kind: "invocation", invocation_id: invocationId, status: "completed", replayed: false,
+          result: { inline: true }, result_digest: originResultDigest,
+          metrics: { execute_ms: 1, request_bytes: 1, response_bytes: 1, framing: "length-prefixed" },
+        },
+      });
+      await expect(outcome).resolves.toEqual({ state: "completed", result: { inline: true } });
+      const root = fixture.snapshot().records.find((row) => row.namespace === "gateway.rbp-session/v2" && row.key === session.payload.rsid);
+      const binding = (root?.value as { binding?: { sessionBindingId?: string; sessionVersion?: number } }).binding;
+      if (binding?.sessionBindingId === undefined || binding.sessionVersion === undefined) throw new Error("missing fixture binding");
+      await expect(created.admitOmittedPayloadRecovery({
+        tenantId: TENANT_ID, userId: USER_ID, effectiveMcpSessionId: MCP_SESSION_ID,
+        rsid: session.payload.rsid, sessionBindingId: binding.sessionBindingId,
+        sessionVersion: binding.sessionVersion, originInvocationId: invocationId, originResultDigest,
+      })).resolves.toEqual({ kind: "guarded" });
+    } finally {
+      await created.close();
+    }
+  });
+
+  it("fails closed when retained omitted-terminal evidence is corrupted", async () => {
+    const fixture = createRestartableTestStore();
+    const created = new GatewayBridgeSessionAuthority(fixture.store, identity());
+    await created.open();
+    try {
+      const opened = await openConnection(created);
+      await created.receive(opened.connectionId, registration("corrupt-omitted-evidence"));
+      const session = registeredFrame(opened.channel);
+      const invocationId = id();
+      const originResultDigest = `sha256:${"d".repeat(64)}` as const;
+      const outcome = created.createExecutor().execute(bridgeRequest(session.payload.rsid, invocationId));
+      const invoke = await emittedInvoke(opened.channel);
+      await created.receive(opened.connectionId, {
+        v: 1, type: "result", id: id(), rsid: session.payload.rsid, seq: 1, ack: invoke.seq,
+        ts: new Date().toISOString(),
+        payload: {
+          kind: "invocation", invocation_id: invocationId, status: "completed", replayed: true,
+          payload_omitted: true, result_digest: originResultDigest,
+          metrics: { execute_ms: 1, request_bytes: 1, response_bytes: 0, framing: "length-prefixed" },
+        },
+      });
+      await outcome;
+      const root = fixture.snapshot().records.find((row) => row.namespace === "gateway.rbp-session/v2" && row.key === session.payload.rsid);
+      const binding = (root?.value as { binding?: { sessionBindingId?: string; sessionVersion?: number } }).binding;
+      const evidence = fixture.snapshot().records.find((row) => row.namespace === "gateway.rbp-session-evidence/v2" && row.key.startsWith(`${session.payload.rsid}/`));
+      if (binding?.sessionBindingId === undefined || binding.sessionVersion === undefined || evidence === undefined) throw new Error("missing omitted fixture evidence");
+      await fixture.store.transact({ tenantId: TENANT_ID }, async (tx) => {
+        tx.stage({ namespace: evidence.namespace, key: evidence.key, value: {}, expect: { kind: "version", version: evidence.version } });
+      });
+      await expect(created.admitOmittedPayloadRecovery({
+        tenantId: TENANT_ID, userId: USER_ID, effectiveMcpSessionId: MCP_SESSION_ID,
+        rsid: session.payload.rsid, sessionBindingId: binding.sessionBindingId,
+        sessionVersion: binding.sessionVersion, originInvocationId: invocationId, originResultDigest,
+      })).resolves.toEqual({ kind: "guarded" });
+    } finally {
+      // The deliberately corrupt durable child also makes shutdown fail closed.
+      await created.close().catch(() => undefined);
+    }
+  });
+
+  it("admits only a genuine omitted terminal for its authenticated current owner and never re-executes origin", async () => {
+    const fixture = createRestartableTestStore();
+    const created = new GatewayBridgeSessionAuthority(fixture.store, identity());
+    await created.open();
+    try {
+      const opened = await openConnection(created);
+      await created.receive(opened.connectionId, registration("omitted-payload"));
+      const session = registeredFrame(opened.channel);
+      const invocationId = id();
+      const originResultDigest = `sha256:${"a".repeat(64)}` as const;
+      const outcome = created.createExecutor().execute(bridgeRequest(session.payload.rsid, invocationId));
+      const invoke = await emittedInvoke(opened.channel);
+      await created.receive(opened.connectionId, {
+        v: 1,
+        type: "result",
+        id: id(),
+        rsid: session.payload.rsid,
+        seq: 1,
+        ack: invoke.seq,
+        ts: new Date().toISOString(),
+        payload: {
+          kind: "invocation",
+          invocation_id: invocationId,
+          status: "completed",
+          replayed: true,
+          payload_omitted: true,
+          result_digest: originResultDigest,
+          metrics: { execute_ms: 1, request_bytes: 1, response_bytes: 0, framing: "length-prefixed" },
+        },
+      });
+      await expect(outcome).resolves.toEqual({ state: "completed", result: null });
+      const root = fixture.snapshot().records.find((row) =>
+        row.namespace === "gateway.rbp-session/v2" && row.key === session.payload.rsid,
+      );
+      const binding = root?.value as { binding?: { sessionBindingId?: string; sessionVersion?: number } };
+      expect(binding.binding).toMatchObject({ sessionVersion: 1 });
+      const sessionBinding = binding.binding;
+      if (sessionBinding?.sessionBindingId === undefined || sessionBinding.sessionVersion === undefined) {
+        throw new Error("fixture omitted the current bridge session binding");
+      }
+      const terminalEvidence = fixture.snapshot().records.find((row) =>
+        row.namespace === "gateway.rbp-session-evidence/v2" && row.key.startsWith(`${session.payload.rsid}/`),
+      );
+      expect(terminalEvidence?.value).toMatchObject({ entry: {
+        effectiveMcpSessionId: MCP_SESSION_ID,
+        terminalInvocationId: invocationId,
+        terminalTruth: { payloadRetained: false, resultDigest: originResultDigest },
+      } });
+      const input = {
+        tenantId: TENANT_ID,
+        userId: USER_ID,
+        effectiveMcpSessionId: MCP_SESSION_ID,
+        rsid: session.payload.rsid,
+        sessionBindingId: sessionBinding.sessionBindingId,
+        sessionVersion: sessionBinding.sessionVersion,
+        originInvocationId: invocationId,
+        originResultDigest,
+      };
+      const claims = await Promise.all(Array.from({ length: 8 }, async () =>
+        await created.admitOmittedPayloadRecovery(input),
+      ));
+      expect(claims.map((claim) => claim.kind).sort()).toEqual([
+        "admitted", "resume", "resume", "resume", "resume", "resume", "resume", "resume",
+      ]);
+      await expect(created.admitOmittedPayloadRecovery({ ...input, userId: "foreign" }))
+        .resolves.toEqual({ kind: "guarded" });
+      await expect(created.admitOmittedPayloadRecovery({ ...input, originResultDigest: `sha256:${"b".repeat(64)}` }))
+        .resolves.toEqual({ kind: "guarded" });
+      expect(opened.channel.frames.filter((frame) => frame.type === "invoke")).toHaveLength(1);
+      await created.detach(opened.connectionId);
+      await expect(created.admitOmittedPayloadRecovery(input)).resolves.toEqual({ kind: "guarded" });
+      const rebound = await openConnection(created);
+      await created.receive(rebound.connectionId, {
+        v: 1,
+        type: "session_resume",
+        id: id(),
+        ts: new Date().toISOString(),
+        payload: { rsid: session.payload.rsid, resume_token: session.payload.resume_token, last_rx_seq: 1 },
+      });
+      await expect(created.admitOmittedPayloadRecovery(input)).resolves.toEqual({ kind: "guarded" });
+      const reboundRoot = fixture.snapshot().records.find((row) => row.namespace === "gateway.rbp-session/v2" && row.key === session.payload.rsid);
+      const reboundBinding = (reboundRoot?.value as { binding?: { sessionBindingId?: string; sessionVersion?: number } }).binding;
+      if (reboundBinding?.sessionBindingId === undefined || reboundBinding.sessionVersion === undefined) throw new Error("missing rebound fixture binding");
+      await expect(created.admitOmittedPayloadRecovery({
+        ...input, sessionBindingId: reboundBinding.sessionBindingId, sessionVersion: reboundBinding.sessionVersion,
+      })).resolves.toEqual({ kind: "guarded" });
+      await created.receive(rebound.connectionId, {
+        v: 1,
+        type: "session_unregister",
+        id: id(),
+        ts: new Date().toISOString(),
+        payload: { rsid: session.payload.rsid, reason: "operator_requested" },
+      });
+      await expect(created.admitOmittedPayloadRecovery(input)).resolves.toEqual({ kind: "guarded" });
+    } finally {
+      await created.close();
+    }
+  });
+});

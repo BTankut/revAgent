@@ -92,6 +92,11 @@ import {
   documentContextDigest,
   isDocumentContextDigest,
 } from "./documentContextDigest.js";
+import {
+  claimOmittedPayloadRecovery,
+  OMITTED_PAYLOAD_RECOVERY_MAX_AGE_MS,
+  type OmittedPayloadRecoveryClaim,
+} from "./omittedPayloadRecovery.js";
 import type {
   BridgeCarrierCommitResult,
   BridgeCarrierCommitMode,
@@ -312,6 +317,22 @@ export type GatewayDocumentContextObservation = Readonly<{
   readonly contextDigest: string;
 }>;
 
+/**
+ * Internal C39 admission input.  The eventual MCP boundary must populate all
+ * fields from its authenticated request scope; this authority never derives
+ * them from an origin payload or a caller-selected store key.
+ */
+export type GatewayOmittedPayloadRecoveryAdmissionInput = Readonly<{
+  readonly tenantId: string;
+  readonly userId: string;
+  readonly effectiveMcpSessionId: string;
+  readonly rsid: string;
+  readonly sessionBindingId: string;
+  readonly sessionVersion: number;
+  readonly originInvocationId: string;
+  readonly originResultDigest: `sha256:${string}`;
+}>;
+
 type GatewayDocumentContextObserver = (
   observation: GatewayDocumentContextObservation,
 ) => void;
@@ -361,6 +382,17 @@ interface DurableDispatchEvidence {
   /** Domain-separated terminal admission digest for exact CAS replay proof. */
   readonly terminalDigest?: `sha256:${string}` | null;
   readonly terminalCarrierDigest?: `sha256:${string}` | null;
+  /** Exact carrier correlation retained for omitted-result recovery only. */
+  readonly terminalInvocationId?: string;
+  readonly terminalSessionBindingId?: string;
+  readonly terminalSessionVersion?: number;
+  /** Present only on new omitted-result terminals; legacy rows deny recovery. */
+  readonly effectiveMcpSessionId?: string;
+  /** Strictly true only for the admitted RBP result payload_omitted form. */
+  readonly payloadOmittedRecoveryEvidenceVersion?: 1;
+  readonly payloadOmittedRecoveryEligible?: true;
+  readonly payloadOmittedTerminalRecordedAtMs?: number;
+  readonly payloadOmittedTerminalRetentionExpiresAtMs?: number;
   /**
    * Gateway-authored proof that a particular reserved dispatch was cancelled
    * before the carrier invocation boundary.  This deliberately contains
@@ -2569,6 +2601,41 @@ function terminalCorrelationId(
   return envelope.payload.kind === "invocation"
     ? envelope.payload.invocation_id
     : envelope.payload.batch_id;
+}
+
+function isExplicitPayloadOmittedTerminal(
+  envelope: Extract<RbpEnvelope, { type: "result" | "error" }>,
+): envelope is Extract<RbpEnvelope, { type: "result" }> {
+  return envelope.type === "result" && envelope.payload.kind === "invocation" &&
+    envelope.payload.payload_omitted === true && envelope.payload.replayed === true &&
+    typeof envelope.payload.result_digest === "string" && DIGEST_PATTERN.test(envelope.payload.result_digest);
+}
+
+function recoveryEligibleOmittedTerminalEvidence(
+  value: unknown,
+  input: GatewayOmittedPayloadRecoveryAdmissionInput,
+): { readonly terminalDigest: `sha256:${string}`; readonly retentionExpiresAtMs: number } | null {
+  if (!isRecord(value)) return null;
+  const truth = value.terminalTruth;
+  const recordedAtMs = value.payloadOmittedTerminalRecordedAtMs;
+  const retentionExpiresAtMs = value.payloadOmittedTerminalRetentionExpiresAtMs;
+  if (
+    value.payloadOmittedRecoveryEvidenceVersion !== 1 ||
+    value.payloadOmittedRecoveryEligible !== true ||
+    value.terminalInvocationId !== input.originInvocationId ||
+    value.terminalSessionBindingId !== input.sessionBindingId ||
+    value.terminalSessionVersion !== input.sessionVersion ||
+    value.effectiveMcpSessionId !== input.effectiveMcpSessionId ||
+    typeof value.terminalDigest !== "string" || !DIGEST_PATTERN.test(value.terminalDigest) ||
+    typeof value.terminalCarrierDigest !== "string" || !DIGEST_PATTERN.test(value.terminalCarrierDigest) ||
+    typeof recordedAtMs !== "number" || !isSafeNonNegativeInteger(recordedAtMs) ||
+    typeof retentionExpiresAtMs !== "number" || !isSafeNonNegativeInteger(retentionExpiresAtMs) ||
+    retentionExpiresAtMs <= recordedAtMs ||
+    !isRecord(truth) || !hasExactKeys(truth, ["errorCode", "payloadRetained", "resultDigest", "state"]) ||
+    (truth.state !== "completed" && truth.state !== "guarded") ||
+    truth.payloadRetained !== false || truth.resultDigest !== input.originResultDigest || truth.errorCode !== null
+  ) return null;
+  return { terminalDigest: value.terminalDigest as `sha256:${string}`, retentionExpiresAtMs };
 }
 
 /** A terminal identity is never inferred from mutable route or pending state. */
@@ -6562,6 +6629,100 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
   }
 
   /**
+   * Private authority admission for the future correlated-result reader.
+   * This is deliberately not an executor, replay, resource, or MCP surface:
+   * it can persist only an exact claim against a Gateway-recorded omitted
+   * terminal and cannot cause the origin invocation to run.
+   */
+  public async admitOmittedPayloadRecovery(
+    input: GatewayOmittedPayloadRecoveryAdmissionInput,
+  ): Promise<OmittedPayloadRecoveryClaim> {
+    const guarded = (): OmittedPayloadRecoveryClaim => Object.freeze({ kind: "guarded" as const });
+    if (
+      !isBoundedNonEmptyString(input.tenantId) ||
+      !isBoundedNonEmptyString(input.userId) ||
+      !isBoundedNonEmptyString(input.effectiveMcpSessionId) ||
+      !isBoundedNonEmptyString(input.rsid) ||
+      !isGatewayUuidV7(input.sessionBindingId) ||
+      !isSafePositiveInteger(input.sessionVersion) ||
+      !isGatewayUuidV7(input.originInvocationId) ||
+      !DIGEST_PATTERN.test(input.originResultDigest)
+    ) return guarded();
+    try {
+      this.#assertOpen();
+      return await this.#withSessionAuthorization(input.rsid, async () => {
+        for (let attempt = 0; attempt < MAX_AUTHORIZATION_CAS_ATTEMPTS; attempt += 1) {
+          const active = this.#active.get(input.rsid);
+          if (
+            active === undefined ||
+            active.tenantId !== input.tenantId ||
+            active.record.userId !== input.userId ||
+            active.record.sessionBindingId !== input.sessionBindingId ||
+            active.record.sessionVersion !== input.sessionVersion
+          ) return guarded();
+          const admitted = await this.#sessionRepository.transact(
+            { tenantId: input.tenantId },
+            async (tx) => {
+              const stored = await tx.read<GatewayJsonValue>(
+                GATEWAY_RBP_SESSION_NAMESPACE,
+                input.rsid,
+              );
+              if (stored === null) return guarded();
+              const record = parseStoredSession(stored, input.tenantId, input.rsid);
+              if (
+                record.userId !== input.userId ||
+                record.sessionBindingId !== input.sessionBindingId ||
+                record.sessionVersion !== input.sessionVersion ||
+                record.resumeExpiresAtMs <= this.#clock() ||
+                sessionEgressFence(record).state !== "open" ||
+                this.#active.get(input.rsid)?.record.sessionBindingId !== record.sessionBindingId ||
+                this.#active.get(input.rsid)?.record.sessionVersion !== record.sessionVersion
+              ) return guarded();
+              const evidence = record.evidence
+                .map((candidate) => recoveryEligibleOmittedTerminalEvidence(candidate, input))
+                .find((candidate): candidate is NonNullable<typeof candidate> => candidate !== null);
+              if (evidence === undefined) return guarded();
+              const nowMs = this.#clock();
+              return await claimOmittedPayloadRecovery(tx, {
+                owner: {
+                  tenantId: record.tenantId,
+                  userId: record.userId,
+                  effectiveMcpSessionId: input.effectiveMcpSessionId,
+                  rsid: record.rsid,
+                  sessionBindingId: record.sessionBindingId,
+                  sessionVersion: record.sessionVersion,
+                },
+                originInvocationId: input.originInvocationId,
+                originResultDigest: input.originResultDigest,
+                terminalEvidenceDigest: evidence.terminalDigest,
+                terminalRetentionExpiresAtMs: evidence.retentionExpiresAtMs,
+                ownerSessionExpiresAtMs: record.resumeExpiresAtMs,
+                nowMs,
+              }, {
+                tenantId: record.tenantId,
+                userId: record.userId,
+                effectiveMcpSessionId: input.effectiveMcpSessionId,
+                rsid: record.rsid,
+                sessionBindingId: record.sessionBindingId,
+                sessionVersion: record.sessionVersion,
+                active: true,
+                ownerSessionExpiresAtMs: record.resumeExpiresAtMs,
+                nowMs,
+              });
+            },
+          );
+          if (admitted.ok) return admitted.value;
+          if (admitted.code !== "conflict") return guarded();
+        }
+        return guarded();
+      });
+    } catch {
+      // External callers get no store/tenant/expiry oracle from this seam.
+      return guarded();
+    }
+  }
+
+  /**
    * Returns one current, already-authorized route in digest-only form for the
    * conformance audit join. This method cannot create, select, dispatch, or
    * recover a route: ambiguity and liveness loss return null.
@@ -9668,6 +9829,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
               envelopeDigest: pending.envelopeDigest, journalRecords: journals, batchTerminal: null,
               durableJournalVersion: record.sessionVersion, recordedAtMs: this.#clock(),
             };
+        const omittedRecordedAtMs = this.#clock();
         const evidence: DurableDispatchEvidence = {
           envelopeDigest: pending.envelopeDigest,
           acceptance,
@@ -9675,6 +9837,23 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
           terminalTruth: admission.terminalTruth,
           terminalDigest: admission.terminalDigest,
           terminalCarrierDigest: admission.terminalCarrierDigest,
+          terminalInvocationId: admission.correlationId,
+          terminalSessionBindingId: record.sessionBindingId,
+          terminalSessionVersion: record.sessionVersion,
+          ...(pending.effectiveMcpRequestScope !== undefined
+            ? { effectiveMcpSessionId: pending.effectiveMcpRequestScope.effectiveMcpSessionId }
+            : {}),
+          ...(isExplicitPayloadOmittedTerminal(envelope)
+            ? {
+                payloadOmittedRecoveryEligible: true as const,
+                payloadOmittedRecoveryEvidenceVersion: 1 as const,
+                payloadOmittedTerminalRecordedAtMs: omittedRecordedAtMs,
+                payloadOmittedTerminalRetentionExpiresAtMs: Math.min(
+                  record.resumeExpiresAtMs,
+                  omittedRecordedAtMs + OMITTED_PAYLOAD_RECOVERY_MAX_AGE_MS,
+                ),
+              }
+            : {}),
         };
         completion.current = terminalOutcome(envelope);
         return nextSessionRecord(stored, record, {
@@ -9799,6 +9978,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
           envelopeDigest: record.pending!.envelopeDigest, journalRecords: journals, batchTerminal,
           durableJournalVersion: record.sessionVersion, recordedAtMs: this.#clock(),
         };
+        const omittedRecordedAtMs = this.#clock();
         const next = nextSessionRecord(stored, record, {
           ...record,
           sequence: accepted.state,
@@ -9812,6 +9992,23 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
               terminalTruth: original.terminalTruth,
               terminalDigest: original.terminalDigest,
               terminalCarrierDigest: original.terminalCarrierDigest,
+              terminalInvocationId: original.correlationId,
+              terminalSessionBindingId: record.sessionBindingId,
+              terminalSessionVersion: record.sessionVersion,
+              ...(record.pending!.effectiveMcpRequestScope !== undefined
+                ? { effectiveMcpSessionId: record.pending!.effectiveMcpRequestScope.effectiveMcpSessionId }
+                : {}),
+              ...(isExplicitPayloadOmittedTerminal(envelope)
+                ? {
+                    payloadOmittedRecoveryEligible: true as const,
+                    payloadOmittedRecoveryEvidenceVersion: 1 as const,
+                    payloadOmittedTerminalRecordedAtMs: omittedRecordedAtMs,
+                    payloadOmittedTerminalRetentionExpiresAtMs: Math.min(
+                      record.resumeExpiresAtMs,
+                      omittedRecordedAtMs + OMITTED_PAYLOAD_RECOVERY_MAX_AGE_MS,
+                    ),
+                  }
+                : {}),
             },
           ],
         }, this.#clock());
