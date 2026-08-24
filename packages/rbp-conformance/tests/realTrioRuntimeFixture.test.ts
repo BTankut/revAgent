@@ -64,7 +64,14 @@ describe("WP-12 real-trio fixture document route gate", () => {
           documentId: "raw-document-id-must-not-cross",
           payload: "raw-payload-must-not-cross",
           sessionId: "raw-session-id-must-not-cross",
-        } : {}),
+        } : {
+          // The C# anonymous projection keeps these members explicit on
+          // value-free observations; absence would be a synthetic schema.
+          payloadHash: null,
+          contextDigest: null,
+          sourceRevision: null,
+          cacheIncarnationDigest: null,
+        }),
       }),
     });
     const lifecycle = (digest: string | undefined = contextDigest) => [
@@ -120,6 +127,11 @@ describe("WP-12 real-trio fixture document route gate", () => {
       event: "bridge.document_context_observation",
       stage: "snapshot", outcome: "ready", payloadHash: `sha256:${"9".repeat(64)}`,
       contextDigest, sourceRevision: 2, cacheIncarnationDigest: incarnation,
+    });
+    expect(JSON.parse(lifecycle()[0]!.line)).toMatchObject({
+      stage: "probe", outcome: "started", sequence: null,
+      payloadHash: null, contextDigest: null,
+      sourceRevision: null, cacheIncarnationDigest: null,
     });
     expect(JSON.parse(redacted[1]!.line)).toMatchObject({
       stage: "snapshot", sequence: null, contextDigest,
