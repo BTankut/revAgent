@@ -1298,6 +1298,15 @@ describe("M2 north MCP first slice", () => {
         resourceMetadataUrl: new URL(
           "https://gateway.example.test/.well-known/oauth-protected-resource/mcp",
         ),
+        payloadRecovery: {
+          ready: () => true,
+          async admit() {
+            return { kind: "guarded" as const };
+          },
+          async replayCompleted() {
+            return null;
+          },
+        },
         authenticator: {
           async authenticate(request) {
             const authorization = request.headers.authorization;
@@ -1402,7 +1411,7 @@ describe("M2 north MCP first slice", () => {
           text: instructionPackage.modules[0]!.manifestBytes,
         }),
       ]);
-      expect(FULL_CATALOG_VIEW.entries()).toHaveLength(40);
+      expect(FULL_CATALOG_VIEW.entries()).toHaveLength(41);
       expect(FULL_CATALOG_VIEW.capabilityIndex().tools).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
@@ -1418,14 +1427,19 @@ describe("M2 north MCP first slice", () => {
 
       const legacyTools = await legacyClient.listTools();
       expect(legacyTools.tools.map((tool) => tool.name)).toEqual([
+        "core.dispatch.payload_recovery",
         "core.ui.state",
       ]);
       for (const tool of legacyTools.tools) {
         expect(tool.inputSchema).toEqual(
           registry.require(tool.name).inputJsonSchema,
         );
-        expect(tool.inputSchema.properties).toEqual({});
       }
+      expect(legacyTools.tools[0]?.inputSchema.properties).toEqual({
+        expected_result_digest: expect.any(Object),
+        origin_invocation_id: expect.any(Object),
+      });
+      expect(legacyTools.tools[1]?.inputSchema.properties).toEqual({});
       expect(fixture.getMethodExecutionCount("mcp_status")).toBe(1);
       expect(fixture.getMethodExecutionCount("get_ui_state")).toBe(0);
 
@@ -1561,6 +1575,7 @@ describe("M2 north MCP first slice", () => {
 
       const modernTools = await modernClient.listTools();
       expect(modernTools.tools.map((tool) => tool.name)).toEqual([
+        "core.dispatch.payload_recovery",
         "core.ui.state",
       ]);
       for (const tool of modernTools.tools) {
@@ -1725,6 +1740,54 @@ describe("M2 north MCP first slice", () => {
       rmSync(temporaryRoot, { recursive: true, force: true });
     }
   }, 45_000);
+
+  it("omits the C39 recovery tool from every north registry surface when readiness is disabled", async () => {
+    const registry = buildNorthFirstSliceCallableRegistry(VERIFIED_CATALOG);
+    const dispatcher = new GatewayDispatcher(
+      registry,
+      [{
+        binding: "bridge",
+        async execute(): Promise<GatewayExecutorOutcome> {
+          return { state: "completed", result: { ok: true } };
+        },
+      }],
+      dispatcherOptions(),
+    );
+    const authInfo: AuthInfo = { token: TOKEN, clientId: "c39-readiness-off", scopes: ["mcp:tools"] };
+    let endpoint: NorthMcpEndpointHandle | undefined;
+    let client: Client | undefined;
+    let transport: StreamableHTTPClientTransport | undefined;
+    try {
+      endpoint = await startNorthMcpEndpoint({
+        dispatcher,
+        registry,
+        catalogViewFor: () => FULL_CATALOG_VIEW,
+        invocationRouteFor,
+        requestState: { key: REQUEST_STATE_KEY },
+        resourceMetadataUrl: new URL("https://gateway.example.test/.well-known/oauth-protected-resource/mcp"),
+        authenticator: {
+          async authenticate(request) {
+            return request.headers.authorization === `Bearer ${TOKEN}`
+              ? authenticatedRequest(PRINCIPAL_KEY, authInfo)
+              : null;
+          },
+        },
+      });
+      client = new Client({ name: "C39 readiness disabled", version: "0.1.0" });
+      transport = new StreamableHTTPClientTransport(endpoint.endpoint, {
+        requestInit: { headers: { authorization: `Bearer ${TOKEN}` } },
+      });
+      await client.connect(transport);
+      expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual([
+        "core.ui.state",
+      ]);
+      const capability = await client.readResource({ uri: "revagent://capability-index" });
+      expect(JSON.stringify(capability)).not.toContain("core.dispatch.payload_recovery");
+    } finally {
+      await Promise.allSettled([client?.close(), transport?.close()]);
+      await endpoint?.close().catch(() => undefined);
+    }
+  });
 
   it("verifies signed requestState before dispatch and binds it to actor, Gateway session, and method", async () => {
     const reorderedScopesToken = "m2-reordered-scopes-test-token";
