@@ -334,6 +334,24 @@ const DOCUMENT_CONTEXT_OUTCOMES = new Set([
 ]);
 const SHA256 = /^sha256:[0-9a-f]{64}$/u;
 
+/**
+ * A fixture cache revision is meaningful only together with the incarnation
+ * that produced it.  Do not retain either half from child stderr on its own:
+ * a restart can otherwise make a numerically newer revision look current.
+ */
+function documentContextSourcePair(value: Record<string, unknown>):
+  | Readonly<{ readonly sourceRevision: number; readonly cacheIncarnationDigest: `sha256:${string}` }>
+  | null {
+  if (!Number.isSafeInteger(value.sourceRevision) || Number(value.sourceRevision) < 1 ||
+      typeof value.cacheIncarnationDigest !== "string" || !SHA256.test(value.cacheIncarnationDigest)) {
+    return null;
+  }
+  return Object.freeze({
+    sourceRevision: Number(value.sourceRevision),
+    cacheIncarnationDigest: value.cacheIncarnationDigest as `sha256:${string}`,
+  });
+}
+
 function isSafeDocumentContextSequence(value: unknown): value is number {
   return Number.isSafeInteger(value) && Number(value) >= 1;
 }
@@ -378,6 +396,12 @@ export function redactBridgeTranscript(
           typeof parsed.rsidHash === "string" && SHA256.test(parsed.rsidHash) &&
           (parsed.payloadHash === null || typeof parsed.payloadHash === "string") &&
           (parsed.sequence === null || isSafeDocumentContextSequence(parsed.sequence))) {
+        const source = documentContextSourcePair(parsed);
+        // The real C# projection admits neither a partial pair nor malformed
+        // source identity.  It is a diagnostic boundary, never a repair path.
+        if ((parsed.sourceRevision === null || parsed.sourceRevision === undefined) !==
+            (parsed.cacheIncarnationDigest === null || parsed.cacheIncarnationDigest === undefined) ||
+            ((parsed.sourceRevision !== null && parsed.sourceRevision !== undefined) && source === null)) continue;
         retained.push(Object.freeze({
           stream: "stderr",
           at: record.at,
@@ -391,6 +415,10 @@ export function redactBridgeTranscript(
             rsidHash: parsed.rsidHash,
             sequence: isSafeDocumentContextSequence(parsed.sequence) ? parsed.sequence : null,
             payloadHashPresent: typeof parsed.payloadHash === "string" && SHA256.test(parsed.payloadHash),
+            ...(source === null ? {} : {
+              sourceRevision: source.sourceRevision,
+              cacheIncarnationDigest: source.cacheIncarnationDigest,
+            }),
           }),
         }));
       }

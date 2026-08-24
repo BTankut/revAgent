@@ -146,6 +146,8 @@ export const REAL_TRIO_DOCUMENT_CONTEXT_FAILURE_SCHEMA =
 
 export interface RealTrioDocumentContextAudit {
   readonly revision: number;
+  /** Fixture-local cache epoch; revision is never compared without this. */
+  readonly cacheIncarnationDigest: `sha256:${string}`;
   readonly cachedContextHash: string;
   readonly activeDocumentIdentityHash: string;
   readonly acknowledgementHash: string;
@@ -163,6 +165,11 @@ interface RealTrioDocumentContextCorrelation {
   readonly sendRecordedAt: string | null;
 }
 
+interface RealTrioDocumentContextSourcePair {
+  readonly sourceRevision: number;
+  readonly cacheIncarnationDigest: `sha256:${string}`;
+}
+
 /**
  * The route selector deliberately consumes the one redacted Gateway audit
  * response rather than combining a session listing with a later audit read.
@@ -176,11 +183,17 @@ export interface RealTrioCurrentRouteSelectorInput {
   readonly precedingProbe: RealTrioDocumentContextCursorRow | null;
   readonly audit: unknown;
   readonly baseline: RealTrioGatewayAuditBaseline;
+  /** Exact fixture control pair; lifecycle rows cannot borrow an older cache. */
+  readonly control: Pick<RealTrioDocumentContextAudit, "revision" | "cacheIncarnationDigest">;
 }
 
 export interface RealTrioGatewayAuditBaseline {
   readonly processEpoch: string;
   readonly observationOrdinal: number;
+  /** Present only for a successful real-case audit with one current acceptance. */
+  readonly acceptedObservationOrdinal?: number;
+  /** Value-free exact identity of the baseline's current durable route. */
+  readonly currentIdentity?: `sha256:${string}`;
 }
 
 export interface RealTrioRuntimeFixtureOptions {
@@ -277,11 +290,6 @@ function isObject(value: unknown): value is Record<string, unknown> {
 
 function isSha256(value: unknown): value is `sha256:${string}` {
   return typeof value === "string" && /^sha256:[0-9a-f]{64}$/u.test(value);
-}
-
-function isCanonicalUtc(value: unknown): value is string {
-  return typeof value === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(value) &&
-    Number.isFinite(Date.parse(value)) && new Date(value).toISOString() === value;
 }
 
 function isProcessEpoch(value: unknown): value is string {
@@ -485,11 +493,12 @@ function hash(value: unknown, label: string): string {
 function documentContextControlAudit(value: unknown): RealTrioDocumentContextAudit {
   if (!isObject(value) || value.action !== "apply_document_context" ||
       !Number.isSafeInteger(value.revision) || Number(value.revision) < 1 ||
-      value.activeDocumentIdentityHash === null) {
+      value.activeDocumentIdentityHash === null || !isSha256(value.cacheIncarnationDigest)) {
     throw new Error("fixture apply_document_context acknowledgement is malformed");
   }
   return Object.freeze({
     revision: Number(value.revision),
+    cacheIncarnationDigest: value.cacheIncarnationDigest,
     cachedContextHash: hash(value.cachedContextHash, "cached context hash"),
     activeDocumentIdentityHash: hash(value.activeDocumentIdentityHash, "document identity hash"),
     acknowledgementHash: hash(value.acknowledgementHash, "control acknowledgement hash"),
@@ -506,6 +515,7 @@ export function probeRealTrioFixtureDocumentContext(
   }
   const evidence = value.documentContextEvidence;
   if (evidence.currentRevision !== expected.revision ||
+      evidence.cacheIncarnationDigest !== expected.cacheIncarnationDigest ||
       evidence.cachedContextHash !== expected.cachedContextHash ||
       evidence.activeDocumentIdentityHash !== expected.activeDocumentIdentityHash ||
       evidence.lastControlAcknowledgementHash !== expected.acknowledgementHash) {
@@ -661,6 +671,7 @@ export function correlatedDocumentContextSendFromCursor(
 
 interface LocalDocumentContextCandidate extends RealTrioDocumentContextCorrelation {
   readonly contextDigest: string;
+  readonly source: RealTrioDocumentContextSourcePair;
 }
 
 interface StrictDocumentContextCandidate extends LocalDocumentContextCandidate {
@@ -675,7 +686,15 @@ type StrictDocumentObservation = Readonly<{
   readonly rsidHash: `sha256:${string}`;
   readonly sequence: number | null;
   readonly contextDigest: string | null;
+  readonly source: RealTrioDocumentContextSourcePair | null;
 }>;
+
+function sourcePair(value: Record<string, unknown>): RealTrioDocumentContextSourcePair | null {
+  if (!Number.isSafeInteger(value.sourceRevision) || Number(value.sourceRevision) < 1 ||
+      !isSha256(value.cacheIncarnationDigest)) return null;
+  return Object.freeze({ sourceRevision: Number(value.sourceRevision),
+    cacheIncarnationDigest: value.cacheIncarnationDigest });
+}
 
 /**
  * A document observation is an ordered journal fact, not a best-effort log
@@ -696,11 +715,16 @@ function strictDocumentObservation(row: RealTrioDocumentContextCursorRow): Stric
   const context = typeof value.contextDigest === "string" && /^[0-9a-f]{64}$/u.test(value.contextDigest)
     ? value.contextDigest
     : null;
+  const hasRevision = value.sourceRevision !== null && value.sourceRevision !== undefined;
+  const hasIncarnation = value.cacheIncarnationDigest !== null && value.cacheIncarnationDigest !== undefined;
+  if (hasRevision !== hasIncarnation) return null;
+  const source = hasRevision ? sourcePair(value) : null;
+  if (hasRevision && source === null) return null;
   if (value.stage === "probe" && value.outcome === "started") {
-    return Object.freeze({ stage: "probe", rsidHash: value.rsidHash, sequence, contextDigest: null });
+    return Object.freeze({ stage: "probe", rsidHash: value.rsidHash, sequence, contextDigest: null, source });
   }
   if (value.stage === "ack" && value.outcome === "durably_acknowledged" && sequence !== null) {
-    return Object.freeze({ stage: "ack", rsidHash: value.rsidHash, sequence, contextDigest: null });
+    return Object.freeze({ stage: "ack", rsidHash: value.rsidHash, sequence, contextDigest: null, source });
   }
   if ((value.stage === "snapshot" && value.outcome === "ready") ||
       (value.stage === "queue" && value.outcome === "durably_queued") ||
@@ -708,8 +732,8 @@ function strictDocumentObservation(row: RealTrioDocumentContextCursorRow): Stric
     // A snapshot establishes only watcher identity and context.  The durable
     // queue operation is the sole source of the cycle sequence.
     if ((value.stage === "snapshot" && sequence !== null) ||
-        (value.stage !== "snapshot" && sequence === null) || context === null) return null;
-    return Object.freeze({ stage: value.stage, rsidHash: value.rsidHash, sequence, contextDigest: context });
+        (value.stage !== "snapshot" && sequence === null) || context === null || source === null) return null;
+    return Object.freeze({ stage: value.stage, rsidHash: value.rsidHash, sequence, contextDigest: context, source });
   }
   // `failure`, a malformed stage, and a future/unknown document event are all
   // terminal for this retained grammar.  They must never be compressed away.
@@ -757,7 +781,7 @@ function parseDocumentContextGrammar(input: {
     readonly rsidHash: `sha256:${string}`;
     lastSentSequence: number | null;
     lastAcknowledgedSequence: number | null;
-    cycle: { readonly sequence: number | null; readonly contextDigest: string; readonly startCursor: string; readonly startIndex: number; readonly stage: "snapshot" | "queue" } | null;
+    cycle: { readonly sequence: number | null; readonly contextDigest: string; readonly source: RealTrioDocumentContextSourcePair; readonly startCursor: string; readonly startIndex: number; readonly stage: "snapshot" | "queue" } | null;
     readonly sent: Map<number, ParsedDocumentContextCandidate>;
   } | null = null;
   const candidates: ParsedDocumentContextCandidate[] = [];
@@ -810,6 +834,7 @@ function parseDocumentContextGrammar(input: {
       watcher.cycle = {
         sequence: null,
         contextDigest: observation.contextDigest!,
+        source: observation.source!,
         startCursor: row.cursor,
         startIndex: index,
         stage: "snapshot",
@@ -819,6 +844,8 @@ function parseDocumentContextGrammar(input: {
     if (observation.stage === "queue") {
       if (watcher.cycle === null || watcher.cycle.stage !== "snapshot" ||
           watcher.cycle.contextDigest !== observation.contextDigest ||
+          watcher.cycle.source.sourceRevision !== observation.source!.sourceRevision ||
+          watcher.cycle.source.cacheIncarnationDigest !== observation.source!.cacheIncarnationDigest ||
           (watcher.lastSentSequence !== null && observation.sequence! <= watcher.lastSentSequence)) return null;
       watcher.cycle = { ...watcher.cycle, sequence: observation.sequence!, stage: "queue" };
       continue;
@@ -826,7 +853,9 @@ function parseDocumentContextGrammar(input: {
     // send/sent completes exactly the snapshot -> queue -> send cycle.
     if (watcher.cycle === null || watcher.cycle.stage !== "queue" ||
         watcher.cycle.sequence !== observation.sequence ||
-        watcher.cycle.contextDigest !== observation.contextDigest) return null;
+        watcher.cycle.contextDigest !== observation.contextDigest ||
+        watcher.cycle.source.sourceRevision !== observation.source!.sourceRevision ||
+        watcher.cycle.source.cacheIncarnationDigest !== observation.source!.cacheIncarnationDigest) return null;
     const candidate = Object.freeze({
       rsidHash: watcher.rsidHash,
       sequence: observation.sequence!,
@@ -835,6 +864,7 @@ function parseDocumentContextGrammar(input: {
       sendTranscriptIndex: index,
       sendRecordedAt: row.at.length === 0 ? null : row.at,
       contextDigest: observation.contextDigest!,
+      source: observation.source!,
       startCursor: watcher.cycle.startCursor,
       startTranscriptIndex: watcher.cycle.startIndex,
       watcherOrdinal: watcher.ordinal,
@@ -923,7 +953,9 @@ export function selectCurrentDocumentContextSendFromCursor(
   }
   const selected = parsed.candidates.filter((candidate) => candidate.watcherOrdinal === parsed.currentWatcherOrdinal &&
     candidate.rsidHash === current.rsidHash && candidate.sequence === current.sequence &&
-    candidate.contextDigest === current.contextDigest);
+    candidate.contextDigest === current.contextDigest &&
+    candidate.source.sourceRevision === input.control.revision &&
+    candidate.source.cacheIncarnationDigest === input.control.cacheIncarnationDigest);
   if (selected.length !== 1) return null;
   return Object.freeze({ ...selected[0]!, routeDigest: current.routeDigest,
     controlCursor: input.controlCursor, precedingProbe: input.precedingProbe });
@@ -955,6 +987,7 @@ async function waitForDocumentContextSend(input: {
   readonly generation: number;
   readonly precedingProbe: RealTrioDocumentContextCursorRow | null;
   readonly gatewayBaseline: RealTrioGatewayAuditBaseline;
+  readonly control: Pick<RealTrioDocumentContextAudit, "revision" | "cacheIncarnationDigest">;
   readonly auditCapture: GatewayAuditCapture;
   readonly timeoutMs?: number;
 }): Promise<StrictDocumentContextCandidate> {
@@ -974,6 +1007,7 @@ async function waitForDocumentContextSend(input: {
       precedingProbe: input.precedingProbe,
       audit: await readCapturedRealCaseAudit(input.supervisor, input.auditCapture),
       baseline: input.gatewayBaseline,
+      control: input.control,
     });
     if (expected !== null) return expected;
     if (Date.now() >= deadline) {
@@ -1045,7 +1079,7 @@ export function hasGatewayAcceptedDocumentContextRoute(
       audit.documentContextProcessEpoch !== baseline.processEpoch || !isProcessEpoch(audit.documentContextProcessEpoch) ||
       !Number.isSafeInteger(audit.documentContextObservationHighWaterOrdinal) ||
       Number(audit.documentContextObservationHighWaterOrdinal) < baseline.observationOrdinal ||
-      !isCanonicalUtc(expected.sendRecordedAt) || current === null || !isSha256(routeDigest) ||
+      current === null || !isSha256(routeDigest) ||
       current.rsidHash !== expected.rsidHash || current.sequence !== expected.sequence ||
       current.contextDigest !== contextDigest ||
       current.routeDigest !== routeDigest) return false;
@@ -1059,8 +1093,7 @@ export function hasGatewayAcceptedDocumentContextRoute(
     value.sessionRecordVersion === current.sessionRecordVersion &&
     isSha256(value.rsidHash) && Number.isSafeInteger(value.observedSequence) && Number(value.observedSequence) >= 1 &&
     Number.isSafeInteger(value.observationOrdinal) && Number(value.observationOrdinal) > baseline.observationOrdinal &&
-    Number(value.observationOrdinal) <= Number(audit.documentContextObservationHighWaterOrdinal) &&
-    isCanonicalUtc(value.observedAtUtc) && Date.parse(value.observedAtUtc) >= Date.parse(expected.sendRecordedAt));
+    Number(value.observationOrdinal) <= Number(audit.documentContextObservationHighWaterOrdinal));
   return candidates.length === 1;
 }
 
@@ -1068,8 +1101,22 @@ export function gatewayAuditBaseline(audit: unknown): RealTrioGatewayAuditBaseli
   if (!isObject(audit) || audit.documentContextEpochSchema !== "revagent.wp12-document-context-epoch/v1" ||
       !isProcessEpoch(audit.documentContextProcessEpoch) || !Number.isSafeInteger(audit.documentContextObservationHighWaterOrdinal) ||
       Number(audit.documentContextObservationHighWaterOrdinal) < 0) return null;
-  return Object.freeze({ processEpoch: audit.documentContextProcessEpoch,
+  const baseline = Object.freeze({ processEpoch: audit.documentContextProcessEpoch,
     observationOrdinal: Number(audit.documentContextObservationHighWaterOrdinal) });
+  const current = currentRouteAuditIdentity(audit, baseline);
+  if (current === null || !Array.isArray(audit.documentContextUpdates)) return baseline;
+  const accepted = audit.documentContextUpdates.filter((value) => isObject(value) &&
+    value.contractVersion === "revagent.wp12-document-context-audit/v1" &&
+    value.event === "gateway.doc_context_update_observation" && value.stage === "accepted" &&
+    value.processEpoch === baseline.processEpoch && value.rsidHash === current.rsidHash &&
+    value.observedSequence === current.sequence && value.contextDigest === current.contextDigest &&
+    value.routeDigest === current.routeDigest && value.recordDigest === current.recordDigest &&
+    value.sessionBindingDigest === current.sessionBindingDigest && value.connectionDigest === current.connectionDigest &&
+    value.sessionRecordVersion === current.sessionRecordVersion && Number.isSafeInteger(value.observationOrdinal) &&
+    Number(value.observationOrdinal) >= 1 && Number(value.observationOrdinal) <= baseline.observationOrdinal);
+  if (accepted.length !== 1) return baseline;
+  return Object.freeze({ ...baseline, acceptedObservationOrdinal: Number(accepted[0]!.observationOrdinal),
+    currentIdentity: digest(current) as `sha256:${string}` });
 }
 
 async function waitForPostRouteDocumentContextHeartbeatAck(input: {
@@ -1276,6 +1323,15 @@ export async function startRealTrioRuntimeFixture(
     // This is the normal attested loopback fixture document-context event;
     // route authority is still earned only when the C# watcher forwards it
     // and the Gateway's public audit observes the live route.
+    // Pre-control cursor/generation and successful Gateway audit are one
+    // causal floor.  A post-control audit is never allowed to become a new
+    // baseline: that would permit the control's own historical route to win.
+    const preControlSnapshot = supervisor.readDocumentContextSnapshot();
+    const gatewayBaseline = gatewayAuditBaseline(await readCapturedRealCaseAudit(supervisor, auditCapture));
+    if (gatewayBaseline === null || gatewayBaseline.acceptedObservationOrdinal === undefined ||
+        gatewayBaseline.currentIdentity === undefined) {
+      throw new Error("real trio Gateway pre-control audit baseline lacks one current accepted identity");
+    }
     const controlAudit = documentContextControlAudit(await supervisor.fixtureControl("apply_document_context", {
       event: realTrioFixtureDocumentContextEvent(),
     }));
@@ -1283,19 +1339,22 @@ export async function startRealTrioRuntimeFixture(
     // unmatched probe (if any) is carried separately; all later lifecycle and
     // ACK checks use opaque cursor `since` queries, never array lengths.
     const controlAckSnapshot = supervisor.readDocumentContextSnapshot();
-    const precedingProbe = unmatchedDocumentContextProbe(controlAckSnapshot);
+    if (controlAckSnapshot.generation !== preControlSnapshot.generation ||
+        BigInt(controlAckSnapshot.highWaterCursor) < BigInt(preControlSnapshot.highWaterCursor)) {
+      throw new Error("real trio document-context generation changed across control");
+    }
+    const precedingProbe = unmatchedDocumentContextProbe(preControlSnapshot);
     timeline.push("control_ack");
-    const gatewayBaseline = gatewayAuditBaseline(await readCapturedRealCaseAudit(supervisor, auditCapture));
-    if (gatewayBaseline === null) throw new Error("real trio Gateway audit baseline is unavailable");
     // This probe is value-free and must succeed before any public Gateway
     // route can qualify. The regular 15 s C# watcher is the only forwarder.
     failureReason = "stage_timeout";
     const expected = await waitForDocumentContextSend({
       supervisor,
-      controlCursor: controlAckSnapshot.highWaterCursor,
-      generation: controlAckSnapshot.generation,
+      controlCursor: preControlSnapshot.highWaterCursor,
+      generation: preControlSnapshot.generation,
       precedingProbe,
       gatewayBaseline,
+      control: controlAudit,
       auditCapture,
       timeoutMs: options.documentContextTimeoutMs,
     });

@@ -28,7 +28,10 @@ describe("WP-12 real-trio fixture document route gate", () => {
   const cursorRow = (cursor: string, stage: string, outcome: string, sequence: number | null,
     hash = `sha256:${"a".repeat(64)}`) => ({ cursor, at: "2026-08-24T00:00:01.000Z", line: JSON.stringify({
       event: "bridge.document_context_observation", stage, outcome, rsidHash: hash, sequence,
-      ...(["snapshot", "queue", "send"].includes(stage) ? { contextDigest: "d".repeat(64) } : {}),
+      ...(["snapshot", "queue", "send"].includes(stage) ? {
+        contextDigest: "d".repeat(64), sourceRevision: 1,
+        cacheIncarnationDigest: `sha256:${"c".repeat(64)}`,
+      } : {}),
     }) });
 
   it("uses cursor rows for strict control lifecycle and later ACK, never transcript indices", () => {
@@ -64,6 +67,48 @@ describe("WP-12 real-trio fixture document route gate", () => {
     ], 1, null)).toBeNull();
   });
 
+  it("binds a pre-control lifecycle to the exact acknowledged revision and cache incarnation", () => {
+    const rsidHash = `sha256:${"a".repeat(64)}`;
+    const incarnation = `sha256:${"b".repeat(64)}`;
+    const epoch = "123e4567-e89b-42d3-a456-426614174000";
+    const contextDigest = "c".repeat(64);
+    const routeDigest = `sha256:${"d".repeat(64)}`;
+    const source = (revision: number, digest = incarnation) => ({ sourceRevision: revision, cacheIncarnationDigest: digest });
+    const event = (cursor: number, stage: string, outcome: string, sequence: number | null, pair = source(2)) => ({
+      cursor: String(cursor), at: "not-a-clock", line: JSON.stringify({
+        event: "bridge.document_context_observation", stage, outcome, rsidHash, sequence,
+        ...(["snapshot", "queue", "send"].includes(stage) ? { contextDigest, ...pair } : {}),
+      }),
+    });
+    const audit = {
+      documentContextEpochSchema: "revagent.wp12-document-context-epoch/v1", documentContextProcessEpoch: epoch,
+      documentContextGeneration: 1, documentContextObservationHighWaterOrdinal: 12,
+      documentContextCurrentRoute: { processEpoch: epoch, rsidHash, observedSequence: 3, contextDigest, routeDigest,
+        recordDigest: `sha256:${"e".repeat(64)}`, sessionBindingDigest: `sha256:${"f".repeat(64)}`,
+        connectionDigest: `sha256:${"1".repeat(64)}`, sessionRecordVersion: 1 },
+      documentContextUpdates: [{ contractVersion: "revagent.wp12-document-context-audit/v1",
+        event: "gateway.doc_context_update_observation", stage: "accepted", processEpoch: epoch, rsidHash,
+        observedSequence: 3, contextDigest, routeDigest, recordDigest: `sha256:${"e".repeat(64)}`,
+        sessionBindingDigest: `sha256:${"f".repeat(64)}`, connectionDigest: `sha256:${"1".repeat(64)}`,
+        sessionRecordVersion: 1, observationOrdinal: 12 }],
+    };
+    const select = (pair = source(2), rows = [
+      event(6, "probe", "started", null), event(7, "snapshot", "ready", null, pair),
+      event(8, "queue", "durably_queued", 3, pair), event(9, "send", "sent", 3, pair),
+      event(10, "ack", "durably_acknowledged", 3),
+    ]) => selectCurrentDocumentContextSendFromCursor({ rows, generation: 1, controlCursor: "5",
+      precedingProbe: null, audit, baseline: { processEpoch: epoch, observationOrdinal: 11 },
+      control: { revision: 2, cacheIncarnationDigest: incarnation } });
+    // The watcher may begin before ACK; only its post-floor cycle can qualify.
+    expect(select()).toMatchObject({ sendCursor: "9", source: source(2) });
+    // Identical normalized context cannot borrow an older post-baseline pair.
+    expect(select(source(1))).toBeNull();
+    expect(select(source(2, `sha256:${"9".repeat(64)}`))).toBeNull();
+    expect(select({ sourceRevision: 0, cacheIncarnationDigest: incarnation })).toBeNull();
+    expect(select({ sourceRevision: Number.MAX_SAFE_INTEGER + 1, cacheIncarnationDigest: incarnation })).toBeNull();
+    expect(select({ sourceRevision: 2, cacheIncarnationDigest: "sha256:bad" } as never)).toBeNull();
+  });
+
   it("selects only the current coherent route lifecycle when seq1 advances to seq2", () => {
     const hash = `sha256:${"a".repeat(64)}`;
     const digest1 = `sha256:${"b".repeat(64)}`;
@@ -78,7 +123,9 @@ describe("WP-12 real-trio fixture document route gate", () => {
     const lifecycle = (start: number, sequence: number, contextDigest: string) => ["probe", "snapshot", "queue", "send"].map((stage, offset) => ({
       cursor: String(start + offset), at: "2026-08-24T00:00:01.000Z", line: JSON.stringify({
         ...JSON.parse(row(start + offset, stage, stage === "snapshot" ? null : sequence, digest1)),
-        ...(["snapshot", "queue", "send"].includes(stage) ? { contextDigest } : {}),
+        ...(["snapshot", "queue", "send"].includes(stage) ? {
+          contextDigest, sourceRevision: 1, cacheIncarnationDigest: `sha256:${"c".repeat(64)}`,
+        } : {}),
       }),
     }));
     const audit = (sequence: number, routeDigest: string, contextDigest: string, version = 3) => ({
@@ -95,6 +142,7 @@ describe("WP-12 real-trio fixture document route gate", () => {
     const select = (rows: readonly ReturnType<typeof lifecycle>[number][], value: unknown) => selectCurrentDocumentContextSendFromCursor({
       rows, generation: 1, controlCursor: "0", precedingProbe: null, audit: value,
       baseline: { processEpoch: epoch, observationOrdinal: 4 },
+      control: { revision: 1, cacheIncarnationDigest: `sha256:${"c".repeat(64)}` },
     });
     const both = [...lifecycle(1, 1, context1), ...lifecycle(5, 2, context2)];
     expect(select(both, audit(2, digest2, context2))).toMatchObject({ sequence: 2, sendCursor: "8", routeDigest: digest2 });
@@ -112,7 +160,9 @@ describe("WP-12 real-trio fixture document route gate", () => {
     const epoch = "123e4567-e89b-42d3-a456-426614174000";
     const event = (cursor: number, stage: string, outcome: string, sequence: number) => ({ cursor: String(cursor), at: "2026-08-24T00:00:01.000Z", line: JSON.stringify({
       event: "bridge.document_context_observation", stage, outcome, rsidHash: hash, sequence,
-      ...(["snapshot", "queue", "send"].includes(stage) ? { contextDigest } : {}),
+      ...(["snapshot", "queue", "send"].includes(stage) ? {
+        contextDigest, sourceRevision: 1, cacheIncarnationDigest: `sha256:${"c".repeat(64)}`,
+      } : {}),
     }) });
     const flow = [event(1, "probe", "started", 2), event(2, "snapshot", "ready", null), event(3, "queue", "durably_queued", 2), event(4, "send", "sent", 2)];
     const current = { processEpoch: epoch, rsidHash: hash, observedSequence: 2, contextDigest, routeDigest: digest, recordDigest: `sha256:${"f".repeat(64)}`, sessionBindingDigest: `sha256:${"1".repeat(64)}`, connectionDigest: `sha256:${"2".repeat(64)}`, sessionRecordVersion: 4 };
@@ -121,7 +171,7 @@ describe("WP-12 real-trio fixture document route gate", () => {
       documentContextGeneration: 1, documentContextObservationHighWaterOrdinal: 5, documentContextCurrentRoute: current,
       documentContextUpdates: updates,
     });
-    const select = (rows: readonly typeof flow[number][], value: unknown) => selectCurrentDocumentContextSendFromCursor({ rows, generation: 1, controlCursor: "0", precedingProbe: null, audit: value, baseline: { processEpoch: epoch, observationOrdinal: 4 } });
+    const select = (rows: readonly typeof flow[number][], value: unknown) => selectCurrentDocumentContextSendFromCursor({ rows, generation: 1, controlCursor: "0", precedingProbe: null, audit: value, baseline: { processEpoch: epoch, observationOrdinal: 4 }, control: { revision: 1, cacheIncarnationDigest: `sha256:${"c".repeat(64)}` } });
     expect(select([event(1, "ack", "durably_acknowledged", 2), ...flow], audit())).toBeNull();
     expect(select([flow[0]!, flow[1]!, flow[1]!, flow[2]!, flow[3]!], audit())).toBeNull();
     expect(select(flow, audit([{ contractVersion: "revagent.wp12-document-context-audit/v1", event: "gateway.doc_context_update_observation", stage: "accepted", ...current, observationOrdinal: 5 }, { contractVersion: "revagent.wp12-document-context-audit/v1", event: "gateway.doc_context_update_observation", stage: "accepted", ...current, observationOrdinal: 5 }]))).toBeNull();
@@ -142,7 +192,9 @@ describe("WP-12 real-trio fixture document route gate", () => {
       contextDigest: string | null = null, rsidHash = hash) => ({
       cursor: String(cursor), at: "2026-08-24T00:00:01.000Z", line: JSON.stringify({
         event: "bridge.document_context_observation", stage, outcome, rsidHash, sequence,
-        ...(contextDigest === null ? {} : { contextDigest }),
+        ...(contextDigest === null ? {} : {
+          contextDigest, sourceRevision: 1, cacheIncarnationDigest: `sha256:${"c".repeat(64)}`,
+        }),
       }),
     });
     const probe = (cursor: number, rsidHash = hash) => row(cursor, "probe", "started", null, null, rsidHash);
@@ -172,7 +224,8 @@ describe("WP-12 real-trio fixture document route gate", () => {
     });
     const select = (rows: readonly ReturnType<typeof row>[], value: unknown = audit()) =>
       selectCurrentDocumentContextSendFromCursor({ rows, generation: 7, controlCursor: "0", precedingProbe: null,
-        audit: value, baseline: { processEpoch: epoch, observationOrdinal: 19 } });
+        audit: value, baseline: { processEpoch: epoch, observationOrdinal: 19 },
+        control: { revision: 1, cacheIncarnationDigest: `sha256:${"c".repeat(64)}` } });
     const acknowledgement = (cursor: number, sequence: number, rsidHash = hash) =>
       row(cursor, "ack", "durably_acknowledged", sequence, null, rsidHash);
 
@@ -349,7 +402,9 @@ describe("WP-12 real-trio fixture document route gate", () => {
     expect(hasGatewayAcceptedDocumentContextRoute(audit(`sha256:${"b".repeat(64)}`, 7), expected, baseline)).toBe(false);
     expect(hasGatewayAcceptedDocumentContextRoute(audit(`sha256:${"A".repeat(64)}`, 7), expected, baseline)).toBe(false);
     expect(hasGatewayAcceptedDocumentContextRoute(audit(expected.rsidHash, 7, 4), expected, baseline)).toBe(false);
-    expect(hasGatewayAcceptedDocumentContextRoute(audit(expected.rsidHash, 7, 5, "2026-08-24T00:00:00.999Z"), expected, baseline)).toBe(false);
+    // Timestamp order is diagnostic-only: causal order is cursor/ordinal and
+    // survives wall-clock skew between the real worker and Gateway.
+    expect(hasGatewayAcceptedDocumentContextRoute(audit(expected.rsidHash, 7, 5, "2026-08-24T00:00:00.999Z"), expected, baseline)).toBe(true);
     expect(hasGatewayAcceptedDocumentContextRoute(audit(expected.rsidHash, 7, 5, "2026-08-24T00:00:01.000Z", 3), expected, baseline)).toBe(false);
     expect(hasGatewayAcceptedDocumentContextRoute(audit(expected.rsidHash, 7, 0), expected, baseline)).toBe(false);
     expect(hasGatewayAcceptedDocumentContextRoute(audit(expected.rsidHash, 7, 5, "2026-08-24T00:00:01.000Z", 5, "123e4567-e89b-42d3-a456-426614174001"), expected, baseline)).toBe(false);

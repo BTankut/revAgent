@@ -529,6 +529,27 @@ describe("WP-12 real-trio v2 session smoke reader", () => {
     }) }])).toEqual([]);
   });
 
+  it("retains C# source revision only with its exact valid cache incarnation", () => {
+    const base = {
+      contractVersion: "revagent.rbp-document-context-observation/v1",
+      event: "bridge.document_context_observation", stage: "send", outcome: "sent",
+      rsidHash: `sha256:${"a".repeat(64)}`, payloadHash: `sha256:${"b".repeat(64)}`,
+      sequence: 7,
+    };
+    const valid = redactBridgeTranscript([{ stream: "stderr", at: "now", line: JSON.stringify({
+      ...base, sourceRevision: 9, cacheIncarnationDigest: `sha256:${"c".repeat(64)}`,
+    }) }]);
+    expect(JSON.parse(valid[0]!.line)).toMatchObject({ sourceRevision: 9,
+      cacheIncarnationDigest: `sha256:${"c".repeat(64)}` });
+    for (const value of [
+      { ...base, sourceRevision: 9 },
+      { ...base, cacheIncarnationDigest: `sha256:${"c".repeat(64)}` },
+      { ...base, sourceRevision: 0, cacheIncarnationDigest: `sha256:${"c".repeat(64)}` },
+      { ...base, sourceRevision: Number.MAX_SAFE_INTEGER + 1, cacheIncarnationDigest: `sha256:${"c".repeat(64)}` },
+      { ...base, sourceRevision: 9, cacheIncarnationDigest: `sha256:${"C".repeat(64)}` },
+    ]) expect(redactBridgeTranscript([{ stream: "stderr", at: "now", line: JSON.stringify(value) }])).toEqual([]);
+  });
+
   it("requires document context progression through durable acknowledgement", () => {
     const event = (stage: string) => ({
       stream: "stderr" as const,
