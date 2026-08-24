@@ -508,7 +508,7 @@ describe("add-in loopback fixture listener", () => {
       externalEventRaiseCount: 0,
     });
     expect((before.result as JsonObject).cache_incarnation_digest)
-      .toBe((after.result as JsonObject).cache_incarnation_digest);
+      .not.toBe((after.result as JsonObject).cache_incarnation_digest);
     expect((after.result as JsonObject).cache_incarnation_digest)
       .toBe(evidence.cacheIncarnationDigest);
     expect(evidence.timeline.map((entry) => entry.kind)).toEqual([

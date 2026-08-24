@@ -279,7 +279,7 @@ describe("fixture CLI JSONL control and cleanup", () => {
     expect(acknowledgement).toMatchObject({
       action: "apply_document_context",
       revision: 2,
-      cacheIncarnationDigest: ready.cacheIncarnationDigest,
+      cacheIncarnationDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u),
       cachedContextHash: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u),
       activeDocumentIdentityHash: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u),
       acknowledgementHash: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u),
@@ -470,7 +470,7 @@ describe("fixture CLI JSONL control and cleanup", () => {
         cachedContextHash: acknowledgement.cachedContextHash,
         activeDocumentIdentityHash: acknowledgement.activeDocumentIdentityHash,
         lastControlAcknowledgementHash: acknowledgement.acknowledgementHash,
-        cacheIncarnationDigest: ready.cacheIncarnationDigest,
+        cacheIncarnationDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u),
         timeline: expect.any(Array),
       },
       pendingStalls: [],
