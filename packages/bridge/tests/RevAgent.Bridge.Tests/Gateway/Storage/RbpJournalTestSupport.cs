@@ -164,6 +164,25 @@ internal sealed class ArmedJournalFaultInjector :
     }
 }
 
+/// <summary>Deterministically faults one exact write phase without changing production code.</summary>
+internal sealed class OrdinalJournalFaultInjector : IRbpJournalFaultInjector
+{
+    private readonly RbpJournalFaultPoint _point;
+    private int _remaining;
+
+    internal OrdinalJournalFaultInjector(RbpJournalFaultPoint point, int occurrence)
+    {
+        _point = point;
+        _remaining = occurrence;
+    }
+
+    public void Hit(RbpJournalFaultPoint point)
+    {
+        if (point != _point || Interlocked.Decrement(ref _remaining) != 0) return;
+        throw new IOException($"Injected journal fault at {point}.");
+    }
+}
+
 internal static class RbpJournalTestData
 {
     internal static readonly DateTimeOffset Now =
@@ -172,7 +191,7 @@ internal static class RbpJournalTestData
             System.Globalization.CultureInfo.InvariantCulture);
 
     internal static RbpJournalOpenOptions Options(
-        ArmedJournalFaultInjector? faultInjector = null,
+        IRbpJournalFaultInjector? faultInjector = null,
         IReadOnlyList<RbpJournalMigration>? migrations = null,
         Func<long>? nowMilliseconds = null,
         int busyTimeoutMilliseconds = 5_000) =>

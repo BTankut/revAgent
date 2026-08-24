@@ -683,6 +683,74 @@ public sealed class RbpInvocationDispatcherTests
         Assert.True(metrics.TryGetProperty("response_bytes", out _));
     }
 
+    [Fact]
+    public async Task UnavailableRecoveryIsDurablyTerminalizedAsTheFixedOpaqueWireErrorAndReplays()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        await using RbpJournalStore store = await OpenAsync(directory);
+        var channel = new StubChannel(() => Task.FromResult(Completed("{\"unexpected\":true}")));
+        RbpInvocationDispatcher dispatcher = Dispatcher(store, channel);
+        RbpInvokeRequest request = RecoveryRequest("0197a3c2-0000-7000-8000-0000000000d1");
+
+        RbpInvocationAnswer first = await dispatcher.DispatchAsync(request, CancellationToken.None);
+        RbpInvocationAnswer replay = await dispatcher.DispatchAsync(request, CancellationToken.None);
+
+        Assert.Equal("error", first.Type);
+        Assert.Equal("environment", first.Payload.GetProperty("fault_class").GetString());
+        Assert.Equal("The correlated recovery payload is unavailable.",
+            first.Payload.GetProperty("message").GetString());
+        Assert.True(replay.Payload.GetProperty("replayed").GetBoolean());
+        Assert.Equal(first.Payload.GetProperty("fault_class").GetString(),
+            replay.Payload.GetProperty("fault_class").GetString());
+        Assert.Equal(0, channel.Calls);
+        Assert.Equal(RbpInvocationState.Failed,
+            (await store.GetInvocationAsync(request.ToIdentity().IdempotencyKey))!.State);
+    }
+
+    [Fact]
+    public async Task CommittedUnavailableRecoveryTerminalReadbackReturnsTheSameOpaqueWireError()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        await using (RbpJournalStore seed = RbpJournalStore.Open(directory.JournalPath,
+                         new TestResumeTokenProtector(), RbpJournalTestData.Options()))
+        {
+            _ = await seed.PersistRegisteredSessionAsync(RbpJournalTestData.Registration());
+        }
+        var faults = new OrdinalJournalFaultInjector(RbpJournalFaultPoint.AfterCommitBeforeReturn, 3);
+        await using RbpJournalStore store = RbpJournalStore.Open(directory.JournalPath,
+            new TestResumeTokenProtector(), RbpJournalTestData.Options(faultInjector: faults));
+        RbpInvokeRequest request = RecoveryRequest("0197a3c2-0000-7000-8000-0000000000d2");
+        RbpInvocationAnswer answer = await Dispatcher(store,
+            new StubChannel(() => Task.FromResult(Completed("{\"unexpected\":true}"))))
+            .DispatchAsync(request, CancellationToken.None);
+
+        Assert.Equal("error", answer.Type);
+        Assert.Equal("environment", answer.Payload.GetProperty("fault_class").GetString());
+        Assert.Equal(RbpInvocationState.Failed,
+            (await store.GetInvocationAsync(request.ToIdentity().IdempotencyKey))!.State);
+    }
+
+    [Fact]
+    public async Task UncommittedUnavailableRecoveryTerminalFaultThrowsAndNeverReturnsAWireAnswer()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        await using (RbpJournalStore seed = RbpJournalStore.Open(directory.JournalPath,
+                         new TestResumeTokenProtector(), RbpJournalTestData.Options()))
+        {
+            _ = await seed.PersistRegisteredSessionAsync(RbpJournalTestData.Registration());
+        }
+        var faults = new OrdinalJournalFaultInjector(RbpJournalFaultPoint.BeforeCommit, 3);
+        await using RbpJournalStore store = RbpJournalStore.Open(directory.JournalPath,
+            new TestResumeTokenProtector(), RbpJournalTestData.Options(faultInjector: faults));
+        RbpInvokeRequest request = RecoveryRequest("0197a3c2-0000-7000-8000-0000000000d3");
+
+        await Assert.ThrowsAsync<IOException>(() => Dispatcher(store,
+            new StubChannel(() => Task.FromResult(Completed("{\"unexpected\":true}"))))
+            .DispatchAsync(request, CancellationToken.None));
+        Assert.Equal(RbpInvocationState.Executing,
+            (await store.GetInvocationAsync(request.ToIdentity().IdempotencyKey))!.State);
+    }
+
     private static RbpInvocationDispatcher Dispatcher(
         RbpJournalStore store,
         IRbpInvocationChannel channel) =>
@@ -746,6 +814,25 @@ public sealed class RbpInvocationDispatcherTests
               "mutating": true,
               "mutation_scope": {"kind":"document","document_id":"doc-1"},
               "policy": {"class":"confirm","decision":"confirmed","confirmation_id":"c1"},
+              "verification": null,
+              "recovery_clearances": []
+            }
+            """);
+
+    private static RbpInvokeRequest RecoveryRequest(string invocationId) =>
+        Parse(
+            $$"""
+            {
+              "invocation_id": "{{invocationId}}",
+              "method": "dispatch_payload_recovery",
+              "params": {
+                "origin_invocation_id": "0197a3c2-0000-7000-8000-0000000000f1",
+                "expected_result_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              },
+              "timeout_ms": 120000,
+              "mutating": false,
+              "mutation_scope": null,
+              "policy": {"class":"auto","decision":"auto","confirmation_id":null},
               "verification": null,
               "recovery_clearances": []
             }

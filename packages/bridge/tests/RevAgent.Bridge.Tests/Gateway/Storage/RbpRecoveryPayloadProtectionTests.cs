@@ -9,6 +9,18 @@ namespace RevAgent.Bridge.Tests.Gateway.Storage;
 public sealed class RbpRecoveryPayloadProtectionTests
 {
     [Fact]
+    public void RecoveredPayloadDisposeZerosTheBorrowedOwnedBuffer()
+    {
+        var recovered = new RbpRecoveredPayload("sha256:" + new string('a', 64),
+            Encoding.UTF8.GetBytes("{\"secret\":true}"));
+        ReadOnlyMemory<byte> borrowed = recovered.RawResponseBytes;
+        recovered.Dispose();
+
+        Assert.True(recovered.RawResponseBytes.IsEmpty);
+        Assert.All(borrowed.ToArray(), value => Assert.Equal((byte)0, value));
+    }
+
+    [Fact]
     public async Task ExactOwnerOriginAndRawDigestAreRequiredAndTamperIsOpaque()
     {
         using var directory = new RbpJournalTestDirectory();
@@ -124,6 +136,40 @@ public sealed class RbpRecoveryPayloadProtectionTests
             (await store.GetInvocationAsync(identity.IdempotencyKey))!.State);
         Assert.Null(await store.GetCorrelatedRecoveryPayloadAsync(
             identity.Rsid, identity.InvocationId, digest));
+    }
+
+    [Fact]
+    public async Task ExactThirtyTwoMebibytesRemainsRecoverableButOneByteOverIsNot()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        await using RbpJournalStore store = RbpJournalStore.Open(
+            directory.JournalPath, new TestResumeTokenProtector(),
+            RbpJournalTestData.Options(), new TestRecoveryPayloadProtector());
+        _ = await store.PersistRegisteredSessionAsync(RbpJournalTestData.Registration());
+
+        RbpInvocationIdentity exact = await PrepareExecutingAsync(store,
+            "0197a3c2-0000-7000-8000-0000000000c4");
+        // Keep a single source allocation alive at a time: the journal owns
+        // protection/envelope copies and the lease is disposed before the
+        // oversize boundary case is constructed.
+        byte[] exactRaw = JsonBytes(RbpRecoveryPayloadEnvelope.MaxBytes);
+        string exactDigest = Digest(exactRaw);
+        await CompleteAsync(store, exact, exactDigest, exactRaw);
+        using (RbpRecoveredPayload recovered = Assert.IsType<RbpRecoveredPayload>(
+                   await store.GetCorrelatedRecoveryPayloadAsync(exact.Rsid, exact.InvocationId, exactDigest)))
+        {
+            Assert.Equal(RbpRecoveryPayloadEnvelope.MaxBytes, recovered.RawResponseBytes.Length);
+        }
+
+        RbpInvocationIdentity oversize = await PrepareExecutingAsync(store,
+            "0197a3c2-0000-7000-8000-0000000000c5");
+        byte[] overRaw = JsonBytes(RbpRecoveryPayloadEnvelope.MaxBytes + 1);
+        string overDigest = Digest(overRaw);
+        await CompleteAsync(store, oversize, overDigest, overRaw);
+        Assert.Equal(RbpInvocationState.Completed,
+            (await store.GetInvocationAsync(oversize.IdempotencyKey))!.State);
+        Assert.Null(await store.GetCorrelatedRecoveryPayloadAsync(
+            oversize.Rsid, oversize.InvocationId, overDigest));
     }
 
     [Fact]
