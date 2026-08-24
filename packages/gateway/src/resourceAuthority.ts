@@ -990,7 +990,7 @@ export class GatewayResourceAuthority {
     }
     const bytes = decodeRecoveryChunk(input.data);
     try {
-    const expiresAtMs = this.#recoveryExpiry(input.expiresAtMs);
+    const requestedExpiry = input.expiresAtMs === undefined ? null : this.#recoveryExpiry(input.expiresAtMs);
     const key = recoveryChunkKey(input.owner, input.chunkIndex);
     const storageKey = recoveryStorageKey(input.owner, "chunk", input.chunkIndex);
     const digest = sha256(bytes);
@@ -998,10 +998,25 @@ export class GatewayResourceAuthority {
     if (!existing.ok) fail("storage_unavailable", "recovery receipt unavailable");
     const previous = asRecoveryChunk(existing.value?.value);
     if (previous !== null) {
-      if (!sameRecoveryChunk(previous, input.owner, input.bridgeSequence, input.chunkIndex, digest, bytes.byteLength) || previous.expiresAtMs !== expiresAtMs) {
+      if (!sameRecoveryChunk(previous, input.owner, input.bridgeSequence, input.chunkIndex, digest, bytes.byteLength) || (requestedExpiry !== null && previous.expiresAtMs !== requestedExpiry) || previous.expiresAtMs <= this.#now() || previous.storageKey !== storageKey || previous.resultRefDigest !== recoveryResultRefDigest(bytes)) {
         fail("not_found", "recovery receipt unavailable");
       }
-      if (previous.state === "active") return;
+      if (previous.state === "active") {
+        // A lost bridge response retries against an already active protected
+        // receipt.  Re-prove that exact durable receipt and run the Bridge
+        // transaction callback so inbound duplicate accounting/heartbeat ACK
+        // commits atomically with the proof; this is not carrier-ack state.
+        const acknowledged = await this.#protocolStore.transact({ tenantId: input.scope.tenantId }, async (tx) => {
+          const current = await tx.read<GatewayJsonValue>(RECOVERY_CHUNK_NAMESPACE, key);
+          const active = asRecoveryChunk(current?.value);
+          if (current === null || active === null || active.state !== "active" || !sameRecoveryChunk(active, input.owner, input.bridgeSequence, input.chunkIndex, digest, bytes.byteLength) || (requestedExpiry !== null && active.expiresAtMs !== requestedExpiry) || active.expiresAtMs <= this.#now() || active.storageKey !== storageKey || active.resultRefDigest !== recoveryResultRefDigest(bytes)) return false;
+          await input.commitBridge?.(tx);
+          return true;
+        });
+        if (!acknowledged.ok) fail("storage_unavailable", "recovery receipt acknowledgement was not durably accepted");
+        if (!acknowledged.value) fail("not_found", "recovery receipt unavailable");
+        return;
+      }
       await this.#writeProtectedRecoveryChunk(input.scope, protectedStore, previous, bytes, input.commitBridge);
       return;
     }
@@ -1010,6 +1025,7 @@ export class GatewayResourceAuthority {
       const priorRecord = prior.ok ? asRecoveryChunk(prior.value?.value) : null;
       if (priorRecord === null || priorRecord.state !== "active" || priorRecord.bridgeSequence >= input.bridgeSequence) fail("not_found", "recovery receipt unavailable");
     }
+    const expiresAtMs = requestedExpiry ?? this.#recoveryExpiry(undefined);
     const kid = await protectedStore.activeKid();
     if (kid === null) fail("storage_unavailable", "recovery key is unavailable");
     const record: RecoveryChunkRecord = Object.freeze({ schemaVersion: "revagent-gateway-recovery/v1", state: "writing", owner: input.owner, bridgeSequence: input.bridgeSequence, chunkIndex: input.chunkIndex, kid, storageKey, plainDigest: digest, resultRefDigest: recoveryResultRefDigest(bytes), plainLength: bytes.byteLength, expiresAtMs });

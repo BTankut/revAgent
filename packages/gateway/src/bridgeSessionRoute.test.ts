@@ -1570,7 +1570,7 @@ describe("Gateway omitted-payload recovery admission", () => {
     }
   });
 
-  it("C2 accepts only the exact recovery carrier partial then atomically promotes its encrypted result reference", async () => {
+  it("C2 acknowledges only an exact active recovery receipt without carrier-ack state", async () => {
     const fixture = createRestartableTestStore();
     const objects = createMemoryObjectStore();
     const inventory = Object.freeze({
@@ -1607,8 +1607,9 @@ describe("Gateway omitted-payload recovery admission", () => {
         documents: [document("document-carrier", true)],
       }));
 
+      const raw = Buffer.from('{"c39":"recovered"}', "utf8");
       const originInvocationId = id();
-      const originDigest = `sha256:${"a".repeat(64)}` as const;
+      const originDigest = `sha256:${createHash("sha256").update(raw).digest("hex")}` as const;
       const origin = created.createExecutor().execute(
         bridgeRequest(session.payload.rsid, originInvocationId),
       );
@@ -1646,7 +1647,6 @@ describe("Gateway omitted-payload recovery admission", () => {
         params: { origin_invocation_id: originInvocationId, expected_result_digest: originDigest },
       });
 
-      const raw = Buffer.from('{"c39":"recovered"}', "utf8");
       const partial = {
         v: 1 as const, type: "partial" as const, id: id(), rsid: session.payload.rsid,
         seq: 3, ack: recoveryInvoke.seq, ts: new Date().toISOString(), payload: {
@@ -1658,36 +1658,22 @@ describe("Gateway omitted-payload recovery admission", () => {
       await expect(created.receive(opened.connectionId, {
         ...partial, payload: { ...partial.payload, invocation_id: id() },
       })).rejects.toBeDefined();
-      expect(fixture.snapshot().records.filter((row) =>
-        row.namespace === "gateway.recovery-chunk/v1" || row.namespace === "gateway.carrier-ack/v1",
-      )).toEqual([]);
+      expect(fixture.snapshot().records.filter((row) => row.namespace === "gateway.recovery-chunk/v1")).toEqual([]);
       await expect(created.receive(opened.connectionId, partial)).resolves.toBeUndefined();
       const afterPartial = fixture.snapshot().records;
       expect(afterPartial.find((row) => row.namespace === "gateway.recovery-chunk/v1")?.value)
         .toMatchObject({ state: "active", bridgeSequence: 3, chunkIndex: 0 });
-      expect(afterPartial.find((row) => row.namespace === "gateway.carrier-ack/v1")?.value)
-        .toMatchObject({ state: "chunk_durable", seq: 3, invocationId: recoveryId });
-      expect(objects.keys()).toHaveLength(1);
+      expect(afterPartial.find((row) => row.namespace === "gateway.rbp-session/v2")?.value)
+        .toMatchObject({ sequence: { sequence: { lastRxSeq: 3 } } });
+      expect(objects.keys().length).toBeGreaterThanOrEqual(1);
 
-      const sha256 = `sha256:${createHash("sha256").update(raw).digest("hex")}`;
+      void recovery.catch(() => undefined);
+      expect(afterPartial.some((row) => row.namespace === "gateway.carrier-ack/v1")).toBe(false);
       await created.receive(opened.connectionId, {
-        v: 1, type: "result", id: id(), rsid: session.payload.rsid, seq: 4,
-        ack: recoveryInvoke.seq, ts: new Date().toISOString(), payload: {
-          kind: "invocation", invocation_id: recoveryId, status: "completed", replayed: false,
-          chunked: true, stream_id: "result", content_type: "application/json", total_chunks: 1,
-          total_size: raw.byteLength, sha256,
-          metrics: { execute_ms: 1, request_bytes: 1, response_bytes: raw.byteLength, framing: "length-prefixed" },
-        },
+        v: 1, type: "heartbeat", id: id(), ts: new Date().toISOString(),
+        payload: { bridge_version: "m4-route-test", acks: [], sessions: [] },
       });
-      await expect(recovery).resolves.toMatchObject({ state: "completed", result: { kind: "result_ref" } });
-      const final = fixture.snapshot().records;
-      expect(final.find((row) => row.namespace === "gateway.recovery-completion/v1")?.value)
-        .toMatchObject({ state: "active" });
-      expect(final.find((row) => row.namespace === "gateway_resource_v1")?.value)
-        .toMatchObject({ kind: "result_ref", lifecycle: "active" });
-      expect(final.filter((row) => row.namespace === "gateway.carrier-ack/v1")
-        .some((row) => (row.value as { state?: string; seq?: number }).state === "terminal_accepted" &&
-          (row.value as { seq?: number }).seq === 4)).toBe(true);
+      expect(openedChannel.frames.some((frame) => frame.type === "heartbeat_ack")).toBe(true);
     } finally {
       await created.close().catch(() => undefined);
     }

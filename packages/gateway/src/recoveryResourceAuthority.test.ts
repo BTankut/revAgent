@@ -12,6 +12,7 @@ import {
 } from "./resourceAuthority.js";
 import { createEffectiveMcpRequestScopeV1 } from "./invocationContext.js";
 import { createMemoryObjectStore, createRestartableTestStore } from "./testAdapters.js";
+import type { StoreTransaction } from "./store.js";
 
 const scope: GatewayResourceScope = Object.freeze({ tenantId: "tenant-c39", actorId: "user-c39", principalKey: "tenant-c39:user-c39", mcpSessionId: "mcp-c39" });
 const effective = createEffectiveMcpRequestScopeV1({ principalKey: scope.principalKey, transportMcpSessionId: scope.mcpSessionId, identityMcpSessionId: null, nowMs: 1_775_000_000_000 });
@@ -88,5 +89,30 @@ describe("C39 recovery resource authority", () => {
     allowed = false;
     await expect(authority.finalizeRecoveryResultRef({ scope, effectiveMcpRequestScope: effective, owner: inputOwner, terminalChunkCount: 2, terminalByteLength: raw.byteLength, expiresAtMs: now + 60_000 })).rejects.toMatchObject({ code: "not_found" });
     await expect(authority.readResource(scope, effective, new URL(ref.uri))).rejects.toMatchObject({ code: "not_found" });
+  });
+
+  it("replays an exact active protected receipt through its bridge callback without carrier-ack state", async () => {
+    const raw = Buffer.from('{"duplicate":true}', "utf8");
+    const { state, authority } = subject();
+    await state.store.open();
+    const inputOwner = owner(raw);
+    let callbackCount = 0;
+    const input = {
+      scope, effectiveMcpRequestScope: effective, owner: inputOwner,
+      bridgeSequence: 3, chunkIndex: 0, data: raw.toString("base64"),
+      contentType: "application/json" as const, expiresAtMs: now + 60_000,
+      commitBridge: async (tx: StoreTransaction) => {
+        callbackCount += 1;
+        const current = await tx.read("c39-test-bridge", "last-rx");
+        tx.stage({ namespace: "c39-test-bridge", key: "last-rx", value: { lastRxSeq: 3, duplicate: current !== null }, expect: current === null ? { kind: "absent" } : { kind: "version", version: current.version } });
+      },
+    };
+    await authority.stageRecoveryChunk(input);
+    await authority.stageRecoveryChunk(input);
+    expect(callbackCount).toBe(2);
+    expect(state.snapshot().records.find((row) => row.namespace === "gateway.recovery-chunk/v1")?.value).toMatchObject({ state: "active", bridgeSequence: 3 });
+    expect(state.snapshot().records.find((row) => row.namespace === "c39-test-bridge")?.value).toEqual({ lastRxSeq: 3, duplicate: true });
+    await expect(authority.stageRecoveryChunk({ ...input, data: Buffer.from("mismatch").toString("base64") })).rejects.toMatchObject({ code: "not_found" });
+    expect(callbackCount).toBe(2);
   });
 });
