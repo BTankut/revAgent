@@ -16,7 +16,48 @@ namespace RevAgent.Bridge.Gateway.Connection;
 /// </summary>
 internal delegate Task<bool> RbpDocContextEmit(
     JsonElement payload,
+    RbpDocumentContextDiagnosticPair? diagnosticPair,
     CancellationToken cancellationToken);
+
+/// <summary>
+/// Local-only, value-free correlation carried from one validated add-in
+/// snapshot through its queue/send lifecycle. It is never an RBP payload,
+/// envelope, or journal field.
+/// </summary>
+internal sealed record RbpDocumentContextDiagnosticPair(
+    long SourceRevision,
+    string CacheIncarnationDigest)
+{
+    internal static bool TryCreate(
+        long? sourceRevision,
+        string? cacheIncarnationDigest,
+        out RbpDocumentContextDiagnosticPair? pair)
+    {
+        if (sourceRevision is null || sourceRevision <= 0 ||
+            cacheIncarnationDigest is null ||
+            cacheIncarnationDigest.Length != "sha256:".Length + 64 ||
+            !cacheIncarnationDigest.StartsWith("sha256:", StringComparison.Ordinal))
+        {
+            pair = null;
+            return false;
+        }
+
+        foreach (char character in cacheIncarnationDigest.AsSpan("sha256:".Length))
+        {
+            if ((character < '0' || character > '9') &&
+                (character < 'a' || character > 'f'))
+            {
+                pair = null;
+                return false;
+            }
+        }
+
+        pair = new RbpDocumentContextDiagnosticPair(
+            sourceRevision.Value,
+            cacheIncarnationDigest);
+        return true;
+    }
+}
 
 /// <summary>
 /// Value-free WP-12 diagnostic seam. It deliberately carries only fixed
@@ -60,10 +101,12 @@ internal sealed record RbpDocumentContextObservation(
             payload is { } value ? Hash(value.GetRawText()) : null,
             payload is { } context ? TryMakeContextDigest(context) : null,
             sequence,
-            HasValidFixtureIncarnation(sourceRevision, cacheIncarnationDigest)
+            RbpDocumentContextDiagnosticPair.TryCreate(
+                sourceRevision, cacheIncarnationDigest, out _)
                 ? sourceRevision
                 : null,
-            HasValidFixtureIncarnation(sourceRevision, cacheIncarnationDigest)
+            RbpDocumentContextDiagnosticPair.TryCreate(
+                sourceRevision, cacheIncarnationDigest, out _)
                 ? cacheIncarnationDigest
                 : null);
 
@@ -80,7 +123,8 @@ internal sealed record RbpDocumentContextObservation(
         long? sequence,
         out RbpDocumentContextObservation? observation,
         long? sourceRevision = null,
-        string? cacheIncarnationDigest = null)
+        string? cacheIncarnationDigest = null,
+        bool requireDiagnosticPair = false)
     {
         if (payload is not { } value)
         {
@@ -90,6 +134,15 @@ internal sealed record RbpDocumentContextObservation(
 
         try
         {
+            bool hasPair = RbpDocumentContextDiagnosticPair.TryCreate(
+                sourceRevision,
+                cacheIncarnationDigest,
+                out RbpDocumentContextDiagnosticPair? pair);
+            if (requireDiagnosticPair && !hasPair)
+            {
+                observation = null;
+                return false;
+            }
             observation = new RbpDocumentContextObservation(
                 CurrentContractVersion,
                 "bridge.document_context_observation",
@@ -99,12 +152,8 @@ internal sealed record RbpDocumentContextObservation(
                 Hash(value.GetRawText()),
                 MakeContextDigest(value),
                 sequence,
-                HasValidFixtureIncarnation(sourceRevision, cacheIncarnationDigest)
-                    ? sourceRevision
-                    : null,
-                HasValidFixtureIncarnation(sourceRevision, cacheIncarnationDigest)
-                    ? cacheIncarnationDigest
-                    : null);
+                hasPair ? pair!.SourceRevision : null,
+                hasPair ? pair!.CacheIncarnationDigest : null);
             return true;
         }
         catch
@@ -149,29 +198,6 @@ internal sealed record RbpDocumentContextObservation(
             SHA256.HashData(Encoding.UTF8.GetBytes(value)))
             .ToLowerInvariant();
 
-    private static bool HasValidFixtureIncarnation(
-        long? sourceRevision,
-        string? cacheIncarnationDigest)
-    {
-        if (sourceRevision is null || sourceRevision <= 0 ||
-            cacheIncarnationDigest is null ||
-            cacheIncarnationDigest.Length != "sha256:".Length + 64 ||
-            !cacheIncarnationDigest.StartsWith("sha256:", StringComparison.Ordinal))
-        {
-            return false;
-        }
-
-        foreach (char character in cacheIncarnationDigest.AsSpan("sha256:".Length))
-        {
-            if ((character < '0' || character > '9') &&
-                (character < 'a' || character > 'f'))
-            {
-                return false;
-            }
-        }
-
-        return true;
-    }
 }
 
 /// <summary>
@@ -434,7 +460,14 @@ internal sealed class RbpDocContextWatcher
         bool emitted;
         try
         {
-            emitted = await emitAsync(payload, token).ConfigureAwait(false);
+            RbpDocumentContextDiagnosticPair? pair =
+                RbpDocumentContextDiagnosticPair.TryCreate(
+                    snapshot.Revision,
+                    snapshot.CacheIncarnationDigest,
+                    out RbpDocumentContextDiagnosticPair? validatedPair)
+                    ? validatedPair
+                    : null;
+            emitted = await emitAsync(payload, pair, token).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
@@ -479,7 +512,8 @@ internal sealed class RbpDocContextWatcher
                 sequence: null,
                 out RbpDocumentContextObservation? observation,
                 sourceRevision: snapshot?.Revision,
-                cacheIncarnationDigest: snapshot?.CacheIncarnationDigest) &&
+                cacheIncarnationDigest: snapshot?.CacheIncarnationDigest,
+                requireDiagnosticPair: true) &&
             observation is not null)
         {
             Observe(observation);

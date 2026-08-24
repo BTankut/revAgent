@@ -71,7 +71,7 @@ internal sealed partial class RbpConnectionCoordinator
     private int _connectionAuthorityPoisoned;
     private int _ownedBackgroundTasks;
     private int _activeInvocations;
-    private readonly Dictionary<string, long> _documentContextQueued =
+    private readonly Dictionary<string, DocumentContextQueuedDiagnostic> _documentContextQueued =
         new(StringComparer.Ordinal);
 
     internal RbpConnectionCoordinator(
