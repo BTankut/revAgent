@@ -608,6 +608,8 @@ interface LiveConnection {
   sendDispatchStarted?(serialized: string, revalidate: () => void): {
     readonly started: Promise<void>;
     readonly completion: Promise<void>;
+    /** true only if the carrier has definitely not invoked transport. */
+    cancel(): boolean;
   };
   close(code: number, reason: string): Promise<void>;
 }
@@ -658,6 +660,7 @@ export interface BridgeConnectionChannel {
   sendDispatchStarted?(serialized: string, revalidate: () => void): {
     readonly started: Promise<void>;
     readonly completion: Promise<void>;
+    cancel(): boolean;
   };
   close(code: number, reason: string): Promise<void>;
 }
@@ -6964,7 +6967,26 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         // `started` is resolved only by the concrete WSS/SSE invocation, not
         // by enqueueing. Thus a cancelled or starving queue cannot acquire a
         // waiter or a mutation-indeterminate result.
-        await startedDispatch.started;
+        let startTimer: ReturnType<typeof setTimeout> | null = null;
+        try {
+          await Promise.race([
+            startedDispatch.started,
+            new Promise<void>((_, reject) => {
+              startTimer = setTimeout(
+                () => reject(new GatewayRbpFault("unavailable", "dispatch carrier start timed out", 503, 1011)),
+                SEND_RESERVATION_TTL_MS,
+              );
+            }),
+          ]);
+        } catch (error) {
+          // A cancelled queued entry is guaranteed never to reach the opaque
+          // revalidation/transport invocation closure, so the started lease
+          // can be released by the ordinary finally/CAS path below.
+          startedDispatch.cancel();
+          throw error;
+        } finally {
+          if (startTimer !== null) clearTimeout(startTimer);
+        }
         sendBegan = true;
         beforeSend?.();
         await startedDispatch.completion;

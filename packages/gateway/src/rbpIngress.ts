@@ -389,6 +389,7 @@ class HttpSseChannel implements BridgeConnectionChannel {
     readonly rejectStarted: ((error: Error) => void) | null;
     readonly resolveCompletion: (() => void) | null;
     readonly rejectCompletion: ((error: Error) => void) | null;
+    readonly cancelled: () => boolean;
   }> = [];
   #response: ServerResponse | null = null;
   #pendingBytes = 0;
@@ -445,6 +446,7 @@ class HttpSseChannel implements BridgeConnectionChannel {
     try {
       for (const pending of this.#pending.splice(0)) {
         try {
+          if (pending.cancelled()) throw new Error("SSE dispatch queue cancelled before invocation");
           // Queue entries retain only an opaque closure, never proof bytes.
           pending.revalidate?.();
           pending.resolveStarted?.();
@@ -473,7 +475,7 @@ class HttpSseChannel implements BridgeConnectionChannel {
         this.#fail(new Error("SSE attach backlog exceeds the bounded transport window"));
       }
       this.#pendingBytes = nextBytes;
-      this.#pending.push({ serialized, revalidate: null, resolveStarted: null, rejectStarted: null, resolveCompletion: null, rejectCompletion: null });
+      this.#pending.push({ serialized, revalidate: null, resolveStarted: null, rejectStarted: null, resolveCompletion: null, rejectCompletion: null, cancelled: () => false });
       this.#observe("queued");
       return;
     }
@@ -486,13 +488,15 @@ class HttpSseChannel implements BridgeConnectionChannel {
   public sendDispatchStarted(
     serialized: string,
     revalidate: () => void,
-  ): { readonly started: Promise<void>; readonly completion: Promise<void> } {
+  ): { readonly started: Promise<void>; readonly completion: Promise<void>; cancel(): boolean } {
     let resolveStarted!: () => void;
     let rejectStarted!: (error: Error) => void;
     let resolveCompletion!: () => void;
     let rejectCompletion!: (error: Error) => void;
     const started = new Promise<void>((resolve, reject) => { resolveStarted = resolve; rejectStarted = reject; });
     const completion = new Promise<void>((resolve, reject) => { resolveCompletion = resolve; rejectCompletion = reject; });
+    let startedAtInvocation = false;
+    let cancelled = false;
     try {
       if (this.#closed) throw new Error("SSE stream is closed");
       const response = this.#response;
@@ -500,13 +504,14 @@ class HttpSseChannel implements BridgeConnectionChannel {
         const nextBytes = this.#pendingBytes + Buffer.byteLength(serialized);
         if (nextBytes > MAX_PENDING_TRANSPORT_BYTES) throw new Error("SSE attach backlog exceeds the bounded transport window");
         this.#pendingBytes = nextBytes;
-        this.#pending.push({ serialized, revalidate, resolveStarted, rejectStarted, resolveCompletion, rejectCompletion });
+        this.#pending.push({ serialized, revalidate, resolveStarted, rejectStarted, resolveCompletion, rejectCompletion, cancelled: () => cancelled });
         this.#observe("queued");
       } else {
         if (response.destroyed || response.writableEnded) throw new Error("SSE stream is closed");
         // #writeFrame invokes response.write synchronously before it returns.
         revalidate();
         const write = this.#writeFrame(response, serialized);
+        startedAtInvocation = true;
         resolveStarted();
         void write.then(resolveCompletion, rejectCompletion);
       }
@@ -515,7 +520,18 @@ class HttpSseChannel implements BridgeConnectionChannel {
       rejectStarted(failure);
       rejectCompletion(failure);
     }
-    return { started, completion };
+    return {
+      started,
+      completion,
+      cancel(): boolean {
+        if (startedAtInvocation) return false;
+        cancelled = true;
+        const failure = new Error("SSE dispatch queue cancelled before invocation");
+        rejectStarted(failure);
+        rejectCompletion(failure);
+        return true;
+      },
+    };
   }
 
   /**
@@ -1363,7 +1379,7 @@ export function createProductionRbpIngressHost(
           const sendDispatchStarted = (
             serialized: string,
             revalidate: () => void,
-          ): { readonly started: Promise<void>; readonly completion: Promise<void> } => {
+          ): { readonly started: Promise<void>; readonly completion: Promise<void>; cancel(): boolean } => {
             let resolveStarted!: () => void;
             let rejectStarted!: (error: Error) => void;
             let startedSettled = false;
@@ -1371,12 +1387,14 @@ export function createProductionRbpIngressHost(
               resolveStarted = resolve;
               rejectStarted = reject;
             });
+            let cancelled = false;
             const rejectStart = (error: unknown): void => {
               if (startedSettled) return;
               startedSettled = true;
               rejectStarted(error instanceof Error ? error : new Error(String(error)));
             };
             const completion = appendEgress(async () => {
+              if (cancelled) throw new Error("WSS dispatch queue cancelled before invocation");
               if (terminalEgressClaimed || state === "closing" || state === "faulted" || state === "closed") {
                 throw new Error("WSS dispatch egress is closed");
               }
@@ -1407,7 +1425,16 @@ export function createProductionRbpIngressHost(
               });
             });
             void completion.catch((error: unknown) => rejectStart(error));
-            return { started, completion };
+            return {
+              started,
+              completion,
+              cancel(): boolean {
+                if (startedSettled) return false;
+                cancelled = true;
+                rejectStart(new Error("WSS dispatch queue cancelled before invocation"));
+                return true;
+              },
+            };
           };
 
           const settleEgressForTeardown = async (
