@@ -72,6 +72,30 @@ describe("WP-12 C39 observed recovery audit", () => {
     { namespace: "gateway.carrier-ack/v1", key: "ack", value: { schemaVersion: "revagent-gateway-carrier/v1", rsid: "rsid", invocationId: recovery, tenantId: "conformance", effectiveMcpSessionId: "mcp", seq: 4, state: "chunk_durable" } },
     ...Object.entries(overrides).map(([namespace, value]) => ({ namespace, key: `extra-${namespace}`, value })),
   ];
+  const multiObserved = (): Array<{ namespace: string; key: string; value: unknown }> => {
+    const records: Array<{ namespace: string; key: string; value: unknown }> = structuredClone(observed());
+    const chunk = records.find((row) => row.namespace === "gateway.recovery-chunk/v1")!;
+    const chunkValue = chunk.value as Record<string, unknown>;
+    chunk.value = { ...chunkValue, plainLength: 2 };
+    const resource = records.find((row) => row.namespace === "gateway_resource_v1")!;
+    const resourceValue = resource.value as Record<string, unknown>;
+    resource.value = { ...resourceValue, byteSize: 3, protectedRecovery: {
+      ...(resourceValue.protectedRecovery as Record<string, unknown>), plainLength: 3,
+      bridgeSequence: 6, chunkIndex: 2,
+    } };
+    const session = records.find((row) => row.namespace === "gateway.rbp-session/v2")!;
+    session.value = { ...(session.value as Record<string, unknown>), sequence: { lastRxSeq: 7 } };
+    records.push(
+      { namespace: "gateway.recovery-chunk/v1", key: "chunk-1", value: {
+        ...chunkValue, bridgeSequence: 6, chunkIndex: 1, plainDigest: digest("f"), plainLength: 1,
+      } },
+      { namespace: "gateway.carrier-ack/v1", key: "ack-1", value: {
+        schemaVersion: "revagent-gateway-carrier/v1", rsid: "rsid", invocationId: recovery,
+        tenantId: "conformance", effectiveMcpSessionId: "mcp", seq: 6, state: "chunk_durable",
+      } },
+    );
+    return records;
+  };
 
   it("emits one redacted row only for one fully correlated active recovery", () => {
     const result = coherentC39RecoveryAudit({ records: observed(), nowMs: 10 });
@@ -103,6 +127,29 @@ describe("WP-12 C39 observed recovery audit", () => {
     const wrongRef = observed().map((row) => row.namespace === "gateway.recovery-completion/v1"
       ? { ...row, value: { ...(row.value as Record<string, unknown>), refId: "other" } } : row);
     expect(coherentC39RecoveryAudit({ records: wrongRef, nowMs: 10 }).rows).toHaveLength(0);
+  });
+
+  it("sorts valid shuffled partials deterministically and rejects every sequence/index invariant break", () => {
+    const valid = multiObserved();
+    const shuffled = [...valid].reverse();
+    const expected = coherentC39RecoveryAudit({ records: valid, nowMs: 10 });
+    const actual = coherentC39RecoveryAudit({ records: shuffled, nowMs: 10 });
+    expect(expected).toEqual(actual);
+    expect(expected.rows[0]).toMatchObject({ partials: [
+      { seq: 4, chunkIndex: 0, plainDigest: digest("e"), byteLength: 2, state: "active" },
+      { seq: 6, chunkIndex: 1, plainDigest: digest("f"), byteLength: 1, state: "active" },
+    ], terminal: { seq: 7, originDigest: digest("a"), state: "completed" } });
+    const invalid = (records: Array<{ namespace: string; key: string; value: unknown }>) =>
+      expect(coherentC39RecoveryAudit({ records, nowMs: 10 }).status).toBe("no_coherent_row");
+    const secondChunk = valid.find((row) => row.key === "chunk-1")!;
+    invalid(valid.map((row) => row.key === "chunk-1" ? { ...row, value: { ...(row.value as Record<string, unknown>), chunkIndex: 2 } } : row));
+    invalid([...valid, { ...secondChunk, key: "duplicate-same" }]);
+    invalid([...valid, { ...secondChunk, key: "duplicate-digest", value: { ...(secondChunk.value as Record<string, unknown>), plainDigest: digest("d") } }]);
+    invalid(valid.map((row) => row.key === "chunk-1" ? { ...row, value: { ...(row.value as Record<string, unknown>), bridgeSequence: 4 } } : row));
+    invalid(valid.map((row) => row.key === "chunk-1" ? { ...row, value: { ...(row.value as Record<string, unknown>), bridgeSequence: 3 } } : row));
+    invalid(valid.map((row) => row.namespace === "gateway.rbp-session/v2" ? { ...row, value: { ...(row.value as Record<string, unknown>), sequence: { lastRxSeq: 6 } } } : row));
+    invalid(valid.map((row) => row.namespace === "gateway_resource_v1" ? { ...row, value: { ...(row.value as Record<string, unknown>), protectedRecovery: { ...((row.value as Record<string, unknown>).protectedRecovery as Record<string, unknown>), chunkIndex: 1 } } } : row));
+    invalid(valid.map((row) => row.namespace === "gateway_resource_v1" ? { ...row, value: { ...(row.value as Record<string, unknown>), byteSize: 4 } } : row));
   });
 });
 
