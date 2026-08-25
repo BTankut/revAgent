@@ -35,6 +35,7 @@ import {
 import { GatewayBridgeSessionAuthority } from "./bridgeSession.js";
 import type { GatewayExecutorRequest, GatewayJsonObject } from "./dispatch.js";
 import { gatewayUuidV7 } from "./identifiers.js";
+import { createEffectiveMcpRequestScopeV1 } from "./invocationContext.js";
 import {
   GatewayRecoveryAuthority,
   type GatewayAuditedRecoveryDecisionPort,
@@ -160,6 +161,12 @@ function step(rsid: string, index: number): GatewayExecutorRequest {
       gatewaySessionId: "gateway-session-gw16",
       oauthClientId: "oauth-client-gw16",
       mcpSessionId: "mcp-session-gw16",
+      effectiveMcpRequestScope: createEffectiveMcpRequestScopeV1({
+        principalKey: "tenant-gw16:user-gw16",
+        transportMcpSessionId: "mcp-session-gw16",
+        identityMcpSessionId: null,
+        nowMs: 1_786_300_000_000,
+      }),
       rsid,
       toolName: toolRecord.name,
       toolVersion: toolRecord.version,
@@ -364,9 +371,20 @@ describe("GW-16 registry-authorized atomic batch", () => {
     const prepared = preparation.dispatch;
 
     const pending = executor.executePreparedAtomicBatch!(batch, prepared);
-    while (!sent.some((candidate) => candidate.type === "invoke_batch")) {
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    }
+    await new Promise<void>((resolve, reject) => {
+      const poll = (): void => {
+        if (sent.some((candidate) => candidate.type === "invoke_batch")) {
+          resolve();
+          return;
+        }
+        setTimeout(poll, 0);
+      };
+      void pending.then(
+        (outcome) => reject(new Error(`atomic dispatch settled before send: ${JSON.stringify(outcome)}`)),
+        reject,
+      );
+      poll();
+    });
     const dispatched = sent.filter(
       (candidate) => candidate.type === "invoke_batch",
     ) as InvokeBatchEnvelope[];

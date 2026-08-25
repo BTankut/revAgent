@@ -21,10 +21,10 @@ const seed = verifyRegistrySeed(
 const catalog = buildCatalog(seed);
 
 describe("GW-10 executable registry", () => {
-  it("materializes all 40 governed tools with exact executor bindings", () => {
+  it("materializes all 41 governed tools with exact executor bindings", () => {
     const registry = buildGatewayExecutableRegistry(seed, catalog);
 
-    expect(registry.records()).toHaveLength(40);
+    expect(registry.records()).toHaveLength(41);
     expect(
       registry
         .records()

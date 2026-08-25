@@ -5,7 +5,7 @@ import type {
 } from "./registry.js";
 
 /**
- * The E5 mapping for all 40 tools (GW-3).
+ * The E5 mapping for all 41 tools (GW-3).
  *
  * Every row is transcribed from the frozen E5 tools map: the target name and
  * policy class come from its per-tool table, and the executor binding from its

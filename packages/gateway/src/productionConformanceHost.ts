@@ -43,7 +43,7 @@ export function createProductionConformanceC39OriginResendPolicy(): ConformanceO
       return true;
     },
     peekResumeRequest(input: Parameters<NonNullable<ConformanceOriginResendPolicy["peekResumeRequest"]>>[0]) {
-      for (const [candidateKey, candidate] of pending) {
+      for (const candidate of pending.values()) {
         if (
           candidate.tenantId === input.tenantId && candidate.userId === input.userId &&
           candidate.rsid === input.rsid &&

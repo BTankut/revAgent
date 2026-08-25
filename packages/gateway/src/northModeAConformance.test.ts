@@ -340,7 +340,7 @@ describe("GW-10 north Mode-A conformance", () => {
     expect(client.getInstructions()).toBe(
       gatewayClientInstructions(buildGatewayInstructionPackage(entitledView)),
     );
-    expect(entitledView.entries()).toHaveLength(39);
+    expect(entitledView.entries()).toHaveLength(40);
 
     const initialTools = await client.listTools();
     expect(names(initialTools.tools)).toEqual(

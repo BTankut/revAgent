@@ -135,11 +135,6 @@ function digest(value: unknown): `sha256:${string}` {
   return `sha256:${createHash("sha256").update(JSON.stringify(value)).digest("hex")}`;
 }
 
-/** Matches the C# worker's UTF-8, lowercase, prefixed SHA-256 observation. */
-function rsidHash(value: string): `sha256:${string}` {
-  return `sha256:${createHash("sha256").update(value, "utf8").digest("hex")}`;
-}
-
 function safeObservedSequence(value: unknown): number | null {
   return Number.isSafeInteger(value) && Number(value) >= 1 ? Number(value) : null;
 }

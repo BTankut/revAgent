@@ -135,7 +135,7 @@ describe("GW-20 promotion governance registry", () => {
     expect(feed.candidates.every((row) => row.humanReviewRequired)).toBe(true);
     expect(catalogView.capabilityIndexBytes()).toBe(beforeBytes);
     expect(catalogView.capabilityIndexDigest()).toBe(beforeDigest);
-    expect(catalogView.entries()).toHaveLength(40);
+    expect(catalogView.entries()).toHaveLength(41);
   });
 
   it("fails closed on unknown definitions or unruled reasons", () => {

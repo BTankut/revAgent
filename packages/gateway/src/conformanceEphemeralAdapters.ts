@@ -1,5 +1,5 @@
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
-import { mkdir, open, readFile, rename, rm, writeFile, lstat, realpath } from "node:fs/promises";
+import { mkdir, open, readFile, rename, rm, lstat, realpath } from "node:fs/promises";
 import path from "node:path";
 import Database from "better-sqlite3";
 
@@ -11,7 +11,7 @@ import {
   type IdentityPort,
 } from "./authContext.js";
 import type { GatewayJsonValue } from "./dispatch.js";
-import type { GatewayEventEnvelope, GatewayEventSink } from "./events.js";
+import type { GatewayEventSink } from "./events.js";
 import type { GatewayPortResult } from "./gatewayPorts.js";
 import type {
   GatewayProtocolStore,
@@ -24,7 +24,6 @@ import type {
 } from "./store.js";
 import type { GuardrailPort } from "./guardrails.js";
 
-const CONTRACT = "revagent.conformance-ephemeral/v1" as const;
 const failure = <T>(message: string): GatewayPortResult<T> => Object.freeze({
   ok: false as const, port: "identity" as const, code: "unavailable" as const, message,
 });
@@ -186,5 +185,5 @@ export class DigestFileConformanceObjectStore implements ObjectStorePort {
 
 export function createConformanceSupportingPorts(): { readonly entitlement: EntitlementPort; readonly events: GatewayEventSink; readonly guardrails: GuardrailPort } {
   const ok = <T>(value: T): GatewayPortResult<T> => Object.freeze({ ok: true as const, value });
-  return Object.freeze({ entitlement: Object.freeze({ kind: "conformance" as const, async checkModuleEntitlement() { return ok(true); }, async checkToolEntitlement() { return ok(true); } }), events: Object.freeze({ kind: "conformance" as const, async emit(_event: GatewayEventEnvelope) { return ok(undefined); }, async emitBatch(_events: readonly GatewayEventEnvelope[]) { return ok(undefined); }, async flush() { return ok(undefined); } }), guardrails: Object.freeze({ kind: "conformance" as const, async evaluate() { return Object.freeze({ ok: true as const }); } }) });
+  return Object.freeze({ entitlement: Object.freeze({ kind: "conformance" as const, async checkModuleEntitlement() { return ok(true); }, async checkToolEntitlement() { return ok(true); } }), events: Object.freeze({ kind: "conformance" as const, async emit() { return ok(undefined); }, async emitBatch() { return ok(undefined); }, async flush() { return ok(undefined); } }), guardrails: Object.freeze({ kind: "conformance" as const, async evaluate() { return Object.freeze({ ok: true as const }); } }) });
 }

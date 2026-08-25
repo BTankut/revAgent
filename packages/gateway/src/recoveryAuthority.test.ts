@@ -8,6 +8,7 @@ import {
   type BatchResult,
   type BatchStep,
   type HoldEvidenceConclusion,
+  type HelloEnvelope,
   type InvocationJournalBinding,
   type InvocationJournalRecord,
   type InvokeBatchEnvelope,
@@ -3050,7 +3051,7 @@ function realIdentity(input: {
   };
 }
 
-function realHello(principal: string): import("@revagent/protocol").HelloEnvelope {
+function realHello(principal: string): HelloEnvelope {
   return {
     type: "hello",
     id: uuid7(810_000 + principal.length),
