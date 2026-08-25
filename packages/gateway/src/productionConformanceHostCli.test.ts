@@ -512,5 +512,8 @@ describe("WP-12 conformance recovery composition", () => {
     expect(source).toContain("new ProtectedConformanceObjectStore(");
     expect(source).toContain("new EncryptedProtectedObjectStore(");
     expect(source).toContain("protectedConformanceObjectStore,");
+    expect(source).toContain("c39PartialCarrierCommitFailure");
+    expect(source).toContain("onConformancePartialCarrierCommitFailure");
+    expect(source).not.toContain("C39_PARTIAL_CARRIER_COMMIT_DIAGNOSTIC=");
   });
 });

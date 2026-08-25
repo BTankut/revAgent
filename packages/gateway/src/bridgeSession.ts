@@ -147,6 +147,14 @@ export const TEST_RSID_CARRIER_RECEIVE_TAIL_OBSERVER = Symbol(
   "revagent.gateway.test.rsid-carrier-receive-tail-observer",
 );
 
+/** Bounded conformance diagnostic only; carries no tenant, session, or wire data. */
+export type ConformancePartialCarrierCommitFailure =
+  | "ticket"
+  | "pending"
+  | "sequence"
+  | "normalized_plan_or_cas"
+  | "storage_callback";
+
 const RESUME_LIFETIME_MS = 24 * 60 * 60 * 1_000;
 const INVOCATION_TIMEOUT_MS = 120_000;
 const SEND_RESERVATION_TTL_MS = 5_000;
@@ -3496,6 +3504,9 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
   /** One event-driven retry per rsid; never a timer/polling loop. */
   readonly #d2RouteRetries = new Set<string>();
   readonly #d2ConformanceOriginResendPolicy: ConformanceOriginResendPolicy;
+  readonly #onConformancePartialCarrierCommitFailure:
+    | ((failure: ConformancePartialCarrierCommitFailure) => void)
+    | undefined;
   readonly #receiveTails = new Map<string, Promise<void>>();
   readonly #rsidCarrierReceiveTailBytes = new Map<string, number>();
   readonly #carrierReceiveTailObserver: CarrierReceiveTailObserver | undefined;
@@ -3565,6 +3576,10 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       readonly onDocumentContextObservation?: GatewayDocumentContextObserver;
       /** D2b-only host injection. Omit to seal D2 state as Never. */
       readonly internalConformanceOriginResendPolicy?: ConformanceOriginResendPolicy;
+      /** Conformance-only value-free partial-carrier failure sink. */
+      readonly onConformancePartialCarrierCommitFailure?: (
+        failure: ConformancePartialCarrierCommitFailure,
+      ) => void;
     } = {},
   ) {
     this.#sessionRepository = new SessionAggregateRepository(store);
@@ -3579,6 +3594,8 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     this.#d2ConformanceOriginResendPolicy =
       options.internalConformanceOriginResendPolicy ??
       NEVER_CONFORMANCE_ORIGIN_RESEND_POLICY;
+    this.#onConformancePartialCarrierCommitFailure =
+      options.onConformancePartialCarrierCommitFailure;
     this.#productionIdentity = asProductionIdentityAuthority(identity);
     this.#clock = options.clock ?? Date.now;
     this.#instanceId = options.instanceId ?? gatewayUuidV7(this.#clock());
@@ -10222,18 +10239,30 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     envelope: Extract<RbpEnvelope, { rsid: string; type: "partial" }>,
     authorityTicket: TenantAuthorityTicket,
     committed: { current: DurableRbpSession | null },
+    diagnostic: { reported: boolean },
   ): Promise<void> {
+    try {
     committed.current = await this.#sessionRepository.stageAuthoritativeOnRaw(
       tx,
       active.tenantId,
       active.rsid,
       (stored, record) => {
-        this.#assertAuthorityTicket(authorityTicket, connection, { session: record });
+        try {
+          this.#assertAuthorityTicket(authorityTicket, connection, { session: record });
+        } catch {
+          diagnostic.reported = true;
+          this.#reportConformancePartialCarrierCommitFailure("ticket");
+          throw new Error("carrier receipt authority ticket is stale");
+        }
         if (record.pending === null || record.pending.invocationId !== envelope.payload.invocation_id) {
+          diagnostic.reported = true;
+          this.#reportConformancePartialCarrierCommitFailure("pending");
           throw new Error("carrier receipt does not match the active invocation");
         }
         const accepted = acceptInboundData(record.sequence, envelope as DataEnvelopeSnapshot);
         if (accepted.kind === "protocol_fault" || accepted.kind === "gap") {
+          diagnostic.reported = true;
+          this.#reportConformancePartialCarrierCommitFailure("sequence");
           throw new Error("carrier receipt sequence is not acceptable");
         }
         if (accepted.kind === "duplicate") return record;
@@ -10243,6 +10272,23 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         }, this.#clock());
       },
     );
+    } catch (error) {
+      if (!diagnostic.reported) {
+        diagnostic.reported = true;
+        this.#reportConformancePartialCarrierCommitFailure("normalized_plan_or_cas");
+      }
+      throw error;
+    }
+  }
+
+  #reportConformancePartialCarrierCommitFailure(
+    failure: ConformancePartialCarrierCommitFailure,
+  ): void {
+    try {
+      this.#onConformancePartialCarrierCommitFailure?.(failure);
+    } catch {
+      // Diagnostics never alter carrier authority or transaction outcome.
+    }
   }
 
   async #commitCarrierTerminal(
@@ -10766,6 +10812,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         );
       }
       const committed: { current: DurableRbpSession | null } = { current: null };
+      const diagnostic = { reported: false };
       if (recovery.kind === "authorized") {
         await this.#resourceAuthority.stageRecoveryChunk({
           scope,
@@ -10776,7 +10823,13 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
           data: envelope.payload.data,
           contentType: "application/json",
           commitBridge: async (tx) => {
-            await this.#commitCarrierChunk(tx, active, connection, envelope, authorityTicket, committed);
+            await this.#commitCarrierChunk(tx, active, connection, envelope, authorityTicket, committed, diagnostic);
+          },
+          onCommitFailure: () => {
+            if (!diagnostic.reported) {
+              diagnostic.reported = true;
+              this.#reportConformancePartialCarrierCommitFailure("storage_callback");
+            }
           },
         });
         if (committed.current === null) throw new GatewayRbpFault("unavailable", "recovery receipt commit was not observable", 503, 1011);
@@ -10790,7 +10843,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         invocationId: envelope.payload.invocation_id,
         sequence: envelope.seq,
         chunk: envelope.payload,
-        commitBridge: async (tx) => await this.#commitCarrierChunk(tx, active, connection, envelope, authorityTicket, committed),
+        commitBridge: async (tx) => await this.#commitCarrierChunk(tx, active, connection, envelope, authorityTicket, committed, diagnostic),
       });
       if (committed.current === null) {
         throw new GatewayRbpFault("unavailable", "carrier receipt commit was not observable", 503, 1011);

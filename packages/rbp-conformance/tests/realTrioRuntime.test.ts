@@ -613,6 +613,7 @@ async function waitForC39Recovery(
   timeoutMs: number,
 ): Promise<{ readonly content: Record<string, unknown> }> {
   const deadline = Date.now() + timeoutMs;
+  let partialCarrierCommitFailure = "none";
   for (;;) {
     try {
       // Keep the current authenticated MCP client/session.  Post-control D2
@@ -631,13 +632,21 @@ async function waitForC39Recovery(
   });
   for (;;) {
     const audit = object(await runtime.supervisor.readRealCaseAudit());
+    const candidate = audit?.c39PartialCarrierCommitFailure;
+    if (
+      candidate === "ticket" ||
+      candidate === "pending" ||
+      candidate === "sequence" ||
+      candidate === "normalized_plan_or_cas" ||
+      candidate === "storage_callback"
+    ) partialCarrierCommitFailure = candidate;
     const worker = await runtime.supervisor.readRecoveryCarrierObservations();
     if (object(audit?.c39Recovery)?.status === "joined" && worker.length > 0) {
       const result = await recovery;
       if (result.content.state === "completed") return result;
       throw new Error("real C39 one-shot recovery did not complete");
     }
-    if (Date.now() >= deadline) throw new Error("real C39 recovery evidence did not become coherent");
+    if (Date.now() >= deadline) throw new Error(`real C39 recovery evidence did not become coherent [${partialCarrierCommitFailure}]`);
     await new Promise<void>((resolve) => setTimeout(resolve, 200));
   }
 }

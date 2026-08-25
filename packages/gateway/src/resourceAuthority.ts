@@ -230,6 +230,8 @@ export interface StageRecoveryChunkInput {
   readonly expiresAtMs?: number;
   /** Gateway-only ACK commit after encrypted receipt activation. */
   readonly commitBridge?: (tx: StoreTransaction) => Promise<void>;
+  /** Conformance-only, value-free failure classification. */
+  readonly onCommitFailure?: () => void;
 }
 
 export interface FinalizeRecoveryResultInput {
@@ -1012,7 +1014,7 @@ export class GatewayResourceAuthority {
         await this.#acknowledgeActiveRecoveryChunk(input.scope, previous, requestedExpiry, storageKey, recoveryResultRefDigest(bytes), input.commitBridge);
         return;
       }
-      await this.#writeProtectedRecoveryChunk(input.scope, protectedStore, previous, bytes, input.commitBridge);
+      await this.#writeProtectedRecoveryChunk(input.scope, protectedStore, previous, bytes, input.commitBridge, input.onCommitFailure);
       return;
     }
     if (input.chunkIndex > 0) {
@@ -1028,7 +1030,7 @@ export class GatewayResourceAuthority {
       tx.stage({ namespace: RECOVERY_CHUNK_NAMESPACE, key, value: record as unknown as GatewayJsonValue, expect: { kind: "absent" } });
     });
     if (reserved.ok) {
-      await this.#writeProtectedRecoveryChunk(input.scope, protectedStore, record, bytes, input.commitBridge);
+      await this.#writeProtectedRecoveryChunk(input.scope, protectedStore, record, bytes, input.commitBridge, input.onCommitFailure);
       return;
     }
     // A CAS loser never reports a transient write as failure without reading
@@ -1037,7 +1039,7 @@ export class GatewayResourceAuthority {
     const winner = joined.ok ? asRecoveryChunk(joined.value?.value) : null;
     if (winner === null || !sameRecoveryChunk(winner, input.owner, input.bridgeSequence, input.chunkIndex, digest, bytes.byteLength) || winner.expiresAtMs !== expiresAtMs) fail("not_found", "recovery receipt unavailable");
     if (winner.state === "active") await this.#acknowledgeActiveRecoveryChunk(input.scope, winner, expiresAtMs, storageKey, recoveryResultRefDigest(bytes), input.commitBridge);
-    else await this.#writeProtectedRecoveryChunk(input.scope, protectedStore, winner, bytes, input.commitBridge);
+    else await this.#writeProtectedRecoveryChunk(input.scope, protectedStore, winner, bytes, input.commitBridge, input.onCommitFailure);
     } finally { bytes.fill(0); }
   }
 
@@ -2355,10 +2357,14 @@ export class GatewayResourceAuthority {
     record: RecoveryChunkRecord,
     bytes: Uint8Array,
     commitBridge?: (tx: StoreTransaction) => Promise<void>,
+    onCommitFailure?: () => void,
   ): Promise<void> {
     if (bytes.byteLength !== record.plainLength || sha256(bytes) !== record.plainDigest) fail("not_found", "recovery receipt unavailable");
     const written = await protectedStore.putProtected({ storageKey: record.storageKey, contentType: "application/json", bytes, kid: record.kid, binding: recoveryBinding(record.owner, record.bridgeSequence, record.chunkIndex, record.plainDigest, record.resultRefDigest, record.plainLength, record.expiresAtMs) });
-    if (!written.ok || written.value.storageKey !== record.storageKey) fail("storage_unavailable", "recovery object was not durably written");
+    if (!written.ok || written.value.storageKey !== record.storageKey) {
+      onCommitFailure?.();
+      fail("storage_unavailable", "recovery object was not durably written");
+    }
     const activated = await this.#protocolStore.transact({ tenantId: scope.tenantId }, async (tx): Promise<"activated" | "active" | false> => {
       const current = await tx.read<GatewayJsonValue>(RECOVERY_CHUNK_NAMESPACE, recoveryChunkKey(record.owner, record.chunkIndex));
       const candidate = asRecoveryChunk(current?.value);
@@ -2382,6 +2388,7 @@ export class GatewayResourceAuthority {
     );
     const winner = joined.ok ? asRecoveryChunk(joined.value?.value) : null;
     if (winner === null || winner.state !== "active" || !sameRecoveryChunk(winner, record.owner, record.bridgeSequence, record.chunkIndex, record.plainDigest, record.plainLength)) {
+      onCommitFailure?.();
       fail("storage_unavailable", "recovery receipt was not activated");
     }
     await this.#acknowledgeActiveRecoveryChunk(scope, winner, record.expiresAtMs, record.storageKey, record.resultRefDigest, commitBridge);

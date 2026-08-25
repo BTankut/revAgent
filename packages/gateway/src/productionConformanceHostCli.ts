@@ -2,7 +2,10 @@ import { createHash, randomBytes, randomUUID, timingSafeEqual, X509Certificate }
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
-import { GatewayBridgeSessionAuthority } from "./bridgeSession.js";
+import {
+  GatewayBridgeSessionAuthority,
+  type ConformancePartialCarrierCommitFailure,
+} from "./bridgeSession.js";
 import { GatewayRecoveryAuthority } from "./recoveryAuthority.js";
 import { GATEWAY_OMITTED_PAYLOAD_RECOVERY_NAMESPACE } from "./omittedPayloadRecovery.js";
 import {
@@ -743,6 +746,9 @@ export async function runProductionConformanceHostCli(args: readonly string[]): 
     protectedKeys,
   );
   let authority: GatewayBridgeSessionAuthority | null = null;
+  let c39PartialCarrierCommitFailure:
+    | ConformancePartialCarrierCommitFailure
+    | null = null;
   const resourceAuthority = new GatewayResourceAuthority({
     protocolStore,
     objectStore,
@@ -773,6 +779,10 @@ export async function runProductionConformanceHostCli(args: readonly string[]): 
     resourceAuthority,
     internalConformanceOriginResendPolicy:
       createProductionConformanceC39OriginResendPolicy(),
+    onConformancePartialCarrierCommitFailure(failure) {
+      // One enum only: no identifiers, digests, owners, paths, or messages.
+      c39PartialCarrierCommitFailure ??= failure;
+    },
     onDocumentContextObservation(observation) {
       if (documentContextObservationOrdinal >= Number.MAX_SAFE_INTEGER) return;
       if (observation.stage !== "accepted" || !DOCUMENT_CONTEXT_DIGEST.test(observation.contextDigest) ||
@@ -1041,6 +1051,7 @@ export async function runProductionConformanceHostCli(args: readonly string[]): 
               tenantDigest: digest("conformance"),
               rows,
               c39Recovery,
+              c39PartialCarrierCommitFailure,
               documentContextUpdates: coherentDocumentContext.updates,
               documentContextCurrentRoute: coherentDocumentContext.currentRoute,
               documentContextEpochSchema: DOCUMENT_CONTEXT_EPOCH_SCHEMA,

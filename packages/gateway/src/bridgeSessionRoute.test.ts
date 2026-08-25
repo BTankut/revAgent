@@ -693,6 +693,51 @@ describe("GatewayBridgeSessionAuthority live document routing", () => {
     expect(denied.helloAck.payload.granted_capabilities).toEqual([]);
   });
 
+  it("emits only the bounded sequence classification for an exact pending partial with a gap", async () => {
+    const fixture = createRestartableTestStore();
+    const classifications: string[] = [];
+    const resources = new GatewayResourceAuthority({
+      protocolStore: fixture.store,
+      objectStore: createMemoryObjectStore(),
+    });
+    const created = new GatewayBridgeSessionAuthority(
+      fixture.store,
+      identity({ connectionCapabilities: ["chunked_results"] }),
+      {
+        resourceAuthority: resources,
+        onConformancePartialCarrierCommitFailure: (failure) =>
+          classifications.push(failure),
+      },
+    );
+    await created.open(); authorities.push(created);
+    const offered = hello();
+    offered.payload.capabilities = ["chunked_results"];
+    const openedChannel = channel();
+    const opened = await created.openConnection({
+      deviceToken: DEVICE_TOKEN, binding: "wss", hello: offered, channel: openedChannel,
+    });
+    await created.receive(opened.connectionId, registration("bounded-c39-diagnostic"));
+    const session = registeredFrame(openedChannel);
+    await created.receive(opened.connectionId, contextUpdate({
+      rsid: session.payload.rsid, seq: 1, activeDocument: "document-carrier",
+      documents: [document("document-carrier", true)],
+    }));
+    const invocationId = id();
+    void created.createExecutor().execute(bridgeRequest(session.payload.rsid, invocationId));
+    const invoke = await emittedInvokeFor(openedChannel, invocationId);
+    await expect(created.receive(opened.connectionId, {
+      v: 1, type: "partial", id: id(), rsid: session.payload.rsid, seq: 3,
+      ack: invoke.seq,
+      ts: new Date().toISOString(), payload: {
+        kind: "chunk", invocation_id: invocationId, stream_id: "result", chunk_index: 0,
+        encoding: "base64", content_type: "application/json",
+        data: Buffer.from("{}", "utf8").toString("base64"),
+      },
+    })).rejects.toBeDefined();
+    expect(classifications).toEqual(["sequence"]);
+    expect(JSON.stringify(classifications)).toBe('["sequence"]');
+  });
+
   it.each(["wss", "http_sse"] as const)(
     "keeps a chunked result private until Tx-C commits through the shared %s handler",
     async (binding) => {
