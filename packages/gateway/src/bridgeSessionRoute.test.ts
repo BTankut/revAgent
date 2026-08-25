@@ -693,7 +693,7 @@ describe("GatewayBridgeSessionAuthority live document routing", () => {
     expect(denied.helloAck.payload.granted_capabilities).toEqual([]);
   });
 
-  it("emits only the bounded sequence classification for an exact pending partial with a gap", async () => {
+  it("maps a partial acknowledgement beyond durable high-water to its bounded value-free subtype", async () => {
     const fixture = createRestartableTestStore();
     const classifications: string[] = [];
     const resources = new GatewayResourceAuthority({
@@ -726,16 +726,16 @@ describe("GatewayBridgeSessionAuthority live document routing", () => {
     void created.createExecutor().execute(bridgeRequest(session.payload.rsid, invocationId));
     const invoke = await emittedInvokeFor(openedChannel, invocationId);
     await expect(created.receive(opened.connectionId, {
-      v: 1, type: "partial", id: id(), rsid: session.payload.rsid, seq: 3,
-      ack: invoke.seq,
+      v: 1, type: "partial", id: id(), rsid: session.payload.rsid, seq: 2,
+      ack: invoke.seq + 100,
       ts: new Date().toISOString(), payload: {
         kind: "chunk", invocation_id: invocationId, stream_id: "result", chunk_index: 0,
         encoding: "base64", content_type: "application/json",
         data: Buffer.from("{}", "utf8").toString("base64"),
       },
     })).rejects.toBeDefined();
-    expect(classifications).toEqual(["sequence"]);
-    expect(JSON.stringify(classifications)).toBe('["sequence"]');
+    expect(classifications).toEqual(["sequence_ack_beyond_sent"]);
+    expect(JSON.stringify(classifications)).toBe('["sequence_ack_beyond_sent"]');
   });
 
   it.each(["wss", "http_sse"] as const)(

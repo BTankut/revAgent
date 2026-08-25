@@ -636,7 +636,13 @@ async function waitForC39Recovery(
     if (
       candidate === "ticket" ||
       candidate === "pending" ||
-      candidate === "sequence" ||
+      candidate === "sequence_gap" ||
+      candidate === "sequence_ack_beyond_sent" ||
+      candidate === "sequence_wrong_rsid" ||
+      candidate === "sequence_unsafe" ||
+      candidate === "sequence_duplicate_identity_mismatch" ||
+      candidate === "sequence_exhausted" ||
+      candidate === "sequence_other" ||
       candidate === "normalized_plan_or_cas" ||
       candidate === "storage_callback"
     ) partialCarrierCommitFailure = candidate;

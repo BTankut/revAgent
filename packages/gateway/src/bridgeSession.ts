@@ -151,7 +151,13 @@ export const TEST_RSID_CARRIER_RECEIVE_TAIL_OBSERVER = Symbol(
 export type ConformancePartialCarrierCommitFailure =
   | "ticket"
   | "pending"
-  | "sequence"
+  | "sequence_gap"
+  | "sequence_ack_beyond_sent"
+  | "sequence_wrong_rsid"
+  | "sequence_unsafe"
+  | "sequence_duplicate_identity_mismatch"
+  | "sequence_exhausted"
+  | "sequence_other"
   | "normalized_plan_or_cas"
   | "storage_callback";
 
@@ -10262,7 +10268,21 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         const accepted = acceptInboundData(record.sequence, envelope as DataEnvelopeSnapshot);
         if (accepted.kind === "protocol_fault" || accepted.kind === "gap") {
           diagnostic.reported = true;
-          this.#reportConformancePartialCarrierCommitFailure("sequence");
+          this.#reportConformancePartialCarrierCommitFailure(
+            accepted.kind === "gap"
+              ? "sequence_gap"
+              : accepted.reason === "ack_beyond_sent"
+                ? "sequence_ack_beyond_sent"
+                : accepted.reason === "wrong_rsid"
+                  ? "sequence_wrong_rsid"
+                  : accepted.reason === "unsafe_sequence" || accepted.reason === "unsafe_ack"
+                    ? "sequence_unsafe"
+                    : accepted.reason === "duplicate_identity_mismatch"
+                      ? "sequence_duplicate_identity_mismatch"
+                      : accepted.reason === "sequence_exhausted"
+                        ? "sequence_exhausted"
+                        : "sequence_other",
+          );
           throw new Error("carrier receipt sequence is not acceptable");
         }
         if (accepted.kind === "duplicate") return record;
