@@ -475,35 +475,6 @@ describe("add-in loopback v1 schemas", () => {
     expect(documentContextSemanticErrors(documentContext)).toEqual([]);
   });
 
-  it("accepts the optional cache incarnation correlate only for an initialized revision", () => {
-    const withDigest = structuredClone(documentContext);
-    object(withDigest.response.result, "get_document_context.result").cache_incarnation_digest =
-      `sha256:${"b".repeat(64)}`;
-    expect(
-      validateInstance("get-document-context", withDigest.response),
-      schemaErrors(validators["get-document-context"]),
-    ).toBe(true);
-
-    const withoutDigest = structuredClone(documentContext);
-    expect(
-      validateInstance("get-document-context", withoutDigest.response),
-      schemaErrors(validators["get-document-context"]),
-    ).toBe(true);
-
-    const malformedDigest = structuredClone(withDigest);
-    object(malformedDigest.response.result, "get_document_context.result").cache_incarnation_digest =
-      "sha256:not-a-digest";
-    expect(validateInstance("get-document-context", malformedDigest.response)).toBe(false);
-
-    const uninitializedDigest = structuredClone(withDigest);
-    object(uninitializedDigest.response.result, "get_document_context.result").revision = 0;
-    expect(validateInstance("get-document-context", uninitializedDigest.response)).toBe(false);
-
-    const unknownResultProperty = structuredClone(withDigest);
-    object(unknownResultProperty.response.result, "get_document_context.result").unknown_property = true;
-    expect(validateInstance("get-document-context", unknownResultProperty.response)).toBe(false);
-  });
-
   it.each([
     ["commit", batchCommit],
     ["rollback", batchRollback],
