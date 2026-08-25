@@ -59,15 +59,17 @@ describe("WP-12 C39 observed recovery audit", () => {
     originResultDigest: digest("a") });
   /** A real normalized-v2 projection: root references immutable child rows. */
   const observed = (overrides: Record<string, unknown> = {}) => {
-    const originChild = { namespace: "gateway.rbp-session-evidence/v2", key: `${owner.rsid}/${origin}`, version: 3, value: {
-      schema: "gateway.rbp-session-evidence/v2", tenantId: "conformance", rsid: "rsid", invocationId: origin,
+    const originChildIndex = digest("c");
+    const recoveryChildIndex = digest("d");
+    const originChild = { namespace: "gateway.rbp-session-evidence/v2", key: `${owner.rsid}/${originChildIndex}`, version: 3, value: {
+      schema: "gateway.rbp-session-evidence/v2", tenantId: "conformance", rsid: "rsid", invocationId: originChildIndex,
       entry: { terminalInvocationId: origin, terminalSessionBindingId: binding, terminalSessionVersion: 1,
         effectiveMcpSessionId: "mcp", payloadOmittedRecoveryEvidenceVersion: 1, payloadOmittedRecoveryEligible: true,
         terminalDigest: digest("b"), terminalCarrierDigest: digest("d"),
         terminalTruth: { state: "completed", resultDigest: digest("a"), payloadRetained: false } },
     } };
-    const recoveryChild = { namespace: "gateway.rbp-session-evidence/v2", key: `${owner.rsid}/${recovery}`, version: 4, value: {
-      schema: "gateway.rbp-session-evidence/v2", tenantId: "conformance", rsid: "rsid", invocationId: recovery,
+    const recoveryChild = { namespace: "gateway.rbp-session-evidence/v2", key: `${owner.rsid}/${recoveryChildIndex}`, version: 4, value: {
+      schema: "gateway.rbp-session-evidence/v2", tenantId: "conformance", rsid: "rsid", invocationId: recoveryChildIndex,
       entry: { terminalInvocationId: recovery, terminalSessionBindingId: binding, terminalSessionVersion: 1,
         effectiveMcpSessionId: "mcp", terminalDigest: digest("e"), terminalCarrierDigest: digest("b"),
         terminalTruth: { state: "completed", resultDigest: digest("a"), payloadRetained: true } },
@@ -175,8 +177,28 @@ describe("WP-12 C39 observed recovery audit", () => {
     const digestMismatch = withRoot(observed(), (value) => ({ ...value, childRefs: (value.childRefs as Record<string, unknown>[]).map((ref, index) =>
       index === 0 ? { ...ref, digest: digest("a") } : ref), childrenDigest: normalizedDigest((value.childRefs as Record<string, unknown>[]).map((ref, index) => index === 0 ? { ...ref, digest: digest("a") } : ref)) }));
     invalid(digestMismatch);
-    const unreferencedDuplicate = [...observed(), { ...observed().find((row) => row.namespace === "gateway.rbp-session-evidence/v2" && row.key.endsWith(origin))!, key: "rsid/unreferenced-origin", version: 5 }];
+    const originEvidence = observed().find((row) => row.namespace === "gateway.rbp-session-evidence/v2" &&
+      ((row.value as Record<string, unknown>).entry as Record<string, unknown>).terminalInvocationId === origin)!;
+    const unreferencedDuplicate = [...observed(), { ...originEvidence, key: "rsid/unreferenced-origin", version: 5 }];
     invalid(unreferencedDuplicate);
+    const duplicateChildRef = withRoot(observed(), (value) => {
+      const childRefs = value.childRefs as Record<string, unknown>[];
+      const duplicate = childRefs[0]!;
+      return { ...value, childRefs: [...childRefs, duplicate], childrenDigest: normalizedDigest([...childRefs, duplicate]) };
+    });
+    invalid(duplicateChildRef);
+    const mismatchedTerminal = structuredClone(observed());
+    const changedChild = mismatchedTerminal.find((row) => row.namespace === "gateway.rbp-session-evidence/v2" &&
+      ((row.value as Record<string, unknown>).entry as Record<string, unknown>).terminalInvocationId === origin)!;
+    changedChild.value = { ...(changedChild.value as Record<string, unknown>), entry: {
+      ...((changedChild.value as Record<string, unknown>).entry as Record<string, unknown>), terminalInvocationId: recovery,
+    } };
+    const changedRoot = root(mismatchedTerminal);
+    const changedRootValue = changedRoot.value as Record<string, unknown>;
+    const changedRefs = (changedRootValue.childRefs as Record<string, unknown>[]).map((ref) =>
+      ref.key === changedChild.key ? { ...ref, digest: normalizedDigest(changedChild.value) } : ref);
+    changedRoot.value = { ...changedRootValue, childRefs: changedRefs, childrenDigest: normalizedDigest(changedRefs) };
+    invalid(mismatchedTerminal);
     const missingInbound = withRoot(observed(), (value) => ({ ...value, sequence: { ...(value.sequence as Record<string, unknown>), sequence: {
       ...((value.sequence as Record<string, unknown>).sequence as Record<string, unknown>), acceptedInbound: [{ seq: 5, immutableDigest: digest("b") }],
     } } }));

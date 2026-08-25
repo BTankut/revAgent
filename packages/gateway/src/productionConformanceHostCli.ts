@@ -347,7 +347,8 @@ export function coherentC39RecoveryAudit(input: {
       });
       return value !== null && entry !== null && truth !== null && child.namespace === "gateway.rbp-session-evidence/v2" &&
         c39Positive(child.version) && value.schema === "gateway.rbp-session-evidence/v2" &&
-        value.tenantId === "conformance" && value.rsid === fullOwner.rsid && value.invocationId === invocationId &&
+        value.tenantId === "conformance" && value.rsid === fullOwner.rsid && c39Digest(value.invocationId) &&
+        child.key === `${fullOwner.rsid}/${value.invocationId}` &&
         entry.terminalInvocationId === invocationId && entry.terminalSessionBindingId === fullOwner.sessionBindingId &&
         entry.terminalSessionVersion === fullOwner.sessionBindingVersion &&
         entry.effectiveMcpSessionId === fullOwner.effectiveMcpSessionId && c39Digest(entry.terminalDigest) &&
@@ -363,7 +364,9 @@ export function coherentC39RecoveryAudit(input: {
     const recoveryEvidence = evidenceFor(fullOwner.recoveryInvocationId, false);
     const evidenceRowsFor = (invocationId: unknown) => evidenceChildren.filter((child) => {
       const value = c39Object(child.value);
-      return value !== null && value.rsid === fullOwner.rsid && value.invocationId === invocationId;
+      const entry = c39Object(value?.entry);
+      return value !== null && entry !== null && value.rsid === fullOwner.rsid &&
+        entry.terminalInvocationId === invocationId;
     });
     const partials = [...matchingChunks].sort((left, right) => Number(left.chunkIndex) - Number(right.chunkIndex));
     const acceptedInbound = nestedSequence.acceptedInbound as unknown[];
