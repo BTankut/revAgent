@@ -120,6 +120,45 @@ describe("WP-12 C38 monotonic document-context cursor journal", () => {
     expect(since.state === "ok" && since.rows.map((row) => row.cursor)).toEqual(["2"]);
     expect(after.highWaterCursor).toBe("2");
   });
+
+  it("earns a compact settled watcher seed before a 128-row eviction and binds it to exact high water", () => {
+    const journal = new RealTrioDocumentContextCursorJournal();
+    const records = Array.from({ length: 33 }, (_, cycle) => {
+      const offset = cycle * 5;
+      return [
+        cursorObservation("probe", "started", null, offset + 1),
+        cursorObservation("snapshot", "ready", null, offset + 2),
+        cursorObservation("queue", "durably_queued", cycle + 1, offset + 3),
+        cursorObservation("send", "sent", cycle + 1, offset + 4),
+        cursorObservation("ack", "durably_acknowledged", cycle + 1, offset + 5),
+      ];
+    }).flat();
+    const snapshot = journal.snapshot(records);
+    expect(snapshot.rows).toHaveLength(MAX_REAL_TRIO_DOCUMENT_CONTEXT_ROWS);
+    expect(snapshot.lowWaterCursor).toBe("38");
+    expect(snapshot.settledWatcherSeed).toMatchObject({
+      generation: snapshot.generation, highWaterCursor: snapshot.highWaterCursor,
+      watcherOrdinal: 33, lastSentSequence: 33, lastAckSequence: 33,
+    });
+  });
+
+  it("withholds the compact seed for open/unacknowledged or malformed document history and clears it on restart", () => {
+    const journal = new RealTrioDocumentContextCursorJournal();
+    const open = [
+      cursorObservation("probe", "started", null, 1),
+      cursorObservation("snapshot", "ready", null, 2),
+      cursorObservation("queue", "durably_queued", 1, 3),
+      cursorObservation("send", "sent", 1, 4),
+    ];
+    expect(journal.snapshot(open).settledWatcherSeed).toBeNull();
+    const malformed = { stream: "stderr" as const, at: "", sourceOffset: 5,
+      line: JSON.stringify({ event: "bridge.document_context_observation", stage: "future", outcome: "unknown" }) };
+    expect(journal.snapshot([...open, malformed]).settledWatcherSeed).toBeNull();
+    journal.restartGeneration();
+    const restarted = journal.snapshot([]);
+    expect(restarted.settledWatcherSeed).toBeNull();
+    expect(restarted.highWaterCursor).toBe("0");
+  });
 });
 
 describe("WP-12 real trio bridge endpoint derivation", () => {

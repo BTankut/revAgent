@@ -26,6 +26,13 @@ import {
   type RealTrioSupervisorResult,
   classifyRealTrioAuditControlFailure,
 } from "../src/realTrioSupervisor.js";
+import {
+  documentContextSourcePair as sharedDocumentContextSourcePair,
+  type ParsedDocumentContextCandidate,
+  type RealTrioDocumentContextCorrelation,
+  type RealTrioDocumentContextSourcePair,
+  type RealTrioPreControlWatcherSeed,
+} from "../src/realTrioDocumentContextEvidence.js";
 import { stableJson } from "../src/stableJson.js";
 import { createEphemeralLoopbackTlsIdentity } from "../src/ephemeralTlsIdentity.js";
 
@@ -173,21 +180,6 @@ export interface RealTrioDocumentContextAudit {
   readonly pollRequestCount: number;
 }
 
-interface RealTrioDocumentContextCorrelation {
-  readonly rsidHash: `sha256:${string}`;
-  readonly sequence: number;
-  /** Selected journal ordinal; never infer this from an array index. */
-  readonly sendCursor: string;
-  readonly generation: number;
-  readonly sendTranscriptIndex: number;
-  readonly sendRecordedAt: string | null;
-}
-
-interface RealTrioDocumentContextSourcePair {
-  readonly sourceRevision: number;
-  readonly cacheIncarnationDigest: `sha256:${string}`;
-}
-
 /**
  * The route selector deliberately consumes the one redacted Gateway audit
  * response rather than combining a session listing with a later audit read.
@@ -214,19 +206,6 @@ export interface RealTrioGatewayAuditBaseline {
   readonly acceptedObservationOrdinal?: number;
   /** Value-free exact identity of the baseline's current durable route. */
   readonly currentIdentity?: `sha256:${string}`;
-}
-
-/**
- * The pre-control watcher seed deliberately omits prior context and the
- * source revision/incarnation pair. Post-control evidence must establish the
- * newly acknowledged pair without borrowing a historical value.
- */
-export interface RealTrioPreControlWatcherSeed {
-  readonly generation: number;
-  readonly watcherOrdinal: number;
-  readonly rsidHash: `sha256:${string}`;
-  readonly lastSentSequence: number | null;
-  readonly lastAckSequence: number | null;
 }
 
 /**
@@ -1021,17 +1000,11 @@ export function correlatedDocumentContextSendFromCursor(
   return parsed?.candidates.length === 1 ? parsed.candidates[0]! : null;
 }
 
-interface LocalDocumentContextCandidate extends RealTrioDocumentContextCorrelation {
-  readonly contextDigest: string;
-  readonly source: RealTrioDocumentContextSourcePair;
-}
-
-interface StrictDocumentContextCandidate extends LocalDocumentContextCandidate {
+interface StrictDocumentContextCandidate extends ParsedDocumentContextCandidate {
   readonly routeDigest: `sha256:${string}`;
   readonly controlCursor: string;
   readonly precedingProbe: RealTrioDocumentContextCursorRow | null;
   readonly precedingSeed: RealTrioPreControlWatcherSeed | null;
-  readonly watcherOrdinal: number;
 }
 
 type StrictDocumentObservation = Readonly<{
@@ -1043,10 +1016,7 @@ type StrictDocumentObservation = Readonly<{
 }>;
 
 function sourcePair(value: Record<string, unknown>): RealTrioDocumentContextSourcePair | null {
-  if (!Number.isSafeInteger(value.sourceRevision) || Number(value.sourceRevision) < 1 ||
-      !isSha256(value.cacheIncarnationDigest)) return null;
-  return Object.freeze({ sourceRevision: Number(value.sourceRevision),
-    cacheIncarnationDigest: value.cacheIncarnationDigest });
+  return sharedDocumentContextSourcePair(value);
 }
 
 /**
@@ -1255,6 +1225,7 @@ function parseDocumentContextGrammar(input: {
     currentWatcherOrdinal: watcher?.ordinal ?? 0,
     currentWatcher: watcher === null ? null : Object.freeze({
       generation: input.generation,
+      highWaterCursor: previous.toString(),
       watcherOrdinal: watcher.ordinal,
       rsidHash: watcher.rsidHash,
       lastSentSequence: watcher.lastSentSequence,
@@ -1288,10 +1259,20 @@ function preControlWatcherSnapshotState(
       !/^(?:0|[1-9][0-9]*)$/u.test(snapshot.highWaterCursor)) return Object.freeze({ kind: "invalid" });
   const lowWater = BigInt(snapshot.lowWaterCursor);
   const highWater = BigInt(snapshot.highWaterCursor);
+  const compact = snapshot.settledWatcherSeed;
+  const compactValid = compact !== undefined && compact !== null &&
+    compact.generation === snapshot.generation && compact.highWaterCursor === snapshot.highWaterCursor &&
+    Number.isSafeInteger(compact.watcherOrdinal) && compact.watcherOrdinal >= 1 && isSha256(compact.rsidHash) &&
+    ((compact.lastSentSequence === null && compact.lastAckSequence === null) ||
+      (Number.isSafeInteger(compact.lastSentSequence) && Number(compact.lastSentSequence) >= 1 &&
+       Number.isSafeInteger(compact.lastAckSequence) && Number(compact.lastAckSequence) >= Number(compact.lastSentSequence)));
   // A new process may expose an exact empty genesis ring before its first
   // watcher probe. This is a wait-only state, never a usable route seed.
   if (snapshot.rows.length === 0 && lowWater === 0n && highWater === 0n) {
     return Object.freeze({ kind: "bootstrap_pending" });
+  }
+  if (lowWater > 1n) {
+    return compactValid ? Object.freeze({ kind: "seed", seed: compact! }) : Object.freeze({ kind: "invalid" });
   }
   if (snapshot.rows.length === 0 || snapshot.rows.some((row) => !/^[1-9][0-9]*$/u.test(row.cursor)) ||
       lowWater !== 1n || highWater < lowWater ||
@@ -1313,7 +1294,12 @@ function preControlWatcherSnapshotState(
     );
     return acknowledgedAt === undefined || acknowledgedAt <= candidate.sendTranscriptIndex;
   });
-  if (unacknowledged.length === 0) return Object.freeze({ kind: "seed", seed: parsed.currentWatcher });
+  if (unacknowledged.length === 0) {
+    if (compact !== undefined && (!compactValid || compact!.watcherOrdinal !== parsed.currentWatcher.watcherOrdinal ||
+        compact!.rsidHash !== parsed.currentWatcher.rsidHash || compact!.lastSentSequence !== parsed.currentWatcher.lastSentSequence ||
+        compact!.lastAckSequence !== parsed.currentWatcher.lastAckSequence)) return Object.freeze({ kind: "invalid" });
+    return Object.freeze({ kind: "seed", seed: parsed.currentWatcher });
+  }
   const outstanding = unacknowledged[0];
   if (unacknowledged.length === 1 && outstanding !== undefined &&
       outstanding.watcherOrdinal === parsed.currentWatcher.watcherOrdinal &&

@@ -508,13 +508,13 @@ describe("WP-12 real-trio fixture document route gate", () => {
       row(5, "ack", "durably_acknowledged", 1),
     ]);
     expect(preControlWatcherSeedFromSnapshot(settled)).toEqual({
-      generation: 3, watcherOrdinal: 1, rsidHash: hash, lastSentSequence: 1, lastAckSequence: 1,
+      generation: 3, highWaterCursor: "5", watcherOrdinal: 1, rsidHash: hash, lastSentSequence: 1, lastAckSequence: 1,
     });
     // The latest deterministic watcher is the only carried identity; its
     // earlier watcher is complete and has no influence on a later control.
     expect(preControlWatcherSeedFromSnapshot(snapshot([
       ...settled.rows, row(6, "probe", "started", null, other),
-    ]))).toEqual({ generation: 3, watcherOrdinal: 2, rsidHash: other,
+    ]))).toEqual({ generation: 3, highWaterCursor: "6", watcherOrdinal: 2, rsidHash: other,
       lastSentSequence: null, lastAckSequence: null });
     // The seed validates every retained watcher, not just the latest one. A
     // new empty probe cannot hide a prior unacknowledged send.
@@ -804,7 +804,7 @@ describe("WP-12 real-trio fixture document route gate", () => {
         outcome: stage === "snapshot" ? "ready" : stage === "queue" ? "durably_queued" : stage === "send" ? "sent" : "started",
         rsidHash, sequence, ...(["snapshot", "queue", "send"].includes(stage) ? { contextDigest: context, ...source } : {}), }),
     });
-    const seed = { generation: 4, watcherOrdinal: 1, rsidHash: oldHash, lastSentSequence: 1, lastAckSequence: 1 } as const;
+    const seed = { generation: 4, highWaterCursor: "5", watcherOrdinal: 1, rsidHash: oldHash, lastSentSequence: 1, lastAckSequence: 1 } as const;
     const input = (rows: readonly ReturnType<typeof event>[], overrides: Record<string, unknown> = {}) => ({ rows,
       generation: 4, controlCursor: "5", precedingProbe: null, precedingSeed: seed, audit: audit(),
       baseline: { processEpoch: epoch, observationOrdinal: 1 },

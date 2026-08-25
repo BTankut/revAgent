@@ -23,6 +23,11 @@ import {
   type RealTrioProcessIdentity,
 } from "./realTrioAttestation.js";
 import { stableJson } from "./stableJson.js";
+import {
+  DocumentContextHistoryReducer,
+  documentContextObservationLooksAdvertised,
+  type RealTrioPreControlWatcherSeed,
+} from "./realTrioDocumentContextEvidence.js";
 
 export const REAL_TRIO_SUPERVISOR_SCHEMA = "rbp-real-trio-supervisor/v1" as const;
 export const REAL_TRIO_FAILURE_DIAGNOSTICS_SCHEMA =
@@ -190,6 +195,8 @@ export interface RealTrioDocumentContextSnapshot {
   readonly lowWaterCursor: string;
   readonly highWaterCursor: string;
   readonly rows: readonly RealTrioDocumentContextCursorRow[];
+  /** Present only when the whole generation prefix is independently settled. */
+  readonly settledWatcherSeed?: RealTrioPreControlWatcherSeed | null;
 }
 
 export type RealTrioDocumentContextSince =
@@ -491,6 +498,10 @@ export class RealTrioDocumentContextCursorJournal {
   private rows: RealTrioDocumentContextCursorRow[] = [];
   private seenObjectLines = new WeakSet<object>();
   private seenOffsets = new Set<string>();
+  private reducer = new DocumentContextHistoryReducer();
+  private historyInvalid = false;
+  /** Retained solely to make post-eviction continuity explicit; never published while a cycle is open. */
+  private earnedSeed: RealTrioPreControlWatcherSeed | null = null;
 
   public ingest(transcript: readonly ProcessTranscriptRecord[]): void {
     for (const record of transcript) {
@@ -506,11 +517,17 @@ export class RealTrioDocumentContextCursorJournal {
         if (this.seenObjectLines.has(source.value)) continue;
         this.seenObjectLines.add(source.value);
       }
-      if (Buffer.byteLength(record.line, "utf8") > MAX_REAL_TRIO_CONTROL_BYTES) continue;
+      if (Buffer.byteLength(record.line, "utf8") > MAX_REAL_TRIO_CONTROL_BYTES) {
+        if (documentContextObservationLooksAdvertised(record.line)) this.historyInvalid = true;
+        continue;
+      }
       const redacted = redactBridgeTranscript([record]);
       const retained = redacted[0];
       if (retained === undefined ||
-          Buffer.byteLength(retained.line, "utf8") > MAX_REAL_TRIO_DOCUMENT_CONTEXT_ROW_BYTES) continue;
+          Buffer.byteLength(retained.line, "utf8") > MAX_REAL_TRIO_DOCUMENT_CONTEXT_ROW_BYTES) {
+        if (documentContextObservationLooksAdvertised(record.line)) this.historyInvalid = true;
+        continue;
+      }
       try {
         const parsed = JSON.parse(retained.line) as unknown;
         if (!isObject(parsed) ||
@@ -521,15 +538,21 @@ export class RealTrioDocumentContextCursorJournal {
              documentContextSourcePair(parsed) === null ||
              (parsed.stage === "snapshot" ? parsed.sequence !== null : !isSafeDocumentContextSequence(parsed.sequence)))) continue;
       } catch {
+        if (documentContextObservationLooksAdvertised(record.line)) this.historyInvalid = true;
         continue;
       }
       this.highWater += 1n;
-      this.rows.push(Object.freeze({
+      const row = Object.freeze({
         cursor: this.highWater.toString(10),
         line: retained.line,
         at: retained.at,
-      }));
+      });
+      if (!this.reducer.accept(row, this.generation)) this.historyInvalid = true;
+      this.rows.push(row);
+      const settled = this.reducer.settledSeed(this.generation);
+      if (settled !== null) this.earnedSeed = settled;
       if (this.rows.length > MAX_REAL_TRIO_DOCUMENT_CONTEXT_ROWS) {
+        if (this.earnedSeed === null) this.historyInvalid = true;
         this.rows.splice(0, this.rows.length - MAX_REAL_TRIO_DOCUMENT_CONTEXT_ROWS);
       }
     }
@@ -545,6 +568,9 @@ export class RealTrioDocumentContextCursorJournal {
     this.rows = [];
     this.seenObjectLines = new WeakSet<object>();
     this.seenOffsets = new Set<string>();
+    this.reducer = new DocumentContextHistoryReducer();
+    this.historyInvalid = false;
+    this.earnedSeed = null;
   }
 
   public snapshot(transcript: readonly ProcessTranscriptRecord[]): RealTrioDocumentContextSnapshot {
@@ -557,6 +583,7 @@ export class RealTrioDocumentContextCursorJournal {
       lowWaterCursor: lowWater.toString(10),
       highWaterCursor: this.highWater.toString(10),
       rows: Object.freeze([...this.rows]),
+      settledWatcherSeed: this.historyInvalid ? null : this.reducer.settledSeed(this.generation),
     });
   }
 
