@@ -61,16 +61,18 @@ internal sealed partial class RbpJournalStore
             string digest = Rfc8785Json.Sha256Digest(terminal);
             string commitment = RbpRecoveryTerminalCommitment.Compute(
                 rsid, recoveryInvocationId, terminalSequence,
-                sequence.State.LastPeerAcknowledgement, digest, terminalJcs,
+                sequence.State.LastPeerAcknowledgement,
+                reservation.InboundAcknowledgementBaseline, digest, terminalJcs,
                 reservation.ExpiresAtMilliseconds);
             using SqliteCommand insert = context.CreateCommand("""
-                INSERT INTO rbp_recovery_terminal_plans(recovery_invocation_id,rsid,plan_version,final_sequence,acknowledgement_baseline,terminal_jcs,terminal_digest,payload_commitment,state,created_at_ms,expires_at_ms,confirmed_at_ms)
-                VALUES($recovery,$rsid,9,$seq,$ack,$jcs,$digest,$commitment,'reserved',$now,$expires,NULL);
+                INSERT INTO rbp_recovery_terminal_plans(recovery_invocation_id,rsid,plan_version,final_sequence,acknowledgement_baseline,inbound_ack_baseline,terminal_jcs,terminal_digest,payload_commitment,state,created_at_ms,expires_at_ms,confirmed_at_ms)
+                VALUES($recovery,$rsid,9,$seq,$ack,$inbound_ack,$jcs,$digest,$commitment,'reserved',$now,$expires,NULL);
                 """);
             insert.Parameters.AddWithValue("$recovery", recoveryInvocationId);
             insert.Parameters.AddWithValue("$rsid", rsid);
             insert.Parameters.AddWithValue("$seq", terminalSequence);
             insert.Parameters.AddWithValue("$ack", sequence.State.LastPeerAcknowledgement);
+            insert.Parameters.AddWithValue("$inbound_ack", reservation.InboundAcknowledgementBaseline);
             insert.Parameters.AddWithValue("$jcs", terminalJcs);
             insert.Parameters.AddWithValue("$digest", digest);
             insert.Parameters.AddWithValue("$commitment", commitment);
@@ -272,11 +274,11 @@ internal sealed partial class RbpJournalStore
                       raw_idempotency_key,raw_payload_version,header_jcs,plaintext_length,chunk_size,
                       chunk_count,phase,chunk_index,current_reserved_seq,
                       canonical_envelope_digest,send_started_at_ms,highest_reserved_seq,
-                      acknowledgement_cursor,plan_version,created_at_ms,expires_at_ms,
+                      acknowledgement_cursor,inbound_ack_baseline,plan_version,created_at_ms,expires_at_ms,
                       updated_at_ms,completed_at_ms,tombstoned_at_ms,tombstone_reason)
                     VALUES($recovery,$rsid,$origin,$digest,$raw,7,$header,$length,
                            $chunk_size,$chunk_count,'reserved',0,$seq,$envelope,
-                           NULL,$seq,$ack,1,$now,$expires,$now,NULL,NULL,NULL);
+                           NULL,$seq,$ack,$inbound_ack,1,$now,$expires,$now,NULL,NULL,NULL);
                     """))
                 {
                     insert.Parameters.AddWithValue("$recovery", request.RecoveryInvocationId);
@@ -291,6 +293,7 @@ internal sealed partial class RbpJournalStore
                     insert.Parameters.AddWithValue("$header", headerJcs);
                     insert.Parameters.AddWithValue("$envelope", request.CanonicalEnvelopeDigest);
                     insert.Parameters.AddWithValue("$ack", loaded.State.LastPeerAcknowledgement);
+                    insert.Parameters.AddWithValue("$inbound_ack", loaded.State.LastRxSequence);
                     insert.Parameters.AddWithValue("$now", now);
                     insert.Parameters.AddWithValue("$expires", expiry);
                     if (insert.ExecuteNonQuery() != 1)
@@ -367,7 +370,7 @@ internal sealed partial class RbpJournalStore
                        raw_idempotency_key,raw_payload_version,header_jcs,plaintext_length,chunk_size,
                        chunk_count,phase,chunk_index,current_reserved_seq,
                        canonical_envelope_digest,send_started_at_ms,highest_reserved_seq,
-                       acknowledgement_cursor,plan_version,created_at_ms,expires_at_ms,
+                       acknowledgement_cursor,inbound_ack_baseline,plan_version,created_at_ms,expires_at_ms,
                        updated_at_ms,completed_at_ms,tombstoned_at_ms,tombstone_reason
                 FROM rbp_recovery_carrier_reservations
                 WHERE phase IN ('reserved','send_started')
@@ -398,7 +401,7 @@ internal sealed partial class RbpJournalStore
         {
             using SqliteCommand command = CreateCommand(connection, """
                 SELECT recovery_invocation_id,rsid,plan_version,final_sequence,
-                       acknowledgement_baseline,terminal_jcs,terminal_digest,
+                       acknowledgement_baseline,inbound_ack_baseline,terminal_jcs,terminal_digest,
                        payload_commitment,state,created_at_ms,expires_at_ms,
                        confirmed_at_ms
                 FROM rbp_recovery_terminal_plans
@@ -1334,7 +1337,7 @@ internal sealed partial class RbpJournalStore
                    raw_idempotency_key,raw_payload_version,header_jcs,plaintext_length,chunk_size,
                    chunk_count,phase,chunk_index,current_reserved_seq,
                    canonical_envelope_digest,send_started_at_ms,highest_reserved_seq,
-                   acknowledgement_cursor,plan_version,created_at_ms,expires_at_ms,
+                   acknowledgement_cursor,inbound_ack_baseline,plan_version,created_at_ms,expires_at_ms,
                    updated_at_ms,completed_at_ms,tombstoned_at_ms,tombstone_reason
             FROM rbp_recovery_carrier_reservations
             WHERE rsid=$rsid AND phase IN ('reserved','send_started','awaiting_ack','tombstoned');
@@ -1373,13 +1376,13 @@ internal sealed partial class RbpJournalStore
     }
 
     private const string RecoveryTerminalPlanColumns = """
-        recovery_invocation_id,rsid,plan_version,final_sequence,acknowledgement_baseline,
+        recovery_invocation_id,rsid,plan_version,final_sequence,acknowledgement_baseline,inbound_ack_baseline,
         terminal_jcs,terminal_digest,payload_commitment,state,created_at_ms,expires_at_ms,
         confirmed_at_ms
         """;
 
     private const string RecoveryTerminalPlanByIdSql = """
-        SELECT recovery_invocation_id,rsid,plan_version,final_sequence,acknowledgement_baseline,
+        SELECT recovery_invocation_id,rsid,plan_version,final_sequence,acknowledgement_baseline,inbound_ack_baseline,
                terminal_jcs,terminal_digest,payload_commitment,state,created_at_ms,expires_at_ms,
                confirmed_at_ms
         FROM rbp_recovery_terminal_plans
@@ -1387,7 +1390,7 @@ internal sealed partial class RbpJournalStore
         """;
 
     private const string RecoveryTerminalPlanByRsidSql = """
-        SELECT recovery_invocation_id,rsid,plan_version,final_sequence,acknowledgement_baseline,
+        SELECT recovery_invocation_id,rsid,plan_version,final_sequence,acknowledgement_baseline,inbound_ack_baseline,
                terminal_jcs,terminal_digest,payload_commitment,state,created_at_ms,expires_at_ms,
                confirmed_at_ms
         FROM rbp_recovery_terminal_plans
@@ -1405,10 +1408,12 @@ internal sealed partial class RbpJournalStore
 
     private static RbpRecoveryTerminalPlan MaterializeRecoveryTerminalPlan(SqliteDataReader reader)
     {
-        string terminalJcs = reader.GetString(5);
-        string terminalDigest = reader.GetString(6);
-        string commitment = reader.GetString(7);
-        string state = reader.GetString(8);
+        if (reader.IsDBNull(5) || reader.GetInt64(5) < 0)
+            throw RbpJournalSerialization.Corrupt("Recovery terminal inbound acknowledgement baseline is missing or invalid.");
+        string terminalJcs = reader.GetString(6);
+        string terminalDigest = reader.GetString(7);
+        string commitment = reader.GetString(8);
+        string state = reader.GetString(9);
         if (reader.GetInt32(2) != RbpRecoveryTerminalCommitment.PlanVersion ||
             state is not ("reserved" or "confirmed" or "tombstoned") ||
             !RbpJournalSerialization.IsSha256Digest(terminalDigest) ||
@@ -1430,19 +1435,19 @@ internal sealed partial class RbpJournalStore
             !string.Equals(Rfc8785Json.Sha256Digest(terminal), terminalDigest, StringComparison.Ordinal) ||
             !string.Equals(commitment, RbpRecoveryTerminalCommitment.Compute(
                     reader.GetString(1), reader.GetString(0), reader.GetInt64(3), reader.GetInt64(4),
-                    terminalDigest, terminalJcs, reader.GetInt64(10)), StringComparison.Ordinal))
+                    reader.GetInt64(5), terminalDigest, terminalJcs, reader.GetInt64(11)), StringComparison.Ordinal))
         {
             throw RbpJournalSerialization.Corrupt("Recovery terminal plan integrity is invalid.");
         }
-        long? confirmed = reader.IsDBNull(11) ? null : reader.GetInt64(11);
+        long? confirmed = reader.IsDBNull(12) ? null : reader.GetInt64(12);
         if ((state == "confirmed") != (confirmed is not null) ||
             (state != "confirmed" && confirmed is not null))
         {
             throw RbpJournalSerialization.Corrupt("Recovery terminal plan state is invalid.");
         }
         return new RbpRecoveryTerminalPlan(reader.GetString(0), reader.GetString(1), reader.GetInt32(2),
-            reader.GetInt64(3), reader.GetInt64(4), terminal, terminalDigest, commitment, state,
-            reader.GetInt64(9), reader.GetInt64(10), confirmed);
+            reader.GetInt64(3), reader.GetInt64(4), reader.GetInt64(5), terminal, terminalDigest, commitment, state,
+            reader.GetInt64(10), reader.GetInt64(11), confirmed);
     }
 
     private static JsonElement BuildRecoveryTerminalPayload(RbpRecoveryCarrierReservation reservation)
@@ -1469,7 +1474,8 @@ internal sealed partial class RbpJournalStore
         if (reservation is null || reservation.Phase != RbpRecoveryCarrierPhase.Completed ||
             !string.Equals(reservation.Rsid, rsid, StringComparison.Ordinal) ||
             reservation.ExpiresAtMilliseconds != plan.ExpiresAtMilliseconds ||
-            reservation.CurrentReservedSequence != plan.AcknowledgementBaseline)
+            reservation.CurrentReservedSequence != plan.AcknowledgementBaseline ||
+            reservation.InboundAcknowledgementBaseline != plan.InboundAcknowledgementBaseline)
         {
             return false;
         }
@@ -1590,7 +1596,7 @@ internal sealed partial class RbpJournalStore
                raw_idempotency_key,raw_payload_version,header_jcs,plaintext_length,chunk_size,
                chunk_count,phase,chunk_index,current_reserved_seq,
                canonical_envelope_digest,send_started_at_ms,highest_reserved_seq,
-               acknowledgement_cursor,plan_version,created_at_ms,expires_at_ms,
+               acknowledgement_cursor,inbound_ack_baseline,plan_version,created_at_ms,expires_at_ms,
                updated_at_ms,completed_at_ms,tombstoned_at_ms,tombstone_reason
         FROM rbp_recovery_carrier_reservations
         WHERE recovery_invocation_id=$recovery;
@@ -1606,6 +1612,8 @@ internal sealed partial class RbpJournalStore
 
     private static RbpRecoveryCarrierReservation MaterializeRecoveryCarrierReservation(SqliteDataReader reader)
     {
+        if (reader.IsDBNull(17) || reader.GetInt64(17) < 0)
+            throw RbpJournalSerialization.Corrupt("Recovery carrier inbound acknowledgement baseline is missing or invalid.");
         return new(
             reader.GetString(1), reader.GetString(0), reader.GetString(2), reader.GetString(3),
             reader.GetString(4), reader.GetString(6), reader.GetInt32(7), reader.GetInt32(8), reader.GetInt32(9),
@@ -1618,10 +1626,10 @@ internal sealed partial class RbpJournalStore
                 "tombstoned" => RbpRecoveryCarrierPhase.Tombstoned,
                 _ => throw RbpJournalSerialization.Corrupt("The recovery carrier phase is invalid."),
             }, reader.GetInt32(11), reader.GetInt64(12), reader.GetInt32(5), reader.GetString(13),
-            reader.IsDBNull(14) ? null : reader.GetInt64(14), reader.GetInt64(15), reader.GetInt64(16),
-            reader.GetInt32(17), reader.GetInt64(18), reader.GetInt64(19), reader.GetInt64(20),
-            reader.IsDBNull(21) ? null : reader.GetInt64(21), reader.IsDBNull(22) ? null : reader.GetInt64(22),
-            reader.IsDBNull(23) ? null : reader.GetString(23));
+            reader.IsDBNull(14) ? null : reader.GetInt64(14), reader.GetInt64(15), reader.GetInt64(16), reader.GetInt64(17),
+            reader.GetInt32(18), reader.GetInt64(19), reader.GetInt64(20), reader.GetInt64(21),
+            reader.IsDBNull(22) ? null : reader.GetInt64(22), reader.IsDBNull(23) ? null : reader.GetInt64(23),
+            reader.IsDBNull(24) ? null : reader.GetString(24));
     }
 
     private (string Key, int Length) ReadExactRecoveryPayloadKey(

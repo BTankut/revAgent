@@ -283,6 +283,7 @@ internal sealed record RbpRecoveryCarrierReservation(
     long? SendStartedAtMilliseconds,
     long HighestReservedSequence,
     long AcknowledgementCursor,
+    long InboundAcknowledgementBaseline,
     int PlanVersion,
     long CreatedAtMilliseconds,
     long ExpiresAtMilliseconds,
@@ -294,6 +295,7 @@ internal sealed record RbpRecoveryCarrierReservation(
 internal sealed record RbpRecoveryTerminalPlan(
     string RecoveryInvocationId, string Rsid, int PlanVersion,
     long FinalSequence, long AcknowledgementBaseline,
+    long InboundAcknowledgementBaseline,
     JsonElement TerminalPayload, string TerminalDigest,
     string PayloadCommitment, string State, long CreatedAtMilliseconds,
     long ExpiresAtMilliseconds, long? ConfirmedAtMilliseconds);
@@ -313,6 +315,7 @@ internal static class RbpRecoveryTerminalCommitment
         string recoveryInvocationId,
         long finalSequence,
         long acknowledgementBaseline,
+        long inboundAcknowledgementBaseline,
         string terminalDigest,
         string terminalJcs,
         long expiresAtMilliseconds) =>
@@ -324,6 +327,7 @@ internal static class RbpRecoveryTerminalCommitment
             plan_version = PlanVersion,
             final_sequence = finalSequence,
             acknowledgement_baseline = acknowledgementBaseline,
+            inbound_ack_baseline = inboundAcknowledgementBaseline,
             terminal_digest = terminalDigest,
             terminal_jcs = terminalJcs,
             expires_at_ms = expiresAtMilliseconds,
@@ -353,6 +357,7 @@ internal static class RbpRecoveryCarrierCommitment
             total_length = value.PlaintextLength,
             current_reserved_seq = value.CurrentReservedSequence,
             predecessor_ack = value.AcknowledgementCursor,
+            inbound_ack_baseline = value.InboundAcknowledgementBaseline,
             high_water = value.HighestReservedSequence,
             next_sequence = nextSequence,
             created_at_ms = value.CreatedAtMilliseconds,

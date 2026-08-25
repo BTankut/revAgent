@@ -61,7 +61,7 @@ internal sealed partial class RbpConnectionCoordinator
                 Rsid: started.Rsid,
                 Sequence: materialized.ReservedSequence,
                 Payload: materialized.Answer.Payload,
-                Acknowledgement: started.AcknowledgementCursor,
+                Acknowledgement: started.InboundAcknowledgementBaseline,
                 Timestamp: DateTimeOffset
                     .FromUnixTimeMilliseconds(started.CreatedAtMilliseconds)
                     .ToString("O", CultureInfo.InvariantCulture));
@@ -294,7 +294,7 @@ internal sealed partial class RbpConnectionCoordinator
                 Rsid: plan.Rsid,
                 Sequence: materialized.ReservedSequence,
                 Payload: materialized.Answer.Payload,
-                Acknowledgement: plan.AcknowledgementBaseline,
+                Acknowledgement: plan.InboundAcknowledgementBaseline,
                 Timestamp: DateTimeOffset
                     .FromUnixTimeMilliseconds(plan.CreatedAtMilliseconds)
                     .ToString("O", CultureInfo.InvariantCulture));

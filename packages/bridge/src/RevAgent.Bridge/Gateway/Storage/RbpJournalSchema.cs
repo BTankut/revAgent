@@ -5,7 +5,7 @@ namespace RevAgent.Bridge.Gateway.Storage;
 
 internal static class RbpJournalSchema
 {
-    internal const int CurrentVersion = 9;
+    internal const int CurrentVersion = 10;
     internal const string StoreFormat = "revagent-rbp-journal";
 
     private const string TransportLifecycleSchema = """
@@ -592,7 +592,23 @@ internal static class RbpJournalSchema
         """;
 
     internal static RbpJournalMigration RecoveryTerminalPlanMigration { get; } = new(
-        CurrentVersion, "WP-12", "rbp_correlated_recovery_terminal_plan_v9", RecoveryTerminalPlanSchema);
+        9, "WP-12", "rbp_correlated_recovery_terminal_plan_v9", RecoveryTerminalPlanSchema);
+
+    // This is deliberately additive: old v8/v9 recovery rows receive NULL
+    // and are rejected by the recovery readers.  They must never be upgraded
+    // by sampling the current session receive cursor after a restart.
+    private const string RecoveryInboundAcknowledgementBaselineSchema = """
+        ALTER TABLE rbp_recovery_carrier_reservations
+        ADD COLUMN inbound_ack_baseline INTEGER
+          CHECK(inbound_ack_baseline>=0 AND inbound_ack_baseline<=9007199254740991);
+        ALTER TABLE rbp_recovery_terminal_plans
+        ADD COLUMN inbound_ack_baseline INTEGER
+          CHECK(inbound_ack_baseline>=0 AND inbound_ack_baseline<=9007199254740991);
+        """;
+
+    internal static RbpJournalMigration RecoveryInboundAcknowledgementBaselineMigration { get; } = new(
+        CurrentVersion, "WP-12", "rbp_recovery_inbound_ack_baseline_v10",
+        RecoveryInboundAcknowledgementBaselineSchema);
 
     internal static IReadOnlyList<RbpJournalMigration> BuildMigrationChain(
         IReadOnlyList<RbpJournalMigration>? additional)
@@ -608,6 +624,7 @@ internal static class RbpJournalSchema
             RecoveryPayloadMigration,
             RecoveryCarrierReservationMigration,
             RecoveryTerminalPlanMigration,
+            RecoveryInboundAcknowledgementBaselineMigration,
         };
         if (additional is not null)
         {

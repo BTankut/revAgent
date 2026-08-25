@@ -46,7 +46,7 @@ public sealed partial class RbpConnectionCoordinatorTests
             envelope => envelope.Type == "partial" &&
                         envelope.Id == reservation.RecoveryInvocationId);
         Assert.Equal(reservation.CurrentReservedSequence, partial.Sequence);
-        Assert.Equal(reservation.AcknowledgementCursor, partial.Acknowledgement);
+        Assert.Equal(reservation.InboundAcknowledgementBaseline, partial.Acknowledgement);
         Assert.Equal(reservation.Rsid, partial.Rsid);
         Assert.Equal("chunk", partial.Payload.GetProperty("kind").GetString());
         Assert.Empty((await store.LoadSequenceAsync(reservation.Rsid)).Outbox);
@@ -310,7 +310,7 @@ public sealed partial class RbpConnectionCoordinatorTests
         RbpEnvelope terminal = await EventuallySentAsync(cycle, item =>
             item.Type == "result" && item.Id == reservation.RecoveryInvocationId);
         Assert.Equal(reservation.CurrentReservedSequence + 1, terminal.Sequence);
-        Assert.Equal(reservation.CurrentReservedSequence, terminal.Acknowledgement);
+        Assert.Equal(reservation.InboundAcknowledgementBaseline, terminal.Acknowledgement);
         Assert.True(terminal.Payload.GetProperty("chunked").GetBoolean());
         Assert.False(terminal.Payload.TryGetProperty("payload_omitted", out _));
         Assert.Empty((await store.LoadSequenceAsync(reservation.Rsid)).Outbox);

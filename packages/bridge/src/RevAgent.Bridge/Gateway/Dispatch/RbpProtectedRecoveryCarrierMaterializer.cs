@@ -43,6 +43,7 @@ internal sealed class RbpProtectedRecoveryCarrierMaterializer
             reservation.RawPayloadVersion != RbpRecoveryPayloadEnvelope.Version ||
             reservation.PlanVersion != 1 || reservation.CurrentReservedSequence < 1 ||
             reservation.AcknowledgementCursor != reservation.CurrentReservedSequence - 1 ||
+            reservation.InboundAcknowledgementBaseline < 0 ||
             reservation.ExpiresAtMilliseconds <= DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() ||
             reservation.PlaintextLength is <= 0 or > RbpArtifactCarrierProducer.MaximumCombinedBytes ||
             !string.Equals(reservation.HeaderJcs,

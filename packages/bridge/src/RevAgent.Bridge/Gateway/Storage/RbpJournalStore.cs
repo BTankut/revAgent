@@ -796,22 +796,32 @@ internal sealed partial class RbpJournalStore : IAsyncDisposable
         int schemaVersion)
     {
         if (schemaVersion < 8) return;
+        var reservationColumns = new List<(string Name, string Type)>
+        {
+            ("recovery_invocation_id", "TEXT"), ("rsid", "TEXT"),
+            ("origin_invocation_id", "TEXT"), ("result_digest", "TEXT"),
+            ("raw_idempotency_key", "TEXT"), ("raw_payload_version", "INTEGER"),
+            ("header_jcs", "TEXT"), ("plaintext_length", "INTEGER"),
+            ("chunk_size", "INTEGER"), ("chunk_count", "INTEGER"),
+            ("phase", "TEXT"), ("chunk_index", "INTEGER"),
+            ("current_reserved_seq", "INTEGER"), ("canonical_envelope_digest", "TEXT"),
+            ("send_started_at_ms", "INTEGER"), ("highest_reserved_seq", "INTEGER"),
+            ("acknowledgement_cursor", "INTEGER"),
+        };
+        reservationColumns.AddRange(
+        [
+            ("plan_version", "INTEGER"), ("created_at_ms", "INTEGER"),
+            ("expires_at_ms", "INTEGER"), ("updated_at_ms", "INTEGER"),
+            ("completed_at_ms", "INTEGER"), ("tombstoned_at_ms", "INTEGER"),
+            ("tombstone_reason", "TEXT"),
+        ]);
+        if (schemaVersion >= 10)
+        {
+            // ALTER TABLE appends this additive v10 column.
+            reservationColumns.Add(("inbound_ack_baseline", "INTEGER"));
+        }
         RequireExactColumns(connection, "rbp_recovery_carrier_reservations",
-            new[]
-            {
-                ("recovery_invocation_id", "TEXT"), ("rsid", "TEXT"),
-                ("origin_invocation_id", "TEXT"), ("result_digest", "TEXT"),
-                ("raw_idempotency_key", "TEXT"), ("raw_payload_version", "INTEGER"),
-                ("header_jcs", "TEXT"), ("plaintext_length", "INTEGER"),
-                ("chunk_size", "INTEGER"), ("chunk_count", "INTEGER"),
-                ("phase", "TEXT"), ("chunk_index", "INTEGER"),
-                ("current_reserved_seq", "INTEGER"), ("canonical_envelope_digest", "TEXT"),
-                ("send_started_at_ms", "INTEGER"), ("highest_reserved_seq", "INTEGER"),
-                ("acknowledgement_cursor", "INTEGER"), ("plan_version", "INTEGER"),
-                ("created_at_ms", "INTEGER"), ("expires_at_ms", "INTEGER"),
-                ("updated_at_ms", "INTEGER"), ("completed_at_ms", "INTEGER"),
-                ("tombstoned_at_ms", "INTEGER"), ("tombstone_reason", "TEXT"),
-            });
+            reservationColumns);
         RequireExactColumns(connection, "rbp_recovery_sequence_tombstones",
             new[] { ("rsid", "TEXT"), ("format_version", "INTEGER"),
                 ("tombstoned_at_ms", "INTEGER"), ("reason_code", "TEXT"),
@@ -827,16 +837,26 @@ internal sealed partial class RbpJournalStore : IAsyncDisposable
         RequireForeignKey(connection, "rbp_recovery_carrier_reservations", "rsid", "rbp_sessions");
         RequireForeignKey(connection, "rbp_recovery_sequence_tombstones", "rsid", "rbp_sessions");
         if (schemaVersion < 9) return;
+        var terminalColumns = new List<(string Name, string Type)>
+        {
+            ("recovery_invocation_id", "TEXT"), ("rsid", "TEXT"),
+            ("plan_version", "INTEGER"), ("final_sequence", "INTEGER"),
+            ("acknowledgement_baseline", "INTEGER"),
+        };
+        terminalColumns.AddRange(
+        [
+            ("terminal_jcs", "TEXT"), ("terminal_digest", "TEXT"),
+            ("payload_commitment", "TEXT"), ("state", "TEXT"),
+            ("created_at_ms", "INTEGER"), ("expires_at_ms", "INTEGER"),
+            ("confirmed_at_ms", "INTEGER"),
+        ]);
+        if (schemaVersion >= 10)
+        {
+            // ALTER TABLE appends this additive v10 column.
+            terminalColumns.Add(("inbound_ack_baseline", "INTEGER"));
+        }
         RequireExactColumns(connection, "rbp_recovery_terminal_plans",
-            new[]
-            {
-                ("recovery_invocation_id", "TEXT"), ("rsid", "TEXT"),
-                ("plan_version", "INTEGER"), ("final_sequence", "INTEGER"),
-                ("acknowledgement_baseline", "INTEGER"), ("terminal_jcs", "TEXT"),
-                ("terminal_digest", "TEXT"), ("payload_commitment", "TEXT"),
-                ("state", "TEXT"), ("created_at_ms", "INTEGER"),
-                ("expires_at_ms", "INTEGER"), ("confirmed_at_ms", "INTEGER"),
-            });
+            terminalColumns);
         RequireIndex(connection, "rbp_recovery_terminal_plans",
             "ux_rbp_recovery_terminal_active_rsid", unique: true, partial: true,
             new[] { "rsid" },
