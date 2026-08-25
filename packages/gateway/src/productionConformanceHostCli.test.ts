@@ -1,9 +1,11 @@
 import { fork } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
+import { canonicalizeJson, type JsonValue } from "@revagent/protocol";
 
 import {
   coherentC39RecoveryAudit,
@@ -31,6 +33,8 @@ import {
 
 const epoch = "123e4567-e89b-42d3-a456-426614174000";
 const digest = (character: string) => `sha256:${character.repeat(64)}` as const;
+const normalizedDigest = (value: unknown): `sha256:${string}` =>
+  `sha256:${createHash("sha256").update(canonicalizeJson(value as JsonValue)).digest("hex")}`;
 const contextDigest = "c".repeat(64);
 const route = (overrides: Record<string, unknown> = {}) => Object.freeze({
   rsidHash: digest("a"), observedSequence: 7, contextDigest,
@@ -53,27 +57,49 @@ describe("WP-12 C39 observed recovery audit", () => {
     effectiveMcpSessionId: "mcp", sessionBindingId: binding, sessionBindingVersion: 1,
     rsid: "rsid", recoveryInvocationId: recovery, originInvocationId: origin,
     originResultDigest: digest("a") });
-  const observed = (overrides: Record<string, unknown> = {}) => [
-    { namespace: GATEWAY_OMITTED_PAYLOAD_RECOVERY_NAMESPACE, key: origin, value: {
-      schema: GATEWAY_OMITTED_PAYLOAD_RECOVERY_NAMESPACE, recordVersion: 1, tenantId: "conformance",
-      owner: { userId: "user", effectiveMcpSessionId: "mcp", rsid: "rsid", sessionBindingId: binding, sessionVersion: 1 },
-      originInvocationId: origin, originResultDigest: digest("a"), carrierRecoveryInvocationId: recovery,
-      terminalEvidenceDigest: digest("b"), state: "completed", expiresAtMs: 1000,
-      resultReferenceDigest: digest("c"), createdAtMs: 1, updatedAtMs: 2,
-    } },
-    { namespace: "gateway.recovery-chunk/v1", key: "chunk", value: { schemaVersion: "revagent-gateway-recovery/v1", state: "active", owner,
-      bridgeSequence: 4, chunkIndex: 0, kid: "kid", storageKey: digest("d"), plainDigest: digest("e"), resultRefDigest: digest("c"), plainLength: 3, expiresAtMs: 1000 } },
-    { namespace: "gateway.recovery-completion/v1", key: "completion", value: { schemaVersion: "revagent-gateway-recovery/v1", state: "active", owner,
-      refId: "ref", expiresAtMs: 1000, activatedSessionBindingId: binding, activatedSessionBindingVersion: 1 } },
-    { namespace: "gateway_resource_v1", key: "resource", value: { kind: "result_ref", refId: "ref", digest: digest("c"), expiresAtMs: 1000, lifecycle: "active", byteSize: 3,
-      protectedRecovery: { schemaVersion: "revagent-gateway-recovery/v1", owner, kid: "kid", storageKey: digest("d"), plainDigest: digest("a"), resultRefDigest: digest("c"), plainLength: 3, bridgeSequence: 4, chunkIndex: 1, activatedSessionBindingId: binding, activatedSessionBindingVersion: 1 } } },
-    { namespace: "gateway.rbp-session/v2", key: "rsid", value: { rsid: "rsid", tenantId: "conformance", userId: "user", sessionBindingId: binding, sessionVersion: 1,
-      sequence: { lastRxSeq: 5 }, evidence: [{ terminalInvocationId: origin, terminalSessionBindingId: binding, terminalSessionVersion: 1, effectiveMcpSessionId: "mcp", payloadOmittedRecoveryEligible: true, terminalTruth: { state: "completed", resultDigest: digest("a") } }] } },
-    { namespace: "gateway.carrier-ack/v1", key: "ack", value: { schemaVersion: "revagent-gateway-carrier/v1", rsid: "rsid", invocationId: recovery, tenantId: "conformance", effectiveMcpSessionId: "mcp", seq: 4, state: "chunk_durable" } },
-    ...Object.entries(overrides).map(([namespace, value]) => ({ namespace, key: `extra-${namespace}`, value })),
-  ];
-  const multiObserved = (): Array<{ namespace: string; key: string; value: unknown }> => {
-    const records: Array<{ namespace: string; key: string; value: unknown }> = structuredClone(observed());
+  /** A real normalized-v2 projection: root references immutable child rows. */
+  const observed = (overrides: Record<string, unknown> = {}) => {
+    const originChild = { namespace: "gateway.rbp-session-evidence/v2", key: `${owner.rsid}/${origin}`, version: 3, value: {
+      schema: "gateway.rbp-session-evidence/v2", tenantId: "conformance", rsid: "rsid", invocationId: origin,
+      entry: { terminalInvocationId: origin, terminalSessionBindingId: binding, terminalSessionVersion: 1,
+        effectiveMcpSessionId: "mcp", payloadOmittedRecoveryEvidenceVersion: 1, payloadOmittedRecoveryEligible: true,
+        terminalDigest: digest("b"), terminalCarrierDigest: digest("d"),
+        terminalTruth: { state: "completed", resultDigest: digest("a"), payloadRetained: false } },
+    } };
+    const recoveryChild = { namespace: "gateway.rbp-session-evidence/v2", key: `${owner.rsid}/${recovery}`, version: 4, value: {
+      schema: "gateway.rbp-session-evidence/v2", tenantId: "conformance", rsid: "rsid", invocationId: recovery,
+      entry: { terminalInvocationId: recovery, terminalSessionBindingId: binding, terminalSessionVersion: 1,
+        effectiveMcpSessionId: "mcp", terminalDigest: digest("e"), terminalCarrierDigest: digest("b"),
+        terminalTruth: { state: "completed", resultDigest: digest("a"), payloadRetained: true } },
+    } };
+    const childRefs = [originChild, recoveryChild].map((child) => ({
+      namespace: child.namespace, key: child.key, version: child.version, digest: normalizedDigest(child.value),
+    })).sort((left, right) => `${left.namespace}\u0000${left.key}`.localeCompare(`${right.namespace}\u0000${right.key}`));
+    return [
+      { namespace: GATEWAY_OMITTED_PAYLOAD_RECOVERY_NAMESPACE, key: origin, version: 1, value: {
+        schema: GATEWAY_OMITTED_PAYLOAD_RECOVERY_NAMESPACE, recordVersion: 1, tenantId: "conformance",
+        owner: { userId: "user", effectiveMcpSessionId: "mcp", rsid: "rsid", sessionBindingId: binding, sessionVersion: 1 },
+        originInvocationId: origin, originResultDigest: digest("a"), carrierRecoveryInvocationId: recovery,
+        terminalEvidenceDigest: digest("b"), state: "completed", expiresAtMs: 1000,
+        resultReferenceDigest: digest("c"), createdAtMs: 1, updatedAtMs: 2,
+      } },
+      { namespace: "gateway.recovery-chunk/v1", key: "chunk", version: 1, value: { schemaVersion: "revagent-gateway-recovery/v1", state: "active", owner,
+        bridgeSequence: 4, chunkIndex: 0, kid: "kid", storageKey: digest("d"), plainDigest: digest("e"), resultRefDigest: digest("c"), plainLength: 3, expiresAtMs: 1000 } },
+      { namespace: "gateway.recovery-completion/v1", key: "completion", version: 1, value: { schemaVersion: "revagent-gateway-recovery/v1", state: "active", owner,
+        refId: "ref", expiresAtMs: 1000, activatedSessionBindingId: binding, activatedSessionBindingVersion: 1 } },
+      { namespace: "gateway_resource_v1", key: "resource", version: 1, value: { kind: "result_ref", refId: "ref", digest: digest("c"), expiresAtMs: 1000, lifecycle: "active", byteSize: 3,
+        protectedRecovery: { schemaVersion: "revagent-gateway-recovery/v1", owner, kid: "kid", storageKey: digest("d"), plainDigest: digest("a"), resultRefDigest: digest("c"), plainLength: 3, bridgeSequence: 4, chunkIndex: 1, activatedSessionBindingId: binding, activatedSessionBindingVersion: 1 } } },
+      { namespace: "gateway.rbp-session/v2", key: "rsid", version: 7, value: { schema: "gateway.rbp-session/v2", generation: 2, rootVersion: 7, tenantId: "conformance", rsid: "rsid",
+        identity: { userId: "user" }, binding: { sessionBindingId: "0197a3c2-0000-7000-8000-000000000904", sessionVersion: 6 },
+        sequence: { sequence: { rsid: "rsid", lastRxSeq: 5, acceptedInbound: [{ seq: 4, immutableDigest: digest("f") }, { seq: 5, immutableDigest: digest("b") }] }, pending: null },
+        childRefs, childrenDigest: normalizedDigest(childRefs) } },
+      originChild,
+      recoveryChild,
+      ...Object.entries(overrides).map(([namespace, value]) => ({ namespace, key: `extra-${namespace}`, version: 1, value })),
+    ];
+  };
+  const multiObserved = (): Array<{ namespace: string; key: string; value: unknown; version: number }> => {
+    const records: Array<{ namespace: string; key: string; value: unknown; version: number }> = structuredClone(observed());
     const chunk = records.find((row) => row.namespace === "gateway.recovery-chunk/v1")!;
     const chunkValue = chunk.value as Record<string, unknown>;
     chunk.value = { ...chunkValue, plainLength: 2 };
@@ -84,12 +110,20 @@ describe("WP-12 C39 observed recovery audit", () => {
       bridgeSequence: 6, chunkIndex: 2,
     } };
     const session = records.find((row) => row.namespace === "gateway.rbp-session/v2")!;
-    session.value = { ...(session.value as Record<string, unknown>), sequence: { lastRxSeq: 7 } };
+    const sessionValue = session.value as Record<string, unknown>;
+    const sessionSequence = (sessionValue.sequence as Record<string, unknown>).sequence as Record<string, unknown>;
+    session.value = { ...sessionValue, sequence: { ...(sessionValue.sequence as Record<string, unknown>), sequence: {
+      ...sessionSequence, lastRxSeq: 7, acceptedInbound: [
+        ...(sessionSequence.acceptedInbound as Array<Record<string, unknown>>).map((entry) =>
+          entry.seq === 5 ? { ...entry, immutableDigest: digest("d") } : entry),
+        { seq: 6, immutableDigest: digest("a") }, { seq: 7, immutableDigest: digest("b") },
+      ],
+    } } };
     records.push(
-      { namespace: "gateway.recovery-chunk/v1", key: "chunk-1", value: {
+      { namespace: "gateway.recovery-chunk/v1", key: "chunk-1", version: 1, value: {
         ...chunkValue, bridgeSequence: 6, chunkIndex: 1, plainDigest: digest("f"), plainLength: 1,
       } },
-      { namespace: "gateway.carrier-ack/v1", key: "ack-1", value: {
+      { namespace: "gateway.carrier-ack/v1", key: "ack-1", version: 1, value: {
         schemaVersion: "revagent-gateway-carrier/v1", rsid: "rsid", invocationId: recovery,
         tenantId: "conformance", effectiveMcpSessionId: "mcp", seq: 6, state: "chunk_durable",
       } },
@@ -118,15 +152,50 @@ describe("WP-12 C39 observed recovery audit", () => {
     const foreign = observed().map((row) => row.namespace === "gateway.recovery-chunk/v1"
       ? { ...row, value: { ...(row.value as Record<string, unknown>), owner: { ...owner, userId: "other" } } } : row);
     expect(coherentC39RecoveryAudit({ records: foreign, nowMs: 10 }).rows).toHaveLength(0);
-    const wrongSeq = observed().map((row) => row.namespace === "gateway.carrier-ack/v1"
-      ? { ...row, value: { ...(row.value as Record<string, unknown>), seq: 9 } } : row);
-    expect(coherentC39RecoveryAudit({ records: wrongSeq, nowMs: 10 }).rows).toHaveLength(0);
+    const forgedAck = [...observed(), { namespace: "gateway.carrier-ack/v1", key: "forged", version: 1,
+      value: { schemaVersion: "revagent-gateway-carrier/v1", rsid: "rsid", invocationId: recovery, seq: 4, state: "chunk_durable" } }];
+    expect(coherentC39RecoveryAudit({ records: forgedAck, nowMs: 10 }).status).toBe("joined");
     const wrongDigest = observed().map((row) => row.namespace === "gateway_resource_v1"
       ? { ...row, value: { ...(row.value as Record<string, unknown>), protectedRecovery: { ...((row.value as Record<string, unknown>).protectedRecovery as Record<string, unknown>), plainDigest: digest("f") } } } : row);
     expect(coherentC39RecoveryAudit({ records: wrongDigest, nowMs: 10 }).rows).toHaveLength(0);
     const wrongRef = observed().map((row) => row.namespace === "gateway.recovery-completion/v1"
       ? { ...row, value: { ...(row.value as Record<string, unknown>), refId: "other" } } : row);
     expect(coherentC39RecoveryAudit({ records: wrongRef, nowMs: 10 }).rows).toHaveLength(0);
+  });
+
+  it("fails closed on normalized child proof or immutable inbound correlation breaks", () => {
+    const invalid = (records: ReturnType<typeof observed>) =>
+      expect(coherentC39RecoveryAudit({ records, nowMs: 10 }).status).toBe("no_coherent_row");
+    const root = (records: ReturnType<typeof observed>) => records.find((row) => row.namespace === "gateway.rbp-session/v2")!;
+    const withRoot = (records: ReturnType<typeof observed>, mutate: (value: Record<string, unknown>) => Record<string, unknown>) =>
+      records.map((row) => row.namespace === "gateway.rbp-session/v2" ? { ...row, value: mutate(row.value as Record<string, unknown>) } : row);
+    const versionMismatch = withRoot(observed(), (value) => ({ ...value, childRefs: (value.childRefs as Record<string, unknown>[]).map((ref, index) =>
+      index === 0 ? { ...ref, version: 99 } : ref), childrenDigest: normalizedDigest((value.childRefs as Record<string, unknown>[]).map((ref, index) => index === 0 ? { ...ref, version: 99 } : ref)) }));
+    invalid(versionMismatch);
+    const digestMismatch = withRoot(observed(), (value) => ({ ...value, childRefs: (value.childRefs as Record<string, unknown>[]).map((ref, index) =>
+      index === 0 ? { ...ref, digest: digest("a") } : ref), childrenDigest: normalizedDigest((value.childRefs as Record<string, unknown>[]).map((ref, index) => index === 0 ? { ...ref, digest: digest("a") } : ref)) }));
+    invalid(digestMismatch);
+    const unreferencedDuplicate = [...observed(), { ...observed().find((row) => row.namespace === "gateway.rbp-session-evidence/v2" && row.key.endsWith(origin))!, key: "rsid/unreferenced-origin", version: 5 }];
+    invalid(unreferencedDuplicate);
+    const missingInbound = withRoot(observed(), (value) => ({ ...value, sequence: { ...(value.sequence as Record<string, unknown>), sequence: {
+      ...((value.sequence as Record<string, unknown>).sequence as Record<string, unknown>), acceptedInbound: [{ seq: 5, immutableDigest: digest("b") }],
+    } } }));
+    invalid(missingInbound);
+    const duplicateInbound = withRoot(observed(), (value) => ({ ...value, sequence: { ...(value.sequence as Record<string, unknown>), sequence: {
+      ...((value.sequence as Record<string, unknown>).sequence as Record<string, unknown>), acceptedInbound: [
+        ...(((value.sequence as Record<string, unknown>).sequence as Record<string, unknown>).acceptedInbound as unknown[]), { seq: 4, immutableDigest: digest("c") },
+      ],
+    } } }));
+    invalid(duplicateInbound);
+    const terminalDigestMismatch = withRoot(observed(), (value) => ({ ...value, sequence: { ...(value.sequence as Record<string, unknown>), sequence: {
+      ...((value.sequence as Record<string, unknown>).sequence as Record<string, unknown>), acceptedInbound: [{ seq: 4, immutableDigest: digest("f") }, { seq: 5, immutableDigest: digest("c") }],
+    } } }));
+    invalid(terminalDigestMismatch);
+    const resourceBridgeSeqMismatch = observed().map((row) => row.namespace === "gateway_resource_v1" ? { ...row, value: {
+      ...(row.value as Record<string, unknown>), protectedRecovery: { ...((row.value as Record<string, unknown>).protectedRecovery as Record<string, unknown>), bridgeSequence: 5 },
+    } } : row);
+    invalid(resourceBridgeSeqMismatch);
+    expect(root(observed()).version).toBe(7);
   });
 
   it("sorts valid shuffled partials deterministically and rejects every sequence/index invariant break", () => {
@@ -139,7 +208,7 @@ describe("WP-12 C39 observed recovery audit", () => {
       { seq: 4, chunkIndex: 0, plainDigest: digest("e"), byteLength: 2, state: "active" },
       { seq: 6, chunkIndex: 1, plainDigest: digest("f"), byteLength: 1, state: "active" },
     ], terminal: { seq: 7, originDigest: digest("a"), state: "completed" } });
-    const invalid = (records: Array<{ namespace: string; key: string; value: unknown }>) =>
+    const invalid = (records: Array<{ namespace: string; key: string; value: unknown; version: number }>) =>
       expect(coherentC39RecoveryAudit({ records, nowMs: 10 }).status).toBe("no_coherent_row");
     const secondChunk = valid.find((row) => row.key === "chunk-1")!;
     invalid(valid.map((row) => row.key === "chunk-1" ? { ...row, value: { ...(row.value as Record<string, unknown>), chunkIndex: 2 } } : row));
@@ -147,7 +216,11 @@ describe("WP-12 C39 observed recovery audit", () => {
     invalid([...valid, { ...secondChunk, key: "duplicate-digest", value: { ...(secondChunk.value as Record<string, unknown>), plainDigest: digest("d") } }]);
     invalid(valid.map((row) => row.key === "chunk-1" ? { ...row, value: { ...(row.value as Record<string, unknown>), bridgeSequence: 4 } } : row));
     invalid(valid.map((row) => row.key === "chunk-1" ? { ...row, value: { ...(row.value as Record<string, unknown>), bridgeSequence: 3 } } : row));
-    invalid(valid.map((row) => row.namespace === "gateway.rbp-session/v2" ? { ...row, value: { ...(row.value as Record<string, unknown>), sequence: { lastRxSeq: 6 } } } : row));
+    invalid(valid.map((row) => row.namespace === "gateway.rbp-session/v2" ? { ...row, value: {
+      ...(row.value as Record<string, unknown>), sequence: { ...((row.value as Record<string, unknown>).sequence as Record<string, unknown>), sequence: {
+        ...(((row.value as Record<string, unknown>).sequence as Record<string, unknown>).sequence as Record<string, unknown>), lastRxSeq: 6,
+      } },
+    } } : row));
     invalid(valid.map((row) => row.namespace === "gateway_resource_v1" ? { ...row, value: { ...(row.value as Record<string, unknown>), protectedRecovery: { ...((row.value as Record<string, unknown>).protectedRecovery as Record<string, unknown>), chunkIndex: 1 } } } : row));
     invalid(valid.map((row) => row.namespace === "gateway_resource_v1" ? { ...row, value: { ...(row.value as Record<string, unknown>), byteSize: 4 } } : row));
   });

@@ -34,6 +34,7 @@ import { EncryptedProtectedObjectStore } from "./protectedObjectStore.js";
 import { createConformanceRbpIngressHost } from "./rbpIngress.js";
 import type { AuthorizedNorthMcpRequest, NorthMcpEndpointOptions } from "./northMcpEndpoint.js";
 import type { EffectiveMcpRequestScopeV1 } from "./invocationContext.js";
+import { canonicalizeJson, type JsonValue } from "@revagent/protocol";
 
 interface CliOptions {
   readonly root: string;
@@ -181,6 +182,8 @@ type C39AuditRecord = Readonly<{
   readonly namespace: string;
   readonly key: string;
   readonly value: unknown;
+  /** Store version is part of a normalized-v2 child reference proof. */
+  readonly version: number;
 }>;
 
 function c39Object(value: unknown): Record<string, unknown> | null {
@@ -194,6 +197,18 @@ function c39Digest(value: unknown): value is `sha256:${string}` {
 
 function c39Positive(value: unknown): value is number {
   return Number.isSafeInteger(value) && Number(value) > 0;
+}
+
+function c39NonNegative(value: unknown): value is number {
+  return Number.isSafeInteger(value) && Number(value) >= 0;
+}
+
+function c39StoredValueDigest(value: unknown): `sha256:${string}` | null {
+  try {
+    return `sha256:${createHash("sha256").update(canonicalizeJson(value as JsonValue)).digest("hex")}`;
+  } catch {
+    return null;
+  }
 }
 
 function c39OwnerMatches(left: Record<string, unknown>, right: Record<string, unknown>): boolean {
@@ -225,8 +240,8 @@ export function coherentC39RecoveryAudit(input: {
   const chunks = byNamespace("gateway.recovery-chunk/v1");
   const completions = byNamespace("gateway.recovery-completion/v1");
   const resources = byNamespace("gateway_resource_v1");
-  const carrierAcks = byNamespace("gateway.carrier-ack/v1");
   const sessions = byNamespace("gateway.rbp-session/v2");
+  const evidenceChildren = byNamespace("gateway.rbp-session-evidence/v2");
   const rows: Record<string, unknown>[] = [];
   for (const source of omitted) {
     const record = c39Object(source.value);
@@ -277,21 +292,37 @@ export function coherentC39RecoveryAudit(input: {
         c39Digest(value.plainDigest) && value.resultRefDigest === record.resultReferenceDigest &&
         c39OwnerMatches(candidateOwner, fullOwner);
     });
-    const matchingSessions = sessions.map((row) => c39Object(row.value)).filter((value): value is Record<string, unknown> => {
-      const evidence = Array.isArray(value?.evidence) ? value!.evidence : [];
-      return value !== null && value.rsid === fullOwner.rsid && value.tenantId === "conformance" &&
-        value.userId === fullOwner.userId && value.sessionBindingId === fullOwner.sessionBindingId &&
-        value.sessionVersion === fullOwner.sessionBindingVersion &&
-        evidence.filter((entry) => {
-          const terminal = c39Object(entry);
-          const truth = c39Object(terminal?.terminalTruth);
-          return terminal !== null && truth !== null && terminal.terminalInvocationId === fullOwner.originInvocationId &&
-            terminal.terminalSessionBindingId === fullOwner.sessionBindingId &&
-            terminal.terminalSessionVersion === fullOwner.sessionBindingVersion &&
-            terminal.effectiveMcpSessionId === fullOwner.effectiveMcpSessionId &&
-            terminal.payloadOmittedRecoveryEligible === true &&
-            truth.resultDigest === fullOwner.originResultDigest;
-        }).length === 1;
+    const matchingSessions = sessions.filter((row) => {
+      const value = c39Object(row.value);
+      const identity = c39Object(value?.identity);
+      const binding = c39Object(value?.binding);
+      const sequence = c39Object(value?.sequence);
+      const nestedSequence = c39Object(sequence?.sequence);
+      const childRefs = Array.isArray(value?.childRefs) ? value.childRefs : null;
+      if (value === null || identity === null || binding === null || sequence === null || nestedSequence === null ||
+        childRefs === null || row.key !== fullOwner.rsid || !c39Positive(row.version) ||
+        value.schema !== "gateway.rbp-session/v2" || value.generation !== 2 || value.tenantId !== "conformance" ||
+        value.rsid !== fullOwner.rsid || identity.userId !== fullOwner.userId ||
+        !C39_UUID.test(String(binding.sessionBindingId)) || !c39Positive(binding.sessionVersion) ||
+        nestedSequence.rsid !== fullOwner.rsid || !c39NonNegative(nestedSequence.lastRxSeq) ||
+        !Array.isArray(nestedSequence.acceptedInbound) || !c39Digest(value.childrenDigest) ||
+        c39StoredValueDigest(childRefs) !== value.childrenDigest) return false;
+      const refIds = new Set<string>();
+      const inboundSequences = new Set<number>();
+      return childRefs.every((entry) => {
+        const ref = c39Object(entry);
+        if (ref === null || typeof ref.namespace !== "string" || typeof ref.key !== "string" ||
+          !c39Positive(ref.version) || !c39Digest(ref.digest)) return false;
+        const id = `${ref.namespace}\u0000${ref.key}`;
+        if (refIds.has(id)) return false;
+        refIds.add(id);
+        return true;
+      }) && nestedSequence.acceptedInbound.every((entry) => {
+        const accepted = c39Object(entry);
+        if (accepted === null || !c39Positive(accepted.seq) || !c39Digest(accepted.immutableDigest) || inboundSequences.has(accepted.seq)) return false;
+        inboundSequences.add(accepted.seq);
+        return true;
+      });
     });
     const uniqueChunkIndexes = new Set(matchingChunks.map((chunk) => chunk.chunkIndex));
     if (matchingCompletions.length !== 1 || matchingResources.length !== 1 ||
@@ -301,31 +332,62 @@ export function coherentC39RecoveryAudit(input: {
     const resource = matchingResources[0]!;
     const protectedRecovery = c39Object(resource.protectedRecovery);
     const session = matchingSessions[0]!;
-    const sequence = c39Object(session.sequence);
-    const terminalCandidates = (Array.isArray(session.evidence) ? session.evidence : []).map(c39Object).filter((terminal): terminal is Record<string, unknown> => {
-      if (terminal === null) return false;
-      const truth = c39Object(terminal.terminalTruth);
-      return truth !== null && terminal.terminalInvocationId === fullOwner.originInvocationId &&
-        terminal.terminalSessionBindingId === fullOwner.sessionBindingId &&
-        terminal.terminalSessionVersion === fullOwner.sessionBindingVersion &&
-        terminal.effectiveMcpSessionId === fullOwner.effectiveMcpSessionId &&
-        terminal.payloadOmittedRecoveryEligible === true && truth.state === "completed" &&
-        truth.resultDigest === fullOwner.originResultDigest;
+    const root = c39Object(session.value)!;
+    const sequence = c39Object(root.sequence)!;
+    const nestedSequence = c39Object(sequence.sequence)!;
+    const childRefs = root.childRefs as unknown[];
+    const evidenceFor = (invocationId: unknown, requireOmitted: boolean): readonly C39AuditRecord[] => evidenceChildren.filter((child) => {
+      const value = c39Object(child.value);
+      const entry = c39Object(value?.entry);
+      const truth = c39Object(entry?.terminalTruth);
+      const matchingRefs = childRefs.filter((candidate) => {
+        const ref = c39Object(candidate);
+        return ref !== null && ref.namespace === child.namespace && ref.key === child.key &&
+          ref.version === child.version && ref.digest === c39StoredValueDigest(child.value);
+      });
+      return value !== null && entry !== null && truth !== null && child.namespace === "gateway.rbp-session-evidence/v2" &&
+        c39Positive(child.version) && value.schema === "gateway.rbp-session-evidence/v2" &&
+        value.tenantId === "conformance" && value.rsid === fullOwner.rsid && value.invocationId === invocationId &&
+        entry.terminalInvocationId === invocationId && entry.terminalSessionBindingId === fullOwner.sessionBindingId &&
+        entry.terminalSessionVersion === fullOwner.sessionBindingVersion &&
+        entry.effectiveMcpSessionId === fullOwner.effectiveMcpSessionId && c39Digest(entry.terminalDigest) &&
+        c39Digest(entry.terminalCarrierDigest) && truth.state === "completed" &&
+        truth.resultDigest === fullOwner.originResultDigest && matchingRefs.length === 1 &&
+        (requireOmitted
+          ? entry.payloadOmittedRecoveryEvidenceVersion === 1 && entry.payloadOmittedRecoveryEligible === true && truth.payloadRetained === false
+          : true);
+    });
+    // The v2 root's binding is deliberately *not* matched to fullOwner: it can
+    // advance after the immutable historical terminal evidence was committed.
+    const originEvidence = evidenceFor(fullOwner.originInvocationId, true);
+    const recoveryEvidence = evidenceFor(fullOwner.recoveryInvocationId, false);
+    const evidenceRowsFor = (invocationId: unknown) => evidenceChildren.filter((child) => {
+      const value = c39Object(child.value);
+      return value !== null && value.rsid === fullOwner.rsid && value.invocationId === invocationId;
     });
     const partials = [...matchingChunks].sort((left, right) => Number(left.chunkIndex) - Number(right.chunkIndex));
-    const partialAcksValid = partials.every((partial) => carrierAcks.map((row) => c39Object(row.value)).filter((ack) =>
-      ack !== null && ack.schemaVersion === "revagent-gateway-carrier/v1" &&
-      ack.rsid === fullOwner.rsid && ack.invocationId === fullOwner.recoveryInvocationId &&
-      ack.tenantId === "conformance" && ack.effectiveMcpSessionId === fullOwner.effectiveMcpSessionId &&
-      ack.seq === partial.bridgeSequence && ack.state === "chunk_durable"
-    ).length === 1);
+    const acceptedInbound = nestedSequence.acceptedInbound as unknown[];
+    const inboundAt = (seq: unknown): Record<string, unknown> | null => {
+      const candidates = acceptedInbound.map(c39Object).filter((accepted): accepted is Record<string, unknown> =>
+        accepted !== null && accepted.seq === seq && c39Digest(accepted.immutableDigest));
+      return candidates.length === 1 ? candidates[0]! : null;
+    };
+    const partialEvidenceValid = partials.every((partial) => inboundAt(partial.bridgeSequence) !== null);
     const contiguous = partials.every((partial, index) => Number(partial.chunkIndex) === index &&
       (index === 0 || Number(partial.bridgeSequence) > Number(partials[index - 1]!.bridgeSequence)));
     const byteLength = partials.reduce((total, partial) => total + Number(partial.plainLength), 0);
-    const terminalSequence = sequence?.lastRxSeq;
+    const recoveryEntry = c39Object(recoveryEvidence[0]?.value)?.entry;
+    const originEntry = c39Object(originEvidence[0]?.value)?.entry;
+    const terminalCarrierDigest = c39Object(recoveryEntry)?.terminalCarrierDigest;
+    const terminalCandidates = acceptedInbound.map(c39Object).filter((accepted): accepted is Record<string, unknown> =>
+      accepted !== null && c39Digest(accepted.immutableDigest) && accepted.immutableDigest === terminalCarrierDigest);
+    const terminalSequence = terminalCandidates.length === 1 ? terminalCandidates[0]!.seq : null;
     if (completion.refId !== resource.refId || protectedRecovery === null ||
-      terminalCandidates.length !== 1 || !partialAcksValid || !contiguous ||
-      !Number.isSafeInteger(terminalSequence) || Number(terminalSequence) <= Number(partials.at(-1)!.bridgeSequence) ||
+      originEvidence.length !== 1 || recoveryEvidence.length !== 1 ||
+      evidenceRowsFor(fullOwner.originInvocationId).length !== 1 || evidenceRowsFor(fullOwner.recoveryInvocationId).length !== 1 ||
+      c39Object(originEntry)?.terminalDigest !== record.terminalEvidenceDigest || !partialEvidenceValid || !contiguous ||
+      !c39Positive(terminalSequence) || Number(terminalSequence) <= Number(partials.at(-1)!.bridgeSequence) ||
+      Number(nestedSequence.lastRxSeq) < Number(terminalSequence) ||
       completion.expiresAtMs !== resource.expiresAtMs ||
       protectedRecovery.chunkIndex !== partials.length || protectedRecovery.bridgeSequence !== partials.at(-1)!.bridgeSequence ||
       protectedRecovery.plainLength !== byteLength || resource.byteSize !== byteLength ||
@@ -1012,14 +1074,14 @@ export async function runProductionConformanceHostCli(args: readonly string[]): 
               "gateway.recovery-chunk/v1",
               "gateway.recovery-completion/v1",
               "gateway_resource_v1",
-              "gateway.carrier-ack/v1",
+              "gateway.rbp-session-evidence/v2",
             ];
             const readSnapshot = async (): Promise<readonly C39AuditRecord[] | null> => {
               const records: C39AuditRecord[] = [];
               for (const namespace of namespaces) {
                 const result = await protocolStore.transact({ tenantId: "conformance" }, async (tx) => await tx.list(namespace));
                 if (!result.ok) return null;
-                records.push(...result.value.map((row) => Object.freeze({ namespace: row.namespace, key: row.key, value: row.value })));
+                records.push(...result.value.map((row) => Object.freeze({ namespace: row.namespace, key: row.key, value: row.value, version: row.version })));
               }
               return Object.freeze(records.sort((left, right) => `${left.namespace}\u0000${left.key}`.localeCompare(`${right.namespace}\u0000${right.key}`)));
             };
