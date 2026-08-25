@@ -2437,7 +2437,13 @@ export class GatewayResourceAuthority {
   }
 
   async #resumeRecoveryFinalize(input: FinalizeRecoveryResultInput, protectedStore: ProtectedObjectStorePort, completion: RecoveryCompletionRecord, knownBytes?: Uint8Array): Promise<GatewayResultRef> {
-    const chunks = knownBytes === undefined ? await this.#loadRecoveryChunks(input.scope, input.owner, input.terminalChunkCount) : [];
+    // `knownBytes` avoids only the second plaintext read.  Canonical active
+    // receipt metadata remains mandatory for terminal binding and sequence.
+    const chunks = await this.#loadRecoveryChunks(
+      input.scope,
+      input.owner,
+      input.terminalChunkCount,
+    );
     const bytes = knownBytes ?? await this.#readRecoveryBytes(input.scope, protectedStore, chunks);
     try {
       if (bytes.byteLength !== input.terminalByteLength || sha256(bytes) !== input.owner.originResultDigest) fail("not_found", "recovery terminal unavailable");
@@ -2449,7 +2455,9 @@ export class GatewayResourceAuthority {
       if (record === null) {
         const kid = await protectedStore.activeKid();
         if (kid === null) fail("storage_unavailable", "recovery key is unavailable");
-        const protectedRecovery: RecoveryProtectedRef = Object.freeze({ schemaVersion: "revagent-gateway-recovery/v1", owner: input.owner, kid, storageKey: recoveryStorageKey(input.owner, "result", 0), plainDigest: input.owner.originResultDigest, resultRefDigest: resultReferenceDigest, plainLength: bytes.byteLength, bridgeSequence: chunks.at(-1)?.bridgeSequence ?? input.terminalChunkCount - 1, chunkIndex: input.terminalChunkCount });
+        const lastChunk = chunks.at(-1);
+        if (lastChunk === undefined) fail("not_found", "recovery terminal unavailable");
+        const protectedRecovery: RecoveryProtectedRef = Object.freeze({ schemaVersion: "revagent-gateway-recovery/v1", owner: input.owner, kid, storageKey: recoveryStorageKey(input.owner, "result", 0), plainDigest: input.owner.originResultDigest, resultRefDigest: resultReferenceDigest, plainLength: bytes.byteLength, bridgeSequence: lastChunk.bridgeSequence, chunkIndex: input.terminalChunkCount });
         const next: ResultRecord = Object.freeze({ schemaVersion: "revagent-gateway-resource/v1", kind: "result_ref", refId: completion.refId, actorId: input.scope.actorId, principalKey: input.scope.principalKey, mcpSessionId: input.scope.mcpSessionId, createdAtMs: this.#now(), expiresAtMs: completion.expiresAtMs, contentType: "application/json", byteSize: bytes.byteLength, digest: protectedRecovery.resultRefDigest, pageSize: this.#maxResultPageBytes, pageCount: Math.max(1, Math.ceil(bytes.byteLength / this.#maxResultPageBytes)), storageKey: protectedRecovery.storageKey, lifecycle: "allocating", protectedRecovery });
         const reserved = await this.#writeRecords(input.scope, [next]);
         if (reserved) record = next;
