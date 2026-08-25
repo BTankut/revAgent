@@ -4,6 +4,7 @@ import { gatewayUuidV7 } from "./identifiers.js";
 import {
   claimOmittedPayloadRecovery,
   completeOmittedPayloadRecovery,
+  isOmittedPayloadRecoveryInvocationReserved,
   type OmittedPayloadRecoveryAdmission,
   type OmittedPayloadRecoveryCurrentOwner,
 } from "./omittedPayloadRecovery.js";
@@ -79,6 +80,48 @@ describe("omitted payload recovery CAS admission", () => {
     // The owner admission and its reverse recovery-invocation index are both
     // durable so a C1d terminal can be correlated after a process restart.
     expect(fixture.snapshot().records).toHaveLength(2);
+  });
+
+  it("keeps a pre-admitted recovery invocation reserved across malformed or stale owner state", async () => {
+    const fixture = createRestartableTestStore();
+    await fixture.store.open();
+    const value = admission();
+    const claimed = await claimWithRetry(fixture.store, value);
+    if (claimed.kind === "guarded") throw new Error("recovery claim was unexpectedly guarded");
+    const reserved = await fixture.store.transact(
+      { tenantId: value.owner.tenantId },
+      async (tx) => ({
+        exact: await isOmittedPayloadRecoveryInvocationReserved(
+          tx, value.owner.tenantId, claimed.record.carrierRecoveryInvocationId,
+        ),
+        unrelated: await isOmittedPayloadRecoveryInvocationReserved(
+          tx, value.owner.tenantId, id(),
+        ),
+      }),
+    );
+    expect(reserved).toEqual({ ok: true, value: { exact: true, unrelated: false } });
+
+    const primary = fixture.snapshot().records.find((record) =>
+      record.namespace === "gateway.omitted-payload-recovery/v1" &&
+      record.key === value.originInvocationId,
+    );
+    if (primary === undefined) throw new Error("recovery primary record is missing");
+    const corrupted = await fixture.store.transact({ tenantId: value.owner.tenantId }, async (tx) => {
+      tx.stage({
+        namespace: primary.namespace,
+        key: primary.key,
+        value: { schema: "gateway.omitted-payload-recovery/v1" },
+        expect: { kind: "version", version: primary.version },
+      });
+    });
+    expect(corrupted).toEqual({ ok: true, value: undefined });
+    const afterCorruption = await fixture.store.transact(
+      { tenantId: value.owner.tenantId },
+      async (tx) => await isOmittedPayloadRecoveryInvocationReserved(
+        tx, value.owner.tenantId, claimed.record.carrierRecoveryInvocationId,
+      ),
+    );
+    expect(afterCorruption).toEqual({ ok: true, value: true });
   });
 
   it("denies binding drift and cross-owner or digest substitution with one guarded shape", async () => {

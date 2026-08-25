@@ -227,6 +227,24 @@ function isRecordInvocationIndex(
 }
 
 /**
+ * Fail-closed reservation probe for C39 carrier admission. Any durable reverse
+ * index row in the current tenant reserves the invocation id, even when the
+ * primary row is stale or malformed; reserved ids must never fall through to
+ * the generic C38 carrier path.
+ */
+export async function isOmittedPayloadRecoveryInvocationReserved(
+  tx: StoreTransaction,
+  tenantId: string,
+  carrierRecoveryInvocationId: string,
+): Promise<boolean> {
+  if (!bounded(tenantId) || !isGatewayUuidV7(carrierRecoveryInvocationId)) return false;
+  return await tx.read<GatewayJsonValue>(
+    GATEWAY_OMITTED_PAYLOAD_RECOVERY_INVOCATION_NAMESPACE,
+    carrierRecoveryInvocationId,
+  ) !== null;
+}
+
+/**
  * Durable reverse lookup used only by the Bridge's C39 carrier admission.
  * It returns no payload and requires the same live owner tuple that created
  * the admission; malformed or stale rows are deliberately indistinguishable.

@@ -94,6 +94,7 @@ import {
 } from "./documentContextDigest.js";
 import {
   claimOmittedPayloadRecovery,
+  isOmittedPayloadRecoveryInvocationReserved,
   OMITTED_PAYLOAD_RECOVERY_MAX_AGE_MS,
   readOmittedPayloadRecoveryByInvocation,
   type OmittedPayloadRecoveryClaim,
@@ -341,6 +342,11 @@ export type GatewayOmittedPayloadRecoveryAdmissionInput = Readonly<{
  * It is intentionally a current live snapshot, never a generic store read or
  * a north/API result.
  */
+type RecoveryCarrierLookup =
+  | Readonly<{ readonly kind: "authorized"; readonly owner: RecoveryOwner }>
+  | Readonly<{ readonly kind: "guarded" }>
+  | Readonly<{ readonly kind: "generic" }>;
+
 export type GatewayCurrentRecoveryAuthoritySnapshot = Readonly<{
   readonly tenantId: string;
   readonly userId: string;
@@ -6897,15 +6903,15 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     ) return null;
     const { scope, effective } = this.#carrierScope(active.record);
     if (effective.effectiveMcpSessionId !== input.effectiveMcpSessionId) return null;
-    const owner = await this.#recoveryOwnerForInvocation(
+    const recovery = await this.#recoveryCarrierLookup(
       active.record,
       input.carrierRecoveryInvocationId,
     );
-    if (owner === null) return null;
+    if (recovery.kind !== "authorized") return null;
     const result = await this.#resourceAuthority.resumeRecoveryResultRef({
       scope,
       effectiveMcpRequestScope: effective,
-      owner,
+      owner: recovery.owner,
     });
     return result === null ? null : (result as unknown as GatewayJsonValue);
   }
@@ -8467,7 +8473,9 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     ) {
       return "cancellation_pending";
     }
-    const { authorityDigest: _authorityDigest, recordedAtMs: _recordedAtMs, ...coordinates } = receipt;
+    const { authorityDigest, recordedAtMs, ...coordinates } = receipt;
+    void authorityDigest;
+    void recordedAtMs;
     return noSendAuthorityDigest({ ...coordinates, binding: record.binding }) === receipt.authorityDigest
       ? "settled_no_send"
       : "cancellation_pending";
@@ -8916,6 +8924,22 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         if (acknowledged.kind === "protocol_fault") {
           throw new Error(`resume cumulative ack rejected: ${acknowledged.reason}`);
         }
+        const pendingRecoveryScope = recovered.pending?.effectiveMcpRequestScope;
+        const continuingRecovery = pendingRecoveryScope === undefined || recovered.pending === null
+          ? null
+          : await readOmittedPayloadRecoveryByInvocation(tx, {
+              tenantId: recovered.tenantId,
+              userId: recovered.userId,
+              effectiveMcpSessionId: pendingRecoveryScope.effectiveMcpSessionId,
+              rsid: recovered.rsid,
+              sessionBindingId: recovered.sessionBindingId,
+              sessionVersion: recovered.sessionVersion,
+              active: true,
+              ownerSessionExpiresAtMs: recovered.resumeExpiresAtMs,
+              nowMs,
+            }, recovered.pending.invocationId);
+        const preserveRecoveryBindingVersion =
+          continuingRecovery?.state === "awaiting_correlated_read";
         let connectionLifecycle = connectionTransition(connection.lifecycle, {
           type: "begin_resume",
         });
@@ -8934,7 +8958,14 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
           ...recovered,
           connectionId: connection.connectionId,
           binding: connection.binding,
-          sessionVersion: recovered.sessionVersion + 1,
+          // A transport restart after a protected C39 frame write is the same
+          // logical owner binding, not a new authority generation. Preserve
+          // that version only for the exact durable pending recovery claim so
+          // its DPAPI/AES-GCM owner tuple can resume. Every ordinary resume and
+          // every completed/foreign claim still advances the binding version.
+          sessionVersion: preserveRecoveryBindingVersion
+            ? recovered.sessionVersion
+            : recovered.sessionVersion + 1,
           sequence: acknowledged.state,
           liveDocumentRoute: null,
           connectionLifecycle,
@@ -9241,7 +9272,9 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         evidence.noSendAuthorityDigest === null ||
         evidence.noSendAuthorityDigest !== noSend.authorityDigest ||
         (() => {
-          const { authorityDigest: _authorityDigest, recordedAtMs: _recordedAtMs, ...coordinates } = noSend;
+          const { authorityDigest, recordedAtMs, ...coordinates } = noSend;
+          void authorityDigest;
+          void recordedAtMs;
           return noSendAuthorityDigest({ ...coordinates, binding: session.binding }) !==
             noSend.authorityDigest;
         })()
@@ -10654,16 +10687,24 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         throw new GatewayRbpFault("unsupported", "chunk carrier was not granted", 403, 4403);
       }
       const { scope, effective } = this.#carrierScope(active.record);
-      const recoveryOwner = await this.#recoveryOwnerForInvocation(
+      const recovery = await this.#recoveryCarrierLookup(
         active.record,
         envelope.payload.invocation_id,
       );
+      if (recovery.kind === "guarded") {
+        throw new GatewayRbpFault(
+          "auth",
+          "recovery carrier authorization rejected",
+          403,
+          4403,
+        );
+      }
       const committed: { current: DurableRbpSession | null } = { current: null };
-      if (recoveryOwner !== null) {
+      if (recovery.kind === "authorized") {
         await this.#resourceAuthority.stageRecoveryChunk({
           scope,
           effectiveMcpRequestScope: effective,
-          owner: recoveryOwner,
+          owner: recovery.owner,
           bridgeSequence: envelope.seq,
           chunkIndex: envelope.payload.chunk_index,
           data: envelope.payload.data,
@@ -10698,11 +10739,19 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         throw new GatewayRbpFault("unsupported", "result carrier was not granted", 403, 4403);
       }
       const { scope, effective } = this.#carrierScope(active.record);
-      const recoveryOwner = await this.#recoveryOwnerForInvocation(
+      const recovery = await this.#recoveryCarrierLookup(
         active.record,
         envelope.payload.invocation_id,
       );
-      if (recoveryOwner !== null) {
+      if (recovery.kind === "guarded") {
+        throw new GatewayRbpFault(
+          "auth",
+          "recovery carrier authorization rejected",
+          403,
+          4403,
+        );
+      }
+      if (recovery.kind === "authorized") {
         const totalChunks = envelope.payload.total_chunks;
         const totalSize = envelope.payload.total_size;
         if (
@@ -10718,7 +10767,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         const resultRef = await this.#resourceAuthority.finalizeRecoveryResultRef({
           scope,
           effectiveMcpRequestScope: effective,
-          owner: recoveryOwner,
+          owner: recovery.owner,
           terminalChunkCount: totalChunks,
           terminalByteLength: totalSize,
           commitBridge: async (tx) => {
@@ -10877,7 +10926,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       if (accepted.kind === "duplicate") {
         return { ...record, sequence: accepted.state, updatedAtMs: this.#clock() };
       }
-      let pending = record.pending;
+      const pending = record.pending;
       let evidence = [...record.evidence];
       if (pending !== null && envelope.ack !== undefined && envelope.ack >= pending.gatewaySequence) {
         const receipt = pending.dispatchReceipt ?? null;
@@ -10975,37 +11024,61 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     }
   }
 
-  async #recoveryOwnerForInvocation(
+  async #recoveryCarrierLookup(
     record: DurableRbpSession,
     carrierRecoveryInvocationId: string,
-  ): Promise<RecoveryOwner | null> {
+  ): Promise<RecoveryCarrierLookup> {
     const { scope, effective } = this.#carrierScope(record);
     const found = await this.#sessionRepository.transact(
       { tenantId: record.tenantId },
-      async (tx) => await readOmittedPayloadRecoveryByInvocation(tx, {
-        tenantId: record.tenantId,
-        userId: record.userId,
-        effectiveMcpSessionId: effective.effectiveMcpSessionId,
-        rsid: record.rsid,
-        sessionBindingId: record.sessionBindingId,
-        sessionVersion: record.sessionVersion,
-        active: true,
-        ownerSessionExpiresAtMs: record.resumeExpiresAtMs,
-        nowMs: this.#clock(),
-      }, carrierRecoveryInvocationId),
+      async (tx) => {
+        const reserved = await isOmittedPayloadRecoveryInvocationReserved(
+          tx,
+          record.tenantId,
+          carrierRecoveryInvocationId,
+        );
+        if (!reserved) return Object.freeze({ reserved: false as const, record: null });
+        const recovered = await readOmittedPayloadRecoveryByInvocation(tx, {
+          tenantId: record.tenantId,
+          userId: record.userId,
+          effectiveMcpSessionId: effective.effectiveMcpSessionId,
+          rsid: record.rsid,
+          sessionBindingId: record.sessionBindingId,
+          sessionVersion: record.sessionVersion,
+          active: true,
+          ownerSessionExpiresAtMs: record.resumeExpiresAtMs,
+          nowMs: this.#clock(),
+        }, carrierRecoveryInvocationId);
+        return Object.freeze({ reserved: true as const, record: recovered });
+      },
     );
-    if (!found.ok || found.value === null || found.value.state !== "awaiting_correlated_read") return null;
+    if (!found.ok) {
+      throw new GatewayRbpFault(
+        "unavailable",
+        "recovery carrier admission is unavailable",
+        503,
+        1011,
+      );
+    }
+    if (!found.value.reserved) return Object.freeze({ kind: "generic" as const });
+    if (found.value.record === null ||
+        found.value.record.state !== "awaiting_correlated_read") {
+      return Object.freeze({ kind: "guarded" as const });
+    }
     return Object.freeze({
-      tenantId: scope.tenantId,
-      userId: scope.actorId,
-      principalKey: scope.principalKey,
-      effectiveMcpSessionId: scope.mcpSessionId,
-      sessionBindingId: record.sessionBindingId,
-      sessionBindingVersion: record.sessionVersion,
-      rsid: record.rsid,
-      recoveryInvocationId: carrierRecoveryInvocationId,
-      originInvocationId: found.value.originInvocationId,
-      originResultDigest: found.value.originResultDigest,
+      kind: "authorized" as const,
+      owner: Object.freeze({
+        tenantId: scope.tenantId,
+        userId: scope.actorId,
+        principalKey: scope.principalKey,
+        effectiveMcpSessionId: scope.mcpSessionId,
+        sessionBindingId: record.sessionBindingId,
+        sessionBindingVersion: record.sessionVersion,
+        rsid: record.rsid,
+        recoveryInvocationId: carrierRecoveryInvocationId,
+        originInvocationId: found.value.record.originInvocationId,
+        originResultDigest: found.value.record.originResultDigest,
+      }),
     });
   }
 

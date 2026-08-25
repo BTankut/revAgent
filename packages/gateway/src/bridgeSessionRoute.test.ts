@@ -1,4 +1,7 @@
 import { createHash } from "node:crypto";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 
 import {
   makeParamsDigest,
@@ -30,6 +33,8 @@ import {
 import { GatewayResourceAuthority } from "./resourceAuthority.js";
 import { ConformanceProtectedObjectKeyProvider } from "./protectedObjectKeyProvider.js";
 import { EncryptedProtectedObjectStore } from "./protectedObjectStore.js";
+import { SqliteConformanceProtocolStore } from "./conformanceEphemeralAdapters.js";
+import type { GatewayProtocolStore, StoreOutcome, StoreTransaction } from "./store.js";
 import { createMemoryObjectStore, createRestartableTestStore } from "./testAdapters.js";
 
 const TENANT_ID = "tenant-route";
@@ -176,6 +181,35 @@ function deferred<T = void>(): Deferred<T> {
     resolve = resolvePromise;
   });
   return { promise, resolve };
+}
+
+function observingProtocolStore(
+  backing: SqliteConformanceProtocolStore,
+  callbackErrors: unknown[],
+  outcomes: StoreOutcome<unknown>[],
+): GatewayProtocolStore {
+  return {
+    kind: backing.kind,
+    contractVersion: backing.contractVersion,
+    startupCoordinator: backing.startupCoordinator,
+    async open() { return await backing.open(); },
+    async close() { return await backing.close(); },
+    async transact<T>(
+      scope: { readonly tenantId: string },
+      fn: (tx: StoreTransaction) => Promise<T> | T,
+    ): Promise<StoreOutcome<T>> {
+      const outcome = await backing.transact(scope, async (tx) => {
+        try {
+          return await fn(tx) as T;
+        } catch (error) {
+          callbackErrors.push(error);
+          throw error;
+        }
+      });
+      outcomes.push(outcome as StoreOutcome<unknown>);
+      return outcome;
+    },
+  };
 }
 
 function channel(): TestChannel {
@@ -1580,18 +1614,19 @@ describe("Gateway omitted-payload recovery admission", () => {
     const keys = new ConformanceProtectedObjectKeyProvider(
       "c39-c2-key", new Map([["c39-c2-key", Buffer.alloc(32, 7)]]), inventory,
     );
-    let created!: GatewayBridgeSessionAuthority;
+    const authorityRef: { current: GatewayBridgeSessionAuthority | null } = { current: null };
     const resources = new GatewayResourceAuthority({
       protocolStore: fixture.store, objectStore: objects,
       protectedObjectStore: new EncryptedProtectedObjectStore(objects, keys),
       reauthorizeRecoveryScope: async (owner) =>
-        await created.resolveCurrentRecoveryAuthoritySnapshot(owner),
+        await authorityRef.current?.resolveCurrentRecoveryAuthoritySnapshot(owner) ?? null,
     });
-    created = new GatewayBridgeSessionAuthority(
+    const created = new GatewayBridgeSessionAuthority(
       fixture.store,
       identity({ connectionCapabilities: ["chunked_results"] }),
       { resourceAuthority: resources },
     );
+    authorityRef.current = created;
     await created.open();
     try {
       const offered = hello();
@@ -1676,6 +1711,165 @@ describe("Gateway omitted-payload recovery admission", () => {
       expect(openedChannel.frames.some((frame) => frame.type === "heartbeat_ack")).toBe(true);
     } finally {
       await created.close().catch(() => undefined);
+    }
+  });
+
+  it("C2 atomically commits the exact active recovery receipt on SQLite", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "revagent-c39-sqlite-route-"));
+    const backing = new SqliteConformanceProtocolStore(root);
+    const callbackErrors: unknown[] = [];
+    const outcomes: StoreOutcome<unknown>[] = [];
+    const protocolStore = observingProtocolStore(backing, callbackErrors, outcomes);
+    const objects = createMemoryObjectStore();
+    const inventory = Object.freeze({
+      kind: "conformance" as const,
+      async listLiveKids() { return Object.freeze(["c39-c2-key"]); },
+    });
+    const keys = new ConformanceProtectedObjectKeyProvider(
+      "c39-c2-key", new Map([["c39-c2-key", Buffer.alloc(32, 7)]]), inventory,
+    );
+    const authorityRef: { current: GatewayBridgeSessionAuthority | null } = { current: null };
+    const resources = new GatewayResourceAuthority({
+      protocolStore, objectStore: objects,
+      protectedObjectStore: new EncryptedProtectedObjectStore(objects, keys),
+      reauthorizeRecoveryScope: async (owner) =>
+        await authorityRef.current?.resolveCurrentRecoveryAuthoritySnapshot(owner) ?? null,
+    });
+    const created = new GatewayBridgeSessionAuthority(
+      protocolStore,
+      identity({ connectionCapabilities: ["chunked_results"] }),
+      { resourceAuthority: resources },
+    );
+    authorityRef.current = created;
+    await created.open();
+    try {
+      const offered = hello();
+      offered.payload.capabilities = ["chunked_results"];
+      const openedChannel = channel();
+      const opened = await created.openConnection({
+        deviceToken: DEVICE_TOKEN, binding: "wss", hello: offered, channel: openedChannel,
+      });
+      await created.receive(opened.connectionId, registration("c39-c2-sqlite"));
+      const session = registeredFrame(openedChannel);
+      await created.receive(opened.connectionId, contextUpdate({
+        rsid: session.payload.rsid, seq: 1, activeDocument: "document-carrier",
+        documents: [document("document-carrier", true)],
+      }));
+
+      const raw = Buffer.from('{"c39":"sqlite-recovered"}', "utf8");
+      const originInvocationId = id();
+      const originDigest = `sha256:${createHash("sha256").update(raw).digest("hex")}` as const;
+      const origin = created.createExecutor().execute(
+        bridgeRequest(session.payload.rsid, originInvocationId),
+      );
+      const originInvoke = await emittedInvokeFor(openedChannel, originInvocationId);
+      await created.receive(opened.connectionId, {
+        v: 1, type: "result", id: id(), rsid: session.payload.rsid, seq: 2,
+        ack: originInvoke.seq, ts: new Date().toISOString(), payload: {
+          kind: "invocation", invocation_id: originInvocationId, status: "completed",
+          replayed: true, payload_omitted: true, result_digest: originDigest,
+          metrics: { execute_ms: 1, request_bytes: 1, response_bytes: 0, framing: "length-prefixed" },
+        },
+      });
+      await expect(origin).resolves.toMatchObject({ state: "omitted_payload" });
+      const rootRead = await protocolStore.transact({ tenantId: TENANT_ID }, (tx) =>
+        tx.read("gateway.rbp-session/v2", session.payload.rsid),
+      );
+      if (!rootRead.ok || rootRead.value === null) throw new Error("SQLite C39 fixture lacks a session root");
+      const binding = (rootRead.value.value as { binding?: { sessionBindingId?: string; sessionVersion?: number } }).binding;
+      if (binding?.sessionBindingId === undefined || binding.sessionVersion === undefined) {
+        throw new Error("SQLite C39 fixture lacks a current owner binding");
+      }
+      const claim = await created.admitOmittedPayloadRecovery({
+        tenantId: TENANT_ID, userId: USER_ID, effectiveMcpSessionId: MCP_SESSION_ID,
+        rsid: session.payload.rsid, sessionBindingId: binding.sessionBindingId,
+        sessionVersion: binding.sessionVersion, originInvocationId, originResultDigest: originDigest,
+        newCarrierRecoveryInvocationId: id(),
+      });
+      if (claim.kind !== "admitted") throw new Error("SQLite C39 claim was not admitted");
+      const recoveryId = claim.record.carrierRecoveryInvocationId;
+      const recoveryRequest = recoveryBridgeRequest(
+        session.payload.rsid, recoveryId, originInvocationId, originDigest,
+      );
+      const recovery = created.createExecutor().execute(recoveryRequest);
+      const recoveryInvoke = await emittedInvokeFor(openedChannel, recoveryId);
+      const partial = {
+        v: 1 as const, type: "partial" as const, id: id(), rsid: session.payload.rsid,
+        seq: 3, ack: recoveryInvoke.seq, ts: new Date().toISOString(), payload: {
+          kind: "chunk" as const, invocation_id: recoveryId, stream_id: "result" as const,
+          chunk_index: 0, encoding: "base64" as const, content_type: "application/json" as const,
+          data: raw.toString("base64"),
+        },
+      };
+      const effective = recoveryRequest.context.effectiveMcpRequestScope!;
+      const owner = Object.freeze({
+        tenantId: TENANT_ID, userId: USER_ID, principalKey: effective.principalKey,
+        effectiveMcpSessionId: effective.effectiveMcpSessionId,
+        sessionBindingId: binding.sessionBindingId, sessionBindingVersion: binding.sessionVersion,
+        rsid: session.payload.rsid, recoveryInvocationId: recoveryId,
+        originInvocationId, originResultDigest: originDigest,
+      });
+      await expect(resources.stageRecoveryChunk({
+        scope: { tenantId: TENANT_ID, actorId: USER_ID, principalKey: effective.principalKey,
+          mcpSessionId: effective.effectiveMcpSessionId },
+        effectiveMcpRequestScope: effective,
+        owner,
+        bridgeSequence: partial.seq,
+        chunkIndex: partial.payload.chunk_index,
+        contentType: partial.payload.content_type,
+        data: partial.payload.data,
+        commitBridge: async () => { throw new Error("test recovery activation lost before durable Bridge commit"); },
+      })).rejects.toBeDefined();
+      const interrupted = await protocolStore.transact({ tenantId: TENANT_ID }, async (tx) => ({
+        recovery: await tx.list("gateway.recovery-chunk/v1"),
+        generic: await tx.list("gateway.carrier-chunk/v1"),
+      }));
+      expect(interrupted).toMatchObject({ ok: true });
+      if (!interrupted.ok) throw new Error(interrupted.message);
+      expect(interrupted.value.recovery[0]?.value).toMatchObject({ state: "writing", bridgeSequence: 3, chunkIndex: 0 });
+      expect(interrupted.value.generic).toEqual([]);
+      callbackErrors.length = 0;
+      outcomes.length = 0;
+
+      await created.detach(opened.connectionId);
+      const reboundHello = hello();
+      reboundHello.payload.capabilities = ["chunked_results"];
+      const reboundChannel = channel();
+      const rebound = await created.openConnection({
+        deviceToken: DEVICE_TOKEN, binding: "wss", hello: reboundHello, channel: reboundChannel,
+      });
+      await created.receive(rebound.connectionId, {
+        v: 1, type: "session_resume", id: id(), ts: new Date().toISOString(),
+        payload: { rsid: session.payload.rsid, resume_token: session.payload.resume_token,
+          last_rx_seq: recoveryInvoke.seq },
+      });
+
+      let receiveError: unknown;
+      try {
+        await created.receive(rebound.connectionId, partial);
+      } catch (error) {
+        receiveError = error;
+      }
+      if (receiveError !== undefined) {
+        const callbackDetail = callbackErrors.map((error) =>
+          error instanceof Error ? `${error.name}:${error.message}` : String(error));
+        const failedOutcomes = outcomes.filter((outcome) => !outcome.ok);
+        throw new Error(`SQLite C39 retry failed: receive=${String(receiveError)} callback=${JSON.stringify(callbackDetail)} outcomes=${JSON.stringify(failedOutcomes)}`);
+      }
+      const afterPartial = await protocolStore.transact({ tenantId: TENANT_ID }, async (tx) => ({
+        recovery: await tx.list("gateway.recovery-chunk/v1"),
+        generic: await tx.list("gateway.carrier-chunk/v1"),
+        session: await tx.read("gateway.rbp-session/v2", session.payload.rsid),
+      }));
+      expect(afterPartial).toMatchObject({ ok: true });
+      if (!afterPartial.ok) throw new Error(afterPartial.message);
+      expect(afterPartial.value.recovery[0]?.value).toMatchObject({ state: "active", bridgeSequence: 3, chunkIndex: 0 });
+      expect(afterPartial.value.generic).toEqual([]);
+      expect(afterPartial.value.session?.value).toMatchObject({ sequence: { sequence: { lastRxSeq: 3 } } });
+      void recovery.catch(() => undefined);
+    } finally {
+      await created.close().catch(() => undefined);
+      rmSync(root, { recursive: true, force: true });
     }
   });
 });
