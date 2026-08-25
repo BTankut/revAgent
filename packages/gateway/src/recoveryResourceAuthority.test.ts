@@ -117,4 +117,84 @@ describe("C39 recovery resource authority", () => {
     await expect(authority.stageRecoveryChunk({ ...input, data: Buffer.from("mismatch").toString("base64") })).rejects.toMatchObject({ code: "not_found" });
     expect(state.snapshot().records.find((row) => row.namespace === "c39-test-bridge")?.version).toBe(2);
   });
+
+  it("retries a durable seq-5/index-0 writing receipt through one atomic activation and Bridge continuation", async () => {
+    const raw = Buffer.from('{"restart":true}', "utf8");
+    const { state, authority } = subject();
+    await state.store.open();
+    const inputOwner = owner(raw);
+    const input = {
+      scope,
+      effectiveMcpRequestScope: effective,
+      owner: inputOwner,
+      bridgeSequence: 5,
+      chunkIndex: 0,
+      data: raw.toString("base64"),
+      contentType: "application/json" as const,
+      expiresAtMs: now + 60_000,
+    };
+    await expect(authority.stageRecoveryChunk({
+      ...input,
+      commitBridge: async () => {
+        throw new Error("simulated post-write interruption");
+      },
+    })).rejects.toBeDefined();
+    expect(state.snapshot().records.find((row) => row.namespace === "gateway.recovery-chunk/v1")?.value)
+      .toMatchObject({ state: "writing", bridgeSequence: 5, chunkIndex: 0 });
+    await authority.stageRecoveryChunk({
+      ...input,
+      commitBridge: async (tx) => {
+        tx.stage({
+          namespace: "c39-test-bridge",
+          key: "seq-5",
+          value: { lastRxSeq: 5 },
+          expect: { kind: "absent" },
+        });
+      },
+    });
+    expect(state.snapshot().records.find((row) => row.namespace === "gateway.recovery-chunk/v1")?.value)
+      .toMatchObject({ state: "active", bridgeSequence: 5, chunkIndex: 0 });
+    expect(state.snapshot().records.find((row) => row.namespace === "c39-test-bridge")?.value)
+      .toEqual({ lastRxSeq: 5 });
+  });
+
+  it("keeps a derived result-ref and terminal acknowledgement uncommitted when the exact completion callback rejects", async () => {
+    const raw = Buffer.from('{"terminal":"guarded"}', "utf8");
+    const { state, authority } = subject();
+    await state.store.open();
+    const inputOwner = owner(raw);
+    await authority.stageRecoveryChunk({
+      scope,
+      effectiveMcpRequestScope: effective,
+      owner: inputOwner,
+      bridgeSequence: 5,
+      chunkIndex: 0,
+      data: raw.toString("base64"),
+      contentType: "application/json",
+      expiresAtMs: now + 60_000,
+    });
+    const bridgeDigest: { current: string | null } = { current: null };
+    await expect(authority.finalizeRecoveryResultRef({
+      scope,
+      effectiveMcpRequestScope: effective,
+      owner: inputOwner,
+      terminalChunkCount: 1,
+      terminalByteLength: raw.byteLength,
+      expiresAtMs: now + 60_000,
+      commitBridge: async (_tx, resultReferenceDigest) => {
+        bridgeDigest.current = resultReferenceDigest;
+        throw new Error("exact Bridge completion rejected");
+      },
+    })).rejects.toBeDefined();
+    expect(bridgeDigest.current).toBe(recoveryResultRefDigest(raw));
+    expect(await authority.resumeRecoveryResultRef({
+      scope,
+      effectiveMcpRequestScope: effective,
+      owner: inputOwner,
+    })).toBeNull();
+    expect(state.snapshot().records.find((row) => row.namespace === "gateway_resource_v1")?.value)
+      .toMatchObject({ lifecycle: "allocating" });
+    expect(state.snapshot().records.find((row) => row.namespace === "gateway.recovery-completion/v1")?.value)
+      .toMatchObject({ state: "writing" });
+  });
 });

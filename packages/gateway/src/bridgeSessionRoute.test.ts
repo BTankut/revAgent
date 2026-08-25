@@ -1702,8 +1702,30 @@ describe("Gateway omitted-payload recovery admission", () => {
         .toMatchObject({ sequence: { sequence: { lastRxSeq: 3 } } });
       expect(objects.keys().length).toBeGreaterThanOrEqual(1);
 
-      void recovery.catch(() => undefined);
       expect(afterPartial.some((row) => row.namespace === "gateway.carrier-ack/v1")).toBe(false);
+      await created.receive(opened.connectionId, {
+        v: 1, type: "result", id: id(), rsid: session.payload.rsid,
+        seq: 4, ack: recoveryInvoke.seq, ts: new Date().toISOString(), payload: {
+          kind: "invocation", invocation_id: recoveryId, status: "completed",
+          replayed: false, result_digest: originDigest, chunked: true,
+          stream_id: "result", content_type: "application/json",
+          total_chunks: 1, total_size: raw.byteLength, sha256: originDigest,
+          metrics: { execute_ms: 0, request_bytes: 0, response_bytes: raw.byteLength, framing: "length-prefixed" },
+        },
+      });
+      await expect(recovery).resolves.toMatchObject({
+        state: "completed",
+        result: { kind: "result_ref" },
+      });
+      const terminalRecords = fixture.snapshot().records;
+      expect(terminalRecords.find((row) => row.namespace === "gateway.omitted-payload-recovery/v1")?.value)
+        .toMatchObject({
+          state: "completed",
+          originResultDigest: originDigest,
+          resultReferenceDigest: expect.stringMatching(/^sha256:/u),
+        });
+      expect(terminalRecords.find((row) => row.namespace === "gateway.rbp-session/v2")?.value)
+        .toMatchObject({ sequence: { sequence: { lastRxSeq: 4 } } });
       await created.receive(opened.connectionId, {
         v: 1, type: "heartbeat", id: id(), ts: new Date().toISOString(),
         payload: { bridge_version: "m4-route-test", acks: [], sessions: [] },

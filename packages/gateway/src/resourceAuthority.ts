@@ -239,8 +239,15 @@ export interface FinalizeRecoveryResultInput {
   readonly terminalChunkCount: number;
   readonly terminalByteLength: number;
   readonly expiresAtMs?: number;
-  /** Gateway-only terminal ACK commit after ref/completion activation. */
-  readonly commitBridge?: (tx: StoreTransaction) => Promise<void>;
+  /**
+   * Gateway-only terminal ACK commit after ref/completion activation.  The
+   * reference digest is derived from verified recovered bytes by this
+   * authority; callers never derive or supply it from carrier input.
+   */
+  readonly commitBridge?: (
+    tx: StoreTransaction,
+    resultReferenceDigest: `sha256:${string}`,
+  ) => Promise<void>;
 }
 
 interface RecoveryProtectedRef {
@@ -2427,6 +2434,7 @@ export class GatewayResourceAuthority {
     const bytes = knownBytes ?? await this.#readRecoveryBytes(input.scope, protectedStore, chunks);
     try {
       if (bytes.byteLength !== input.terminalByteLength || sha256(bytes) !== input.owner.originResultDigest) fail("not_found", "recovery terminal unavailable");
+      const resultReferenceDigest = recoveryResultRefDigest(bytes);
       const existing = await this.#protocolStore.transact({ tenantId: input.scope.tenantId }, (tx) => tx.read<GatewayJsonValue>(RESOURCE_NAMESPACE, recordKey(input.scope, "result_ref", completion.refId)));
       if (!existing.ok) fail("storage_unavailable", "recovery result unavailable");
       let record = asJsonRecord(existing.value?.value);
@@ -2434,14 +2442,14 @@ export class GatewayResourceAuthority {
       if (record === null) {
         const kid = await protectedStore.activeKid();
         if (kid === null) fail("storage_unavailable", "recovery key is unavailable");
-        const protectedRecovery: RecoveryProtectedRef = Object.freeze({ schemaVersion: "revagent-gateway-recovery/v1", owner: input.owner, kid, storageKey: recoveryStorageKey(input.owner, "result", 0), plainDigest: input.owner.originResultDigest, resultRefDigest: recoveryResultRefDigest(bytes), plainLength: bytes.byteLength, bridgeSequence: chunks.at(-1)?.bridgeSequence ?? input.terminalChunkCount - 1, chunkIndex: input.terminalChunkCount });
+        const protectedRecovery: RecoveryProtectedRef = Object.freeze({ schemaVersion: "revagent-gateway-recovery/v1", owner: input.owner, kid, storageKey: recoveryStorageKey(input.owner, "result", 0), plainDigest: input.owner.originResultDigest, resultRefDigest: resultReferenceDigest, plainLength: bytes.byteLength, bridgeSequence: chunks.at(-1)?.bridgeSequence ?? input.terminalChunkCount - 1, chunkIndex: input.terminalChunkCount });
         const next: ResultRecord = Object.freeze({ schemaVersion: "revagent-gateway-resource/v1", kind: "result_ref", refId: completion.refId, actorId: input.scope.actorId, principalKey: input.scope.principalKey, mcpSessionId: input.scope.mcpSessionId, createdAtMs: this.#now(), expiresAtMs: completion.expiresAtMs, contentType: "application/json", byteSize: bytes.byteLength, digest: protectedRecovery.resultRefDigest, pageSize: this.#maxResultPageBytes, pageCount: Math.max(1, Math.ceil(bytes.byteLength / this.#maxResultPageBytes)), storageKey: protectedRecovery.storageKey, lifecycle: "allocating", protectedRecovery });
         const reserved = await this.#writeRecords(input.scope, [next]);
         if (reserved) record = next;
         else {
           const joined = await this.#protocolStore.transact({ tenantId: input.scope.tenantId }, (tx) => tx.read<GatewayJsonValue>(RESOURCE_NAMESPACE, recordKey(input.scope, "result_ref", completion.refId)));
           const winner = joined.ok ? asJsonRecord(joined.value?.value) : null;
-          if (winner === null || winner.kind !== "result_ref" || winner.protectedRecovery === undefined || !sameRecoveryOwner(winner.protectedRecovery.owner, input.owner) || winner.protectedRecovery.resultRefDigest !== recoveryResultRefDigest(bytes)) fail("not_found", "recovery result unavailable");
+          if (winner === null || winner.kind !== "result_ref" || winner.protectedRecovery === undefined || !sameRecoveryOwner(winner.protectedRecovery.owner, input.owner) || winner.protectedRecovery.resultRefDigest !== resultReferenceDigest) fail("not_found", "recovery result unavailable");
           record = winner;
         }
       }
@@ -2453,18 +2461,22 @@ export class GatewayResourceAuthority {
       // This is the post-stream authorization fence: encrypted bytes may
       // exist, but they remain unreadable until this current binding is CASed.
       const authorization = await this.#reauthorize(input.owner);
-      if (authorization === null || !await this.#activateRecoveryResult(input.scope, record, authorization)) fail("scope_denied", "recovery scope is no longer authorized");
+      if (authorization === null) fail("scope_denied", "recovery scope is no longer authorized");
       const completed = await this.#protocolStore.transact({ tenantId: input.scope.tenantId }, async (tx) => {
+        // Keep protected result activation, immutable completion, and the
+        // Bridge terminal continuation in one transaction.  A completion CAS
+        // or Bridge failure must not release either an ACK or a readable ref.
+        if (!await this.#stageActivateRecoveryResult(tx, input.scope, record!, authorization)) return false;
         const current = await tx.read<GatewayJsonValue>(RECOVERY_COMPLETION_NAMESPACE, recoveryCompletionKey(input.owner));
         const candidate = asRecoveryCompletion(current?.value);
         if (current === null || candidate === null || candidate.refId !== completion.refId || !sameRecoveryOwner(candidate.owner, input.owner)) return false;
         if (candidate.state === "active") {
           if (candidate.activatedSessionBindingId !== authorization.sessionBindingId || candidate.activatedSessionBindingVersion !== authorization.sessionBindingVersion) return false;
-          await input.commitBridge?.(tx);
+          await input.commitBridge?.(tx, resultReferenceDigest);
           return true;
         }
         tx.stage({ namespace: RECOVERY_COMPLETION_NAMESPACE, key: current.key, value: { ...candidate, state: "active", activatedSessionBindingId: authorization.sessionBindingId, activatedSessionBindingVersion: authorization.sessionBindingVersion } as unknown as GatewayJsonValue, expect: { kind: "version", version: current.version } });
-        await input.commitBridge?.(tx);
+        await input.commitBridge?.(tx, resultReferenceDigest);
         return true;
       });
       if (!completed.ok || !completed.value) fail("storage_unavailable", "recovery completion was not activated");
@@ -2478,17 +2490,45 @@ export class GatewayResourceAuthority {
     return Object.freeze({ kind: "result_ref", refId: record.refId, uri: resultUri(scope, record.refId), contentType: "application/json", byteSize: record.byteSize, digest: record.digest, pageCount: record.pageCount, expiresAtMs: record.expiresAtMs });
   }
 
-  async #activateRecoveryResult(scope: GatewayResourceScope, record: ResultRecord, authorization: RecoveryCurrentAuthorization): Promise<boolean> {
-    const activated = await this.#protocolStore.transact({ tenantId: scope.tenantId }, async (tx) => {
-      const current = await tx.read<GatewayJsonValue>(RESOURCE_NAMESPACE, recordKey(scope, "result_ref", record.refId));
-      const candidate = asJsonRecord(current?.value);
-      if (current === null || candidate === null || candidate.kind !== "result_ref" || candidate.protectedRecovery === undefined || !sameRecoveryOwner(candidate.protectedRecovery.owner, record.protectedRecovery!.owner)) return false;
-      const currentActivation = candidate.protectedRecovery.activatedSessionBindingId;
-      if ((candidate.lifecycle ?? "active") === "active") return currentActivation === authorization.sessionBindingId && candidate.protectedRecovery.activatedSessionBindingVersion === authorization.sessionBindingVersion;
-      tx.stage({ namespace: RESOURCE_NAMESPACE, key: current.key, value: { ...candidate, lifecycle: "active", protectedRecovery: { ...candidate.protectedRecovery, activatedSessionBindingId: authorization.sessionBindingId, activatedSessionBindingVersion: authorization.sessionBindingVersion } } as unknown as GatewayJsonValue, expect: { kind: "version", version: current.version } });
-      return true;
+  async #stageActivateRecoveryResult(
+    tx: StoreTransaction,
+    scope: GatewayResourceScope,
+    record: ResultRecord,
+    authorization: RecoveryCurrentAuthorization,
+  ): Promise<boolean> {
+    const current = await tx.read<GatewayJsonValue>(
+      RESOURCE_NAMESPACE,
+      recordKey(scope, "result_ref", record.refId),
+    );
+    const candidate = asJsonRecord(current?.value);
+    if (
+      current === null ||
+      candidate === null ||
+      candidate.kind !== "result_ref" ||
+      candidate.protectedRecovery === undefined ||
+      record.protectedRecovery === undefined ||
+      !sameRecoveryOwner(candidate.protectedRecovery.owner, record.protectedRecovery.owner)
+    ) return false;
+    const currentActivation = candidate.protectedRecovery.activatedSessionBindingId;
+    if ((candidate.lifecycle ?? "active") === "active") {
+      return currentActivation === authorization.sessionBindingId &&
+        candidate.protectedRecovery.activatedSessionBindingVersion === authorization.sessionBindingVersion;
+    }
+    tx.stage({
+      namespace: RESOURCE_NAMESPACE,
+      key: current.key,
+      value: {
+        ...candidate,
+        lifecycle: "active",
+        protectedRecovery: {
+          ...candidate.protectedRecovery,
+          activatedSessionBindingId: authorization.sessionBindingId,
+          activatedSessionBindingVersion: authorization.sessionBindingVersion,
+        },
+      } as unknown as GatewayJsonValue,
+      expect: { kind: "version", version: current.version },
     });
-    return activated.ok && activated.value;
+    return true;
   }
 
   async #deliverRecoveryResultRef(scope: GatewayResourceScope, owner: RecoveryOwner, refId: string): Promise<GatewayResultRef> {

@@ -94,10 +94,12 @@ import {
 } from "./documentContextDigest.js";
 import {
   claimOmittedPayloadRecovery,
+  completeOmittedPayloadRecovery,
   isOmittedPayloadRecoveryInvocationReserved,
   OMITTED_PAYLOAD_RECOVERY_MAX_AGE_MS,
   readOmittedPayloadRecoveryByInvocation,
   type OmittedPayloadRecoveryClaim,
+  type OmittedPayloadRecoveryRecord,
 } from "./omittedPayloadRecovery.js";
 import type {
   BridgeCarrierCommitResult,
@@ -343,9 +345,19 @@ export type GatewayOmittedPayloadRecoveryAdmissionInput = Readonly<{
  * a north/API result.
  */
 type RecoveryCarrierLookup =
-  | Readonly<{ readonly kind: "authorized"; readonly owner: RecoveryOwner }>
+  | Readonly<{
+      readonly kind: "authorized";
+      readonly owner: RecoveryOwner;
+      /** Exact durable admission, retained only for terminal completion CAS. */
+      readonly admission: OmittedPayloadRecoveryRecord;
+    }>
   | Readonly<{ readonly kind: "guarded" }>
   | Readonly<{ readonly kind: "generic" }>;
+
+type RecoveryTerminalCompletion = Readonly<{
+  readonly admission: OmittedPayloadRecoveryRecord;
+  readonly resultReferenceDigest: `sha256:${string}`;
+}>;
 
 export type GatewayCurrentRecoveryAuthoritySnapshot = Readonly<{
   readonly tenantId: string;
@@ -6940,8 +6952,11 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     ) return null;
     try {
       this.#assertOpen();
-      return await this.#withSessionAuthorization(input.rsid, async () => {
-        const active = this.#active.get(input.rsid);
+      // This read-only authority seam is also called while the matching
+      // inbound carrier already owns the per-RSID tail.  Re-entering that tail
+      // would deadlock terminal finalization.  The shared terminal Tx-C still
+      // rechecks the exact current session/binding before it can commit.
+      const active = this.#active.get(input.rsid);
         if (
           active === undefined || active.tenantId !== input.tenantId ||
           active.record.userId !== input.userId ||
@@ -6988,16 +7003,15 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
           recovered.value.originInvocationId !== input.originInvocationId ||
           recovered.value.originResultDigest !== input.originResultDigest
         ) return null;
-        return Object.freeze({
-          tenantId: active.tenantId,
-          userId: active.record.userId,
-          principalKey: input.principalKey,
-          effectiveMcpSessionId: input.effectiveMcpSessionId,
-          rsid: active.record.rsid,
-          sessionBindingId: active.record.sessionBindingId,
-          sessionBindingVersion: active.record.sessionVersion,
-          expiresAtMs: active.record.resumeExpiresAtMs,
-        });
+      return Object.freeze({
+        tenantId: active.tenantId,
+        userId: active.record.userId,
+        principalKey: input.principalKey,
+        effectiveMcpSessionId: input.effectiveMcpSessionId,
+        rsid: active.record.rsid,
+        sessionBindingId: active.record.sessionBindingId,
+        sessionBindingVersion: active.record.sessionVersion,
+        expiresAtMs: active.record.resumeExpiresAtMs,
       });
     } catch {
       return null;
@@ -10241,6 +10255,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     mode: BridgeCarrierCommitMode,
     committed: { current: DurableRbpSession | null },
     completion: { current: GatewayExecutorOutcome | null },
+    recoveryCompletion?: RecoveryTerminalCompletion,
   ): Promise<BridgeCarrierCommitResult> {
     // Re-read final unregister authority in the *shared* resource Tx-C before
     // staging any session, ACK, or activation row.  A matching tombstone is a
@@ -10302,6 +10317,49 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     const preflightAdmission = terminalAdmissionFor(preflight, connection.connectionId, envelope);
     if (!sameJson(preflightAdmission, admission)) {
       throw new Error("carrier terminal admission changed before stage C");
+    }
+    if (recoveryCompletion !== undefined) {
+      const completedRecovery = await completeOmittedPayloadRecovery(
+        tx,
+        {
+          owner: {
+            tenantId: preflight.tenantId,
+            userId: preflight.userId,
+            effectiveMcpSessionId:
+              recoveryCompletion.admission.owner.effectiveMcpSessionId,
+            rsid: preflight.rsid,
+            sessionBindingId: preflight.sessionBindingId,
+            sessionVersion: preflight.sessionVersion,
+          },
+          originInvocationId: recoveryCompletion.admission.originInvocationId,
+          originResultDigest: recoveryCompletion.admission.originResultDigest,
+          newCarrierRecoveryInvocationId:
+            recoveryCompletion.admission.carrierRecoveryInvocationId,
+          terminalEvidenceDigest:
+            recoveryCompletion.admission.terminalEvidenceDigest,
+          // The persisted expiry is the immutable minimum of the original
+          // owner-session and terminal-retention fences.
+          terminalRetentionExpiresAtMs: recoveryCompletion.admission.expiresAtMs,
+          ownerSessionExpiresAtMs: preflight.resumeExpiresAtMs,
+          nowMs: this.#clock(),
+        },
+        {
+          tenantId: preflight.tenantId,
+          userId: preflight.userId,
+          effectiveMcpSessionId:
+            recoveryCompletion.admission.owner.effectiveMcpSessionId,
+          rsid: preflight.rsid,
+          sessionBindingId: preflight.sessionBindingId,
+          sessionVersion: preflight.sessionVersion,
+          active: true,
+          ownerSessionExpiresAtMs: preflight.resumeExpiresAtMs,
+          nowMs: this.#clock(),
+        },
+        recoveryCompletion.resultReferenceDigest,
+      );
+      if (completedRecovery.kind !== "completed") {
+        throw new Error("recovery completion no longer matches the active exact admission");
+      }
     }
     committed.current = await this.#sessionRepository.stageAuthoritativeOnRaw(
       tx,
@@ -10770,8 +10828,22 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
           owner: recovery.owner,
           terminalChunkCount: totalChunks,
           terminalByteLength: totalSize,
-          commitBridge: async (tx) => {
-            const result = await this.#commitCarrierTerminal(tx, active, connection, envelope, authorityTicket, admission, "activate", committed, completion);
+          commitBridge: async (tx, resultReferenceDigest) => {
+            const result = await this.#commitCarrierTerminal(
+              tx,
+              active,
+              connection,
+              envelope,
+              authorityTicket,
+              admission,
+              "activate",
+              committed,
+              completion,
+              Object.freeze({
+                admission: recovery.admission,
+                resultReferenceDigest,
+              }),
+            );
             if (result.kind === "aborted") throw new BridgeCarrierTerminalAborted();
           },
         });
@@ -11079,6 +11151,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         originInvocationId: found.value.record.originInvocationId,
         originResultDigest: found.value.record.originResultDigest,
       }),
+      admission: found.value.record,
     });
   }
 
