@@ -89,3 +89,23 @@ Ordinary `WorkerGatewayComposition` is sealed `Never`; no environment, CLI, MCP,
 The genuine add-in response is hashed. C# persists the normal completed terminal unchanged plus the existing encrypted v7 raw recovery payload and an in-memory marker `(rsid,idempotency/origin,digest,attestation)`; no DB/schema marker. A bounded conformance fault closes transport after journal commit but before any normal terminal byte reaches Gateway. Journal reconnect/replay only (no add-in call) verifies current attestation, normal completed row, raw digest, and marker, then emits the existing replayed terminal. Gateway persists ordinary production evidence and exact ACK; only afterward may public recovery run.
 
 The marker binds replay terminal sequence and outer digest, survives lost/duplicate/foreign ACK, and is consumed only by exact Gateway durable ACK. Marker/process/attestation loss yields normal fail-safe replay with no C39 admission. No raw or marker logs. Recovery semantics/C2 remain production. Required WSS+HTTP tests cover origin count one, suppression/replay, lost ACK, process restart, nonfixture rejection, and absence of live selectors.
+
+### C2c public omitted-coordinate carrier
+
+The frozen recovery input remains exactly origin UUID plus expected digest. Only after a genuine Gateway-observed replayed `payload_omitted` terminal, durable owner-bound A evidence, and current exact tenant+user+principal+effective session+RSID+binding reauthorization may North return one strict bounded MCP omitted carrier: fixed code `payload_omitted`, server-minted origin UUIDv7, exact sha256 digest, and fixed recovery tool name/version. Keys, types, and no-extra rules are exact; structured and text forms are canonical-equivalent.
+
+The carrier contains no owner/session/RSID/audit/path/key/raw/message details. The same original retry returns identical coordinates. Foreign, rebound, or fresh requests receive generic denial with no coordinate. The carrier is never emitted for arbitrary executor, transport, journal, policy, or parse failures; no origin execution, RBP change, or log detail is permitted. Required tests cover owner/retry/cross-scope/forged/schema/parser and A-order cases.
+
+Public identity is exact: `recovery_tool=core.dispatch.payload_recovery`, `recovery_tool_version=1.0.0`, and separate `carrier_version=c39.omitted-recovery-coordinate/v1`. The internal Bridge `dispatch_payload_recovery` is not advertised. UUID and digest parameters remain unchanged. Parser, registry, and end-to-end tests are mandatory.
+
+### D0 finite conformance transport exception
+
+Only the `productionConformanceHost` C39 profile may use this exception; normal Gateway composition is sealed null with no selector. After the first exact D0 fixture inner invoke is sent, retain one bounded in-memory record only (no raw store/log), bound to tenant+user+principal+effective MCP session+RSID+sessionBinding/connection, origin invocation/idempotency/method/params digest, and first-send proof.
+
+On authenticated same-process resume with exact current auth/binding/route and no terminal, an atomic one-shot claim reserves a normal new outer egress sequence/fence and resends the byte-identical inner invoke directly—never dispatcher, executor, or reconstruction. C# journal Duplicate invokes real ReplayTerminal; add-in count remains one. Clear on terminal/ACK/tombstone. Process/Gateway restart or any mismatch loses authority and evidence. Required tests cover concurrent one-winner, cross-scope/binding/route/terminal/restart denial, sequence/fence, no raw, WSS, and HTTP. This is an explicit finite conformance transport exception, not production recovery semantics or generic replay.
+
+### D2 conformance resend refinement
+
+Before any D2 claim, normal resume/outbox reconciliation must complete and a CAS snapshot must prove the exact original invoke outbox row is absent. If present or uncertain, D2 does not send; two paths and timing races are forbidden. Capture memory only after physical first-send initiation/success, and only for the exact bounded D0 fixture inner invoke.
+
+Add durable egress lease literal `conformance_origin_resend` to the frozen internal lease vocabulary; no RBP wire change. The parser remains backward-compatible with all old rows/operations and the old schema/version is unchanged. Gateway restart loses memory authority; any persisted D2 lease is recognized only for fail-closed cleanup/tombstone, never replay. Final terminal/revoke/fence/auth revalidation is mandatory; clear on every terminal path. Tests cover outbox exclusion, physical-send failure, old/unknown/restart lease compatibility, races, WSS, and HTTP.
