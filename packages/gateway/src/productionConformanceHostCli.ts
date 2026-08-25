@@ -11,6 +11,7 @@ import { GATEWAY_OMITTED_PAYLOAD_RECOVERY_NAMESPACE } from "./omittedPayloadReco
 import {
   GatewayResourceAuthority,
   ResourceAuthorityProtectedKeyInventoryPort,
+  type ConformanceProtectedResourceReadStage,
 } from "./resourceAuthority.js";
 import { GatewayDispatcher } from "./dispatch.js";
 import { EntitledCatalogView } from "./entitledRegistry.js";
@@ -814,10 +815,16 @@ export async function runProductionConformanceHostCli(args: readonly string[]): 
   let c39PartialCarrierCommitFailure:
     | ConformancePartialCarrierCommitFailure
     | null = null;
+  let c39ProtectedResourceReadFirst: ConformanceProtectedResourceReadStage | null = null;
+  let c39ProtectedResourceReadLast: ConformanceProtectedResourceReadStage | null = null;
   const resourceAuthority = new GatewayResourceAuthority({
     protocolStore,
     objectStore,
     protectedObjectStore,
+    onConformanceProtectedResourceRead(stage) {
+      c39ProtectedResourceReadFirst ??= stage;
+      c39ProtectedResourceReadLast = stage;
+    },
     async reauthorizeRecoveryScope(owner) {
       const current = await authority?.resolveCurrentRecoveryAuthoritySnapshot(owner);
       return current === null || current === undefined
@@ -1117,6 +1124,8 @@ export async function runProductionConformanceHostCli(args: readonly string[]): 
               rows,
               c39Recovery,
               c39PartialCarrierCommitFailure,
+              c39ProtectedResourceReadFirst,
+              c39ProtectedResourceReadLast,
               documentContextUpdates: coherentDocumentContext.updates,
               documentContextCurrentRoute: coherentDocumentContext.currentRoute,
               documentContextEpochSchema: DOCUMENT_CONTEXT_EPOCH_SCHEMA,

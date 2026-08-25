@@ -198,7 +198,14 @@ export interface GatewayResourceAuthorityOptions {
   readonly protectedObjectStore?: ProtectedObjectStorePort;
   /** Must return the currently bound session identity/version, or null. */
   readonly reauthorizeRecoveryScope?: (input: RecoveryOwner) => Promise<RecoveryCurrentAuthorization | null> | RecoveryCurrentAuthorization | null;
+  readonly onConformanceProtectedResourceRead?: (stage: ConformanceProtectedResourceReadStage) => void;
 }
+
+export type ConformanceProtectedResourceReadStage =
+  | "uri_scope_denied" | "record_missing" | "owner_scope_mismatch"
+  | "completion_missing_or_mismatch" | "activation_mismatch"
+  | "recovery_reauthorize_denied" | "protected_store_read_failed"
+  | "protected_integrity_mismatch" | "success";
 
 export interface RecoveryOwner {
   readonly tenantId: string;
@@ -950,6 +957,7 @@ export class GatewayResourceAuthority {
   readonly #scopeUriComparisonObserver: ScopedUriComparisonObserver | undefined;
   readonly #protectedObjectStore: ProtectedObjectStorePort | undefined;
   readonly #reauthorizeRecoveryScope: ((input: RecoveryOwner) => Promise<RecoveryCurrentAuthorization | null> | RecoveryCurrentAuthorization | null) | undefined;
+  readonly #onConformanceProtectedResourceRead: ((stage: ConformanceProtectedResourceReadStage) => void) | undefined;
 
   public constructor(options: GatewayResourceAuthorityOptions) {
     this.#protocolStore = options.protocolStore;
@@ -963,6 +971,7 @@ export class GatewayResourceAuthority {
     this.#gcOwnerId = options.gcOwnerId ?? `gateway-resource-gc:${randomUUID()}`;
     this.#protectedObjectStore = options.protectedObjectStore;
     this.#reauthorizeRecoveryScope = options.reauthorizeRecoveryScope;
+    this.#onConformanceProtectedResourceRead = options.onConformanceProtectedResourceRead;
     const observer = Object.getOwnPropertyDescriptor(
       options,
       TEST_SCOPE_URI_COMPARISON_OBSERVER,
@@ -2212,11 +2221,26 @@ export class GatewayResourceAuthority {
       // live owner/binding decision before decrypting the protected result.
       const completion = await this.#protocolStore.transact({ tenantId: scope.tenantId }, (tx) => tx.read<GatewayJsonValue>(RECOVERY_COMPLETION_NAMESPACE, recoveryCompletionKey(recovery.owner)));
       const terminal = completion.ok ? asRecoveryCompletion(completion.value?.value) : null;
-      if (!sameRecoveryOwner(recovery.owner, { ...recovery.owner, tenantId: scope.tenantId, userId: scope.actorId, principalKey: scope.principalKey, effectiveMcpSessionId: scope.mcpSessionId }) || terminal === null || terminal.state !== "active" || terminal.refId !== record.refId || terminal.activatedSessionBindingId !== recovery.owner.sessionBindingId || terminal.activatedSessionBindingVersion !== recovery.owner.sessionBindingVersion || recovery.activatedSessionBindingId !== recovery.owner.sessionBindingId || recovery.activatedSessionBindingVersion !== recovery.owner.sessionBindingVersion || await this.#reauthorize(recovery.owner) === null) {
+      if (!sameRecoveryOwner(recovery.owner, { ...recovery.owner, tenantId: scope.tenantId, userId: scope.actorId, principalKey: scope.principalKey, effectiveMcpSessionId: scope.mcpSessionId })) {
+        this.#reportConformanceProtectedRead("owner_scope_mismatch");
+        fail("not_found", "resource ref was not found");
+      }
+      if (terminal === null || terminal.state !== "active" || terminal.refId !== record.refId) {
+        this.#reportConformanceProtectedRead("completion_missing_or_mismatch");
+        fail("not_found", "resource ref was not found");
+      }
+      if (terminal.activatedSessionBindingId !== recovery.owner.sessionBindingId || terminal.activatedSessionBindingVersion !== recovery.owner.sessionBindingVersion || recovery.activatedSessionBindingId !== recovery.owner.sessionBindingId || recovery.activatedSessionBindingVersion !== recovery.owner.sessionBindingVersion) {
+        this.#reportConformanceProtectedRead("activation_mismatch");
+        fail("not_found", "resource ref was not found");
+      }
+      if (await this.#reauthorize(recovery.owner) === null) {
+        this.#reportConformanceProtectedRead("recovery_reauthorize_denied");
         fail("not_found", "resource ref was not found");
       }
       const stored = await protectedStore.getProtected({ storageKey: recovery.storageKey, contentType: record.contentType, binding: recoveryBinding(recovery.owner, recovery.bridgeSequence, recovery.chunkIndex, recovery.plainDigest, recovery.resultRefDigest, recovery.plainLength, record.expiresAtMs) });
-      if (!stored.ok || stored.value.bytes.byteLength !== record.byteSize || sha256(stored.value.bytes) !== recovery.plainDigest || recoveryResultRefDigest(stored.value.bytes) !== recovery.resultRefDigest || record.digest !== recovery.resultRefDigest) fail("not_found", "resource ref was not found");
+      if (!stored.ok) { this.#reportConformanceProtectedRead("protected_store_read_failed"); fail("not_found", "resource ref was not found"); }
+      if (stored.value.bytes.byteLength !== record.byteSize || sha256(stored.value.bytes) !== recovery.plainDigest || recoveryResultRefDigest(stored.value.bytes) !== recovery.resultRefDigest || record.digest !== recovery.resultRefDigest) { this.#reportConformanceProtectedRead("protected_integrity_mismatch"); fail("not_found", "resource ref was not found"); }
+      this.#reportConformanceProtectedRead("success");
       // Explicit ownership transfer to the authorized reader/finalizer.
       return stored.value.bytes;
     }
@@ -2235,6 +2259,10 @@ export class GatewayResourceAuthority {
       fail("digest_mismatch", "stored resource bytes do not match durable metadata");
     }
     return new Uint8Array(stored.value.bytes);
+  }
+
+  #reportConformanceProtectedRead(stage: ConformanceProtectedResourceReadStage): void {
+    try { this.#onConformanceProtectedResourceRead?.(stage); } catch { /* diagnostic only */ }
   }
 
   async #deleteStored(
