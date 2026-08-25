@@ -107,6 +107,33 @@ export function documentContextObservationLooksAdvertised(line: string): boolean
   }
 }
 
+export type RealTrioCompactSeedStatus = "valid" | "pending" | "invalid";
+export type RealTrioCompactSeedReason =
+  | "no_probe" | "open_cycle" | "unacked" | "malformed" | "gap"
+  | "unknown_stage" | "source_mismatch" | "rsid_mismatch" | "seq_mismatch"
+  | "ack_unbacked" | "overflow" | "restart_reset";
+
+/** Fixed, value-free reason for a document-looking source row rejected before redaction. */
+export function documentContextObservationInvalidReason(line: string): RealTrioCompactSeedReason {
+  let value: unknown;
+  try { value = JSON.parse(line) as unknown; } catch { return "malformed"; }
+  if (!isObject(value) || value.event !== "bridge.document_context_observation") return "malformed";
+  if (!isSha256(value.rsidHash)) return "rsid_mismatch";
+  if (!(value.sequence === null || (Number.isSafeInteger(value.sequence) && Number(value.sequence) >= 1))) return "seq_mismatch";
+  const known = (value.stage === "probe" && value.outcome === "started") ||
+    (value.stage === "snapshot" && value.outcome === "ready") ||
+    (value.stage === "queue" && value.outcome === "durably_queued") ||
+    (value.stage === "send" && value.outcome === "sent") ||
+    (value.stage === "ack" && value.outcome === "durably_acknowledged");
+  if (!known) return "unknown_stage";
+  const hasRevision = value.sourceRevision !== null && value.sourceRevision !== undefined;
+  const hasIncarnation = value.cacheIncarnationDigest !== null && value.cacheIncarnationDigest !== undefined;
+  if (hasRevision !== hasIncarnation || (hasRevision && documentContextSourcePair(value) === null)) return "source_mismatch";
+  if ((value.stage === "snapshot" && (value.sequence !== null || typeof value.contextDigest !== "string" || !/^[0-9a-f]{64}$/u.test(value.contextDigest) || !hasRevision)) ||
+      ((value.stage === "queue" || value.stage === "send") && (value.sequence === null || typeof value.contextDigest !== "string" || !/^[0-9a-f]{64}$/u.test(value.contextDigest) || !hasRevision))) return "source_mismatch";
+  return "malformed";
+}
+
 export function candidateKey(watcherOrdinal: number, rsidHash: `sha256:${string}`, sequence: number): string {
   return `${watcherOrdinal}:${rsidHash}:${sequence}`;
 }
@@ -224,6 +251,7 @@ export function preControlWatcherSeedFromSnapshot(snapshot: RealTrioDocumentCont
  */
 export class DocumentContextHistoryReducer {
   private invalid = false;
+  private invalidReason: RealTrioCompactSeedReason | null = null;
   private lastCursor = 0n;
   private watcherOrdinal = 0;
   private rsidHash: `sha256:${string}` | null = null;
@@ -232,29 +260,35 @@ export class DocumentContextHistoryReducer {
   private unacknowledged = new Set<number>();
   private cycle: { readonly stage: "snapshot" | "queue"; readonly sequence: number | null; readonly contextDigest: string; readonly source: RealTrioDocumentContextSourcePair } | null = null;
 
+  private fail(reason: RealTrioCompactSeedReason): false {
+    if (!this.invalid) this.invalidReason = reason;
+    this.invalid = true;
+    return false;
+  }
+
+  public invalidate(reason: RealTrioCompactSeedReason): void { this.fail(reason); }
+
   public accept(row: RealTrioDocumentContextCursorRow, generation: number): boolean {
-    if (this.invalid || !/^[1-9][0-9]*$/u.test(row.cursor) || BigInt(row.cursor) !== this.lastCursor + 1n) {
-      this.invalid = true; return false;
-    }
+    if (this.invalid || !/^[1-9][0-9]*$/u.test(row.cursor) || BigInt(row.cursor) !== this.lastCursor + 1n) return this.fail("gap");
     this.lastCursor = BigInt(row.cursor);
     const observation = strictDocumentObservation(row);
     if (observation === undefined) return true;
-    if (observation === null) { this.invalid = true; return false; }
+    if (observation === null) return this.fail(documentContextObservationInvalidReason(row.line));
     if (observation.stage === "probe") {
-      if (this.cycle !== null || this.unacknowledged.size !== 0) { this.invalid = true; return false; }
+      if (this.cycle !== null || this.unacknowledged.size !== 0) return this.fail(this.cycle === null ? "unacked" : "open_cycle");
       this.watcherOrdinal += 1; this.rsidHash = observation.rsidHash;
       this.lastSent = null; this.lastAck = null;
       return true;
     }
-    if (this.rsidHash === null || this.rsidHash !== observation.rsidHash) { this.invalid = true; return false; }
+    if (this.rsidHash === null || this.rsidHash !== observation.rsidHash) return this.fail("rsid_mismatch");
     if (observation.stage === "ack") {
       if (!this.unacknowledged.has(observation.sequence!) ||
-          (this.lastAck !== null && observation.sequence! <= this.lastAck)) { this.invalid = true; return false; }
+          (this.lastAck !== null && observation.sequence! <= this.lastAck)) return this.fail("ack_unbacked");
       this.unacknowledged.delete(observation.sequence!); this.lastAck = observation.sequence!;
       return true;
     }
     if (observation.stage === "snapshot") {
-      if (this.cycle !== null) { this.invalid = true; return false; }
+      if (this.cycle !== null) return this.fail("open_cycle");
       this.cycle = { stage: "snapshot", sequence: null, contextDigest: observation.contextDigest!, source: observation.source! };
       return true;
     }
@@ -262,13 +296,13 @@ export class DocumentContextHistoryReducer {
       if (this.cycle === null || this.cycle.stage !== "snapshot" || this.cycle.contextDigest !== observation.contextDigest ||
           this.cycle.source.sourceRevision !== observation.source!.sourceRevision ||
           this.cycle.source.cacheIncarnationDigest !== observation.source!.cacheIncarnationDigest ||
-          (this.lastSent !== null && observation.sequence! <= this.lastSent)) { this.invalid = true; return false; }
+          (this.lastSent !== null && observation.sequence! <= this.lastSent)) return this.fail("seq_mismatch");
       this.cycle = { ...this.cycle, stage: "queue", sequence: observation.sequence! };
       return true;
     }
     if (this.cycle === null || this.cycle.stage !== "queue" || this.cycle.sequence !== observation.sequence ||
         this.cycle.contextDigest !== observation.contextDigest || this.cycle.source.sourceRevision !== observation.source!.sourceRevision ||
-        this.cycle.source.cacheIncarnationDigest !== observation.source!.cacheIncarnationDigest) { this.invalid = true; return false; }
+        this.cycle.source.cacheIncarnationDigest !== observation.source!.cacheIncarnationDigest) return this.fail("source_mismatch");
     this.lastSent = observation.sequence!; this.unacknowledged.add(observation.sequence!); this.cycle = null;
     return true;
   }
@@ -279,6 +313,15 @@ export class DocumentContextHistoryReducer {
         (this.lastSent !== null && this.lastAck! < this.lastSent)) return null;
     return Object.freeze({ generation, highWaterCursor: this.lastCursor.toString(), watcherOrdinal: this.watcherOrdinal,
       rsidHash: this.rsidHash, lastSentSequence: this.lastSent, lastAckSequence: this.lastAck });
+  }
+
+  public seedDiagnostics(generation: number, restarted = false): Readonly<{ readonly seedStatus: RealTrioCompactSeedStatus; readonly seedReason: RealTrioCompactSeedReason | null }> {
+    if (this.invalid) return Object.freeze({ seedStatus: "invalid", seedReason: this.invalidReason ?? "malformed" });
+    const seed = this.settledSeed(generation);
+    if (seed !== null) return Object.freeze({ seedStatus: "valid", seedReason: null });
+    if (restarted && this.lastCursor === 0n) return Object.freeze({ seedStatus: "pending", seedReason: "restart_reset" });
+    if (this.rsidHash === null) return Object.freeze({ seedStatus: "pending", seedReason: "no_probe" });
+    return Object.freeze({ seedStatus: "pending", seedReason: this.cycle === null ? "unacked" : "open_cycle" });
   }
 
   public get historyInvalid(): boolean { return this.invalid; }

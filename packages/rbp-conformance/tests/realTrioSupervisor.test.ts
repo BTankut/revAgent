@@ -140,6 +140,7 @@ describe("WP-12 C38 monotonic document-context cursor journal", () => {
       generation: snapshot.generation, highWaterCursor: snapshot.highWaterCursor,
       watcherOrdinal: 33, lastSentSequence: 33, lastAckSequence: 33,
     });
+    expect(snapshot).toMatchObject({ seedStatus: "valid", seedReason: null });
   });
 
   it("withholds the compact seed for open/unacknowledged or malformed document history and clears it on restart", () => {
@@ -158,6 +159,20 @@ describe("WP-12 C38 monotonic document-context cursor journal", () => {
     const restarted = journal.snapshot([]);
     expect(restarted.settledWatcherSeed).toBeNull();
     expect(restarted.highWaterCursor).toBe("0");
+  });
+
+  it("reports only fixed compact-seed reason codes without changing seed admission", () => {
+    const journal = new RealTrioDocumentContextCursorJournal();
+    expect(journal.snapshot([])).toMatchObject({ seedStatus: "pending", seedReason: "no_probe" });
+    const open = [cursorObservation("probe", "started", null, 1), cursorObservation("snapshot", "ready", null, 2)];
+    expect(journal.snapshot(open)).toMatchObject({ seedStatus: "pending", seedReason: "open_cycle", settledWatcherSeed: null });
+    const sent = [...open, cursorObservation("queue", "durably_queued", 1, 3), cursorObservation("send", "sent", 1, 4)];
+    expect(journal.snapshot(sent)).toMatchObject({ seedStatus: "pending", seedReason: "unacked" });
+    const malformed = { stream: "stderr" as const, at: "", sourceOffset: 5,
+      line: JSON.stringify({ event: "bridge.document_context_observation", stage: "unknown", outcome: "unknown", rsidHash: `sha256:${"a".repeat(64)}`, sequence: null }) };
+    expect(journal.snapshot([...sent, malformed])).toMatchObject({ seedStatus: "invalid", seedReason: "unknown_stage" });
+    journal.restartGeneration();
+    expect(journal.snapshot([])).toMatchObject({ seedStatus: "pending", seedReason: "restart_reset" });
   });
 });
 

@@ -2092,7 +2092,7 @@ export async function startRealTrioRuntimeFixture(
           const reason = candidateBaseline === null || secondBaseline === null ? "malformed" :
             candidateFirstSnapshot.generation !== candidateSecondSnapshot.generation ? "snapshot_generation" :
             BigInt(candidateSecondSnapshot.highWaterCursor) < BigInt(candidateFirstSnapshot.highWaterCursor) ? "highwater_decrease" :
-            candidateSeed === null ? "seed_missing" :
+            candidateSeed === null ? `seed_missing:${candidateSecondSnapshot.seedStatus ?? "invalid"}:${candidateSecondSnapshot.seedReason ?? "malformed"}` :
             !sameBaseline && candidateBaseline.processEpoch !== secondBaseline.processEpoch ? "audit_epoch" :
             !sameBaseline && candidateBaseline.currentIdentity !== secondBaseline.currentIdentity ? "current_identity" :
             !sameBaseline && candidateBaseline.acceptedObservationOrdinal !== secondBaseline.acceptedObservationOrdinal ? "accepted_ordinal" :
