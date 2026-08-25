@@ -66,6 +66,8 @@ internal sealed partial class RbpJournalStore
                         RequireActiveSession(context, rsid);
                         LoadedSequence loaded =
                             LoadSequence(context, rsid);
+                        RequireNoUnresolvedRecoveryTerminalAcknowledgement(
+                            context, rsid, lastReceivedSequence);
                         RbpAcknowledgementResult acknowledgement =
                             RbpSequenceReducer
                                 .ApplyCumulativeAcknowledgement(
@@ -341,6 +343,8 @@ internal sealed partial class RbpJournalStore
                             RequireActiveSession(context, rsid);
                             LoadedSequence loaded =
                                 LoadSequence(context, rsid);
+                            RequireNoUnresolvedRecoveryTerminalAcknowledgement(
+                                context, rsid, acknowledgements[rsid]);
                             RbpAcknowledgementResult result =
                                 RbpSequenceReducer
                                     .ApplyCumulativeAcknowledgement(

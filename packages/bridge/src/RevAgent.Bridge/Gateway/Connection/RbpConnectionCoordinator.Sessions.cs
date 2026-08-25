@@ -215,6 +215,18 @@ internal sealed partial class RbpConnectionCoordinator
                         context.Token)
                     .ConfigureAwait(false),
                 candidate.Session.Rsid);
+            RbpRecoveryTerminalPlan? terminal = await _journal
+                .ApplyRecoveryTerminalAcknowledgementAsync(
+                    parsed.Rsid, parsed.LastReceivedSequence,
+                    gatewayDeliveryReceiptRecorded: true,
+                    sourceReleaseEligible: true, context.Token)
+                .ConfigureAwait(false);
+            if (terminal?.State == "tombstoned")
+            {
+                throw new RbpCoordinatorException(
+                    RbpCoordinatorErrorCode.UnexpectedControl,
+                    "Recovery terminal resume acknowledgement violated its durable fence.");
+            }
             RbpResumeAcknowledgementResult applied =
                 await _journal.ApplyResumeAcknowledgementAsync(
                         parsed.Rsid,

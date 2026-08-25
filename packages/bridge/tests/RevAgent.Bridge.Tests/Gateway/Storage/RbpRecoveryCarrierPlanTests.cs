@@ -98,7 +98,9 @@ public sealed class RbpRecoveryCarrierPlanTests
             (await reopened.ApplyRecoveryCarrierFenceAcknowledgementAsync(reservation.Rsid, 0))!.Phase);
         Assert.Equal(RbpRecoveryCarrierPhase.Completed,
             (await reopened.ApplyRecoveryCarrierFenceAcknowledgementAsync(reservation.Rsid, 1))!.Phase);
-        Assert.Null(await reopened.ApplyRecoveryCarrierFenceAcknowledgementAsync(reservation.Rsid, 1));
+        Assert.Equal(RbpRecoveryCarrierPhase.Completed,
+            (await reopened.ApplyRecoveryCarrierFenceAcknowledgementAsync(
+                reservation.Rsid, 1))!.Phase);
     }
 
     [Fact]
@@ -288,6 +290,95 @@ public sealed class RbpRecoveryCarrierPlanTests
         Assert.Null(await reopened.GetCorrelatedRecoveryPayloadAsync(
             request.Rsid, request.OriginInvocationId, request.ResultDigest));
         Assert.Equal(2, (await reopened.LoadSequenceAsync(request.Rsid)).LastPeerAcknowledgement);
+    }
+
+    [Fact]
+    public async Task CompletedCarrierDelegatesLaterAckToTerminalBeforeGenericResumeReducer()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        await using RbpJournalStore store = OpenStore(directory);
+        (RbpInvocationIdentity origin, byte[] raw, string digest) =
+            await PersistRecoverableTerminalAsync(store,
+                "0197a3c2-0000-7000-8000-0000000000eb");
+        var request = new RbpRecoveryCarrierReservationRequest(
+            origin.Rsid, "0197a3c2-0000-7000-8000-0000000000ec",
+            origin.InvocationId, digest, raw.Length,
+            new RbpRecoveryCarrierHeader("application/json", "base64"),
+            "sha256:" + new string('a', 64), RbpJournalTestData.Now.AddHours(1));
+        await EnsureRecoveryExecutingAsync(store, request);
+        _ = await store.PersistProtectedRecoveryTerminalAndReserveAsync(request);
+        _ = await store.MarkRecoveryCarrierSendStartedAsync(request.RecoveryInvocationId);
+        Assert.Equal(RbpRecoveryCarrierPhase.Completed,
+            (await store.ApplyRecoveryCarrierFenceAcknowledgementAsync(origin.Rsid, 1))!.Phase);
+        RbpRecoveryTerminalPlan terminal = await store.ReserveRecoveryTerminalAsync(
+            request.RecoveryInvocationId, origin.Rsid);
+
+        // The v8 row is completed: ACK2 belongs solely to v9. It must not
+        // tombstone the carrier or advance the generic peer-ACK frontier.
+        RbpRecoveryCarrierReservation delegated = Assert.IsType<RbpRecoveryCarrierReservation>(
+            await store.ApplyRecoveryCarrierFenceAcknowledgementAsync(origin.Rsid,
+                terminal.FinalSequence));
+        Assert.Equal(RbpRecoveryCarrierPhase.Completed, delegated.Phase);
+        Assert.Equal(1, (await store.LoadSequenceAsync(origin.Rsid)).LastPeerAcknowledgement);
+
+        RbpRecoveryTerminalPlan below = Assert.IsType<RbpRecoveryTerminalPlan>(
+            await store.ApplyRecoveryTerminalAcknowledgementAsync(origin.Rsid, 1,
+                gatewayDeliveryReceiptRecorded: true, sourceReleaseEligible: true));
+        Assert.Equal("reserved", below.State);
+        Assert.Equal(RbpAcknowledgementKind.Duplicate,
+            (await store.ApplyResumeAcknowledgementAsync(origin.Rsid, 1,
+                RbpJournalTestData.Now.AddHours(2))).Acknowledgement.Kind);
+
+        RbpRecoveryTerminalPlan confirmed = Assert.IsType<RbpRecoveryTerminalPlan>(
+            await store.ApplyRecoveryTerminalAcknowledgementAsync(origin.Rsid,
+                terminal.FinalSequence, gatewayDeliveryReceiptRecorded: true,
+                sourceReleaseEligible: true));
+        Assert.Equal("confirmed", confirmed.State);
+        RbpResumeAcknowledgementResult duplicate =
+            await store.ApplyResumeAcknowledgementAsync(origin.Rsid,
+                terminal.FinalSequence, RbpJournalTestData.Now.AddHours(2));
+        Assert.Equal(RbpAcknowledgementKind.Duplicate, duplicate.Acknowledgement.Kind);
+        Assert.Empty(duplicate.Retransmit);
+        Assert.Null(await store.GetCorrelatedRecoveryPayloadAsync(origin.Rsid,
+            origin.InvocationId, digest));
+
+        // A restart sees the confirmed v9 authority and cannot allocate or
+        // resend another terminal for the same recovery invocation.
+        await store.DisposeAsync();
+        await using RbpJournalStore reopened = OpenStore(directory);
+        Assert.Empty(await reopened.ListActiveRecoveryTerminalPlansAsync());
+        Assert.Equal(terminal.FinalSequence,
+            (await reopened.LoadSequenceAsync(origin.Rsid)).LastPeerAcknowledgement);
+    }
+
+    [Fact]
+    public async Task UnresolvedOrAboveTerminalAckCannotReopenThroughGenericResumeReducer()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        await using RbpJournalStore store = OpenStore(directory);
+        (RbpInvocationIdentity origin, byte[] raw, string digest) =
+            await PersistRecoverableTerminalAsync(store,
+                "0197a3c2-0000-7000-8000-0000000000f3");
+        var request = new RbpRecoveryCarrierReservationRequest(
+            origin.Rsid, "0197a3c2-0000-7000-8000-0000000000f4",
+            origin.InvocationId, digest, raw.Length,
+            new RbpRecoveryCarrierHeader("application/json", "base64"),
+            "sha256:" + new string('b', 64), RbpJournalTestData.Now.AddHours(1));
+        await EnsureRecoveryExecutingAsync(store, request);
+        _ = await store.PersistProtectedRecoveryTerminalAndReserveAsync(request);
+        _ = await store.MarkRecoveryCarrierSendStartedAsync(request.RecoveryInvocationId);
+        _ = await store.ApplyRecoveryCarrierFenceAcknowledgementAsync(origin.Rsid, 1);
+        RbpRecoveryTerminalPlan terminal = await store.ReserveRecoveryTerminalAsync(
+            request.RecoveryInvocationId, origin.Rsid);
+
+        RbpRecoveryTerminalPlan tombstoned = Assert.IsType<RbpRecoveryTerminalPlan>(
+            await store.ApplyRecoveryTerminalAcknowledgementAsync(origin.Rsid,
+                terminal.FinalSequence + 1, gatewayDeliveryReceiptRecorded: true,
+                sourceReleaseEligible: true));
+        Assert.Equal("tombstoned", tombstoned.State);
+        await Assert.ThrowsAsync<RbpJournalException>(() =>
+            store.ApplyResumeAcknowledgementAsync(origin.Rsid,
+                terminal.FinalSequence + 1, RbpJournalTestData.Now.AddHours(2)));
     }
 
     [Fact]

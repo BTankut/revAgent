@@ -149,15 +149,19 @@ internal sealed partial class RbpConnectionCoordinator
                     RbpCoordinatorErrorCode.UnexpectedControl,
                     "Recovery carrier acknowledgement violated its durable fence.");
             }
-            if (applied is { Phase: RbpRecoveryCarrierPhase.Completed or
-                RbpRecoveryCarrierPhase.Reserved })
+            bool carrierReceiptApplied = applied?.Phase ==
+                RbpRecoveryCarrierPhase.Reserved ||
+                (applied?.Phase == RbpRecoveryCarrierPhase.Completed &&
+                 acknowledgement.Sequence == applied.CurrentReservedSequence);
+            if (carrierReceiptApplied && applied is not null)
             {
                 ObserveRecoveryCarrierAcknowledgement(context, applied,
                     acknowledgement.Sequence);
                 ReleaseRecoveryCarrierClaims(context, acknowledgement.Rsid,
                     applied.RecoveryInvocationId, acknowledgement.Sequence);
             }
-            if (applied?.Phase == RbpRecoveryCarrierPhase.Completed)
+            if (applied?.Phase == RbpRecoveryCarrierPhase.Completed &&
+                acknowledgement.Sequence == applied.CurrentReservedSequence)
             {
                 // The final partial receipt opens exactly one v9 terminal
                 // plan. Reservation is idempotent, so a duplicate heartbeat

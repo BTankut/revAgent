@@ -589,9 +589,13 @@ internal sealed partial class RbpJournalStore
         long now = NowMilliseconds();
         return ExecuteImmediateAsync(context =>
         {
-            RbpRecoveryCarrierReservation? current = ReadActiveRecoveryCarrierReservation(context, rsid);
-            if (current is null || current.Phase == RbpRecoveryCarrierPhase.Tombstoned)
+            RbpRecoveryCarrierReservation? current =
+                ReadRecoveryCarrierAcknowledgementReservation(context, rsid);
+            if (current is null || current.Phase is RbpRecoveryCarrierPhase.Completed or
+                RbpRecoveryCarrierPhase.Tombstoned)
             {
+                // A completed v8 carrier is historical fence evidence only.
+                // Its successor v9 terminal owns any later acknowledgement.
                 return current;
             }
             if (acknowledgement < current.CurrentReservedSequence)
@@ -1345,6 +1349,56 @@ internal sealed partial class RbpJournalStore
         command.Parameters.AddWithValue("$rsid", rsid);
         using SqliteDataReader reader = command.ExecuteReader();
         return MaterializeSingleRecoveryCarrierReservation(reader);
+    }
+
+    private static RbpRecoveryCarrierReservation?
+        ReadRecoveryCarrierAcknowledgementReservation(
+            RbpJournalWriteContext context, string rsid)
+    {
+        using SqliteCommand command = context.CreateCommand("""
+            SELECT recovery_invocation_id,rsid,origin_invocation_id,result_digest,
+                   raw_idempotency_key,raw_payload_version,header_jcs,plaintext_length,chunk_size,
+                   chunk_count,phase,chunk_index,current_reserved_seq,
+                   canonical_envelope_digest,send_started_at_ms,highest_reserved_seq,
+                   acknowledgement_cursor,inbound_ack_baseline,plan_version,created_at_ms,expires_at_ms,
+                   updated_at_ms,completed_at_ms,tombstoned_at_ms,tombstone_reason
+            FROM rbp_recovery_carrier_reservations
+            WHERE rsid=$rsid AND phase IN ('reserved','send_started','awaiting_ack','completed','tombstoned')
+            ORDER BY CASE phase
+              WHEN 'reserved' THEN 0 WHEN 'send_started' THEN 0
+              WHEN 'awaiting_ack' THEN 0 WHEN 'tombstoned' THEN 0 ELSE 1 END,
+              current_reserved_seq DESC
+            LIMIT 1;
+            """);
+        command.Parameters.AddWithValue("$rsid", rsid);
+        using SqliteDataReader reader = command.ExecuteReader();
+        return MaterializeSingleRecoveryCarrierReservation(reader);
+    }
+
+    private static void RequireNoUnresolvedRecoveryTerminalAcknowledgement(
+        RbpJournalWriteContext context, string rsid, long acknowledgement)
+    {
+        if (HasRecoverySequenceTombstone(context, rsid))
+        {
+            throw new RbpJournalException(RbpJournalErrorCode.ProtocolConflict,
+                "Recovery authority is tombstoned and cannot reopen through a generic acknowledgement.");
+        }
+
+        RbpRecoveryCarrierReservation? completed =
+            ReadRecoveryCarrierAcknowledgementReservation(context, rsid);
+        if (completed?.Phase != RbpRecoveryCarrierPhase.Completed ||
+            acknowledgement <= completed.CurrentReservedSequence)
+        {
+            return;
+        }
+
+        RbpRecoveryTerminalPlan? terminal = ReadRecoveryTerminalPlan(
+            context, completed.RecoveryInvocationId);
+        if (terminal is null || terminal.State != "confirmed")
+        {
+            throw new RbpJournalException(RbpJournalErrorCode.ProtocolConflict,
+                "A completed recovery carrier cannot acknowledge an unresolved terminal through the generic reducer.");
+        }
     }
 
     private static RbpRecoveryTerminalPlan? ReadActiveRecoveryTerminalPlan(
