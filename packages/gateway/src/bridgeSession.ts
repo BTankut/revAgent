@@ -7880,7 +7880,8 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     let reserved: DurableEgressReservation | null = null;
     let serialized = "";
     try {
-      const claimed = await this.#withSessionAuthorization(input.rsid, async () => await this.#sessionRepository.transact({ tenantId: input.tenantId }, async (tx) => {
+      return await this.#withSessionAuthorization(input.rsid, async () => {
+      const claimed = await this.#sessionRepository.transact({ tenantId: input.tenantId }, async (tx) => {
         const tombstone = await tx.read<GatewayJsonValue>(GATEWAY_RBP_UNREGISTER_NAMESPACE, input.rsid);
         if (tombstone !== null) return { kind: "blocked" as const };
         const stored = await tx.read<GatewayJsonValue>(GATEWAY_RBP_SESSION_NAMESPACE, input.rsid);
@@ -7912,12 +7913,17 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         const next = nextSessionRecord(stored, record, { ...record, sequence: queued.state, d2ConformanceOriginResend: { version: 1, state: "claimed", originInvocationId: captured.originInvocationId, originEnvelopeDigest: captured.originEnvelopeDigest, originOuterSequence: captured.originOuterSequence, resendEnvelopeDigest: lease.envelopeDigest, claimedAtMs: this.#clock() }, egressFence: { version: 1, state: "open", epoch: fence.epoch + 1, nextTicket: fence.nextTicket + 1, lease, revocation: null, cancellation: null } }, this.#clock());
         tx.stage({ namespace: GATEWAY_RBP_SESSION_NAMESPACE, key: input.rsid, value: asJson(next), expect: { kind: "version", version: stored.version } });
         return { kind: "reserved" as const, record: next, lease };
-      }));
+      });
       if (!claimed.ok || claimed.value.kind !== "reserved") return false;
       reserved = { tenantId: input.tenantId, rsid: input.rsid, record: claimed.value.record, lease: claimed.value.lease };
+      // The D2 reservation owns the full conformance-only transition.  Make
+      // its queued high-water current before promotion/send so no inbound
+      // carrier can observe the pre-D2 sequence snapshot.
+      this.#syncActiveRecord(reserved.record);
       await this.#sendWithDurableReservation(connection, reserved, serialized, ticket);
       this.#clearD2ConformanceOrigin(input.rsid, input.originInvocationId);
       return true;
+      });
     } catch {
       if (reserved !== null) await this.#clearFailedD2Lease(reserved).catch(() => undefined);
       this.#clearD2ConformanceOrigin(input.rsid, input.originInvocationId);
@@ -12212,9 +12218,17 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
 
   #syncActiveRecord(record: DurableRbpSession): void {
     const active = this.#active.get(record.rsid);
-    if (active !== undefined && active.tenantId === record.tenantId) {
+    if (active === undefined || active.tenantId !== record.tenantId) return;
+    const incomingVersion = record.recordVersion ?? 0;
+    const activeVersion = active.record.recordVersion ?? 0;
+    if (incomingVersion > activeVersion) {
       active.record = record;
+      return;
     }
+    if (
+      incomingVersion === activeVersion &&
+      sameJson(record, active.record)
+    ) active.record = record;
   }
 
   #completeLocalUnregister(
