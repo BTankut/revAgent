@@ -252,19 +252,62 @@ export function parseDocumentContextGrammar(input: {
       lastAckSequence: watcher.lastAcknowledgedSequence }) });
 }
 
+function validatedSnapshotCompactSeed(
+  snapshot: RealTrioDocumentContextSnapshot,
+): RealTrioPreControlWatcherSeed | null {
+  const seed = snapshot.settledWatcherSeed;
+  if (seed === undefined || seed === null ||
+      (snapshot.seedStatus !== undefined && snapshot.seedStatus !== "valid") ||
+      (snapshot.seedReason !== undefined && snapshot.seedReason !== null) ||
+      seed.generation !== snapshot.generation || seed.highWaterCursor !== snapshot.highWaterCursor ||
+      !/^(?:0|[1-9][0-9]*)$/u.test(seed.highWaterCursor) ||
+      !Number.isSafeInteger(seed.watcherOrdinal) || seed.watcherOrdinal < 1 || !isSha256(seed.rsidHash) ||
+      !(seed.lastSentSequence === null || (Number.isSafeInteger(seed.lastSentSequence) && seed.lastSentSequence >= 1)) ||
+      !(seed.lastAckSequence === null || (Number.isSafeInteger(seed.lastAckSequence) && seed.lastAckSequence >= 1)) ||
+      ((seed.lastSentSequence === null) !== (seed.lastAckSequence === null)) ||
+      (seed.lastSentSequence !== null && seed.lastAckSequence! < seed.lastSentSequence)) return null;
+  return Object.freeze({ ...seed });
+}
+
+function sameWatcherSeed(
+  left: RealTrioPreControlWatcherSeed,
+  right: RealTrioPreControlWatcherSeed,
+): boolean {
+  return left.generation === right.generation && left.highWaterCursor === right.highWaterCursor &&
+    left.watcherOrdinal === right.watcherOrdinal && left.rsidHash === right.rsidHash &&
+    left.lastSentSequence === right.lastSentSequence && left.lastAckSequence === right.lastAckSequence;
+}
+
 export function preControlWatcherSeedFromSnapshot(snapshot: RealTrioDocumentContextSnapshot): RealTrioPreControlWatcherSeed | null {
   if (!Number.isSafeInteger(snapshot.generation) || snapshot.generation < 1 ||
       !/^(?:0|[1-9][0-9]*)$/u.test(snapshot.lowWaterCursor) || !/^(?:0|[1-9][0-9]*)$/u.test(snapshot.highWaterCursor)) return null;
   const lowWater = BigInt(snapshot.lowWaterCursor); const highWater = BigInt(snapshot.highWaterCursor);
-  if (snapshot.rows.length === 0 || lowWater !== 1n || highWater < lowWater ||
-      BigInt(snapshot.rows[0]!.cursor) !== lowWater || BigInt(snapshot.rows.at(-1)!.cursor) !== highWater) return null;
+  if (snapshot.rows.length === 0 || lowWater < 1n || highWater < lowWater ||
+      BigInt(snapshot.rows.length) !== highWater - lowWater + 1n) return null;
+  for (let index = 0; index < snapshot.rows.length; index += 1) {
+    const row = snapshot.rows[index]!;
+    if (!/^[1-9][0-9]*$/u.test(row.cursor) || BigInt(row.cursor) !== lowWater + BigInt(index)) return null;
+    const observation = strictDocumentObservation(row);
+    if (observation === null || observation === undefined) return null;
+  }
+  const compact = validatedSnapshotCompactSeed(snapshot);
+  if (lowWater > 1n) {
+    // The reducer-authored checkpoint is the only admissible proof once the
+    // retained ring has evicted the generation prefix.  It is value-free,
+    // bound to this exact high-water cursor, and published only after every
+    // watcher cycle through that cursor is durably ACK-settled.
+    return compact;
+  }
   const parsed = parseDocumentContextGrammar({ rows: snapshot.rows, generation: snapshot.generation, controlCursor: "0", precedingProbe: null });
   if (parsed === null || parsed.currentWatcher === null || parsed.currentWatcher.watcherOrdinal < 1) return null;
   const unacknowledged = parsed.candidates.filter((candidate) => {
     const acknowledgedAt = parsed.acknowledgements.get(candidateKey(candidate.watcherOrdinal, candidate.rsidHash, candidate.sequence));
     return acknowledgedAt === undefined || acknowledgedAt <= candidate.sendTranscriptIndex;
   });
-  return unacknowledged.length === 0 ? parsed.currentWatcher : null;
+  if (unacknowledged.length !== 0 || (compact !== null && !sameWatcherSeed(compact, parsed.currentWatcher))) return null;
+  if ((snapshot.seedStatus !== undefined && snapshot.seedStatus !== "valid") ||
+      (snapshot.seedReason !== undefined && snapshot.seedReason !== null)) return null;
+  return parsed.currentWatcher;
 }
 
 /**

@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 
+import { preControlWatcherSeedFromSnapshot } from "../src/realTrioDocumentContextEvidence.js";
+
 import {
   assertProductionCredential,
   assertDedicatedRealTrioProcessComponents,
@@ -141,6 +143,37 @@ describe("WP-12 C38 monotonic document-context cursor journal", () => {
       watcherOrdinal: 33, lastSentSequence: 33, lastAckSequence: 33,
     });
     expect(snapshot).toMatchObject({ seedStatus: "valid", seedReason: null });
+  });
+
+  it("consumes the exact reducer checkpoint after retained-prefix eviction and rejects drift", () => {
+    const journal = new RealTrioDocumentContextCursorJournal();
+    const records = Array.from({ length: 33 }, (_, cycle) => {
+      const offset = cycle * 5;
+      return [
+        cursorObservation("probe", "started", null, offset + 1),
+        cursorObservation("snapshot", "ready", null, offset + 2),
+        cursorObservation("queue", "durably_queued", cycle + 1, offset + 3),
+        cursorObservation("send", "sent", cycle + 1, offset + 4),
+        cursorObservation("ack", "durably_acknowledged", cycle + 1, offset + 5),
+      ];
+    }).flat();
+    const snapshot = journal.snapshot(records);
+    expect(snapshot.lowWaterCursor).not.toBe("1");
+    expect(preControlWatcherSeedFromSnapshot(snapshot)).toEqual(snapshot.settledWatcherSeed);
+    expect(preControlWatcherSeedFromSnapshot({
+      ...snapshot, seedStatus: "pending", seedReason: "unacked",
+    })).toBeNull();
+    expect(preControlWatcherSeedFromSnapshot({
+      ...snapshot,
+      settledWatcherSeed: snapshot.settledWatcherSeed === null || snapshot.settledWatcherSeed === undefined
+        ? null
+        : { ...snapshot.settledWatcherSeed, highWaterCursor: String(BigInt(snapshot.highWaterCursor) - 1n) },
+    })).toBeNull();
+    expect(preControlWatcherSeedFromSnapshot({
+      ...snapshot, rows: Object.freeze([
+        { ...snapshot.rows[0]!, line: "{}" }, ...snapshot.rows.slice(1),
+      ]),
+    })).toBeNull();
   });
 
   it("withholds the compact seed for open/unacknowledged or malformed document history and clears it on restart", () => {
