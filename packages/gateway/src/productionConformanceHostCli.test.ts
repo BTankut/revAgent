@@ -501,12 +501,16 @@ describe("WP-12 conformance recovery composition", () => {
     }
   });
 
-  it("has no recovery control-plane fallback and fixes evidence denial without a message field", async () => {
+  it("has no recovery control-plane fallback, preserves ordinary objects, and isolates C39 protected objects", async () => {
     const source = await readFile(new URL("./productionConformanceHostCli.ts", import.meta.url), "utf8");
     expect(source).toContain("recoveryAuthority,");
     expect(source).not.toContain("recoveryAuthority: {} as never");
     expect(source).toContain('kind: "rejected" as const');
     expect(source).toContain('reason: "conformance_recovery_evidence_denied"');
     expect(source).not.toContain("createReadOnlyRecoveryAuthorityFixture");
+    expect(source).toContain("new DigestFileConformanceObjectStore(options.root)");
+    expect(source).toContain("new ProtectedConformanceObjectStore(");
+    expect(source).toContain("new EncryptedProtectedObjectStore(");
+    expect(source).toContain("protectedConformanceObjectStore,");
   });
 });

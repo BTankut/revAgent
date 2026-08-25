@@ -8,8 +8,11 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   ConformanceCredentialAuthority,
   DigestFileConformanceObjectStore,
+  ProtectedConformanceObjectStore,
   SqliteConformanceProtocolStore,
 } from "./conformanceEphemeralAdapters.js";
+import { ConformanceProtectedObjectKeyProvider } from "./protectedObjectKeyProvider.js";
+import { EncryptedProtectedObjectStore } from "./protectedObjectStore.js";
 
 const fingerprint = `sha256:${"a".repeat(64)}`;
 const roots: string[] = [];
@@ -136,6 +139,95 @@ describe("conformance ephemeral adapters", () => {
     await expect(new DigestFileConformanceObjectStore(location).get({ tenantId: "tenant_a", storageKey: key })).resolves.toMatchObject({ ok: true, value: { contentType: "application/octet-stream" } });
     await expect(store.get({ tenantId: "tenant_b", storageKey: key })).resolves.toMatchObject({ ok: false });
     await expect(store.put({ tenantId: "tenant_a", storageKey: `sha256:${"0".repeat(64)}`, bytes, contentType: "application/octet-stream" })).resolves.toMatchObject({ ok: false });
+  });
+
+  it("keeps ordinary content addressing while C39 opaque protected keys are isolated and write-once", async () => {
+    const location = await root();
+    const ordinary = new DigestFileConformanceObjectStore(location);
+    const protectedStore = new ProtectedConformanceObjectStore(location);
+    const ordinaryBytes = Buffer.from("ordinary content-addressed bytes");
+    const ordinaryKey = `sha256:${createHash("sha256").update(ordinaryBytes).digest("hex")}`;
+    const opaqueKey = `sha256:${"0".repeat(64)}`;
+    const encrypted = Buffer.from("RAPO-not-a-content-address");
+    const changed = Buffer.from("RAPO-different-ciphertext");
+    await expect(ordinary.put({
+      tenantId: "tenant_a", storageKey: ordinaryKey, bytes: ordinaryBytes,
+      contentType: "application/json",
+    })).resolves.toMatchObject({ ok: true });
+    await expect(ordinary.put({
+      tenantId: "tenant_a", storageKey: opaqueKey, bytes: encrypted,
+      contentType: "application/vnd.revagent.c39.protected-object",
+    })).resolves.toMatchObject({ ok: false });
+    await expect(protectedStore.put({
+      tenantId: "tenant_a", storageKey: opaqueKey, bytes: encrypted,
+      contentType: "application/vnd.revagent.c39.protected-object",
+    })).resolves.toMatchObject({ ok: true });
+    await expect(protectedStore.put({
+      tenantId: "tenant_a", storageKey: opaqueKey, bytes: encrypted,
+      contentType: "application/vnd.revagent.c39.protected-object",
+    })).resolves.toMatchObject({ ok: true });
+    await expect(protectedStore.put({
+      tenantId: "tenant_a", storageKey: opaqueKey, bytes: changed,
+      contentType: "application/vnd.revagent.c39.protected-object",
+    })).resolves.toMatchObject({ ok: false });
+    await expect(protectedStore.get({ tenantId: "tenant_a", storageKey: opaqueKey }))
+      .resolves.toMatchObject({ ok: true, value: { bytes: encrypted } });
+    await expect(ordinary.get({ tenantId: "tenant_a", storageKey: opaqueKey }))
+      .resolves.toMatchObject({ ok: false });
+  });
+
+  it("refuses a protected-store junction component before any opaque-key write", async () => {
+    const location = await root();
+    const outside = await root();
+    const linked = path.join(location, "linked-root");
+    await symlink(outside, linked, "junction");
+    const store = new ProtectedConformanceObjectStore(linked);
+    await expect(store.put({
+      tenantId: "tenant_a",
+      storageKey: `sha256:${"0".repeat(64)}`,
+      bytes: Buffer.from("RAPO-protected"),
+      contentType: "application/vnd.revagent.c39.protected-object",
+    })).resolves.toMatchObject({ ok: false });
+  });
+
+  it("stores a C39 AES-GCM envelope under its opaque AAD key without changing ordinary digest validation", async () => {
+    const location = await root();
+    const keyId = "c39-conformance-test";
+    const keys = new ConformanceProtectedObjectKeyProvider(
+      keyId,
+      new Map([[keyId, Buffer.alloc(32, 7)]]),
+      Object.freeze({ kind: "conformance" as const, async listLiveKids() { return [keyId] as const; } }),
+    );
+    const protectedStore = new EncryptedProtectedObjectStore(
+      new ProtectedConformanceObjectStore(location),
+      keys,
+      { randomBytes: () => Buffer.alloc(12, 9) },
+    );
+    const storageKey = `sha256:${"0".repeat(64)}`;
+    const bytes = Buffer.from('{"encrypted":true}', "utf8");
+    const binding = Object.freeze({
+      tenantId: "tenant_a", userId: "user_a", principalKey: "tenant_a:user_a",
+      effectiveMcpSessionId: "mcp_a", sessionBindingId: "0197a3c2-0000-7000-8000-000000000001",
+      sessionBindingVersion: 1, rsid: "rsid_a",
+      recoveryInvocationId: "0197a3c2-0000-7000-8000-000000000002",
+      originInvocationId: "0197a3c2-0000-7000-8000-000000000003",
+      originResultDigest: `sha256:${"a".repeat(64)}`,
+      resultRefDigest: `sha256:${"b".repeat(64)}`,
+      bridgeSequence: 5, chunkIndex: 0,
+      plainDigest: `sha256:${createHash("sha256").update(bytes).digest("hex")}`,
+      plainLength: bytes.byteLength,
+      purpose: "dispatch_payload_recovery" as const,
+      expiresAtMs: Date.now() + 60_000,
+    });
+    await expect(protectedStore.putProtected({
+      storageKey, contentType: "application/json", bytes, binding,
+    })).resolves.toMatchObject({ ok: true });
+    await expect(protectedStore.getProtected({
+      storageKey, contentType: "application/json", binding,
+    })).resolves.toMatchObject({ ok: true, value: { bytes, contentType: "application/json" } });
+    await expect(new DigestFileConformanceObjectStore(location).get({
+      tenantId: "tenant_a", storageKey,
+    })).resolves.toMatchObject({ ok: false });
   });
 
   it("rejects a pre-created tenant directory and never exposes a sidecar-only interrupted write", async () => {

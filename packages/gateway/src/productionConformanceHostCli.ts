@@ -18,6 +18,7 @@ import type { IncomingMessage } from "node:http";
 import {
   ConformanceCredentialAuthority,
   DigestFileConformanceObjectStore,
+  ProtectedConformanceObjectStore,
   SqliteConformanceProtocolStore,
   createConformanceSupportingPorts,
 } from "./conformanceEphemeralAdapters.js";
@@ -716,6 +717,12 @@ export async function runProductionConformanceHostCli(args: readonly string[]): 
   // deliberately composed before ingress so carrier capability grants cannot
   // pass a readiness check against an unrelated object store.
   const objectStore = new DigestFileConformanceObjectStore(options.root);
+  // C39 envelopes are keyed by their authority-bound opaque storage key, not
+  // the ciphertext hash.  Keep that isolated from the ordinary content-
+  // addressed C38 conformance store and its `key === sha256(bytes)` rule.
+  const protectedConformanceObjectStore = new ProtectedConformanceObjectStore(
+    options.root,
+  );
   // This inventory reads the same durable recovery rows as production C2b;
   // only its wrapper/provider are conformance-only and have no config/env
   // selection path. The random process key is never emitted or persisted.
@@ -732,7 +739,7 @@ export async function runProductionConformanceHostCli(args: readonly string[]): 
     conformanceKeyInventory,
   );
   const protectedObjectStore = new EncryptedProtectedObjectStore(
-    objectStore,
+    protectedConformanceObjectStore,
     protectedKeys,
   );
   let authority: GatewayBridgeSessionAuthority | null = null;

@@ -1,5 +1,5 @@
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
-import { mkdir, open, readFile, rename, rm, lstat, realpath } from "node:fs/promises";
+import { link, mkdir, open, readFile, rename, rm, lstat, realpath } from "node:fs/promises";
 import path from "node:path";
 import Database from "better-sqlite3";
 
@@ -181,6 +181,208 @@ export class DigestFileConformanceObjectStore implements ObjectStorePort {
   async get(input: { readonly tenantId: string; readonly storageKey: string }): Promise<GatewayPortResult<{ readonly bytes: Uint8Array; readonly contentType: string }>> { const file = this.#file(input.tenantId, input.storageKey); if (file === null) return failure("conformance object key rejected") as GatewayPortResult<{ readonly bytes: Uint8Array; readonly contentType: string }>; try { await this.#open(); await this.#readableFile(file); const container = await readFile(file); if (container.subarray(0, 5).toString("utf8") !== "RACO1") throw new Error("container magic"); const headerLength = container.readUInt32BE(5); const header = JSON.parse(container.subarray(9, 9 + headerLength).toString("utf8")) as { v: number; digest: string; length: number; contentType: string }; const bytes = container.subarray(9 + headerLength); if (header.v !== 1 || header.digest !== input.storageKey || header.length !== bytes.byteLength || header.contentType.length === 0 || header.contentType.length > 256 || `sha256:${createHash("sha256").update(bytes).digest("hex")}` !== input.storageKey) throw new Error("container integrity"); return Object.freeze({ ok: true as const, value: { bytes, contentType: header.contentType } }); } catch { return failure("conformance object unavailable") as GatewayPortResult<{ readonly bytes: Uint8Array; readonly contentType: string }>; } }
   async head(input: { readonly tenantId: string; readonly storageKey: string }): Promise<GatewayPortResult<{ readonly byteSize: number }>> { const result = await this.get(input); return result.ok ? Object.freeze({ ok: true as const, value: { byteSize: result.value.bytes.byteLength } }) : result as GatewayPortResult<{ readonly byteSize: number }>; }
   async delete(input: { readonly tenantId: string; readonly storageKey: string }): Promise<GatewayPortResult<void>> { const file = this.#file(input.tenantId, input.storageKey); if (file === null) return failure("conformance object key rejected") as GatewayPortResult<void>; try { await this.#open(); await this.#readableFile(file); await rm(file); return Object.freeze({ ok: true as const, value: undefined }); } catch { return failure("conformance object unavailable") as GatewayPortResult<void>; } }
+}
+
+/**
+ * Isolated C39-only conformance backing store.  C39 object keys are opaque
+ * AAD-bound identifiers, so encrypted envelopes cannot satisfy the ordinary
+ * content-addressed store's `key === sha256(bytes)` invariant.  This adapter
+ * deliberately keeps the same filesystem confinement while making each
+ * opaque key write-once and byte-idempotent.
+ */
+export class ProtectedConformanceObjectStore implements ObjectStorePort {
+  readonly kind = "conformance" as const;
+  readonly #root: string;
+  #ready: Promise<void> | null = null;
+
+  public constructor(root: string) {
+    this.#root = path.resolve(root, "protected-objects");
+  }
+
+  #file(tenantId: string, storageKey: string): string | null {
+    if (!/^[a-zA-Z0-9_-]+$/u.test(tenantId) || !/^sha256:[0-9a-f]{64}$/u.test(storageKey)) return null;
+    return path.join(this.#root, tenantId, storageKey.slice(7));
+  }
+
+  async #assertNoLinkComponent(candidate: string): Promise<void> {
+    const parsed = path.parse(candidate);
+    let current = parsed.root;
+    for (const part of path.relative(parsed.root, candidate).split(path.sep).filter(Boolean)) {
+      current = path.join(current, part);
+      try {
+        if ((await lstat(current)).isSymbolicLink()) throw new Error("protected conformance path contains a link");
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+        throw error;
+      }
+    }
+  }
+
+  async #assertContained(candidate: string): Promise<void> {
+    const root = await realpath(this.#root);
+    const resolved = await realpath(candidate);
+    const relative = path.relative(root, resolved);
+    if (relative.startsWith("..") || path.isAbsolute(relative)) throw new Error("protected conformance object escaped root");
+  }
+
+  async #open(): Promise<void> {
+    if (this.#ready !== null) return this.#ready;
+    this.#ready = (async () => {
+      await this.#assertNoLinkComponent(path.dirname(this.#root));
+      await mkdir(path.dirname(this.#root), { recursive: true });
+      const marker = path.join(this.#root, ".protected-conformance-owner-v1");
+      try {
+        await mkdir(this.#root, { recursive: false, mode: 0o700 });
+        await this.#writeAtomic(marker, Buffer.from("revagent-protected-conformance-owner/v1", "utf8"));
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+        if ((await lstat(this.#root)).isSymbolicLink()) throw new Error("protected conformance root is a link");
+        if ((await readFile(marker, "utf8")) !== "revagent-protected-conformance-owner/v1") throw new Error("protected conformance root is unowned");
+      }
+    })();
+    return this.#ready;
+  }
+
+  async #ensureTenant(tenantId: string): Promise<void> {
+    await this.#open();
+    const tenant = path.join(this.#root, tenantId);
+    try { await mkdir(tenant, { recursive: false, mode: 0o700 }); } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    }
+    if ((await lstat(tenant)).isSymbolicLink()) throw new Error("protected conformance tenant directory is a link");
+    await this.#assertContained(tenant);
+  }
+
+  async #readableFile(file: string): Promise<void> {
+    if ((await lstat(file)).isSymbolicLink()) throw new Error("protected conformance object is a link");
+    await this.#assertContained(file);
+  }
+
+  async #writeAtomic(file: string, bytes: Uint8Array): Promise<void> {
+    const temporary = path.join(path.dirname(file), `.${path.basename(file)}.${randomBytes(12).toString("hex")}.tmp`);
+    const handle = await open(temporary, "wx", 0o600);
+    try { await handle.writeFile(bytes); await handle.sync(); } finally { await handle.close(); }
+    await rename(temporary, file);
+  }
+
+  async #writeExclusive(file: string, bytes: Uint8Array): Promise<boolean> {
+    const temporary = path.join(path.dirname(file), `.${path.basename(file)}.${randomBytes(12).toString("hex")}.tmp`);
+    const handle = await open(temporary, "wx", 0o600);
+    try {
+      await handle.writeFile(bytes);
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    try {
+      await link(temporary, file);
+      return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
+      throw error;
+    } finally {
+      await rm(temporary, { force: true });
+    }
+  }
+
+  async #readContainer(
+    tenantId: string,
+    storageKey: string,
+  ): Promise<{ readonly bytes: Uint8Array; readonly contentType: string } | null> {
+    const file = this.#file(tenantId, storageKey);
+    if (file === null) return null;
+    try {
+      await this.#open();
+      await this.#readableFile(file);
+      const container = await readFile(file);
+      if (container.subarray(0, 5).toString("utf8") !== "RACP1") return null;
+      const headerLength = container.readUInt32BE(5);
+      const header = JSON.parse(container.subarray(9, 9 + headerLength).toString("utf8")) as {
+        readonly v: number;
+        readonly key: string;
+        readonly length: number;
+        readonly contentType: string;
+      };
+      const bytes = container.subarray(9 + headerLength);
+      if (
+        header.v !== 1 || header.key !== storageKey || header.length !== bytes.byteLength ||
+        header.contentType !== "application/vnd.revagent.c39.protected-object"
+      ) return null;
+      return Object.freeze({ bytes, contentType: header.contentType });
+    } catch {
+      return null;
+    }
+  }
+
+  async put(input: {
+    readonly tenantId: string;
+    readonly storageKey: string;
+    readonly bytes: Uint8Array;
+    readonly contentType: string;
+  }): Promise<GatewayPortResult<{ readonly storageKey: string }>> {
+    const file = this.#file(input.tenantId, input.storageKey);
+    if (file === null || input.contentType !== "application/vnd.revagent.c39.protected-object") {
+      return failure("protected conformance object rejected") as GatewayPortResult<{ readonly storageKey: string }>;
+    }
+    try {
+      await this.#ensureTenant(input.tenantId);
+      const header = Buffer.from(JSON.stringify({ v: 1, key: input.storageKey, length: input.bytes.byteLength, contentType: input.contentType }), "utf8");
+      const container = Buffer.concat([Buffer.from("RACP1"), Buffer.from(Uint32Array.of(header.byteLength).buffer).swap32(), header, input.bytes]);
+      if (await this.#writeExclusive(file, container)) {
+        return Object.freeze({ ok: true as const, value: { storageKey: input.storageKey } });
+      }
+      const prior = await this.#readContainer(input.tenantId, input.storageKey);
+      if (prior === null || prior.contentType !== input.contentType || !Buffer.from(prior.bytes).equals(input.bytes)) {
+        return failure("protected conformance object write refused") as GatewayPortResult<{ readonly storageKey: string }>;
+      }
+      return Object.freeze({ ok: true as const, value: { storageKey: input.storageKey } });
+    } catch {
+      return failure("protected conformance object write refused") as GatewayPortResult<{ readonly storageKey: string }>;
+    }
+  }
+
+  async get(input: { readonly tenantId: string; readonly storageKey: string }): Promise<GatewayPortResult<{ readonly bytes: Uint8Array; readonly contentType: string }>> {
+    const value = await this.#readContainer(input.tenantId, input.storageKey);
+    return value === null
+      ? failure("protected conformance object unavailable") as GatewayPortResult<{ readonly bytes: Uint8Array; readonly contentType: string }>
+      : Object.freeze({ ok: true as const, value });
+  }
+
+  async getOptional(input: { readonly tenantId: string; readonly storageKey: string }): Promise<GatewayPortResult<{ readonly bytes: Uint8Array; readonly contentType: string } | null>> {
+    const file = this.#file(input.tenantId, input.storageKey);
+    if (file === null) return failure("protected conformance object unavailable") as GatewayPortResult<{ readonly bytes: Uint8Array; readonly contentType: string } | null>;
+    try {
+      await this.#open();
+      await this.#readableFile(file);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return Object.freeze({ ok: true as const, value: null });
+      return failure("protected conformance object unavailable") as GatewayPortResult<{ readonly bytes: Uint8Array; readonly contentType: string } | null>;
+    }
+    const value = await this.#readContainer(input.tenantId, input.storageKey);
+    return value === null
+      ? failure("protected conformance object unavailable") as GatewayPortResult<{ readonly bytes: Uint8Array; readonly contentType: string } | null>
+      : Object.freeze({ ok: true as const, value });
+  }
+
+  async head(input: { readonly tenantId: string; readonly storageKey: string }): Promise<GatewayPortResult<{ readonly byteSize: number }>> {
+    const result = await this.get(input);
+    return result.ok
+      ? Object.freeze({ ok: true as const, value: { byteSize: result.value.bytes.byteLength } })
+      : result as GatewayPortResult<{ readonly byteSize: number }>;
+  }
+
+  async delete(input: { readonly tenantId: string; readonly storageKey: string }): Promise<GatewayPortResult<void>> {
+    const file = this.#file(input.tenantId, input.storageKey);
+    if (file === null) return failure("protected conformance object unavailable") as GatewayPortResult<void>;
+    try {
+      await this.#open();
+      await this.#readableFile(file);
+      await rm(file);
+      return Object.freeze({ ok: true as const, value: undefined });
+    } catch {
+      return failure("protected conformance object unavailable") as GatewayPortResult<void>;
+    }
+  }
 }
 
 export function createConformanceSupportingPorts(): { readonly entitlement: EntitlementPort; readonly events: GatewayEventSink; readonly guardrails: GuardrailPort } {
