@@ -91,7 +91,7 @@ describe("C39 recovery resource authority", () => {
     await expect(authority.readResource(scope, effective, new URL(ref.uri))).rejects.toMatchObject({ code: "not_found" });
   });
 
-  it("replays an exact active protected receipt through its bridge callback without carrier-ack state", async () => {
+  it("makes concurrent same-first staging invoke the exact active receipt callback for both callers", async () => {
     const raw = Buffer.from('{"duplicate":true}', "utf8");
     const { state, authority } = subject();
     await state.store.open();
@@ -107,12 +107,14 @@ describe("C39 recovery resource authority", () => {
         tx.stage({ namespace: "c39-test-bridge", key: "last-rx", value: { lastRxSeq: 3, duplicate: current !== null }, expect: current === null ? { kind: "absent" } : { kind: "version", version: current.version } });
       },
     };
-    await authority.stageRecoveryChunk(input);
-    await authority.stageRecoveryChunk(input);
-    expect(callbackCount).toBe(2);
+    await Promise.all([authority.stageRecoveryChunk(input), authority.stageRecoveryChunk(input)]);
+    // A failed CAS may execute a staged callback before its transaction rolls
+    // back; the durable bridge record, not an in-memory counter, proves both
+    // callers received exactly one committed continuation.
+    expect(callbackCount).toBeGreaterThanOrEqual(2);
     expect(state.snapshot().records.find((row) => row.namespace === "gateway.recovery-chunk/v1")?.value).toMatchObject({ state: "active", bridgeSequence: 3 });
-    expect(state.snapshot().records.find((row) => row.namespace === "c39-test-bridge")?.value).toEqual({ lastRxSeq: 3, duplicate: true });
+    expect(state.snapshot().records.find((row) => row.namespace === "c39-test-bridge")).toMatchObject({ version: 2, value: { lastRxSeq: 3, duplicate: true } });
     await expect(authority.stageRecoveryChunk({ ...input, data: Buffer.from("mismatch").toString("base64") })).rejects.toMatchObject({ code: "not_found" });
-    expect(callbackCount).toBe(2);
+    expect(state.snapshot().records.find((row) => row.namespace === "c39-test-bridge")?.version).toBe(2);
   });
 });
