@@ -36,7 +36,7 @@ const MAX_REAL_TRIO_RECOVERY_CARRIER_OBSERVATIONS = 64;
  * stderr, and its cursor is a decimal BigInt rather than a wrapping array
  * index.
  */
-export const MAX_REAL_TRIO_DOCUMENT_CONTEXT_ROWS = 16;
+export const MAX_REAL_TRIO_DOCUMENT_CONTEXT_ROWS = 64;
 export const MAX_REAL_TRIO_DOCUMENT_CONTEXT_ROW_BYTES = 2 * 1024;
 export const MAX_REAL_TRIO_CONTROL_BYTES = 64 * 1024;
 export const MAX_REAL_TRIO_CONTROL_TIMEOUT_MS = 15_000;

@@ -2092,7 +2092,7 @@ export async function startRealTrioRuntimeFixture(
           const candidateSecondSnapshot = supervisor.readDocumentContextSnapshot();
           const candidateBaseline = gatewayAuditBaseline(candidateFirstAudit);
           const secondBaseline = gatewayAuditBaseline(candidateSecondAudit);
-          const candidateSeed = preControlWatcherSeedFromSnapshot(candidateFirstSnapshot);
+          const candidateSeed = preControlWatcherSeedFromSnapshot(candidateSecondSnapshot);
           const sameBaseline = candidateBaseline !== null && secondBaseline !== null &&
             candidateBaseline.processEpoch === secondBaseline.processEpoch &&
             candidateBaseline.acceptedObservationOrdinal === secondBaseline.acceptedObservationOrdinal &&
