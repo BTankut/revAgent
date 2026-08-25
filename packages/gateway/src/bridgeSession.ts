@@ -10582,6 +10582,14 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
           ...record,
           sequence: accepted.state,
           pending: null,
+          // D2 is an in-memory, same-process resend exception.  Its durable
+          // claim is cleanup-only after the exact origin terminal; retaining
+          // it would falsely fence the later C39 recovery carrier.
+          d2ConformanceOriginResend:
+            record.d2ConformanceOriginResend?.originInvocationId ===
+              original.correlationId
+              ? null
+              : record.d2ConformanceOriginResend,
           evidence: [
             ...record.evidence.filter((candidate) => candidate.envelopeDigest !== record.pending!.envelopeDigest),
             {

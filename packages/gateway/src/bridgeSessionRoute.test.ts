@@ -4,7 +4,9 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import {
+  canonicalizeJson,
   makeParamsDigest,
+  type JsonValue,
   type DocContextUpdateEnvelope,
   type HelloEnvelope,
   type RbpEnvelope,
@@ -18,6 +20,8 @@ import {
   type IdentityPort,
 } from "./authContext.js";
 import {
+  GATEWAY_RBP_SESSION_CUTOVER_V2_NAMESPACE,
+  GATEWAY_RBP_SESSION_V2_NAMESPACE,
   GatewayBridgeSessionAuthority,
   GatewayRbpFault,
   TEST_RSID_CARRIER_RECEIVE_TAIL_OBSERVER,
@@ -45,6 +49,57 @@ const DEVICE_TOKEN = "device-token-route";
 
 let idOffset = 0;
 const id = (): string => gatewayUuidV7(Date.now() + idOffset++);
+
+const normalizedDigest = (value: unknown): `sha256:${string}` =>
+  `sha256:${createHash("sha256").update(canonicalizeJson(value as JsonValue)).digest("hex")}`;
+
+async function injectDurableD2Claim(
+  fixture: ReturnType<typeof createRestartableTestStore>,
+  rsid: string,
+  originInvocationId: string,
+): Promise<void> {
+  const root = fixture.snapshot().records.find((row) =>
+    row.namespace === GATEWAY_RBP_SESSION_V2_NAMESPACE && row.key === rsid,
+  );
+  const marker = fixture.snapshot().records.find((row) =>
+    row.namespace === GATEWAY_RBP_SESSION_CUTOVER_V2_NAMESPACE && row.key === rsid,
+  );
+  if (root === undefined || marker === undefined) throw new Error("normalized fixture session is missing");
+  const nextRoot = structuredClone(root.value) as {
+    rootVersion: number;
+    sequence: Record<string, unknown>;
+  };
+  nextRoot.rootVersion += 1;
+  nextRoot.sequence.d2ConformanceOriginResend = {
+    version: 1,
+    state: "claimed",
+    originInvocationId,
+    originEnvelopeDigest: `sha256:${"a".repeat(64)}`,
+    originOuterSequence: 1,
+    resendEnvelopeDigest: `sha256:${"b".repeat(64)}`,
+    claimedAtMs: 1,
+  };
+  const nextMarker = {
+    ...(marker.value as Record<string, unknown>),
+    rootVersion: nextRoot.rootVersion,
+    rootDigest: normalizedDigest(nextRoot),
+  };
+  const staged = await fixture.store.transact({ tenantId: TENANT_ID }, (tx) => {
+    tx.stage({
+      namespace: GATEWAY_RBP_SESSION_V2_NAMESPACE,
+      key: rsid,
+      value: nextRoot as unknown as GatewayJsonObject,
+      expect: { kind: "version", version: root.version },
+    });
+    tx.stage({
+      namespace: GATEWAY_RBP_SESSION_CUTOVER_V2_NAMESPACE,
+      key: rsid,
+      value: nextMarker as GatewayJsonObject,
+      expect: { kind: "version", version: marker.version },
+    });
+  });
+  if (!staged.ok) throw new Error(staged.message);
+}
 
 function identity(capabilities: {
   readonly connectionCapabilities?: readonly string[];
@@ -453,6 +508,37 @@ describe("GatewayBridgeSessionAuthority live document routing", () => {
     await emittedInvoke(session.channel);
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
     expect(calls).toEqual([{ toolName: "conformance.fixture.c39_multifile", executorMethod: "fixture_multi_file_output", mutating: false }]);
+  });
+
+  it("atomically clears a matched durable D2 claim when its exact origin terminal commits", async () => {
+    const fixture = createRestartableTestStore();
+    const created = new GatewayBridgeSessionAuthority(fixture.store, identity());
+    await created.open(); authorities.push(created);
+    const session = await register(created, "d2-terminal-clear");
+    await created.receive(session.connectionId, contextUpdate({
+      rsid: session.rsid, seq: 1, activeDocument: "document-carrier",
+      documents: [document("document-carrier", true)],
+    }));
+    const originInvocationId = id();
+    const outcome = created.createExecutor().execute(
+      bridgeRequest(session.rsid, originInvocationId),
+    );
+    const invoke = await emittedInvokeFor(session.channel, originInvocationId);
+    await injectDurableD2Claim(fixture, session.rsid, originInvocationId);
+    await created.receive(session.connectionId, {
+      v: 1, type: "result", id: id(), rsid: session.rsid, seq: 2,
+      ack: invoke.seq, ts: new Date().toISOString(), payload: {
+        kind: "invocation", invocation_id: originInvocationId,
+        status: "completed", replayed: false, result: { terminal: true },
+        metrics: { execute_ms: 1, request_bytes: 1, response_bytes: 1, framing: "length-prefixed" },
+      },
+    });
+    await expect(outcome).resolves.toMatchObject({ state: "completed" });
+    const root = fixture.snapshot().records.find((row) =>
+      row.namespace === GATEWAY_RBP_SESSION_V2_NAMESPACE && row.key === session.rsid,
+    );
+    expect((root?.value as { sequence?: Record<string, unknown> }).sequence)
+      .toMatchObject({ d2ConformanceOriginResend: null });
   });
 
   it("separates connection and session grants and quarantines unavailable result capabilities", async () => {
