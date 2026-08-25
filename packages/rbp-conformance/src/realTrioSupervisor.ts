@@ -557,7 +557,7 @@ export class RealTrioDocumentContextCursorJournal {
         line: retained.line,
         at: retained.at,
       });
-      if (!this.reducer.accept(row, this.generation)) this.invalidateHistory("malformed");
+      if (!this.reducer.accept(row)) this.invalidateHistory("malformed");
       this.restarted = false;
       this.rows.push(row);
       const settled = this.reducer.settledSeed(this.generation);

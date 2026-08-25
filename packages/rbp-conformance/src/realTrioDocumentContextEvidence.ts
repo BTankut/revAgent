@@ -39,7 +39,7 @@ export interface ParsedDocumentContextCandidate extends RealTrioDocumentContextC
 }
 
 type StrictDocumentObservation = Readonly<{
-  readonly stage: "probe" | "snapshot" | "queue" | "send" | "ack";
+  readonly stage: "probe" | "snapshot" | "queue" | "send" | "ack" | "idle";
   readonly rsidHash: `sha256:${string}`;
   readonly sequence: number | null;
   readonly contextDigest: string | null;
@@ -75,6 +75,7 @@ function strictDocumentObservation(row: RealTrioDocumentContextCursorRow): Stric
   if (!isSha256(value.rsidHash) || !(value.sequence === null ||
       (Number.isSafeInteger(value.sequence) && Number(value.sequence) >= 1))) return null;
   const sequence = value.sequence === null ? null : Number(value.sequence);
+  const hasContextDigest = value.contextDigest !== null && value.contextDigest !== undefined;
   const contextDigest = typeof value.contextDigest === "string" && /^[0-9a-f]{64}$/u.test(value.contextDigest)
     ? value.contextDigest : null;
   const hasRevision = value.sourceRevision !== null && value.sourceRevision !== undefined;
@@ -94,6 +95,11 @@ function strictDocumentObservation(row: RealTrioDocumentContextCursorRow): Stric
     if ((value.stage === "snapshot" && sequence !== null) ||
         (value.stage !== "snapshot" && sequence === null) || contextDigest === null || source === null) return null;
     return Object.freeze({ stage: value.stage, rsidHash: value.rsidHash, sequence, contextDigest, source });
+  }
+  if (value.stage === "snapshot" && value.outcome === "not_ready") {
+    if (sequence !== null || hasContextDigest || hasRevision || hasIncarnation) return null;
+    return Object.freeze({ stage: "idle", rsidHash: value.rsidHash, sequence: null,
+      contextDigest: null, source: null });
   }
   return null;
 }
@@ -121,7 +127,7 @@ export function documentContextObservationInvalidReason(line: string): RealTrioC
   if (!isSha256(value.rsidHash)) return "rsid_mismatch";
   if (!(value.sequence === null || (Number.isSafeInteger(value.sequence) && Number(value.sequence) >= 1))) return "seq_mismatch";
   const known = (value.stage === "probe" && value.outcome === "started") ||
-    (value.stage === "snapshot" && value.outcome === "ready") ||
+    (value.stage === "snapshot" && (value.outcome === "ready" || value.outcome === "not_ready")) ||
     (value.stage === "queue" && value.outcome === "durably_queued") ||
     (value.stage === "send" && value.outcome === "sent") ||
     (value.stage === "ack" && value.outcome === "durably_acknowledged");
@@ -129,6 +135,11 @@ export function documentContextObservationInvalidReason(line: string): RealTrioC
   const hasRevision = value.sourceRevision !== null && value.sourceRevision !== undefined;
   const hasIncarnation = value.cacheIncarnationDigest !== null && value.cacheIncarnationDigest !== undefined;
   if (hasRevision !== hasIncarnation || (hasRevision && documentContextSourcePair(value) === null)) return "source_mismatch";
+  if (value.stage === "snapshot" && value.outcome === "not_ready") {
+    if (value.sequence !== null) return "seq_mismatch";
+    if ((value.contextDigest !== null && value.contextDigest !== undefined) || hasRevision || hasIncarnation) return "source_mismatch";
+    return "malformed";
+  }
   if ((value.stage === "snapshot" && (value.sequence !== null || typeof value.contextDigest !== "string" || !/^[0-9a-f]{64}$/u.test(value.contextDigest) || !hasRevision)) ||
       ((value.stage === "queue" || value.stage === "send") && (value.sequence === null || typeof value.contextDigest !== "string" || !/^[0-9a-f]{64}$/u.test(value.contextDigest) || !hasRevision))) return "source_mismatch";
   return "malformed";
@@ -192,11 +203,23 @@ export function parseDocumentContextGrammar(input: {
     if (observation === null) return null;
     if (observation.stage === "probe") { if (!openProbe(observation)) return null; continue; }
     if (watcher === null || watcher.rsidHash !== observation.rsidHash) return null;
+    if (observation.stage === "idle") {
+      if (watcher.cycle !== null) return null;
+      continue;
+    }
     if (observation.stage === "ack") {
-      const sent = watcher.sent.get(observation.sequence!);
-      if (sent === undefined || (watcher.lastAcknowledgedSequence !== null && observation.sequence! <= watcher.lastAcknowledgedSequence)) return null;
-      watcher.lastAcknowledgedSequence = observation.sequence!;
-      acknowledgements.set(candidateKey(watcher.ordinal, observation.rsidHash, observation.sequence!), index);
+      const sequence = observation.sequence!;
+      const sent = watcher.sent.get(sequence);
+      if (sent === undefined) {
+        if (watcher.cycle !== null || watcher.lastSentSequence !== watcher.lastAcknowledgedSequence ||
+            (watcher.lastAcknowledgedSequence !== null && sequence <= watcher.lastAcknowledgedSequence)) return null;
+        watcher.lastSentSequence = sequence;
+        watcher.lastAcknowledgedSequence = sequence;
+        continue;
+      }
+      if (watcher.lastAcknowledgedSequence !== null && sequence <= watcher.lastAcknowledgedSequence) return null;
+      watcher.lastAcknowledgedSequence = sequence;
+      acknowledgements.set(candidateKey(watcher.ordinal, observation.rsidHash, sequence), index);
       continue;
     }
     if (observation.stage === "snapshot") {
@@ -268,7 +291,7 @@ export class DocumentContextHistoryReducer {
 
   public invalidate(reason: RealTrioCompactSeedReason): void { this.fail(reason); }
 
-  public accept(row: RealTrioDocumentContextCursorRow, generation: number): boolean {
+  public accept(row: RealTrioDocumentContextCursorRow): boolean {
     if (this.invalid || !/^[1-9][0-9]*$/u.test(row.cursor) || BigInt(row.cursor) !== this.lastCursor + 1n) return this.fail("gap");
     this.lastCursor = BigInt(row.cursor);
     const observation = strictDocumentObservation(row);
@@ -281,10 +304,20 @@ export class DocumentContextHistoryReducer {
       return true;
     }
     if (this.rsidHash === null || this.rsidHash !== observation.rsidHash) return this.fail("rsid_mismatch");
+    if (observation.stage === "idle") {
+      if (this.cycle !== null) return this.fail("open_cycle");
+      return true;
+    }
     if (observation.stage === "ack") {
-      if (!this.unacknowledged.has(observation.sequence!) ||
-          (this.lastAck !== null && observation.sequence! <= this.lastAck)) return this.fail("ack_unbacked");
-      this.unacknowledged.delete(observation.sequence!); this.lastAck = observation.sequence!;
+      const sequence = observation.sequence!;
+      if (this.unacknowledged.has(sequence)) {
+        if (this.lastAck !== null && sequence <= this.lastAck) return this.fail("ack_unbacked");
+        this.unacknowledged.delete(sequence); this.lastAck = sequence;
+        return true;
+      }
+      if (this.cycle !== null || this.unacknowledged.size !== 0 || this.lastSent !== this.lastAck ||
+          (this.lastAck !== null && sequence <= this.lastAck)) return this.fail("ack_unbacked");
+      this.lastSent = sequence; this.lastAck = sequence;
       return true;
     }
     if (observation.stage === "snapshot") {

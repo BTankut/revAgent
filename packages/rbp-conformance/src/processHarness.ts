@@ -836,6 +836,7 @@ export class StrictReadyProcess {
     _signal: NodeJS.Signals = "SIGTERM",
     timeoutMs = 10_000,
   ): Promise<{ stoppedAt: string; exitCode: number; killEscalated: boolean }> {
+    void _signal;
     if (this.#stopPromise !== null) return this.#stopPromise;
     this.#stopPromise = this.#stopWithHandshake(timeoutMs);
     return this.#stopPromise;

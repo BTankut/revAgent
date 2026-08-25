@@ -45,7 +45,9 @@ describe("WP-12 real-trio fixture document route gate", () => {
   const cursorRow = (cursor: string, stage: string, outcome: string, sequence: number | null,
     hash = `sha256:${"a".repeat(64)}`) => ({ cursor, at: "2026-08-24T00:00:01.000Z", line: JSON.stringify({
       event: "bridge.document_context_observation", stage, outcome, rsidHash: hash, sequence,
-      ...(["snapshot", "queue", "send"].includes(stage) ? {
+      ...(((stage === "snapshot" && outcome === "ready") ||
+          (stage === "queue" && outcome === "durably_queued") ||
+          (stage === "send" && outcome === "sent")) ? {
         contextDigest: "d".repeat(64), sourceRevision: 1,
         cacheIncarnationDigest: `sha256:${"c".repeat(64)}`,
       } : {}),
@@ -510,6 +512,18 @@ describe("WP-12 real-trio fixture document route gate", () => {
     expect(preControlWatcherSeedFromSnapshot(settled)).toEqual({
       generation: 3, highWaterCursor: "5", watcherOrdinal: 1, rsidHash: hash, lastSentSequence: 1, lastAckSequence: 1,
     });
+    const replayBaseline = snapshot([
+      row(1, "probe", "started", null),
+      row(2, "ack", "durably_acknowledged", 1),
+      row(3, "ack", "durably_acknowledged", 2),
+      row(4, "snapshot", "not_ready", null),
+      row(5, "probe", "started", null),
+      row(6, "snapshot", "not_ready", null),
+    ]);
+    expect(preControlWatcherSeedFromSnapshot(replayBaseline)).toEqual({
+      generation: 3, highWaterCursor: "6", watcherOrdinal: 2, rsidHash: hash,
+      lastSentSequence: null, lastAckSequence: null,
+    });
     // The latest deterministic watcher is the only carried identity; its
     // earlier watcher is complete and has no influence on a later control.
     expect(preControlWatcherSeedFromSnapshot(snapshot([
@@ -948,7 +962,8 @@ describe("WP-12 real-trio fixture document route gate", () => {
     expect(hasGatewayAcceptedDocumentContextRoute(acceptedHash, expected, baseline)).toBe(true);
     expect(acceptedHash.documentContextUpdates[0]).not.toHaveProperty("rsid");
     expect(acceptedHash.documentContextUpdates[0]).not.toHaveProperty("rsidDigest");
-    const [{ rsidHash: _removedRsidHash, ...legacyOnly }] = acceptedHash.documentContextUpdates;
+    const [{ rsidHash: removedRsidHash, ...legacyOnly }] = acceptedHash.documentContextUpdates;
+    expect(removedRsidHash).toBe(expected.rsidHash);
     expect(hasGatewayAcceptedDocumentContextRoute({
       ...acceptedHash,
       documentContextUpdates: [{ ...legacyOnly, rsidDigest: expected.rsidHash }],

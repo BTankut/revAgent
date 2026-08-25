@@ -161,6 +161,27 @@ describe("WP-12 C38 monotonic document-context cursor journal", () => {
     expect(restarted.highWaterCursor).toBe("0");
   });
 
+  it("seeds a fresh watcher after monotonic replay ACKs and value-free cache-not-ready polls", () => {
+    const journal = new RealTrioDocumentContextCursorJournal();
+    const records = [
+      cursorObservation("probe", "started", null, 1),
+      cursorObservation("ack", "durably_acknowledged", 1, 2),
+      cursorObservation("ack", "durably_acknowledged", 2, 3),
+      cursorObservation("snapshot", "not_ready", null, 4),
+      cursorObservation("probe", "started", null, 5),
+      cursorObservation("snapshot", "not_ready", null, 6),
+    ];
+    const snapshot = journal.snapshot(records);
+    expect(snapshot).toMatchObject({
+      generation: 1, lowWaterCursor: "1", highWaterCursor: "6",
+      seedStatus: "valid", seedReason: null,
+      settledWatcherSeed: {
+        generation: 1, highWaterCursor: "6", watcherOrdinal: 2,
+        lastSentSequence: null, lastAckSequence: null,
+      },
+    });
+  });
+
   it("reports only fixed compact-seed reason codes without changing seed admission", () => {
     const journal = new RealTrioDocumentContextCursorJournal();
     expect(journal.snapshot([])).toMatchObject({ seedStatus: "pending", seedReason: "no_probe" });

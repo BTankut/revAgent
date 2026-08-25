@@ -1008,7 +1008,7 @@ interface StrictDocumentContextCandidate extends ParsedDocumentContextCandidate 
 }
 
 type StrictDocumentObservation = Readonly<{
-  readonly stage: "probe" | "snapshot" | "queue" | "send" | "ack";
+  readonly stage: "probe" | "snapshot" | "queue" | "send" | "ack" | "idle";
   readonly rsidHash: `sha256:${string}`;
   readonly sequence: number | null;
   readonly contextDigest: string | null;
@@ -1038,6 +1038,7 @@ function strictDocumentObservation(row: RealTrioDocumentContextCursorRow): Stric
   if (!isSha256(value.rsidHash) || !(value.sequence === null ||
       (Number.isSafeInteger(value.sequence) && Number(value.sequence) >= 1))) return null;
   const sequence = value.sequence === null ? null : Number(value.sequence);
+  const hasContextDigest = value.contextDigest !== null && value.contextDigest !== undefined;
   const context = typeof value.contextDigest === "string" && /^[0-9a-f]{64}$/u.test(value.contextDigest)
     ? value.contextDigest
     : null;
@@ -1060,6 +1061,13 @@ function strictDocumentObservation(row: RealTrioDocumentContextCursorRow): Stric
     if ((value.stage === "snapshot" && sequence !== null) ||
         (value.stage !== "snapshot" && sequence === null) || context === null || source === null) return null;
     return Object.freeze({ stage: value.stage, rsidHash: value.rsidHash, sequence, contextDigest: context, source });
+  }
+  // A warming cache is an explicit value-free poll result. It can separate
+  // settled watcher epochs, but it cannot carry or complete a route cycle.
+  if (value.stage === "snapshot" && value.outcome === "not_ready") {
+    if (sequence !== null || hasContextDigest || hasRevision || hasIncarnation) return null;
+    return Object.freeze({ stage: "idle", rsidHash: value.rsidHash, sequence: null,
+      contextDigest: null, source: null });
   }
   // `failure`, a malformed stage, and a future/unknown document event are all
   // terminal for this retained grammar.  They must never be compressed away.
@@ -1166,12 +1174,27 @@ function parseDocumentContextGrammar(input: {
     }
     if (watcher === null || watcher.rsidHash !== observation.rsidHash) return null;
 
+    if (observation.stage === "idle") {
+      if (watcher.cycle !== null) return null;
+      continue;
+    }
+
     if (observation.stage === "ack") {
-      const sent = watcher.sent.get(observation.sequence!);
-      if (sent === undefined || (watcher.lastAcknowledgedSequence !== null &&
-          observation.sequence! <= watcher.lastAcknowledgedSequence)) return null;
-      watcher.lastAcknowledgedSequence = observation.sequence!;
-      acknowledgements.set(candidateKey(watcher.ordinal, observation.rsidHash, observation.sequence!), index);
+      const sequence = observation.sequence!;
+      const sent = watcher.sent.get(sequence);
+      if (sent === undefined) {
+        // The observer can attach after durable journal sends already exist.
+        // A monotonic ACK with no locally observed candidate establishes only
+        // a value-free settled sequence baseline; it never creates a route.
+        if (watcher.cycle !== null || watcher.lastSentSequence !== watcher.lastAcknowledgedSequence ||
+            (watcher.lastAcknowledgedSequence !== null && sequence <= watcher.lastAcknowledgedSequence)) return null;
+        watcher.lastSentSequence = sequence;
+        watcher.lastAcknowledgedSequence = sequence;
+        continue;
+      }
+      if (watcher.lastAcknowledgedSequence !== null && sequence <= watcher.lastAcknowledgedSequence) return null;
+      watcher.lastAcknowledgedSequence = sequence;
+      acknowledgements.set(candidateKey(watcher.ordinal, observation.rsidHash, sequence), index);
       continue;
     }
 
