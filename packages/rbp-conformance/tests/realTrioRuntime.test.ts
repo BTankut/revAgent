@@ -544,6 +544,10 @@ describe("C39 worker ACK-order diagnostics", () => {
     expect(c39WorkerRecoveryTraceState([
       ...fullAcknowledged,
       observation("materialized", 5, 7, "a"), observation("restart_resend", 5, 8, "a"),
+    ], expectedSequences)).toEqual({ state: "invalid", diagnostic: "ack_before_write" });
+    expect(c39WorkerRecoveryTraceState([
+      materialized(), observation("write", 5, 2, "a"), observation("materialized", 5, 3, "a"), observation("restart_resend", 5, 4, "a"),
+      observation("ack", 5, 5, "a"), observation("materialized", 6, 6, "b"), observation("write", 6, 7, "b"), observation("ack", 6, 8, "b"),
     ], expectedSequences)).toEqual({ state: "exact" });
     expect(c39WorkerRecoveryTraceState([
       observation("write", 5, 1, "a"), observation("materialized", 5, 2, "a"), observation("ack", 5, 3, "a"),
@@ -1041,10 +1045,11 @@ function c39WorkerRecoveryTraceState(
       return Object.freeze({ state: "pending" });
     }
     if (acked.length !== 1) return invalid("duplicate_ack");
-    const finalWrite = sent.at(-1)!;
+    const latestEmission = worker.filter((entry) => (entry.phase === "write" || entry.phase === "restart_resend") &&
+      entry.sequence === sequence).at(-1)!;
     const acknowledgement = acked[0]!;
-    if (acknowledgement.ordinal <= finalWrite.ordinal) return invalid("ack_before_write");
-    if (acknowledgement.outerDigest !== finalWrite.outerDigest) return invalid("outer_digest_mismatch");
+    if (acknowledgement.ordinal <= latestEmission.ordinal) return invalid("ack_before_write");
+    if (acknowledgement.outerDigest !== latestEmission.outerDigest) return invalid("outer_digest_mismatch");
     if (acknowledgement.ordinal <= previousAcknowledgementOrdinal) return invalid("other");
     previousAcknowledgementOrdinal = acknowledgement.ordinal;
   }
