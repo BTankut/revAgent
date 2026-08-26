@@ -224,6 +224,11 @@ function c39AuditHash(domain: string, value: string): `sha256:${string}` {
   return `sha256:${createHash("sha256").update(`revagent/c39-audit/${domain}\0`, "utf8").update(value, "utf8").digest("hex")}`;
 }
 
+/** Fixed Bridge observation identity; this joins the value-free carrier row. */
+function c39CarrierObservationRecoveryHash(value: string): `sha256:${string}` {
+  return `sha256:${createHash("sha256").update("revagent/c39-carrier-observation/v1\0", "utf8").update(value, "utf8").digest("hex")}`;
+}
+
 /**
  * Fixed, value-free C39 projection.  It is deliberately all-or-nothing per
  * origin: malformed, duplicate, expired, partial, or cross-owner evidence is
@@ -400,7 +405,7 @@ export function coherentC39RecoveryAudit(input: {
       contractVersion: "revagent.wp12-c39-observed-recovery/v1",
       state: "active",
       originIdHash: c39AuditHash("origin", String(record.originInvocationId)),
-      recoveryIdHash: c39AuditHash("recovery", String(record.carrierRecoveryInvocationId)),
+      recoveryIdHash: c39CarrierObservationRecoveryHash(String(record.carrierRecoveryInvocationId)),
       rsidHash: c39AuditHash("rsid", String(fullOwner.rsid)),
       originDigest: record.originResultDigest,
       resultRefDigest: record.resultReferenceDigest,

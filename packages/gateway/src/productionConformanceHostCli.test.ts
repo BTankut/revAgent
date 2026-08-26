@@ -138,9 +138,16 @@ describe("WP-12 C39 observed recovery audit", () => {
     expect(result.status).toBe("joined");
     expect(result.rows).toHaveLength(1);
     expect(result.rows[0]).toMatchObject({ state: "active", originDigest: digest("a"), resultRefDigest: digest("c"), partials: [{ seq: 4, chunkIndex: 0, plainDigest: digest("e"), byteLength: 3, state: "active" }], terminal: { seq: 5, originDigest: digest("a"), state: "completed" } });
+    expect(result.rows[0]).toMatchObject({
+      recoveryIdHash: "sha256:eda0e151b2ab8886f85b740e68a9ff27519a32e10b958d19af9df687648bd2ca",
+      originIdHash: "sha256:c737914ebf0c9eff1380d927d640ec613d0005a7194476553a514e720acddbf5",
+    });
+    expect(result.rows[0]?.recoveryIdHash).not.toBe("sha256:b95a6f59a1a53cd600feaa7253c02e9972ac7a628fd1cdb88f1342eed59aa32e");
     expect(JSON.stringify(result.rows)).not.toContain('"rsid"');
     expect(JSON.stringify(result.rows)).not.toContain("principal");
     expect(JSON.stringify(result.rows)).not.toContain("kid");
+    expect(JSON.stringify(result.rows)).not.toContain(origin);
+    expect(JSON.stringify(result.rows)).not.toContain(recovery);
   });
 
   it("fails closed for partial, ambiguous, expired, or cross-owner joins", () => {
