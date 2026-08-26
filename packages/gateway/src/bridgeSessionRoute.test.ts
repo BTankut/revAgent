@@ -47,6 +47,25 @@ const DEVICE_ID = "device-route";
 const MCP_SESSION_ID = "mcp-route";
 const DEVICE_TOKEN = "device-token-route";
 
+/** Exact owned shape of generated RouteRebindDocumentContext. */
+interface RouteRebindDocumentContext {
+  readonly documents: Array<{
+    readonly document_id: string;
+    readonly title: string;
+    readonly path_digest: string | null;
+    readonly is_workshared: boolean;
+    readonly is_active: boolean;
+  }>;
+  readonly active_document: string | null;
+  readonly active_view: {
+    readonly id: string;
+    readonly name: string;
+    readonly type: string;
+    readonly level?: string | null;
+  } | null;
+  readonly discipline_hint?: string;
+}
+
 let idOffset = 0;
 const id = (): string => gatewayUuidV7(Date.now() + idOffset++);
 
@@ -276,6 +295,20 @@ function contextUpdate(input: {
   };
 }
 
+async function establishCurrentRoute(
+  authority: GatewayBridgeSessionAuthority,
+  connectionId: string,
+  rsid: string,
+  documentId = "document-carrier",
+): Promise<void> {
+  await authority.receive(connectionId, contextUpdate({
+    rsid,
+    seq: 1,
+    activeDocument: documentId,
+    documents: [document(documentId, true)],
+  }));
+}
+
 interface TestChannel extends BridgeConnectionChannel {
   readonly frames: RbpEnvelope[];
 }
@@ -364,11 +397,11 @@ function resumeWithRouteProof(input: {
   readonly connectionId: string;
   readonly lastRxSeq?: number;
   readonly proofId?: string;
-  readonly context?: Record<string, unknown>;
+  readonly context?: RouteRebindDocumentContext;
   readonly sourceRevision?: number;
   readonly cacheIncarnationDigest?: string;
 }): Extract<RbpEnvelope, { type: "session_resume" }> {
-  const context = input.context ?? {
+  const context: RouteRebindDocumentContext = input.context ?? {
     documents: [document("document-rebound", true)],
     active_document: "document-rebound",
     active_view: null,
@@ -389,7 +422,7 @@ function resumeWithRouteProof(input: {
         context,
         context_digest: createHash("sha256")
           .update("revagent:doc-context-payload:v1\n", "utf8")
-          .update(canonicalizeJson(context as JsonValue), "utf8")
+          .update(canonicalizeJson(routeRebindContextJson(context)), "utf8")
           .digest("hex"),
         freshness: {
           source_revision: input.sourceRevision ?? 1,
@@ -397,6 +430,28 @@ function resumeWithRouteProof(input: {
         },
       },
     },
+  };
+}
+
+function routeRebindContextJson(context: RouteRebindDocumentContext): JsonValue {
+  return {
+    documents: context.documents.map((entry) => ({
+      document_id: entry.document_id,
+      title: entry.title,
+      path_digest: entry.path_digest,
+      is_workshared: entry.is_workshared,
+      is_active: entry.is_active,
+    })),
+    active_document: context.active_document,
+    active_view: context.active_view === null
+      ? null
+      : {
+          id: context.active_view.id,
+          name: context.active_view.name,
+          type: context.active_view.type,
+          ...(context.active_view.level === undefined ? {} : { level: context.active_view.level }),
+        },
+    ...(context.discipline_hint === undefined ? {} : { discipline_hint: context.discipline_hint }),
   };
 }
 
@@ -864,6 +919,7 @@ describe("GatewayBridgeSessionAuthority live document routing", () => {
       });
       await created.receive(opened.connectionId, registration("chunked-carrier"));
       const session = registeredFrame(openedChannel);
+      await establishCurrentRoute(created, opened.connectionId, session.payload.rsid);
       const invocationId = id();
       const request = bridgeRequest(session.payload.rsid, invocationId);
       const outcome = created.createExecutor().execute(request);
@@ -876,7 +932,7 @@ describe("GatewayBridgeSessionAuthority live document routing", () => {
         type: "partial",
         id: id(),
         rsid: session.payload.rsid,
-        seq: 1,
+        seq: 2,
         ack: invoke.seq,
         ts: new Date().toISOString(),
         payload: {
@@ -896,7 +952,7 @@ describe("GatewayBridgeSessionAuthority live document routing", () => {
         type: "result",
         id: id(),
         rsid: session.payload.rsid,
-        seq: 2,
+        seq: 3,
         ack: invoke.seq,
         ts: new Date().toISOString(),
         payload: {
@@ -946,6 +1002,7 @@ describe("GatewayBridgeSessionAuthority live document routing", () => {
     ]);
     await created.receive(opened.connectionId, registration("artifact-carrier"));
     const session = registeredFrame(openedChannel);
+    await establishCurrentRoute(created, opened.connectionId, session.payload.rsid);
     const invocationId = id();
     const outcome = created.createExecutor().execute(bridgeRequest(session.payload.rsid, invocationId));
     const invoke = await emittedInvoke(openedChannel);
@@ -958,7 +1015,7 @@ describe("GatewayBridgeSessionAuthority live document routing", () => {
       type: "partial",
       id: id(),
       rsid: session.payload.rsid,
-      seq: 1,
+      seq: 2,
       ack: invoke.seq,
       ts: new Date().toISOString(),
       payload: {
@@ -981,7 +1038,7 @@ describe("GatewayBridgeSessionAuthority live document routing", () => {
       type: "result",
       id: id(),
       rsid: session.payload.rsid,
-      seq: 2,
+      seq: 3,
       ack: invoke.seq,
       ts: new Date().toISOString(),
       payload: {
@@ -1039,12 +1096,13 @@ describe("GatewayBridgeSessionAuthority live document routing", () => {
     expect(opened.helloAck.payload.granted_capabilities).toEqual(["chunked_results"]);
     await created.receive(opened.connectionId, registration("artifact-capability-denied"));
     const session = registeredFrame(openedChannel);
+    await establishCurrentRoute(created, opened.connectionId, session.payload.rsid);
     const invocationId = id();
     void created.createExecutor().execute(bridgeRequest(session.payload.rsid, invocationId));
     const invoke = await emittedInvoke(openedChannel);
     const artifactId = "0197a3c2-0000-7000-8000-000000000912";
     await expect(created.receive(opened.connectionId, {
-      v: 1, type: "partial", id: id(), rsid: session.payload.rsid, seq: 1, ack: invoke.seq,
+      v: 1, type: "partial", id: id(), rsid: session.payload.rsid, seq: 2, ack: invoke.seq,
       ts: new Date().toISOString(),
       payload: {
         kind: "chunk", invocation_id: invocationId, stream_id: `artifact:${artifactId}`,
@@ -1060,10 +1118,10 @@ describe("GatewayBridgeSessionAuthority live document routing", () => {
     )).toEqual([]);
     expect(tailEvents).toEqual([{ stage: "denied_prequeue", queuedBytes: 0 }]);
 
-    // The rejected artifact did not consume seq=1: a result-only chunk with
+    // The rejected artifact did not consume seq=2: a result-only chunk with
     // the same sequence is accepted under the independently granted chunk cap.
     await expect(created.receive(opened.connectionId, {
-      v: 1, type: "partial", id: id(), rsid: session.payload.rsid, seq: 1, ack: invoke.seq,
+      v: 1, type: "partial", id: id(), rsid: session.payload.rsid, seq: 2, ack: invoke.seq,
       ts: new Date().toISOString(),
       payload: {
         kind: "chunk", invocation_id: invocationId, stream_id: "result", chunk_index: 0,
@@ -1111,6 +1169,7 @@ describe("GatewayBridgeSessionAuthority live document routing", () => {
     });
     await created.receive(opened.connectionId, registration("carrier-tail"));
     const session = registeredFrame(openedChannel);
+    await establishCurrentRoute(created, opened.connectionId, session.payload.rsid);
     const invocationId = id();
     void created.createExecutor().execute(bridgeRequest(session.payload.rsid, invocationId));
     const invoke = await emittedInvoke(openedChannel);
@@ -1121,7 +1180,7 @@ describe("GatewayBridgeSessionAuthority live document routing", () => {
         type: "partial",
         id: id(),
         rsid: session.payload.rsid,
-        seq: index + 1,
+        seq: index + 2,
         ack: invoke.seq,
         ts: new Date().toISOString(),
         payload: {
@@ -1140,7 +1199,7 @@ describe("GatewayBridgeSessionAuthority live document routing", () => {
       type: "partial",
       id: id(),
       rsid: session.payload.rsid,
-      seq: 9,
+      seq: 10,
       ack: invoke.seq,
       ts: new Date().toISOString(),
       payload: {
@@ -1944,12 +2003,13 @@ describe("Gateway omitted-payload recovery admission", () => {
       const opened = await openConnection(created);
       await created.receive(opened.connectionId, registration("inline-terminal"));
       const session = registeredFrame(opened.channel);
+      await establishCurrentRoute(created, opened.connectionId, session.payload.rsid);
       const invocationId = id();
       const originResultDigest = `sha256:${"c".repeat(64)}` as const;
       const outcome = created.createExecutor().execute(bridgeRequest(session.payload.rsid, invocationId));
       const invoke = await emittedInvoke(opened.channel);
       await created.receive(opened.connectionId, {
-        v: 1, type: "result", id: id(), rsid: session.payload.rsid, seq: 1, ack: invoke.seq,
+        v: 1, type: "result", id: id(), rsid: session.payload.rsid, seq: 2, ack: invoke.seq,
         ts: new Date().toISOString(),
         payload: {
           kind: "invocation", invocation_id: invocationId, status: "completed", replayed: false,
@@ -1979,12 +2039,13 @@ describe("Gateway omitted-payload recovery admission", () => {
       const opened = await openConnection(created);
       await created.receive(opened.connectionId, registration("corrupt-omitted-evidence"));
       const session = registeredFrame(opened.channel);
+      await establishCurrentRoute(created, opened.connectionId, session.payload.rsid);
       const invocationId = id();
       const originResultDigest = `sha256:${"d".repeat(64)}` as const;
       const outcome = created.createExecutor().execute(bridgeRequest(session.payload.rsid, invocationId));
       const invoke = await emittedInvoke(opened.channel);
       await created.receive(opened.connectionId, {
-        v: 1, type: "result", id: id(), rsid: session.payload.rsid, seq: 1, ack: invoke.seq,
+        v: 1, type: "result", id: id(), rsid: session.payload.rsid, seq: 2, ack: invoke.seq,
         ts: new Date().toISOString(),
         payload: {
           kind: "invocation", invocation_id: invocationId, status: "completed", replayed: true,
@@ -2019,6 +2080,7 @@ describe("Gateway omitted-payload recovery admission", () => {
       const opened = await openConnection(created);
       await created.receive(opened.connectionId, registration("omitted-payload"));
       const session = registeredFrame(opened.channel);
+      await establishCurrentRoute(created, opened.connectionId, session.payload.rsid);
       const invocationId = id();
       const originResultDigest = `sha256:${"a".repeat(64)}` as const;
       const outcome = created.createExecutor().execute(bridgeRequest(session.payload.rsid, invocationId));
@@ -2028,7 +2090,7 @@ describe("Gateway omitted-payload recovery admission", () => {
         type: "result",
         id: id(),
         rsid: session.payload.rsid,
-        seq: 1,
+        seq: 2,
         ack: invoke.seq,
         ts: new Date().toISOString(),
         payload: {
