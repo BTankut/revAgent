@@ -1002,6 +1002,11 @@ describe("GatewayBridgeSessionAuthority live document routing", () => {
       resumeCasCurrent: true,
       routeProvenanceCurrent: true,
       currentConnection: true,
+      routeAuthorityCheckpoint: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u),
+      connectionDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u),
+      serverProofDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u),
+      authorityGenerationDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u),
+      proofCasRecordVersion: expect.any(Number),
     });
     const serialized = JSON.stringify(projection);
     for (const value of [original.rsid, rebound.connectionId, TENANT_ID, USER_ID, DEVICE_ID]) {
@@ -1079,6 +1084,11 @@ describe("GatewayBridgeSessionAuthority live document routing", () => {
       resumeCasCurrent: false,
       routeProvenanceCurrent: false,
       currentConnection: false,
+      routeAuthorityCheckpoint: null,
+      connectionDigest: null,
+      serverProofDigest: null,
+      authorityGenerationDigest: null,
+      proofCasRecordVersion: null,
     });
   });
 

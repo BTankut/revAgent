@@ -343,10 +343,11 @@ export function coherentC39RecoveryAudit(input: {
     const sequence = c39Object(root.sequence)!;
     const nestedSequence = c39Object(sequence.sequence)!;
     const childRefs = root.childRefs as unknown[];
-    const evidenceFor = (invocationId: unknown, requireOmitted: boolean): readonly C39AuditRecord[] => evidenceChildren.filter((child) => {
+    const evidenceFor = (invocationId: unknown, requireOmitted: boolean, requireC39Authority: boolean): readonly C39AuditRecord[] => evidenceChildren.filter((child) => {
       const value = c39Object(child.value);
       const entry = c39Object(value?.entry);
       const truth = c39Object(entry?.terminalTruth);
+      const routeAuthority = c39Object(entry?.c39RouteAuthority);
       const matchingRefs = childRefs.filter((candidate) => {
         const ref = c39Object(candidate);
         return ref !== null && ref.namespace === child.namespace && ref.key === child.key &&
@@ -360,6 +361,12 @@ export function coherentC39RecoveryAudit(input: {
         entry.terminalSessionVersion === fullOwner.sessionBindingVersion &&
         entry.effectiveMcpSessionId === fullOwner.effectiveMcpSessionId && c39Digest(entry.terminalDigest) &&
         c39Digest(entry.terminalCarrierDigest) && truth.state === "completed" &&
+        (!requireC39Authority || (routeAuthority !== null && routeAuthority.version === 1 &&
+          routeAuthority.provenance === "session_resume_route_rebind_v1" &&
+          c39Digest(routeAuthority.routeAuthorityCheckpoint) && c39Digest(routeAuthority.connectionDigest) &&
+          c39Digest(routeAuthority.serverProofDigest) && c39Digest(routeAuthority.authorityGenerationDigest) &&
+          C39_UUID.test(String(routeAuthority.resultantSessionBindingId)) &&
+          c39Positive(routeAuthority.resultantSessionVersion) && c39Positive(routeAuthority.proofCasRecordVersion))) &&
         truth.resultDigest === fullOwner.originResultDigest && matchingRefs.length === 1 &&
         (requireOmitted
           ? entry.payloadOmittedRecoveryEvidenceVersion === 1 && entry.payloadOmittedRecoveryEligible === true && truth.payloadRetained === false
@@ -367,8 +374,8 @@ export function coherentC39RecoveryAudit(input: {
     });
     // The v2 root's binding is deliberately *not* matched to fullOwner: it can
     // advance after the immutable historical terminal evidence was committed.
-    const originEvidence = evidenceFor(fullOwner.originInvocationId, true);
-    const recoveryEvidence = evidenceFor(fullOwner.recoveryInvocationId, false);
+    const originEvidence = evidenceFor(fullOwner.originInvocationId, true, false);
+    const recoveryEvidence = evidenceFor(fullOwner.recoveryInvocationId, false, true);
     const evidenceRowsFor = (invocationId: unknown) => evidenceChildren.filter((child) => {
       const value = c39Object(child.value);
       const entry = c39Object(value?.entry);
@@ -389,6 +396,7 @@ export function coherentC39RecoveryAudit(input: {
     const recoveryEntry = c39Object(recoveryEvidence[0]?.value)?.entry;
     const originEntry = c39Object(originEvidence[0]?.value)?.entry;
     const terminalCarrierDigest = c39Object(recoveryEntry)?.terminalCarrierDigest;
+    const routeAuthority = c39Object(c39Object(recoveryEntry)?.c39RouteAuthority);
     const terminalCandidates = acceptedInbound.map(c39Object).filter((accepted): accepted is Record<string, unknown> =>
       accepted !== null && c39Digest(accepted.immutableDigest) && accepted.immutableDigest === terminalCarrierDigest);
     const terminalSequence = terminalCandidates.length === 1 ? terminalCandidates[0]!.seq : null;
@@ -402,6 +410,7 @@ export function coherentC39RecoveryAudit(input: {
       protectedRecovery.chunkIndex !== partials.length || protectedRecovery.bridgeSequence !== partials.at(-1)!.bridgeSequence ||
       protectedRecovery.plainLength !== byteLength || resource.byteSize !== byteLength ||
       protectedRecovery.plainDigest !== record.originResultDigest) continue;
+    if (routeAuthority === null) continue;
     rows.push(Object.freeze({
       contractVersion: "revagent.wp12-c39-observed-recovery/v1",
       state: "active",
@@ -410,6 +419,15 @@ export function coherentC39RecoveryAudit(input: {
       rsidHash: c39AuditHash("rsid", String(fullOwner.rsid)),
       originDigest: record.originResultDigest,
       resultRefDigest: record.resultReferenceDigest,
+      routeAuthority: Object.freeze({
+        routeAuthorityCheckpoint: routeAuthority.routeAuthorityCheckpoint,
+        connectionDigest: routeAuthority.connectionDigest,
+        serverProofDigest: routeAuthority.serverProofDigest,
+        authorityGenerationDigest: routeAuthority.authorityGenerationDigest,
+        resultantSessionVersion: routeAuthority.resultantSessionVersion,
+        proofCasRecordVersion: routeAuthority.proofCasRecordVersion,
+        provenance: routeAuthority.provenance,
+      }),
       partials: Object.freeze(partials.map((partial) => Object.freeze({
         seq: partial.bridgeSequence,
         chunkIndex: partial.chunkIndex,
@@ -1112,6 +1130,11 @@ export async function runProductionConformanceHostCli(args: readonly string[]): 
               resumeCasCurrent: false,
               routeProvenanceCurrent: false,
               currentConnection: false,
+              routeAuthorityCheckpoint: null,
+              connectionDigest: null,
+              serverProofDigest: null,
+              authorityGenerationDigest: null,
+              proofCasRecordVersion: null,
             });
             // A stable pair makes this diagnostic join value-free and bounded:
             // any concurrent durable transition produces no C39 success row.
@@ -1127,7 +1150,22 @@ export async function runProductionConformanceHostCli(args: readonly string[]): 
               // receipt/proof into a dispatch or recovery authorization.
               const routeBefore = await authority.readRouteRebindAuditSnapshot({ tenantId: "conformance" });
               const routeAfter = await authority.readRouteRebindAuditSnapshot({ tenantId: "conformance" });
-              if (digest(routeBefore) === digest(routeAfter)) c39RouteRebind = routeAfter;
+              if (digest(routeBefore) === digest(routeAfter)) {
+                c39RouteRebind = routeAfter;
+                const joined = c39Recovery.rows.filter((row) => {
+                  const terminal = c39Object(row.routeAuthority);
+                  return routeAfter.status === "current" &&
+                    terminal?.routeAuthorityCheckpoint === routeAfter.routeAuthorityCheckpoint &&
+                    terminal?.connectionDigest === routeAfter.connectionDigest &&
+                    terminal?.serverProofDigest === routeAfter.serverProofDigest &&
+                    terminal?.authorityGenerationDigest === routeAfter.authorityGenerationDigest &&
+                    terminal?.proofCasRecordVersion === routeAfter.proofCasRecordVersion;
+                });
+                c39Recovery = Object.freeze({
+                  status: joined.length === 0 ? "no_coherent_row" as const : "joined" as const,
+                  rows: Object.freeze(joined),
+                });
+              }
               break;
             }
             if (records === null) return reply.code(503).send({ ok: false, action, error: "real_case_audit_unavailable" });
