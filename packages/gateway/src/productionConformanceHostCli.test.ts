@@ -10,10 +10,12 @@ import { canonicalizeJson, type JsonValue } from "@revagent/protocol";
 import {
   coherentC39RecoveryAudit,
   coherentDocumentContextAudit,
+  conformanceConnectionCapabilitiesForBinding,
   createProductionConformanceRecoveryAuthority,
   createOrderedConformanceHostShutdown,
   MAX_DOCUMENT_CONTEXT_OBSERVATIONS,
   MAX_DOCUMENT_CONTEXT_OBSERVATION_BYTES,
+  validateConformanceDeviceProvision,
   type DocumentContextObservationSnapshot,
 } from "./productionConformanceHostCli.js";
 import { GATEWAY_OMITTED_PAYLOAD_RECOVERY_NAMESPACE } from "./omittedPayloadRecovery.js";
@@ -48,6 +50,34 @@ const snapshot = (rows: DocumentContextObservationSnapshot["rows"] = [observatio
   Object.freeze({ processEpoch, highWaterOrdinal, rows: Object.freeze(rows) });
 
 const packageRoot = fileURLToPath(new URL("../", import.meta.url));
+
+describe("WP-12 exact route-rebind conformance provisioning", () => {
+  it.each([
+    ["wss", ["journal_v1", "chunked_results", "artifact_result_v1", "route_rebind_proof_v1"]],
+    ["streamable_http_sse", ["journal_v1", "chunked_results", "artifact_result_v1", "route_rebind_proof_v1", "transport_streamable_http"]],
+  ] as const)("requires only the exact %s connection grant set", (binding, expected) => {
+    expect(conformanceConnectionCapabilitiesForBinding(binding)).toEqual(expected);
+    expect(validateConformanceDeviceProvision({
+      binding,
+      connectionCapabilities: expected,
+      sessionCapabilities: ["batch_atomic", "doc_context_cached_v1"],
+    })).toEqual({
+      binding,
+      connectionCapabilities: expected,
+      sessionCapabilities: ["batch_atomic", "doc_context_cached_v1"],
+    });
+    expect(validateConformanceDeviceProvision({
+      binding,
+      connectionCapabilities: expected.filter((capability) => capability !== "route_rebind_proof_v1"),
+      sessionCapabilities: ["batch_atomic", "doc_context_cached_v1"],
+    })).toBeNull();
+    expect(validateConformanceDeviceProvision({
+      binding,
+      connectionCapabilities: [...expected, "unapproved_extra"],
+      sessionCapabilities: ["batch_atomic", "doc_context_cached_v1"],
+    })).toBeNull();
+  });
+});
 
 describe("WP-12 C39 observed recovery audit", () => {
   const origin = "0197a3c2-0000-7000-8000-000000000901";

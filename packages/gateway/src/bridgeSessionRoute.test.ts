@@ -27,6 +27,7 @@ import {
   TEST_RSID_CARRIER_RECEIVE_TAIL_OBSERVER,
   type BridgeConnectionChannel,
   type ConformanceOriginResendPolicy,
+  type GatewayRouteRebindAuditSnapshot,
 } from "./bridgeSession.js";
 import type { GatewayExecutorRequest, GatewayJsonObject } from "./dispatch.js";
 import { gatewayUuidV7 } from "./identifiers.js";
@@ -129,6 +130,7 @@ async function mutateDurableRoute(
       binding: { sessionVersion: number };
       lifecycle: {
         liveDocumentRoute: Record<string, unknown> | null;
+        routeRebindReceipt?: Record<string, unknown> | null;
         routeRebindFreshness?: unknown;
       };
     },
@@ -145,6 +147,7 @@ async function mutateDurableRoute(
     rootVersion: number;
     lifecycle: {
       liveDocumentRoute: Record<string, unknown> | null;
+      routeRebindReceipt?: Record<string, unknown> | null;
       routeRebindFreshness?: unknown;
     };
     binding: { sessionVersion: number };
@@ -973,6 +976,111 @@ describe("GatewayBridgeSessionAuthority live document routing", () => {
       expect(fixture.snapshot().records.filter((row) => row.namespace === "gateway.carrier-ack/v1" && (row.value as { state?: string }).state === "terminal_accepted")).toHaveLength(1);
     },
   );
+
+  it("projects one current route-rebind CAS as fixed value-free state only", async () => {
+    const created = new GatewayBridgeSessionAuthority(
+      createRestartableTestStore().store,
+      identity({ connectionCapabilities: ["route_rebind_proof_v1"] }),
+    );
+    authorities.push(created);
+    await created.open();
+    const original = await register(created, "route-rebind-audit-current", "wss", ["route_rebind_proof_v1"]);
+    await created.detach(original.connectionId);
+    const rebound = await openConnection(created, "wss", ["route_rebind_proof_v1"]);
+    await created.receive(rebound.connectionId, resumeWithRouteProof({
+      rsid: original.rsid,
+      resumeToken: original.resumeToken,
+      connectionId: rebound.connectionId,
+    }));
+
+    const projection = await created.readRouteRebindAuditSnapshot({ tenantId: TENANT_ID });
+    expect(projection).toEqual({
+      status: "current",
+      candidateCount: 1,
+      capabilityGranted: true,
+      receiptCurrent: true,
+      resumeCasCurrent: true,
+      routeProvenanceCurrent: true,
+      currentConnection: true,
+    });
+    const serialized = JSON.stringify(projection);
+    for (const value of [original.rsid, rebound.connectionId, TENANT_ID, USER_ID, DEVICE_ID]) {
+      expect(serialized).not.toContain(value);
+    }
+    expect(Object.values(projection).some((value) => typeof value === "string" && value.startsWith("sha256:"))).toBe(false);
+  });
+
+  type RouteRebindAuditBoolean = Exclude<keyof GatewayRouteRebindAuditSnapshot, "status" | "candidateCount">;
+  type RouteRebindDrift = readonly [
+    string,
+    Parameters<typeof mutateDurableRoute>[2],
+    RouteRebindAuditBoolean,
+  ];
+  const routeRebindDrifts: readonly RouteRebindDrift[] = [
+    ["receipt", (_route, root) => {
+      root.lifecycle.routeRebindReceipt = {
+        ...(root.lifecycle.routeRebindReceipt ?? {}),
+        proofId: id(),
+      };
+    }, "receiptCurrent"],
+    ["binding", (route: Record<string, unknown>) => {
+      route.resultantSessionVersion = Number(route.resultantSessionVersion) + 1;
+    }, "resumeCasCurrent"],
+    ["generation", (route: Record<string, unknown>) => {
+      route.authorityGenerationDigest = `sha256:${"d".repeat(64)}`;
+    }, "resumeCasCurrent"],
+  ];
+  it.each(routeRebindDrifts)("fails closed in the audit projection when the durable route-rebind %s drifts", async (_name, mutate, falseField) => {
+    const fixture = createRestartableTestStore();
+    const created = new GatewayBridgeSessionAuthority(
+      fixture.store,
+      identity({ connectionCapabilities: ["route_rebind_proof_v1"] }),
+    );
+    authorities.push(created);
+    await created.open();
+    const original = await register(created, `route-rebind-audit-${_name}`, "wss", ["route_rebind_proof_v1"]);
+    await created.detach(original.connectionId);
+    const rebound = await openConnection(created, "wss", ["route_rebind_proof_v1"]);
+    await created.receive(rebound.connectionId, resumeWithRouteProof({
+      rsid: original.rsid,
+      resumeToken: original.resumeToken,
+      connectionId: rebound.connectionId,
+    }));
+    await mutateDurableRoute(fixture, original.rsid, mutate);
+
+    const projection = await created.readRouteRebindAuditSnapshot({ tenantId: TENANT_ID });
+    expect(projection.status).toBe("not_current");
+    expect(projection.candidateCount).toBe(1);
+    expect(projection[falseField]).toBe(false);
+  });
+
+  it("fails closed and redacts every route-rebind candidate when two live proof routes exist", async () => {
+    const created = new GatewayBridgeSessionAuthority(
+      createRestartableTestStore().store,
+      identity({ connectionCapabilities: ["route_rebind_proof_v1"] }),
+    );
+    authorities.push(created);
+    await created.open();
+    for (const localSessionKey of ["route-rebind-audit-first", "route-rebind-audit-second"]) {
+      const original = await register(created, localSessionKey, "wss", ["route_rebind_proof_v1"]);
+      await created.detach(original.connectionId);
+      const rebound = await openConnection(created, "wss", ["route_rebind_proof_v1"]);
+      await created.receive(rebound.connectionId, resumeWithRouteProof({
+        rsid: original.rsid,
+        resumeToken: original.resumeToken,
+        connectionId: rebound.connectionId,
+      }));
+    }
+    expect(await created.readRouteRebindAuditSnapshot({ tenantId: TENANT_ID })).toEqual({
+      status: "ambiguous",
+      candidateCount: 2,
+      capabilityGranted: false,
+      receiptCurrent: false,
+      resumeCasCurrent: false,
+      routeProvenanceCurrent: false,
+      currentConnection: false,
+    });
+  });
 
   it("commits an artifact carrier's receipt, terminal, and bridge completion in Tx-B/Tx-C", async () => {
     const fixture = createRestartableTestStore();

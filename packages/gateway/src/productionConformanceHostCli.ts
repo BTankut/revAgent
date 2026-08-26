@@ -129,6 +129,7 @@ const REQUIRED_CONNECTION_CAPABILITIES = Object.freeze([
   "journal_v1",
   "chunked_results",
   "artifact_result_v1",
+  "route_rebind_proof_v1",
 ]);
 
 const REAL_CASE_AUDIT_SCHEMA = "revagent.wp12-real-case-audit/v1" as const;
@@ -1103,6 +1104,15 @@ export async function runProductionConformanceHostCli(args: readonly string[]): 
             let records: readonly C39AuditRecord[] | null = null;
             let c39Recovery: ReturnType<typeof coherentC39RecoveryAudit> =
               Object.freeze({ status: "no_coherent_row" as const, rows: Object.freeze([]) });
+            let c39RouteRebind: Awaited<ReturnType<GatewayBridgeSessionAuthority["readRouteRebindAuditSnapshot"]>> = Object.freeze({
+              status: "invalid" as const,
+              candidateCount: 0 as const,
+              capabilityGranted: false,
+              receiptCurrent: false,
+              resumeCasCurrent: false,
+              routeProvenanceCurrent: false,
+              currentConnection: false,
+            });
             // A stable pair makes this diagnostic join value-free and bounded:
             // any concurrent durable transition produces no C39 success row.
             for (let attempt = 0; attempt < 3; attempt += 1) {
@@ -1112,6 +1122,12 @@ export async function runProductionConformanceHostCli(args: readonly string[]): 
               records = after;
               if (digest(before) !== digest(after)) continue;
               c39Recovery = coherentC39RecoveryAudit({ records: after, nowMs: Date.now() });
+              // This joins only the authority's bounded diagnostic projection.
+              // It never reads a route from persistence here and cannot turn a
+              // receipt/proof into a dispatch or recovery authorization.
+              const routeBefore = await authority.readRouteRebindAuditSnapshot({ tenantId: "conformance" });
+              const routeAfter = await authority.readRouteRebindAuditSnapshot({ tenantId: "conformance" });
+              if (digest(routeBefore) === digest(routeAfter)) c39RouteRebind = routeAfter;
               break;
             }
             if (records === null) return reply.code(503).send({ ok: false, action, error: "real_case_audit_unavailable" });
@@ -1128,6 +1144,7 @@ export async function runProductionConformanceHostCli(args: readonly string[]): 
               tenantDigest: digest("conformance"),
               rows,
               c39Recovery,
+              c39RouteRebind,
               c39PartialCarrierCommitFailure,
               c39ProtectedResourceReadFirst,
               c39ProtectedResourceReadLast,

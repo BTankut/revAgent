@@ -1091,6 +1091,25 @@ export interface GatewayCurrentDocumentRouteAuditSnapshot {
   readonly sessionRecordVersion: number;
 }
 
+/**
+ * Fixed, value-free conformance projection for a resume-route proof. This is
+ * deliberately not a route selector: it discloses neither a candidate's
+ * identity nor any proof, context, digest, revision, owner, or stored row.
+ *
+ * `candidateCount` is capped at two: 2 means two-or-more and is never a
+ * cardinality oracle. A caller must treat every status except `current` as a
+ * refusal; this projection cannot authorize dispatch, recovery, or a route.
+ */
+export interface GatewayRouteRebindAuditSnapshot {
+  readonly status: "current" | "none" | "ambiguous" | "invalid" | "not_current";
+  readonly candidateCount: 0 | 1 | 2;
+  readonly capabilityGranted: boolean;
+  readonly receiptCurrent: boolean;
+  readonly resumeCasCurrent: boolean;
+  readonly routeProvenanceCurrent: boolean;
+  readonly currentConnection: boolean;
+}
+
 export class GatewayRbpFault extends Error {
   public constructor(
     public readonly code:
@@ -7444,6 +7463,80 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     } catch {
       return null;
     }
+  }
+
+  /**
+   * Reads one already-active resume-proof route as a bounded diagnostic only.
+   * It joins the live active record to a fresh durable read before evaluating
+   * the same current-connection authority predicate used by dispatch. This
+   * prevents a persisted lifecycle flag, a stale in-memory route, or a stale
+   * receipt from ever qualifying as current conformance evidence.
+   */
+  public async readRouteRebindAuditSnapshot(input: {
+    readonly tenantId: string;
+  }): Promise<GatewayRouteRebindAuditSnapshot> {
+    const candidates = [...this.#active.values()].filter((active) =>
+      active.record.tenantId === input.tenantId &&
+      active.record.liveDocumentRoute?.source === "session_resume_route_rebind_v1",
+    );
+    const candidateCount: 0 | 1 | 2 = candidates.length === 0 ? 0 : candidates.length === 1 ? 1 : 2;
+    const empty = (status: Exclude<GatewayRouteRebindAuditSnapshot["status"], "current">): GatewayRouteRebindAuditSnapshot =>
+      Object.freeze({
+        status,
+        candidateCount,
+        capabilityGranted: false,
+        receiptCurrent: false,
+        resumeCasCurrent: false,
+        routeProvenanceCurrent: false,
+        currentConnection: false,
+      });
+    if (candidateCount === 0) return empty("none");
+    if (candidateCount === 2) return empty("ambiguous");
+    const active = candidates[0]!;
+    let record: DurableRbpSession;
+    try {
+      record = await this.#readSession(input.tenantId, active.record.rsid);
+    } catch {
+      return empty("invalid");
+    }
+    const route = record.liveDocumentRoute;
+    if (route === null || route.source !== "session_resume_route_rebind_v1") {
+      return empty("invalid");
+    }
+    const connection = this.#connections.get(record.connectionId);
+    const receipt = record.routeRebindReceipt ?? null;
+    const capabilityGranted = record.grantedCapabilities.includes("route_rebind_proof_v1");
+    const receiptCurrent = receipt !== null &&
+      receipt.connectionId === record.connectionId &&
+      receipt.connectionId === route.observedConnectionId &&
+      receipt.proofId === route.proofId &&
+      receipt.serverProofDigest === route.serverProofDigest;
+    const resumeCasCurrent = route.resultantSessionBindingId === record.sessionBindingId &&
+      route.resultantSessionVersion === record.sessionVersion &&
+      connection !== undefined &&
+      route.authorityGenerationDigest === routeRebindAuthorityGenerationDigest(record, connection);
+    const routeProvenanceCurrent = route.source === "session_resume_route_rebind_v1";
+    const currentConnection = connection !== undefined &&
+      record.connectionId === active.record.connectionId &&
+      route.observedConnectionId === record.connectionId &&
+      this.#connectionIsCurrentlyAuthorized(connection);
+    const activeMatchesDurable = active.record.sessionBindingId === record.sessionBindingId &&
+      active.record.sessionVersion === record.sessionVersion &&
+      active.record.connectionId === record.connectionId &&
+      sameJson(active.record.liveDocumentRoute, record.liveDocumentRoute) &&
+      sameJson(active.record.routeRebindReceipt ?? null, record.routeRebindReceipt ?? null);
+    const current = capabilityGranted && receiptCurrent && resumeCasCurrent &&
+      routeProvenanceCurrent && currentConnection && activeMatchesDurable &&
+      this.#hasCurrentLiveDocumentRoute(record, connection);
+    return Object.freeze({
+      status: current ? "current" : "not_current",
+      candidateCount,
+      capabilityGranted,
+      receiptCurrent,
+      resumeCasCurrent,
+      routeProvenanceCurrent,
+      currentConnection,
+    });
   }
 
   /**

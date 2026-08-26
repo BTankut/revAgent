@@ -56,7 +56,7 @@ const DEFAULT_CONFORMANCE_CAPABILITIES: ConformanceDeviceCapabilityProvision = O
     "journal_v1",
     "chunked_results",
     "artifact_result_v1",
-    "transport_streamable_http",
+    "route_rebind_proof_v1",
   ]),
   sessionCapabilities: Object.freeze(["batch_atomic", "doc_context_cached_v1"]),
 });
