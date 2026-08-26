@@ -1067,6 +1067,66 @@ public sealed partial class RbpConnectionCoordinatorTests
     }
 
     [Fact]
+    public async Task CoordinatorCancellationDuringScopedFreshReadIsCleanAndFencesRoute()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        var clock = new ManualCoordinatorClock();
+        await using RbpJournalStore store = OpenStore(directory, clock);
+        string? durableKey = null;
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        int blocked = 0;
+        var transport = new ScriptedStatusTransport(
+            beforeResponse: async call =>
+            {
+                if (call.Method == "get_document_context" &&
+                    Interlocked.Increment(ref blocked) == 1)
+                {
+                    entered.TrySetResult();
+                    await release.Task.ConfigureAwait(false);
+                }
+            });
+        var router = new AddinSessionRouter(transport);
+        var catalog = new WorkerAddinSessionCatalog(
+            new AddinDiscovery(transport, new NoOpProcessAttestor()), router,
+            ScanConfiguration(), () => new FixedCredentialProvider(),
+            (rsid, _) => Task.FromResult<string?>(rsid == "rs-8080" ? durableKey : null),
+            "0.1.0-test", "WS01");
+        RbpLocalSessionSnapshot local = Assert.Single(await catalog.ReadAsync());
+        durableKey = local.LocalSessionKey;
+        _ = await store.PersistRegisteredSessionAsync(Registration(local, "rs-8080"));
+        string[] capability = [RbpHelloProfile.RouteRebindProofCapability];
+        var responder = new ScriptedGatewayResponder(clock);
+        var cycle = new FakeConnectionCycle(
+            responder.Respond,
+            grantedConnectionCapabilities: capability,
+            connectionId: "019f9add-7a83-7d11-a6a9-d2f8108c0301");
+        RbpConnectionCoordinator coordinator = WorkerGatewayComposition.CreateCoordinator(
+            new WorkerGatewayServices(
+                new FakeConnectionCycleFactory(cycle), store, catalog,
+                new RbpConnectionCoordinatorOptions(
+                    new Uri("wss://gateway.revagent.app/bridge/v1"),
+                    new RbpHelloProfile("0.1.0", "WS01", "Windows 11",
+                        new[] { "2026.07.26.0" }, capability),
+                    SessionRouteBindingAuthority: catalog),
+                new WorkerAddinDispatchSurface(router, catalog, catalog),
+                clock, new FixedRandomSource(0)));
+        using var stop = new CancellationTokenSource();
+        Task run = coordinator.RunAsync(stop.Token);
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        stop.Cancel();
+        release.TrySetResult();
+        await run.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(RbpConnectionPhase.Shutdown,
+            coordinator.GetSnapshot().Lifecycle.Phase);
+        Assert.Null(catalog.Resolve("rs-8080"));
+        Assert.True(catalog.BeginConnectionEpoch(2));
+        Assert.NotNull(await catalog.ReadAsync("rs-8080", CancellationToken.None));
+        Assert.Null(catalog.Resolve("rs-8080"));
+    }
+
+    [Fact]
     public async Task WorkerCatalogRefreshFencesChangedHandleUntilNewAcknowledgedBind()
     {
         string addinVersion = "2026.07.22.0";
