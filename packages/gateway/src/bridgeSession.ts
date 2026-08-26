@@ -6854,8 +6854,16 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     }
     if (parsed === null || !sameJson(parsed, route)) return false;
     if (route.source === "data_doc_context_v1") return true;
+    // route_rebind_proof_v1 is strictly connection-scoped.  A session grant
+    // must never substitute for the live connection grant or its durable
+    // lifecycle counterpart: otherwise a resume-proof route could survive
+    // capability drift, or be authorized from the wrong capability domain.
+    const routeRebindCapabilityCurrent =
+      connection.grantedCapabilities.includes("route_rebind_proof_v1") &&
+      record.connectionLifecycle.grantedCapabilities.includes("route_rebind_proof_v1");
     const receipt = record.routeRebindReceipt ?? null;
     return (
+      routeRebindCapabilityCurrent &&
       route.resultantSessionBindingId === record.sessionBindingId &&
       route.resultantSessionVersion === record.sessionVersion &&
       route.authorityGenerationDigest ===
@@ -7662,7 +7670,13 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     }
     const connection = this.#connections.get(record.connectionId);
     const receipt = record.routeRebindReceipt ?? null;
-    const capabilityGranted = record.grantedCapabilities.includes("route_rebind_proof_v1");
+    // Keep this audit bit aligned with the authoritative route predicate:
+    // it is true only when both independent connection-scoped grants remain
+    // current.  record.grantedCapabilities is session-scoped and is never an
+    // authority source for route_rebind_proof_v1.
+    const capabilityGranted = connection !== undefined &&
+      connection.grantedCapabilities.includes("route_rebind_proof_v1") &&
+      record.connectionLifecycle.grantedCapabilities.includes("route_rebind_proof_v1");
     const receiptCurrent = receipt !== null &&
       receipt.connectionId === record.connectionId &&
       receipt.connectionId === route.observedConnectionId &&

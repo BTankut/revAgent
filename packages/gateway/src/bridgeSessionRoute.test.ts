@@ -127,8 +127,12 @@ async function mutateDurableRoute(
   mutate: (
     route: Record<string, unknown>,
     root: {
-      binding: { sessionVersion: number };
+      binding: {
+        sessionVersion: number;
+        grantedCapabilities: string[];
+      };
       lifecycle: {
+        connectionLifecycle: { grantedCapabilities: string[] };
         liveDocumentRoute: Record<string, unknown> | null;
         routeRebindReceipt?: Record<string, unknown> | null;
         routeRebindFreshness?: unknown;
@@ -146,15 +150,59 @@ async function mutateDurableRoute(
   const nextRoot = structuredClone(root.value) as {
     rootVersion: number;
     lifecycle: {
+      connectionLifecycle: { grantedCapabilities: string[] };
       liveDocumentRoute: Record<string, unknown> | null;
       routeRebindReceipt?: Record<string, unknown> | null;
       routeRebindFreshness?: unknown;
     };
-    binding: { sessionVersion: number };
+    binding: {
+      sessionVersion: number;
+      grantedCapabilities: string[];
+    };
   };
   const route = nextRoot.lifecycle.liveDocumentRoute;
   if (route === null) throw new Error("fixture route is missing");
   mutate(route, nextRoot);
+  nextRoot.rootVersion += 1;
+  const nextMarker = {
+    ...(marker.value as Record<string, unknown>),
+    rootVersion: nextRoot.rootVersion,
+    rootDigest: normalizedDigest(nextRoot),
+  };
+  const staged = await fixture.store.transact({ tenantId: TENANT_ID }, (tx) => {
+    tx.stage({
+      namespace: GATEWAY_RBP_SESSION_V2_NAMESPACE,
+      key: rsid,
+      value: nextRoot as unknown as GatewayJsonObject,
+      expect: { kind: "version", version: root.version },
+    });
+    tx.stage({
+      namespace: GATEWAY_RBP_SESSION_CUTOVER_V2_NAMESPACE,
+      key: rsid,
+      value: nextMarker as GatewayJsonObject,
+      expect: { kind: "version", version: marker.version },
+    });
+  });
+  if (!staged.ok) throw new Error(staged.message);
+}
+
+async function mutateDurableSessionGrant(
+  fixture: ReturnType<typeof createRestartableTestStore>,
+  rsid: string,
+  mutate: (root: { binding: { grantedCapabilities: string[] } }) => void,
+): Promise<void> {
+  const root = fixture.snapshot().records.find((row) =>
+    row.namespace === GATEWAY_RBP_SESSION_V2_NAMESPACE && row.key === rsid,
+  );
+  const marker = fixture.snapshot().records.find((row) =>
+    row.namespace === GATEWAY_RBP_SESSION_CUTOVER_V2_NAMESPACE && row.key === rsid,
+  );
+  if (root === undefined || marker === undefined) throw new Error("normalized fixture session is missing");
+  const nextRoot = structuredClone(root.value) as {
+    rootVersion: number;
+    binding: { grantedCapabilities: string[] };
+  };
+  mutate(nextRoot);
   nextRoot.rootVersion += 1;
   const nextMarker = {
     ...(marker.value as Record<string, unknown>),
@@ -1052,6 +1100,112 @@ describe("GatewayBridgeSessionAuthority live document routing", () => {
       expect(serialized).not.toContain(value);
     }
     expect(Object.values(projection).some((value) => typeof value === "string" && value.startsWith("sha256:"))).toBe(false);
+  });
+
+  it.each(["wss", "http_sse"] as const)(
+    "admits a %s route proof from the connection capability domain without a session capability grant",
+    async (binding) => {
+      const capabilities = binding === "http_sse"
+        ? ["route_rebind_proof_v1", "transport_streamable_http"]
+        : ["route_rebind_proof_v1"];
+      const created = new GatewayBridgeSessionAuthority(
+        createRestartableTestStore().store,
+        identity({
+          connectionCapabilities: capabilities,
+          sessionCapabilities: ["partial_progress"],
+        }),
+      );
+      authorities.push(created);
+      await created.open();
+      const original = await register(created, `route-rebind-connection-domain-${binding}`, binding, capabilities);
+      await created.detach(original.connectionId);
+      const rebound = await openConnection(created, binding, capabilities);
+      await created.receive(rebound.connectionId, resumeWithRouteProof({
+        rsid: original.rsid,
+        resumeToken: original.resumeToken,
+        connectionId: rebound.connectionId,
+      }));
+
+      await expect(created.readRouteRebindAuditSnapshot({ tenantId: TENANT_ID }))
+        .resolves.toMatchObject({
+          status: "current",
+          capabilityGranted: true,
+        });
+      expect(resolve(created).documentIdentity).toEqual({
+        kind: "live",
+        session_document_id: "document-rebound",
+      });
+    },
+  );
+
+  it("refuses a route proof when only the session-grant domain contains its capability", async () => {
+    const fixture = createRestartableTestStore();
+    const created = new GatewayBridgeSessionAuthority(
+      fixture.store,
+      identity({
+        connectionCapabilities: [],
+        sessionCapabilities: ["partial_progress", "route_rebind_proof_v1"],
+      }),
+    );
+    authorities.push(created);
+    await created.open();
+    const original = await register(created, "route-rebind-session-domain-only", "wss", ["route_rebind_proof_v1"]);
+    // The durable session grant is deliberately polluted with the
+    // connection-only capability. It must not authorize the resumed route.
+    await mutateDurableSessionGrant(fixture, original.rsid, (root) => {
+      root.binding.grantedCapabilities = [
+        ...root.binding.grantedCapabilities,
+        "route_rebind_proof_v1",
+      ];
+    });
+    await created.detach(original.connectionId);
+    const rebound = await openConnection(created, "wss", ["route_rebind_proof_v1"]);
+    await expect(created.receive(rebound.connectionId, resumeWithRouteProof({
+      rsid: original.rsid,
+      resumeToken: original.resumeToken,
+      connectionId: rebound.connectionId,
+    }))).rejects.toMatchObject({ code: "unsupported" });
+    expectUnavailable(created);
+    await expect(created.readRouteRebindAuditSnapshot({ tenantId: TENANT_ID }))
+      .resolves.toMatchObject({ status: "none", capabilityGranted: false });
+  });
+
+  it("fails closed when a durable route-rebind connection grant is removed", async () => {
+    const fixture = createRestartableTestStore();
+    const created = new GatewayBridgeSessionAuthority(
+      fixture.store,
+      identity({ connectionCapabilities: ["route_rebind_proof_v1"] }),
+    );
+    authorities.push(created);
+    await created.open();
+    const original = await register(created, "route-rebind-durable-capability-removal", "wss", ["route_rebind_proof_v1"]);
+    await created.detach(original.connectionId);
+    const rebound = await openConnection(created, "wss", ["route_rebind_proof_v1"]);
+    await created.receive(rebound.connectionId, resumeWithRouteProof({
+      rsid: original.rsid,
+      resumeToken: original.resumeToken,
+      connectionId: rebound.connectionId,
+    }));
+    await mutateDurableRoute(fixture, original.rsid, (_route, root) => {
+      root.lifecycle.connectionLifecycle.grantedCapabilities = [];
+    });
+
+    await expect(created.readRouteRebindAuditSnapshot({ tenantId: TENANT_ID }))
+      .resolves.toMatchObject({ status: "not_current", capabilityGranted: false });
+    // Synchronize the active record through its normal durable heartbeat CAS;
+    // current-route consumers must then reject the same missing durable grant.
+    await created.receive(rebound.connectionId, {
+      v: 1,
+      type: "heartbeat",
+      id: id(),
+      ts: new Date().toISOString(),
+      payload: {
+        bridge_version: "m4-route-test",
+        acks: [{ rsid: original.rsid, seq: 0 }],
+        sessions: [],
+      },
+    });
+    expectUnavailable(created);
   });
 
   type RouteRebindAuditBoolean = Exclude<keyof GatewayRouteRebindAuditSnapshot, "status" | "candidateCount">;
