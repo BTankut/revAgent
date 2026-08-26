@@ -306,16 +306,13 @@ describe.sequential("WP-12 direct real trio runtime fixture", () => {
           const initialProvenance = await waitForC39OriginProvenance(runtime, 45_000);
           await waitForC39ReconnectWatch(runtime, 45_000);
           // The recovery-proof CAS must be current before the retained
-          // terminal can be observed or retried. In particular, C39 no
-          // longer uses a sequenced document-context edge to escape N-1.
+          // terminal can be observed or retried. Settlement timing is
+          // deliberately not used: the later causal assertion proves the
+          // identical Gateway tuple and resume_ack_applied < restart_resend
+          // < terminal ACK ordering, alongside the proofless, stale, and
+          // substituted-route negatives. In particular, C39 no longer uses a
+          // sequenced document-context edge to escape N-1.
           const routeAuthorityBeforeOwnerRead = await waitForC39RouteRebindCurrent(runtime, 45_000);
-          let originSettledBeforeRouteEdge = false;
-          void originPromise.then(
-            () => { originSettledBeforeRouteEdge = true; },
-            () => { originSettledBeforeRouteEdge = true; },
-          );
-          await new Promise<void>((resolve) => setTimeout(resolve, 250));
-          expect(originSettledBeforeRouteEdge).toBe(false);
           const carrier = await c39OriginCarrierFromPromise(originPromise);
           const origin = Object.freeze({ requestId: carrier.origin_invocation_id, responseDigest: carrier.expected_result_digest });
           expect(origin.requestId).toMatch(UUID_V7);
