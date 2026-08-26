@@ -435,6 +435,65 @@ public sealed partial class RbpConnectionCoordinatorTests
     }
 
     [Fact]
+    public async Task ResumeMismatchedAckPublishesNoRoute()
+    {
+        using var fixture = await ResumeRouteFixture.CreateAsync(
+            respondToResume: false);
+        RbpEnvelope resume = await EventuallySentAsync(fixture.Cycle,
+            envelope => envelope.Type == "session_resume");
+        fixture.Cycle.Deliver(ResumeAck(fixture.Clock, "rs-other"));
+        await EventuallyAsync(() => !fixture.Routes.IsBound("rs-8080"));
+        Assert.Empty(fixture.Routes.Bound);
+        Assert.Null(fixture.Routes.Resolve("rs-8080"));
+        fixture.Stop();
+        await fixture.Run.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    [Fact]
+    public async Task AlteredDuplicateResumeAckDoesNotBindTwiceAndFencesRoute()
+    {
+        using var fixture = await ResumeRouteFixture.CreateAsync(
+            respondToResume: true);
+        await EventuallyAsync(() => fixture.Routes.IsBound("rs-8080"));
+        _ = Assert.Single(fixture.Routes.Bound, rsid => rsid == "rs-8080");
+        fixture.Cycle.Deliver(ResumeAck(fixture.Clock, "rs-altered"));
+        await EventuallyAsync(() => !fixture.Routes.IsBound("rs-8080"));
+        _ = Assert.Single(fixture.Routes.Bound, rsid => rsid == "rs-8080");
+        Assert.Null(fixture.Routes.Resolve("rs-8080"));
+        fixture.Stop();
+        await fixture.Run.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    [Fact]
+    public async Task LostResumeAckLeavesRouteAbsent()
+    {
+        using var fixture = await ResumeRouteFixture.CreateAsync(
+            respondToResume: false);
+        _ = await EventuallySentAsync(fixture.Cycle,
+            envelope => envelope.Type == "session_resume");
+        Assert.Empty(fixture.Routes.Bound);
+        Assert.Null(fixture.Routes.Resolve("rs-8080"));
+        fixture.Stop();
+        await fixture.Run.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Null(fixture.Routes.Resolve("rs-8080"));
+    }
+
+    [Fact]
+    public async Task ResumeTransportResetBeforeAckLeavesRouteAbsent()
+    {
+        using var fixture = await ResumeRouteFixture.CreateAsync(
+            respondToResume: false);
+        _ = await EventuallySentAsync(fixture.Cycle,
+            envelope => envelope.Type == "session_resume");
+        fixture.Cycle.Fail(new IOException("test reset before resume_ack"));
+        await EventuallyAsync(() => !fixture.Routes.IsBound("rs-8080"));
+        Assert.Empty(fixture.Routes.Bound);
+        Assert.Null(fixture.Routes.Resolve("rs-8080"));
+        fixture.Stop();
+        await fixture.Run.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    [Fact]
     public async Task WorkerRuntimePurgeUsesSevenDayJournalReleaseForSpoolCleanup()
     {
         using var directory = new RbpJournalTestDirectory();
@@ -1622,6 +1681,99 @@ public sealed partial class RbpConnectionCoordinatorTests
         {
             Resolved.Enqueue(rsid);
             return null;
+        }
+    }
+
+    private static RbpEnvelope ResumeAck(
+        ManualCoordinatorClock clock,
+        string rsid) => new(
+        1,
+        "resume_ack",
+        Id(9911),
+        clock.UtcNow.ToString("O"),
+        JsonSerializer.SerializeToElement(new
+        {
+            rsid,
+            last_rx_seq = 0,
+            resume_expires_at = "2026-07-27T10:00:00.000Z",
+        }),
+        RbpEnvelopeScope.Control,
+        Rsid: null,
+        Sequence: null,
+        Acknowledgement: null,
+        Hello: null,
+        HelloAck: null,
+        RbpEnvelopeDisposition.Known,
+        RbpEnvelope.FreezeAdditionalProperties(
+            new Dictionary<string, JsonElement>()));
+
+    private sealed class ResumeRouteFixture : IDisposable
+    {
+        private readonly RbpJournalTestDirectory _directory;
+        private readonly RbpJournalStore _store;
+        private readonly CancellationTokenSource _stop = new();
+
+        private ResumeRouteFixture(
+            RbpJournalTestDirectory directory,
+            RbpJournalStore store,
+            ManualCoordinatorClock clock,
+            FakeConnectionCycle cycle,
+            RecordingRouteAuthority routes)
+        {
+            _directory = directory;
+            _store = store;
+            Clock = clock;
+            Cycle = cycle;
+            Routes = routes;
+        }
+
+        internal ManualCoordinatorClock Clock { get; }
+        internal FakeConnectionCycle Cycle { get; }
+        internal RecordingRouteAuthority Routes { get; }
+        internal Task Run { get; private set; } = Task.CompletedTask;
+
+        internal static async Task<ResumeRouteFixture> CreateAsync(
+            bool respondToResume)
+        {
+            var directory = new RbpJournalTestDirectory();
+            var clock = new ManualCoordinatorClock();
+            RbpJournalStore store = OpenStore(directory, clock);
+            RbpLocalSessionSnapshot local = WatchedLocalSession(8080, 1000);
+            _ = await store.PersistRegisteredSessionAsync(
+                Registration(local, "rs-8080"));
+            var responder = new ScriptedGatewayResponder(clock);
+            var cycle = new FakeConnectionCycle(envelope =>
+                envelope.Type == "session_resume" && !respondToResume
+                    ? null
+                    : responder.Respond(envelope));
+            var routes = new RecordingRouteAuthority();
+            RbpConnectionCoordinator coordinator =
+                WorkerGatewayComposition.CreateCoordinator(
+                    new WorkerGatewayServices(
+                        new FakeConnectionCycleFactory(cycle), store,
+                        new MutableSessionCatalog(local),
+                        CompositionOptions() with
+                        {
+                            SessionRouteBindingAuthority = routes,
+                        },
+                        new WorkerAddinDispatchSurface(
+                            new AddinSessionRouter(
+                                new NeverInvokedAddinTransport()), routes),
+                        clock, new FixedRandomSource(0)));
+            var fixture = new ResumeRouteFixture(
+                directory, store, clock, cycle, routes);
+            fixture.Run = coordinator.RunAsync(fixture._stop.Token);
+            return fixture;
+        }
+
+        internal void Stop() => _stop.Cancel();
+
+        public void Dispose()
+        {
+            _stop.Cancel();
+            _store.DisposeAsync().AsTask().GetAwaiter().GetResult();
+            _stop.Dispose();
+            _directory.Dispose();
         }
     }
 
