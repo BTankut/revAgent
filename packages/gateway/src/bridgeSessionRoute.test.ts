@@ -106,7 +106,13 @@ async function mutateDurableRoute(
   rsid: string,
   mutate: (
     route: Record<string, unknown>,
-    root: { binding: { sessionVersion: number } },
+    root: {
+      binding: { sessionVersion: number };
+      lifecycle: {
+        liveDocumentRoute: Record<string, unknown> | null;
+        routeRebindFreshness?: unknown;
+      };
+    },
   ) => void,
 ): Promise<void> {
   const root = fixture.snapshot().records.find((row) =>
@@ -118,7 +124,10 @@ async function mutateDurableRoute(
   if (root === undefined || marker === undefined) throw new Error("normalized fixture session is missing");
   const nextRoot = structuredClone(root.value) as {
     rootVersion: number;
-    lifecycle: { liveDocumentRoute: Record<string, unknown> | null };
+    lifecycle: {
+      liveDocumentRoute: Record<string, unknown> | null;
+      routeRebindFreshness?: unknown;
+    };
     binding: { sessionVersion: number };
   };
   const route = nextRoot.lifecycle.liveDocumentRoute;
@@ -1628,6 +1637,79 @@ describe("GatewayBridgeSessionAuthority live document routing", () => {
     });
   });
 
+  it.each(["wss", "http_sse"] as const)(
+    "preserves the %s freshness watermark across proofless downgrade and restart",
+    async (binding) => {
+      const capabilities = binding === "http_sse"
+        ? ["route_rebind_proof_v1", "transport_streamable_http"]
+        : ["route_rebind_proof_v1"];
+      const fixture = createRestartableTestStore();
+      const created = new GatewayBridgeSessionAuthority(
+        fixture.store,
+        identity({ connectionCapabilities: capabilities }),
+      );
+      authorities.push(created);
+      await created.open();
+      const original = await register(created, `route-watermark-${binding}`, binding, capabilities);
+      await created.detach(original.connectionId);
+      const first = await openConnection(created, binding, capabilities);
+      const incarnationA = `sha256:${"a".repeat(64)}`;
+      await created.receive(first.connectionId, resumeWithRouteProof({
+        rsid: original.rsid,
+        resumeToken: original.resumeToken,
+        connectionId: first.connectionId,
+        sourceRevision: 2,
+        cacheIncarnationDigest: incarnationA,
+      }));
+      await created.detach(first.connectionId);
+
+      const downgrade = await openConnection(created, binding, capabilities);
+      await created.receive(downgrade.connectionId, {
+        v: 1,
+        type: "session_resume",
+        id: id(),
+        ts: new Date().toISOString(),
+        payload: {
+          rsid: original.rsid,
+          resume_token: original.resumeToken,
+          last_rx_seq: 0,
+        },
+      });
+      expectUnavailable(created);
+      await created.close();
+
+      const restarted = new GatewayBridgeSessionAuthority(
+        fixture.store,
+        identity({ connectionCapabilities: capabilities }),
+      );
+      authorities.push(restarted);
+      await restarted.open();
+      const stale = await openConnection(restarted, binding, capabilities);
+      await expect(restarted.receive(stale.connectionId, resumeWithRouteProof({
+        rsid: original.rsid,
+        resumeToken: original.resumeToken,
+        connectionId: stale.connectionId,
+        sourceRevision: 1,
+        cacheIncarnationDigest: incarnationA,
+      }))).rejects.toMatchObject({
+        code: "protocol",
+        message: "route rebind freshness rejected: source revision regressed within cache incarnation",
+      });
+      const incarnationB = `sha256:${"b".repeat(64)}`;
+      await restarted.receive(stale.connectionId, resumeWithRouteProof({
+        rsid: original.rsid,
+        resumeToken: original.resumeToken,
+        connectionId: stale.connectionId,
+        sourceRevision: 1,
+        cacheIncarnationDigest: incarnationB,
+      }));
+      expect(resolve(restarted).documentIdentity).toEqual({
+        kind: "live",
+        session_document_id: "document-rebound",
+      });
+    },
+  );
+
   it.each([
     ["resultant binding version", (route: Record<string, unknown>) => {
       route.resultantSessionVersion = Number(route.resultantSessionVersion) + 1;
@@ -1667,6 +1749,46 @@ describe("GatewayBridgeSessionAuthority live document routing", () => {
       },
     });
     expectUnavailable(created);
+  });
+
+  it("fails closed when the persisted freshness watermark is malformed", async () => {
+    const fixture = createRestartableTestStore();
+    const created = new GatewayBridgeSessionAuthority(
+      fixture.store,
+      identity({ connectionCapabilities: ["route_rebind_proof_v1"] }),
+    );
+    authorities.push(created);
+    await created.open();
+    const original = await register(created, "route-watermark-malformed");
+    await created.detach(original.connectionId);
+    const rebound = await openConnection(created, "wss", ["route_rebind_proof_v1"]);
+    await created.receive(rebound.connectionId, resumeWithRouteProof({
+      rsid: original.rsid,
+      resumeToken: original.resumeToken,
+      connectionId: rebound.connectionId,
+    }));
+    await mutateDurableRoute(fixture, original.rsid, (_route, root) => {
+      root.lifecycle.routeRebindFreshness = {
+        version: 1,
+        cacheIncarnationDigest: `sha256:${"a".repeat(64)}`,
+        sourceRevision: 0,
+        contextDigest: "a".repeat(64),
+      };
+    });
+    await expect(created.receive(rebound.connectionId, {
+      v: 1,
+      type: "heartbeat",
+      id: id(),
+      ts: new Date().toISOString(),
+      payload: {
+        bridge_version: "m4-route-test",
+        acks: [{ rsid: original.rsid, seq: 0 }],
+        sessions: [],
+      },
+    })).rejects.toMatchObject({ code: "unavailable" });
+    const index = authorities.indexOf(created);
+    if (index >= 0) authorities.splice(index, 1);
+    await created.close().catch(() => undefined);
   });
 
   it("refuses an ambiguous identity with multiple matching live sessions", async () => {

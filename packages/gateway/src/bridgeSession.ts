@@ -547,6 +547,14 @@ interface DurableRouteRebindReceipt {
   readonly resumeAckSerialized: string;
 }
 
+/** Persistent anti-downgrade fact; it is never route authority by itself. */
+interface DurableRouteRebindFreshness {
+  readonly version: 1;
+  readonly cacheIncarnationDigest: `sha256:${string}`;
+  readonly sourceRevision: number;
+  readonly contextDigest: string;
+}
+
 interface DurableRbpSession {
   readonly schema: typeof GATEWAY_RBP_SESSION_NAMESPACE;
   /** Optional only for pre-WP-02 legacy rows; every new write carries it. */
@@ -574,6 +582,8 @@ interface DurableRbpSession {
   readonly liveDocumentRoute: DurableLiveDocumentRoute | null;
   /** Absent only for rows written before route-rebind proof support. */
   readonly routeRebindReceipt?: DurableRouteRebindReceipt | null;
+  /** Absent only for rows written before route-rebind proof support. */
+  readonly routeRebindFreshness?: DurableRouteRebindFreshness | null;
   readonly pending: DurablePendingDispatch | null;
   readonly evidence: readonly DurableDispatchEvidence[];
   /** Optional only for pre-WP-02 legacy rows. */
@@ -604,7 +614,7 @@ interface DurableRbpSessionV2 {
   readonly rsid: string;
   readonly identity: Pick<DurableRbpSession, "userId" | "deviceId" | "seatId" | "identityAuthority">;
   readonly binding: Pick<DurableRbpSession, "sessionBindingId" | "sessionVersion" | "connectionId" | "binding" | "resumeTokenDigest" | "resumeExpiresAtMs" | "grantedCapabilities">;
-  readonly lifecycle: Pick<DurableRbpSession, "connectionLifecycle" | "sessionLifecycle" | "lastHeartbeatAtMs" | "liveDocumentRoute" | "routeRebindReceipt" | "createdAtMs" | "updatedAtMs" | "recordVersion">;
+  readonly lifecycle: Pick<DurableRbpSession, "connectionLifecycle" | "sessionLifecycle" | "lastHeartbeatAtMs" | "liveDocumentRoute" | "routeRebindReceipt" | "routeRebindFreshness" | "createdAtMs" | "updatedAtMs" | "recordVersion">;
   readonly sequence: Pick<DurableRbpSession, "sequence" | "pending" | "d2ConformanceOriginResend">;
   readonly migration: {
     readonly sourceVersionDigest: `sha256:${string}`;
@@ -1585,6 +1595,7 @@ function parseStoredSession(
   parseSessionIdentityAuthority(candidate.identityAuthority);
   const route = parseDurableLiveDocumentRoute(candidate.liveDocumentRoute);
   const receipt = parseRouteRebindReceipt(candidate.routeRebindReceipt);
+  const freshness = parseRouteRebindFreshness(candidate.routeRebindFreshness);
   sessionEgressFence(candidate);
   sessionConflictIndex(candidate);
   if (candidate.d2ConformanceOriginResend !== undefined && candidate.d2ConformanceOriginResend !== null) {
@@ -1604,6 +1615,7 @@ function parseStoredSession(
     ...candidate,
     liveDocumentRoute: route,
     routeRebindReceipt: receipt,
+    routeRebindFreshness: freshness,
   };
 }
 
@@ -1662,6 +1674,18 @@ function parseRouteRebindReceipt(value: unknown): DurableRouteRebindReceipt | nu
     throw new Error("malformed route rebind receipt");
   }
   return value as unknown as DurableRouteRebindReceipt;
+}
+
+function parseRouteRebindFreshness(value: unknown): DurableRouteRebindFreshness | null {
+  if (value === undefined || value === null) return null;
+  if (!isRecord(value) || !hasExactKeys(value, [
+    "version", "cacheIncarnationDigest", "sourceRevision", "contextDigest",
+  ]) || value.version !== 1 || typeof value.cacheIncarnationDigest !== "string" ||
+    !DIGEST_PATTERN.test(value.cacheIncarnationDigest) || !isSafePositiveInteger(value.sourceRevision) ||
+    !isDocumentContextDigest(value.contextDigest)) {
+    throw new Error("malformed route rebind freshness watermark");
+  }
+  return value as unknown as DurableRouteRebindFreshness;
 }
 
 function nextSessionRecord(
@@ -2798,15 +2822,12 @@ type RouteRebindFreshnessDecision =
   | { readonly kind: "rejected"; readonly reason: string };
 
 function compareRouteRebindFreshness(
-  prior: DurableLiveDocumentRoute | null,
+  prior: DurableRouteRebindFreshness | null,
   proof: RouteRebindProof,
+  record: DurableRbpSession,
   connection: LiveConnection,
 ): RouteRebindFreshnessDecision {
-  if (prior === null || prior.source !== "session_resume_route_rebind_v1") {
-    // Legacy/sequenced routes carry no cache-incarnation authority and are
-    // deliberately never promoted into this comparison.
-    return { kind: "accepted" };
-  }
+  if (prior === null) return { kind: "accepted" };
   const sameIncarnation =
     prior.cacheIncarnationDigest === proof.freshness.cache_incarnation_digest;
   if (sameIncarnation && proof.freshness.source_revision < prior.sourceRevision) {
@@ -2818,10 +2839,35 @@ function compareRouteRebindFreshness(
     }
     return { kind: "rejected", reason: "equal freshness requires exact proof receipt replay" };
   }
-  if (prior.observedConnectionId === connection.connectionId) {
+  if (record.connectionId === connection.connectionId) {
     return { kind: "rejected", reason: "new proof cannot replace an active same-connection proof" };
   }
   return { kind: "accepted" };
+}
+
+function routeRebindFreshnessFor(record: DurableRbpSession): DurableRouteRebindFreshness | null {
+  if (record.routeRebindFreshness !== undefined && record.routeRebindFreshness !== null) {
+    return record.routeRebindFreshness;
+  }
+  // Compatibility for proof rows committed before the watermark existed;
+  // sequenced data and legacy rows intentionally supply no freshness fact.
+  const route = record.liveDocumentRoute;
+  if (route === null || route.source !== "session_resume_route_rebind_v1") return null;
+  return {
+    version: 1,
+    cacheIncarnationDigest: route.cacheIncarnationDigest,
+    sourceRevision: route.sourceRevision,
+    contextDigest: route.contextDigest,
+  };
+}
+
+function routeRebindFreshnessFrom(proof: RouteRebindProof): DurableRouteRebindFreshness {
+  return {
+    version: 1,
+    cacheIncarnationDigest: proof.freshness.cache_incarnation_digest as `sha256:${string}`,
+    sourceRevision: proof.freshness.source_revision,
+    contextDigest: proof.context_digest,
+  };
 }
 
 function invocationPolicy(request: GatewayExecutorRequest): InvokeEnvelope["payload"]["policy"] {
@@ -3675,7 +3721,7 @@ class SessionAggregateRepository {
       schema: GATEWAY_RBP_SESSION_V2_NAMESPACE, generation: 2, rootVersion, tenantId: record.tenantId, rsid: record.rsid,
       identity: { userId: record.userId, deviceId: record.deviceId, seatId: record.seatId, identityAuthority: record.identityAuthority },
       binding: { sessionBindingId: record.sessionBindingId, sessionVersion: record.sessionVersion, connectionId: record.connectionId, binding: record.binding, resumeTokenDigest: record.resumeTokenDigest, resumeExpiresAtMs: record.resumeExpiresAtMs, grantedCapabilities: record.grantedCapabilities },
-      lifecycle: { connectionLifecycle: record.connectionLifecycle, sessionLifecycle: record.sessionLifecycle, lastHeartbeatAtMs: record.lastHeartbeatAtMs, liveDocumentRoute: record.liveDocumentRoute, routeRebindReceipt: record.routeRebindReceipt ?? null, recordVersion: record.recordVersion, createdAtMs: record.createdAtMs, updatedAtMs: record.updatedAtMs },
+      lifecycle: { connectionLifecycle: record.connectionLifecycle, sessionLifecycle: record.sessionLifecycle, lastHeartbeatAtMs: record.lastHeartbeatAtMs, liveDocumentRoute: record.liveDocumentRoute, routeRebindReceipt: record.routeRebindReceipt ?? null, routeRebindFreshness: record.routeRebindFreshness ?? null, recordVersion: record.recordVersion, createdAtMs: record.createdAtMs, updatedAtMs: record.updatedAtMs },
       sequence: { sequence: record.sequence, pending: record.pending, ...(record.d2ConformanceOriginResend === undefined ? {} : { d2ConformanceOriginResend: record.d2ConformanceOriginResend }) }, migration, childRefs,
       childrenDigest: digest(canonicalizeJson(childRefs as unknown as JsonValue)),
     };
@@ -9171,8 +9217,9 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         }
         if (suppliedProof !== null) {
           const freshness = compareRouteRebindFreshness(
-            record.liveDocumentRoute,
+            routeRebindFreshnessFor(record),
             suppliedProof,
+            record,
             connection,
           );
           if (freshness.kind === "rejected") {
@@ -9420,6 +9467,11 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
                 suppliedProofDigest!,
               ),
           routeRebindReceipt: null,
+          // Proofless resume clears only active route/receipt. The watermark
+          // remains bound to this durable RSID and owner row.
+          routeRebindFreshness: suppliedProof === null
+            ? routeRebindFreshnessFor(recovered)
+            : routeRebindFreshnessFrom(suppliedProof),
           connectionLifecycle,
           sessionLifecycle,
           lastHeartbeatAtMs: nowMs,
@@ -9914,6 +9966,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         acceptedInbound: [],
       },
       liveDocumentRoute: null,
+      routeRebindFreshness: null,
       pending: null,
       evidence: [],
       egressFence: openEgressFence(),
