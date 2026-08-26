@@ -147,7 +147,7 @@ function identity(capabilities: {
   };
 }
 
-function hello(): HelloEnvelope {
+function hello(capabilities: readonly string[] = ["partial_progress"]): HelloEnvelope {
   return {
     type: "hello",
     id: id(),
@@ -155,7 +155,7 @@ function hello(): HelloEnvelope {
     payload: {
       min_protocol: 1,
       max_protocol: 1,
-      capabilities: ["partial_progress"],
+      capabilities: [...capabilities],
       bridge_version: "m4-route-test",
       device_id: DEVICE_ID,
       machine: { hostname: "petrucci", os: "windows" },
@@ -291,23 +291,65 @@ function registeredFrame(channel: TestChannel): SessionRegisteredEnvelope {
 async function openConnection(
   authority: GatewayBridgeSessionAuthority,
   binding: "wss" | "http_sse" = "wss",
+  capabilities: readonly string[] = ["partial_progress"],
 ): Promise<{ readonly connectionId: string; readonly channel: TestChannel }> {
   const openedChannel = channel();
   const opened = await authority.openConnection({
     deviceToken: DEVICE_TOKEN,
     binding,
-    hello: hello(),
+    hello: hello(capabilities),
     channel: openedChannel,
   });
   return { connectionId: opened.connectionId, channel: openedChannel };
+}
+
+function resumeWithRouteProof(input: {
+  readonly rsid: string;
+  readonly resumeToken: string;
+  readonly connectionId: string;
+  readonly lastRxSeq?: number;
+  readonly proofId?: string;
+  readonly context?: Record<string, unknown>;
+}): Extract<RbpEnvelope, { type: "session_resume" }> {
+  const context = input.context ?? {
+    documents: [document("document-rebound", true)],
+    active_document: "document-rebound",
+    active_view: null,
+  };
+  return {
+    v: 1,
+    type: "session_resume",
+    id: id(),
+    ts: new Date().toISOString(),
+    payload: {
+      rsid: input.rsid,
+      resume_token: input.resumeToken,
+      last_rx_seq: input.lastRxSeq ?? 0,
+      route_rebind_proof: {
+        version: 1,
+        connection_id: input.connectionId,
+        proof_id: input.proofId ?? id(),
+        context,
+        context_digest: createHash("sha256")
+          .update("revagent:doc-context-payload:v1\n", "utf8")
+          .update(canonicalizeJson(context as JsonValue), "utf8")
+          .digest("hex"),
+        freshness: {
+          source_revision: 1,
+          cache_incarnation_digest: `sha256:${"c".repeat(64)}`,
+        },
+      },
+    },
+  };
 }
 
 async function register(
   authority: GatewayBridgeSessionAuthority,
   localSessionKey = "local-route",
   binding: "wss" | "http_sse" = "wss",
+  capabilities: readonly string[] = ["partial_progress"],
 ) {
-  const opened = await openConnection(authority, binding);
+  const opened = await openConnection(authority, binding, capabilities);
   await authority.receive(opened.connectionId, registration(localSessionKey));
   const registered = registeredFrame(opened.channel);
   return {
@@ -1349,6 +1391,124 @@ describe("GatewayBridgeSessionAuthority live document routing", () => {
       kind: "live",
       session_document_id: "document-after-resume",
     });
+  });
+
+  it.each(["wss", "http_sse"] as const)(
+    "binds a fresh route proof through the shared %s resume CAS without consuming data sequence",
+    async (binding) => {
+      const capabilities = binding === "http_sse"
+        ? ["route_rebind_proof_v1", "transport_streamable_http"]
+        : ["route_rebind_proof_v1"];
+      const created = new GatewayBridgeSessionAuthority(
+        createRestartableTestStore().store,
+        identity({ connectionCapabilities: capabilities }),
+      );
+      authorities.push(created);
+      await created.open();
+      const original = await register(created, `route-rebind-${binding}`, binding, capabilities);
+      await created.detach(original.connectionId);
+      const rebound = await openConnection(created, binding, capabilities);
+      const proof = resumeWithRouteProof({
+        rsid: original.rsid,
+        resumeToken: original.resumeToken,
+        connectionId: rebound.connectionId,
+      });
+
+      await created.receive(rebound.connectionId, proof);
+      expect(rebound.channel.frames.filter((frame) => frame.type === "resume_ack")).toHaveLength(1);
+      expect(resolve(created).documentIdentity).toEqual({
+        kind: "live",
+        session_document_id: "document-rebound",
+      });
+      // Proof provenance deliberately has no observed data sequence.
+      expect(created.readCurrentDocumentRouteAuditSnapshot({ tenantId: TENANT_ID })).toBeNull();
+
+      // ACK-loss retry is an exact receipt replay: it does not install a
+      // second route or consume a data sequence.
+      await created.receive(rebound.connectionId, proof);
+      expect(rebound.channel.frames.filter((frame) => frame.type === "resume_ack")).toHaveLength(2);
+      expect(resolve(created).documentIdentity).toEqual({
+        kind: "live",
+        session_document_id: "document-rebound",
+      });
+
+      // The first real data context consumes sequence 1, proving that the
+      // proof itself did not create a synthetic accepted-inbound row.
+      await created.receive(rebound.connectionId, contextUpdate({
+        rsid: original.rsid,
+        seq: 1,
+        activeDocument: "document-after-proof",
+        documents: [document("document-after-proof", true)],
+      }));
+      expect(resolve(created).documentIdentity).toEqual({
+        kind: "live",
+        session_document_id: "document-after-proof",
+      });
+      expect(created.readCurrentDocumentRouteAuditSnapshot({ tenantId: TENANT_ID }))
+        .toMatchObject({ observedSequence: 1 });
+
+      const altered = structuredClone(proof) as typeof proof & {
+        payload: typeof proof.payload & { route_rebind_proof: Record<string, unknown> };
+      };
+      altered.payload.route_rebind_proof = {
+        ...altered.payload.route_rebind_proof,
+        proof_id: id(),
+      };
+      await expect(created.receive(rebound.connectionId, altered)).rejects.toMatchObject({
+        code: "protocol",
+        message: "route rebind proof receipt is immutable",
+      });
+    },
+  );
+
+  it("fails closed when the route proof is present without a granted capability", async () => {
+    const created = await authority();
+    const original = await register(created, "route-rebind-no-cap");
+    await created.detach(original.connectionId);
+    const rebound = await openConnection(created);
+    await expect(created.receive(rebound.connectionId, resumeWithRouteProof({
+      rsid: original.rsid,
+      resumeToken: original.resumeToken,
+      connectionId: rebound.connectionId,
+    }))).rejects.toMatchObject({ code: "unsupported" });
+    expectUnavailable(created);
+  });
+
+  it("rejects stale connection and tampered digest proofs before resume CAS", async () => {
+    const created = new GatewayBridgeSessionAuthority(
+      createRestartableTestStore().store,
+      identity({ connectionCapabilities: ["route_rebind_proof_v1"] }),
+    );
+    authorities.push(created);
+    await created.open();
+    const original = await register(created, "route-rebind-negative");
+    await created.detach(original.connectionId);
+    const rebound = await openConnection(created, "wss", ["route_rebind_proof_v1"]);
+    const stale = resumeWithRouteProof({
+      rsid: original.rsid,
+      resumeToken: original.resumeToken,
+      connectionId: original.connectionId,
+    });
+    await expect(created.receive(rebound.connectionId, stale)).rejects.toMatchObject({
+      code: "auth",
+      message: "route rebind proof is not bound to the current connection",
+    });
+
+    const malformed = resumeWithRouteProof({
+      rsid: original.rsid,
+      resumeToken: original.resumeToken,
+      connectionId: rebound.connectionId,
+    }) as ReturnType<typeof resumeWithRouteProof> & {
+      payload: ReturnType<typeof resumeWithRouteProof>["payload"] & {
+        route_rebind_proof: Record<string, unknown>;
+      };
+    };
+    malformed.payload.route_rebind_proof.context_digest = "0".repeat(64);
+    await expect(created.receive(rebound.connectionId, malformed)).rejects.toMatchObject({
+      code: "protocol",
+      message: "route rebind context digest is invalid",
+    });
+    expectUnavailable(created);
   });
 
   it("refuses an ambiguous identity with multiple matching live sessions", async () => {

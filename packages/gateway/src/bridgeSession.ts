@@ -35,6 +35,7 @@ import {
   type RbpEnvelope,
   type RbpSequenceState,
   type SessionRegister,
+  type SessionResume,
   type SessionLifecycleState,
   type SessionUnregister,
   type MutationScope,
@@ -42,6 +43,22 @@ import {
   type ArtifactReference,
   type TerminalStreamManifest,
 } from "@revagent/protocol";
+
+interface RouteRebindProof {
+  readonly version: 1;
+  readonly connection_id: string;
+  readonly proof_id: string;
+  readonly context: DocContextUpdate;
+  readonly context_digest: string;
+  readonly freshness: {
+    readonly source_revision: number;
+    readonly cache_incarnation_digest: string;
+  };
+}
+
+type RouteRebindResumePayload = SessionResume & {
+  readonly route_rebind_proof?: unknown;
+};
 
 import {
   isCanonicalMachineFingerprint,
@@ -196,6 +213,7 @@ const IMPLEMENTED_CONNECTION_CAPABILITIES = Object.freeze([
   "chunked_results",
   "artifact_result_v1",
   "transport_streamable_http",
+  "route_rebind_proof_v1",
 ] as const);
 
 const IMPLEMENTED_SESSION_CAPABILITIES = Object.freeze([
@@ -493,12 +511,40 @@ interface TerminalAdmission {
   readonly terminalTruth: DurableTerminalTruth;
 }
 
-interface DurableLiveDocumentRoute {
+interface DurableDataDocumentRoute {
+  readonly source: "data_doc_context_v1";
   readonly sessionDocumentId: string;
   readonly observedConnectionId: string;
   readonly observedSequence: number;
   /** Diagnostic-only correlate for the admitted payload, never north input. */
   readonly contextDigest: string;
+}
+
+interface DurableResumeRebindDocumentRoute {
+  readonly source: "session_resume_route_rebind_v1";
+  readonly sessionDocumentId: string;
+  readonly observedConnectionId: string;
+  /** Diagnostic-only correlate for the freshly admitted proof context. */
+  readonly contextDigest: string;
+  readonly proofId: string;
+  readonly serverProofDigest: `sha256:${string}`;
+  readonly sourceRevision: number;
+  readonly cacheIncarnationDigest: `sha256:${string}`;
+  readonly resultantSessionBindingId: string;
+  readonly resultantSessionVersion: number;
+  readonly authorityGenerationDigest: `sha256:${string}`;
+}
+
+type DurableLiveDocumentRoute =
+  | DurableDataDocumentRoute
+  | DurableResumeRebindDocumentRoute;
+
+interface DurableRouteRebindReceipt {
+  readonly version: 1;
+  readonly connectionId: string;
+  readonly proofId: string;
+  readonly serverProofDigest: `sha256:${string}`;
+  readonly resumeAckSerialized: string;
 }
 
 interface DurableRbpSession {
@@ -526,6 +572,8 @@ interface DurableRbpSession {
   readonly lastHeartbeatAtMs: number;
   readonly sequence: RbpSequenceState;
   readonly liveDocumentRoute: DurableLiveDocumentRoute | null;
+  /** Absent only for rows written before route-rebind proof support. */
+  readonly routeRebindReceipt?: DurableRouteRebindReceipt | null;
   readonly pending: DurablePendingDispatch | null;
   readonly evidence: readonly DurableDispatchEvidence[];
   /** Optional only for pre-WP-02 legacy rows. */
@@ -556,7 +604,7 @@ interface DurableRbpSessionV2 {
   readonly rsid: string;
   readonly identity: Pick<DurableRbpSession, "userId" | "deviceId" | "seatId" | "identityAuthority">;
   readonly binding: Pick<DurableRbpSession, "sessionBindingId" | "sessionVersion" | "connectionId" | "binding" | "resumeTokenDigest" | "resumeExpiresAtMs" | "grantedCapabilities">;
-  readonly lifecycle: Pick<DurableRbpSession, "connectionLifecycle" | "sessionLifecycle" | "lastHeartbeatAtMs" | "liveDocumentRoute" | "createdAtMs" | "updatedAtMs" | "recordVersion">;
+  readonly lifecycle: Pick<DurableRbpSession, "connectionLifecycle" | "sessionLifecycle" | "lastHeartbeatAtMs" | "liveDocumentRoute" | "routeRebindReceipt" | "createdAtMs" | "updatedAtMs" | "recordVersion">;
   readonly sequence: Pick<DurableRbpSession, "sequence" | "pending" | "d2ConformanceOriginResend">;
   readonly migration: {
     readonly sourceVersionDigest: `sha256:${string}`;
@@ -1535,6 +1583,8 @@ function parseStoredSession(
     throw new Error("malformed durable session");
   }
   parseSessionIdentityAuthority(candidate.identityAuthority);
+  const route = parseDurableLiveDocumentRoute(candidate.liveDocumentRoute);
+  const receipt = parseRouteRebindReceipt(candidate.routeRebindReceipt);
   sessionEgressFence(candidate);
   sessionConflictIndex(candidate);
   if (candidate.d2ConformanceOriginResend !== undefined && candidate.d2ConformanceOriginResend !== null) {
@@ -1548,7 +1598,70 @@ function parseStoredSession(
       !isSafeNonNegativeInteger(d2.claimedAtMs)
     ) throw new Error("malformed D2 conformance resend state");
   }
-  return candidate;
+  // Dual-read: old rows are data-context routes. They are never promoted by
+  // resume; the next ordinary data update writes the explicit provenance.
+  return {
+    ...candidate,
+    liveDocumentRoute: route,
+    routeRebindReceipt: receipt,
+  };
+}
+
+function parseDurableLiveDocumentRoute(value: unknown): DurableLiveDocumentRoute | null {
+  if (value === null) return null;
+  if (!isRecord(value) || !isBoundedNonEmptyString(value.sessionDocumentId) ||
+    !isGatewayUuidV7(value.observedConnectionId as string) || !isDocumentContextDigest(value.contextDigest)) {
+    throw new Error("malformed durable live document route");
+  }
+  // Legacy v1 rows predate provenance and can only have been written by a
+  // sequenced doc_context_update; decode them as that source, never as proof.
+  if (value.source === undefined) {
+    if (!hasExactKeys(value, ["sessionDocumentId", "observedConnectionId", "observedSequence", "contextDigest"]) ||
+      !isSafePositiveInteger(value.observedSequence)) {
+      throw new Error("malformed legacy live document route");
+    }
+    return {
+      source: "data_doc_context_v1",
+      sessionDocumentId: value.sessionDocumentId as string,
+      observedConnectionId: value.observedConnectionId as string,
+      observedSequence: value.observedSequence,
+      contextDigest: value.contextDigest,
+    };
+  }
+  if (value.source === "data_doc_context_v1") {
+    if (!hasExactKeys(value, ["source", "sessionDocumentId", "observedConnectionId", "observedSequence", "contextDigest"]) ||
+      !isSafePositiveInteger(value.observedSequence)) {
+      throw new Error("malformed data document route");
+    }
+    return value as unknown as DurableDataDocumentRoute;
+  }
+  if (value.source === "session_resume_route_rebind_v1") {
+    if (!hasExactKeys(value, [
+      "source", "sessionDocumentId", "observedConnectionId", "contextDigest", "proofId",
+      "serverProofDigest", "sourceRevision", "cacheIncarnationDigest",
+      "resultantSessionBindingId", "resultantSessionVersion", "authorityGenerationDigest",
+    ]) || !isGatewayUuidV7(value.proofId as string) || typeof value.serverProofDigest !== "string" ||
+      !DIGEST_PATTERN.test(value.serverProofDigest) || !isSafePositiveInteger(value.sourceRevision) ||
+      typeof value.cacheIncarnationDigest !== "string" || !DIGEST_PATTERN.test(value.cacheIncarnationDigest) ||
+      !isGatewayUuidV7(value.resultantSessionBindingId as string) || !isSafePositiveInteger(value.resultantSessionVersion) ||
+      typeof value.authorityGenerationDigest !== "string" || !DIGEST_PATTERN.test(value.authorityGenerationDigest)) {
+      throw new Error("malformed route rebind document route");
+    }
+    return value as unknown as DurableResumeRebindDocumentRoute;
+  }
+  throw new Error("unknown durable document route provenance");
+}
+
+function parseRouteRebindReceipt(value: unknown): DurableRouteRebindReceipt | null {
+  if (value === undefined || value === null) return null;
+  if (!isRecord(value) || !hasExactKeys(value, [
+    "version", "connectionId", "proofId", "serverProofDigest", "resumeAckSerialized",
+  ]) || value.version !== 1 || !isGatewayUuidV7(value.connectionId as string) ||
+    !isGatewayUuidV7(value.proofId as string) || typeof value.serverProofDigest !== "string" ||
+    !DIGEST_PATTERN.test(value.serverProofDigest) || !isBoundedNonEmptyString(value.resumeAckSerialized)) {
+    throw new Error("malformed route rebind receipt");
+  }
+  return value as unknown as DurableRouteRebindReceipt;
 }
 
 function nextSessionRecord(
@@ -2503,7 +2616,7 @@ function liveDocumentRouteFrom(
   connectionId: string,
   sequence: number,
   contextDigest: string,
-): DurableLiveDocumentRoute | null {
+): DurableDataDocumentRoute | null {
   if (!isDocumentContextDigest(contextDigest)) {
     throw new GatewayRbpFault("protocol", "document context digest is invalid", 400, 4400);
   }
@@ -2548,10 +2661,135 @@ function liveDocumentRouteFrom(
   }
 
   return {
+    source: "data_doc_context_v1",
     sessionDocumentId: payload.active_document,
     observedConnectionId: connectionId,
     observedSequence: sequence,
     contextDigest,
+  };
+}
+
+function isBoundedString(value: unknown): value is string {
+  return typeof value === "string" && value.length <= MAX_DURABLE_STRING_LENGTH;
+}
+
+/** Strictly admits the one capability-gated, sequence-free route proof. */
+function parseRouteRebindProof(value: unknown): RouteRebindProof {
+  if (!isRecord(value) || !hasExactKeys(value, [
+    "version", "connection_id", "proof_id", "context", "context_digest", "freshness",
+  ]) || value.version !== 1 || !isGatewayUuidV7(value.connection_id as string) ||
+    !isGatewayUuidV7(value.proof_id as string) || !isDocumentContextDigest(value.context_digest) ||
+    !isRecord(value.freshness) || !hasExactKeys(value.freshness, [
+      "source_revision", "cache_incarnation_digest",
+    ]) || !isSafePositiveInteger(value.freshness.source_revision) ||
+    typeof value.freshness.cache_incarnation_digest !== "string" ||
+    !DIGEST_PATTERN.test(value.freshness.cache_incarnation_digest) ||
+    !isRecord(value.context)) {
+    throw new GatewayRbpFault("protocol", "route rebind proof is malformed", 400, 4400);
+  }
+  const context = value.context;
+  const contextKeys = Object.keys(context).sort();
+  const allowedContextKeys = ["active_document", "active_view", "discipline_hint", "documents"];
+  if (!contextKeys.every((key) => allowedContextKeys.includes(key)) ||
+    !hasExactKeys(context, contextKeys.includes("discipline_hint")
+      ? allowedContextKeys : ["documents", "active_document", "active_view"]) ||
+    !Array.isArray(context.documents) || context.documents.length > 32 ||
+    !(context.active_document === null || isBoundedNonEmptyString(context.active_document)) ||
+    !(context.active_view === null || isRecord(context.active_view)) ||
+    (context.discipline_hint !== undefined && !isBoundedString(context.discipline_hint))) {
+    throw new GatewayRbpFault("protocol", "route rebind context is malformed", 400, 4400);
+  }
+  for (const document of context.documents) {
+    if (!isRecord(document) || !hasExactKeys(document, [
+      "document_id", "title", "path_digest", "is_workshared", "is_active",
+    ]) || !isBoundedNonEmptyString(document.document_id) || !isBoundedString(document.title) ||
+      !(document.path_digest === null ||
+        (typeof document.path_digest === "string" && DIGEST_PATTERN.test(document.path_digest))) ||
+      typeof document.is_workshared !== "boolean" || typeof document.is_active !== "boolean") {
+      throw new GatewayRbpFault("protocol", "route rebind context is malformed", 400, 4400);
+    }
+  }
+  if (context.active_view !== null) {
+    const view = context.active_view;
+    const keys = Object.keys(view).sort();
+    if (!hasExactKeys(view, keys.includes("level") ? ["id", "name", "type", "level"] : ["id", "name", "type"]) ||
+      !isBoundedNonEmptyString(view.id) || !isBoundedString(view.name) ||
+      !isBoundedNonEmptyString(view.type) ||
+      !(view.level === undefined || view.level === null || isBoundedString(view.level))) {
+      throw new GatewayRbpFault("protocol", "route rebind context is malformed", 400, 4400);
+    }
+  }
+  const typed = value as unknown as RouteRebindProof;
+  if (documentContextDigest(typed.context as unknown as JsonValue) !== typed.context_digest) {
+    throw new GatewayRbpFault("protocol", "route rebind context digest is invalid", 400, 4400);
+  }
+  return typed;
+}
+
+function serverRouteRebindProofDigest(
+  proof: RouteRebindProof,
+  record: DurableRbpSession,
+  connection: LiveConnection,
+): `sha256:${string}` {
+  return digest(canonicalizeJson({
+    domain: "revagent.gateway.session-resume-route-rebind/v1",
+    proof,
+    tenantId: record.tenantId,
+    rsid: record.rsid,
+    connectionId: connection.connectionId,
+    binding: connection.binding,
+    userId: record.userId,
+    deviceId: record.deviceId,
+    seatId: record.seatId,
+    identityAuthority: record.identityAuthority ?? null,
+  } as unknown as JsonValue));
+}
+
+function routeRebindAuthorityGenerationDigest(
+  record: DurableRbpSession,
+  connection: LiveConnection,
+): `sha256:${string}` {
+  return digest(canonicalizeJson({
+    domain: "revagent.gateway.session-resume-route-authority/v1",
+    connectionId: connection.connectionId,
+    binding: connection.binding,
+    tenantId: record.tenantId,
+    userId: record.userId,
+    deviceId: record.deviceId,
+    seatId: record.seatId,
+    identityAuthority: record.identityAuthority ?? null,
+    connectionAuthority: connection.auth,
+  } as unknown as JsonValue));
+}
+
+function liveRouteFromRebindProof(
+  proof: RouteRebindProof,
+  record: DurableRbpSession,
+  connection: LiveConnection,
+  resultantSessionVersion: number,
+  serverProofDigest: `sha256:${string}`,
+): DurableResumeRebindDocumentRoute {
+  const contextRoute = liveDocumentRouteFrom(
+    proof.context as DocContextUpdate,
+    connection.connectionId,
+    1,
+    proof.context_digest,
+  );
+  if (contextRoute === null) {
+    throw new GatewayRbpFault("protocol", "route rebind proof requires an active document", 400, 4400);
+  }
+  return {
+    source: "session_resume_route_rebind_v1",
+    sessionDocumentId: contextRoute.sessionDocumentId,
+    observedConnectionId: connection.connectionId,
+    contextDigest: proof.context_digest,
+    proofId: proof.proof_id,
+    serverProofDigest,
+    sourceRevision: proof.freshness.source_revision,
+    cacheIncarnationDigest: proof.freshness.cache_incarnation_digest as `sha256:${string}`,
+    resultantSessionBindingId: record.sessionBindingId,
+    resultantSessionVersion,
+    authorityGenerationDigest: routeRebindAuthorityGenerationDigest(record, connection),
   };
 }
 
@@ -3406,7 +3644,7 @@ class SessionAggregateRepository {
       schema: GATEWAY_RBP_SESSION_V2_NAMESPACE, generation: 2, rootVersion, tenantId: record.tenantId, rsid: record.rsid,
       identity: { userId: record.userId, deviceId: record.deviceId, seatId: record.seatId, identityAuthority: record.identityAuthority },
       binding: { sessionBindingId: record.sessionBindingId, sessionVersion: record.sessionVersion, connectionId: record.connectionId, binding: record.binding, resumeTokenDigest: record.resumeTokenDigest, resumeExpiresAtMs: record.resumeExpiresAtMs, grantedCapabilities: record.grantedCapabilities },
-      lifecycle: { connectionLifecycle: record.connectionLifecycle, sessionLifecycle: record.sessionLifecycle, lastHeartbeatAtMs: record.lastHeartbeatAtMs, liveDocumentRoute: record.liveDocumentRoute, recordVersion: record.recordVersion, createdAtMs: record.createdAtMs, updatedAtMs: record.updatedAtMs },
+      lifecycle: { connectionLifecycle: record.connectionLifecycle, sessionLifecycle: record.sessionLifecycle, lastHeartbeatAtMs: record.lastHeartbeatAtMs, liveDocumentRoute: record.liveDocumentRoute, routeRebindReceipt: record.routeRebindReceipt ?? null, recordVersion: record.recordVersion, createdAtMs: record.createdAtMs, updatedAtMs: record.updatedAtMs },
       sequence: { sequence: record.sequence, pending: record.pending, ...(record.d2ConformanceOriginResend === undefined ? {} : { d2ConformanceOriginResend: record.d2ConformanceOriginResend }) }, migration, childRefs,
       childrenDigest: digest(canonicalizeJson(childRefs as unknown as JsonValue)),
     };
@@ -7064,7 +7302,10 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     if (candidates.length !== 1) return null;
     const record = candidates[0]!.record;
     const route = record.liveDocumentRoute!;
-    if (!isDocumentContextDigest(route.contextDigest) ||
+    // This legacy audit seam intentionally reports only sequenced document
+    // observations. A resume proof is route authority, never a fabricated
+    // document/data sequence observation.
+    if (route.source !== "data_doc_context_v1" || !isDocumentContextDigest(route.contextDigest) ||
         !isSafePositiveInteger(record.recordVersion)) return null;
     try {
       return Object.freeze({
@@ -7465,7 +7706,9 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         document: input.dispatchContext.documentIdentity,
       } as unknown as JsonValue,
       documentHash: digest(canonicalizeJson(input.dispatchContext.documentIdentity as unknown as JsonValue)),
-      documentSequence: active.record.liveDocumentRoute?.observedSequence ?? active.record.sequence.lastRxSeq,
+      documentSequence: active.record.liveDocumentRoute?.source === "data_doc_context_v1"
+        ? active.record.liveDocumentRoute.observedSequence
+        : active.record.sequence.lastRxSeq,
       documentAck: active.record.sequence.lastRxSeq,
       gatewayProcessEpoch: this.#instanceId,
       gatewayProcessOrdinal: sessionEgressFence(active.record).epoch,
@@ -8741,14 +8984,20 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
 
   async #reserveResumeAck(
     connection: LiveConnection,
-    payload: {
-      readonly rsid: string;
-      readonly resume_token: string;
-      readonly last_rx_seq: number;
-    },
+    payload: RouteRebindResumePayload,
     authorityTicket: TenantAuthorityTicket,
   ): Promise<ReservedResumeAck> {
     this.#assertAuthorityTicket(authorityTicket, connection);
+    const suppliedProof = payload.route_rebind_proof === undefined
+      ? null
+      : parseRouteRebindProof(payload.route_rebind_proof);
+    if (suppliedProof !== null &&
+      !connection.grantedCapabilities.includes("route_rebind_proof_v1")) {
+      throw new GatewayRbpFault("unsupported", "route rebind proof capability was not granted", 403, 4403);
+    }
+    if (suppliedProof !== null && suppliedProof.connection_id !== connection.connectionId) {
+      throw new GatewayRbpFault("auth", "route rebind proof is not bound to the current connection", 403, 4403);
+    }
     const tenantId = connection.auth.actor.tenantId;
     const leaseId = gatewayUuidV7(this.#clock());
     const messageId = gatewayUuidV7(this.#clock());
@@ -8780,6 +9029,62 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         if (stored === null) return { kind: "blocked" as const };
         const record = parseStoredSession(stored, tenantId, payload.rsid);
         this.#assertAuthorityTicket(authorityTicket, connection);
+        const suppliedProofDigest = suppliedProof === null
+          ? null
+          : serverRouteRebindProofDigest(suppliedProof, record, connection);
+        const existingReceipt = record.routeRebindReceipt ?? null;
+        if (existingReceipt !== null && existingReceipt.connectionId === connection.connectionId) {
+          if (suppliedProof === null || suppliedProofDigest !== existingReceipt.serverProofDigest ||
+            suppliedProof.proof_id !== existingReceipt.proofId ||
+            record.connectionId !== connection.connectionId ||
+            payload.last_rx_seq !== record.sequence.lastRxSeq) {
+            // Return a typed outcome rather than throwing inside the store
+            // callback: store failures are intentionally normalized to
+            // unavailable, while a changed proof is a caller protocol fault.
+            return { kind: "invalid_proof" as const };
+          }
+          const existingFence = sessionEgressFence(record);
+          const nowMs = this.#clock();
+          if (existingFence.state !== "open" || existingFence.revocation !== null ||
+            existingFence.lease?.phase === "started" ||
+            (existingFence.lease?.phase === "reserved" && existingFence.lease.reserveExpiresAtMs > nowMs) ||
+            record.resumeTokenDigest !== digest(payload.resume_token) ||
+            record.resumeExpiresAtMs <= nowMs || !record.sessionLifecycle.dispatchAllowed) {
+            return { kind: "blocked" as const };
+          }
+          const replayLease: DurableEgressLease = {
+            leaseId,
+            ticket: existingFence.nextTicket,
+            holderInstanceId: this.#instanceId,
+            connectionId: connection.connectionId,
+            operation: "resume_ack",
+            envelopeDigest: digest(existingReceipt.resumeAckSerialized),
+            phase: "reserved",
+            reservedAtMs: nowMs,
+            reserveExpiresAtMs: nowMs + SEND_RESERVATION_TTL_MS,
+            startedAtMs: null,
+          };
+          const next = nextSessionRecord(stored, record, {
+            ...record,
+            egressFence: {
+              version: 1,
+              state: "open",
+              epoch: existingFence.epoch + 1,
+              nextTicket: existingFence.nextTicket + 1,
+              lease: replayLease,
+              revocation: null,
+              cancellation: null,
+            },
+          }, nowMs);
+          attempted.current = { prior: stored, next, lease: replayLease, serialized: existingReceipt.resumeAckSerialized };
+          tx.stage({
+            namespace: GATEWAY_RBP_SESSION_NAMESPACE,
+            key: payload.rsid,
+            value: asJson(next),
+            expect: { kind: "version", version: stored.version },
+          });
+          return { kind: "reserved" as const, record: next, lease: replayLease, serialized: existingReceipt.resumeAckSerialized };
+        }
         const initialFence = sessionEgressFence(record);
         const nowMs = this.#clock();
         let recovered = record;
@@ -8983,6 +9288,9 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
             }, recovered.pending.invocationId);
         const preserveRecoveryBindingVersion =
           continuingRecovery?.state === "awaiting_correlated_read";
+        const resultantSessionVersion = preserveRecoveryBindingVersion
+          ? recovered.sessionVersion
+          : recovered.sessionVersion + 1;
         let connectionLifecycle = connectionTransition(connection.lifecycle, {
           type: "begin_resume",
         });
@@ -9006,11 +9314,18 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
           // that version only for the exact durable pending recovery claim so
           // its DPAPI/AES-GCM owner tuple can resume. Every ordinary resume and
           // every completed/foreign claim still advances the binding version.
-          sessionVersion: preserveRecoveryBindingVersion
-            ? recovered.sessionVersion
-            : recovered.sessionVersion + 1,
+          sessionVersion: resultantSessionVersion,
           sequence: acknowledged.state,
-          liveDocumentRoute: null,
+          liveDocumentRoute: suppliedProof === null
+            ? null
+            : liveRouteFromRebindProof(
+                suppliedProof,
+                recovered,
+                connection,
+                resultantSessionVersion,
+                suppliedProofDigest!,
+              ),
+          routeRebindReceipt: null,
           connectionLifecycle,
           sessionLifecycle,
           lastHeartbeatAtMs: nowMs,
@@ -9027,6 +9342,18 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
             resume_expires_at: nowIso(resumed.resumeExpiresAtMs),
           },
         } satisfies RbpEnvelope);
+        const resumedWithReceipt: DurableRbpSession = suppliedProof === null
+          ? resumed
+          : {
+              ...resumed,
+              routeRebindReceipt: {
+                version: 1,
+                connectionId: connection.connectionId,
+                proofId: suppliedProof.proof_id,
+                serverProofDigest: suppliedProofDigest!,
+                resumeAckSerialized: serialized,
+              },
+            };
         const lease: DurableEgressLease = {
           leaseId,
           ticket: fence.nextTicket,
@@ -9043,7 +9370,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
           stored,
           record,
           {
-            ...resumed,
+            ...resumedWithReceipt,
             egressFence: {
               version: 1,
               state: "open",
@@ -9080,6 +9407,14 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
             "resume authorization rejected",
             403,
             4403,
+          );
+        }
+        if (reserved.value.kind === "invalid_proof") {
+          throw new GatewayRbpFault(
+            "protocol",
+            "route rebind proof receipt is immutable",
+            400,
+            4400,
           );
         }
         this.#assertAuthorityTicket(authorityTicket, connection, {
@@ -9545,7 +9880,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
 
   async #resume(
     connection: LiveConnection,
-    payload: { readonly rsid: string; readonly resume_token: string; readonly last_rx_seq: number },
+    payload: RouteRebindResumePayload,
     authorityTicket: TenantAuthorityTicket,
   ): Promise<void> {
     // Keep the rsid tail only through the authoritative resume transition and
@@ -9606,7 +9941,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
 
   async #resumeNow(
     connection: LiveConnection,
-    payload: { readonly rsid: string; readonly resume_token: string; readonly last_rx_seq: number },
+    payload: RouteRebindResumePayload,
     authorityTicket: TenantAuthorityTicket,
   ): Promise<ReservedResumeAck> {
     this.#assertAuthorityTicket(authorityTicket, connection);
