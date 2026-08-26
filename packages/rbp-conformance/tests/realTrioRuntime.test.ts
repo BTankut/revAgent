@@ -165,6 +165,20 @@ describe("C39 route-rebind audit projection", () => {
       .toThrow(/malformed or unredacted/u);
     expect(() => readC39RouteRebindAudit({ ...current, proofCasRecordVersion: -1 }))
       .toThrow(/malformed or unredacted/u);
+
+    const inconsistentCurrentStates = [
+      ["zero candidates", { ...current, candidateCount: 0 }],
+      ["ambiguous candidates", { ...current, candidateCount: 2 }],
+      ["capability not granted", { ...current, capabilityGranted: false }],
+      ["receipt not current", { ...current, receiptCurrent: false }],
+      ["resume CAS not current", { ...current, resumeCasCurrent: false }],
+      ["route provenance not current", { ...current, routeProvenanceCurrent: false }],
+      ["connection not current", { ...current, currentConnection: false }],
+    ] as const;
+    for (const [, inconsistentCurrent] of inconsistentCurrentStates) {
+      expect(() => readC39RouteRebindAudit(inconsistentCurrent))
+        .toThrow(/malformed or unredacted/u);
+    }
   });
 
   it("rejects proofless, substituted, and causally unordered terminal traces", () => {
@@ -207,6 +221,18 @@ describe("C39 route-rebind audit projection", () => {
       ...row,
       routeAuthority: { ...row.routeAuthority, connectionDigest: digest("9") },
     }, audit, exact, reconnect)).toThrow(/exact current Gateway route-authority tuple/u);
+    const inconsistentCurrent = {
+      status: "current", candidateCount: 1, capabilityGranted: true,
+      receiptCurrent: false, resumeCasCurrent: true, routeProvenanceCurrent: true,
+      currentConnection: true, routeAuthorityCheckpoint: checkpoint, connectionDigest: connection,
+      serverProofDigest: digest("c"), authorityGenerationDigest: digest("d"), proofCasRecordVersion: 7,
+    } as const;
+    expect(() => assertC39CausalRouteAuthority(
+      row,
+      readC39RouteRebindAudit(inconsistentCurrent),
+      exact,
+      reconnect,
+    )).toThrow(/malformed or unredacted/u);
   });
 });
 
@@ -1501,6 +1527,8 @@ function readC39RouteRebindAudit(value: unknown): C39RouteRebindAudit {
       !(record.proofCasRecordVersion === null ||
         (Number.isSafeInteger(record.proofCasRecordVersion) && Number(record.proofCasRecordVersion) > 0)) ||
       (record.status === "current" && (
+        record.candidateCount !== 1 || !record.capabilityGranted || !record.receiptCurrent ||
+        !record.resumeCasCurrent || !record.routeProvenanceCurrent || !record.currentConnection ||
         record.routeAuthorityCheckpoint === null || record.connectionDigest === null ||
         record.serverProofDigest === null || record.authorityGenerationDigest === null ||
         record.proofCasRecordVersion === null
