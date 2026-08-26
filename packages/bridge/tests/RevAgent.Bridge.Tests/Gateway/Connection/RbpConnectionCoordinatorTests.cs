@@ -12,6 +12,35 @@ namespace RevAgent.Bridge.Tests.Gateway.Connection;
 public sealed partial class RbpConnectionCoordinatorTests
 {
     [Fact]
+    public async Task SnapshotProjectsOnlyTheCurrentRouteRebindProofGrant()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        var clock = new ManualCoordinatorClock();
+        await using RbpJournalStore store = OpenStore(directory, clock);
+        var responder = new ScriptedGatewayResponder(clock);
+        var cycle = new FakeConnectionCycle(
+            responder.Respond,
+            grantedConnectionCapabilities:
+                new[] { RbpHelloProfile.RouteRebindProofCapability });
+        var profile = new RbpHelloProfile(
+            "0.1.0", "WS01", "Windows 11", new[] { "2026.07.26.0" },
+            new[] { RbpHelloProfile.RouteRebindProofCapability });
+        var coordinator = Coordinator(
+            new FakeConnectionCycleFactory(cycle), store,
+            new MutableSessionCatalog(LocalSession(8080, 1000)), clock,
+            helloProfile: profile);
+        using var stop = new CancellationTokenSource();
+
+        Task run = coordinator.RunAsync(stop.Token);
+        await EventuallyAsync(() => coordinator.GetSnapshot().HasActiveConnection);
+        Assert.True(coordinator.GetSnapshot().RouteRebindProofGranted);
+
+        stop.Cancel();
+        await run.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.False(coordinator.GetSnapshot().RouteRebindProofGranted);
+    }
+
+    [Fact]
     public async Task RegistersTwoSessionsAndOwnsHeartbeatLifecycle()
     {
         using var directory = new RbpJournalTestDirectory();

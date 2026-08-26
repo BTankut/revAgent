@@ -166,6 +166,7 @@ internal sealed partial class RbpConnectionCoordinator
         ConnectionCycleContext? active;
         int ownedTasks;
         int invocations;
+        bool routeRebindProofGranted;
         lock (_sync)
         {
             lifecycle = _lifecycle;
@@ -173,6 +174,11 @@ internal sealed partial class RbpConnectionCoordinator
             active = _active;
             ownedTasks = _ownedBackgroundTasks;
             invocations = _activeInvocations;
+            routeRebindProofGranted = active is not null &&
+                _connectionGeneration == active.Generation &&
+                active.GrantedConnectionCapabilities.Contains(
+                    RbpHelloProfile.RouteRebindProofCapability,
+                    StringComparer.Ordinal);
         }
 
         return new RbpConnectionCoordinatorSnapshot(
@@ -182,7 +188,8 @@ internal sealed partial class RbpConnectionCoordinator
             active?.ActiveRsids ??
             Array.AsReadOnly(Array.Empty<string>()),
             ownedTasks,
-            invocations);
+            invocations,
+            routeRebindProofGranted);
     }
 
     internal void NotifyRetryConditionChanged()

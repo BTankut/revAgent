@@ -172,4 +172,5 @@ internal sealed record RbpConnectionCoordinatorSnapshot(
     bool HasActiveConnection,
     IReadOnlyList<string> ActiveRsids,
     int OwnedBackgroundTaskCount,
-    int ActiveInvocationCount = 0);
+    int ActiveInvocationCount = 0,
+    bool RouteRebindProofGranted = false);

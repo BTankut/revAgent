@@ -105,6 +105,8 @@ internal static class Program
                         result = new {
                             observations = recoveryObservations.Snapshot(),
                             reconnectWatchObservations = reconnectObservations.Snapshot(),
+                            routeRebindProofGranted = runtime.Coordinator
+                                .GetSnapshot().RouteRebindProofGranted,
                         },
                     })).ConfigureAwait(false);
                     continue;

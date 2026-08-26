@@ -27,14 +27,15 @@ public sealed partial class RbpConnectionCoordinatorTests
         Func<RbpConnectionFailureObservation, ValueTask>?
             onConnectionFailureObservation = null,
         IRbpRecoveryCarrierObservationSink?
-            recoveryCarrierObservationSink = null) =>
+            recoveryCarrierObservationSink = null,
+        RbpHelloProfile? helloProfile = null) =>
         new(
             factory,
             store,
             catalog,
             new RbpConnectionCoordinatorOptions(
                 new Uri("wss://gateway.revagent.app/bridge/v1"),
-                new RbpHelloProfile(
+                helloProfile ?? new RbpHelloProfile(
                     "0.1.0",
                     "WS01",
                     "Windows 11",
@@ -495,19 +496,17 @@ public sealed partial class RbpConnectionCoordinatorTests
             bool hangCloseAndDispose = false,
             bool leaveInboundOpenAfterClose = false,
             Func<FakeConnectionCycle, RbpEnvelope, CancellationToken, Task>?
-                sendBehavior = null)
+                sendBehavior = null,
+            IReadOnlyList<string>? grantedConnectionCapabilities = null)
         {
             _responder = responder;
             _hangCloseAndDispose = hangCloseAndDispose;
             _leaveInboundOpenAfterClose = leaveInboundOpenAfterClose;
             _sendBehavior = sendBehavior;
-        }
-
-        public RbpHelloAckPayload Acknowledgement { get; } =
-            new(
+            Acknowledgement = new RbpHelloAckPayload(
                 1,
                 "conn-test",
-                Array.Empty<string>(),
+                grantedConnectionCapabilities ?? Array.Empty<string>(),
                 15_000,
                 new RbpHelloLimits(
                     4 * 1024 * 1024,
@@ -516,6 +515,9 @@ public sealed partial class RbpConnectionCoordinatorTests
                 new RbpHelloManifest(
                     "0.1.0",
                     "/bridge/update/manifest"));
+        }
+
+        public RbpHelloAckPayload Acknowledgement { get; }
 
         internal ConcurrentQueue<RbpEnvelope> Sent { get; } = new();
 
