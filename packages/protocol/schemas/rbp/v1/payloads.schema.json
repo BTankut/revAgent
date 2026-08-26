@@ -338,9 +338,68 @@
         },
         "last_rx_seq": {
           "$ref": "common.schema.json#/$defs/safeNonNegativeInteger"
+        },
+        "route_rebind_proof": {
+          "$ref": "#/$defs/routeRebindProof"
         }
       },
       "additionalProperties": true
+    },
+    "routeRebindProof": {
+      "type": "object",
+      "required": [
+        "version",
+        "connection_id",
+        "proof_id",
+        "context",
+        "context_digest",
+        "freshness"
+      ],
+      "properties": {
+        "version": { "const": 1 },
+        "connection_id": { "$ref": "common.schema.json#/$defs/uuidV7" },
+        "proof_id": { "$ref": "common.schema.json#/$defs/uuidV7" },
+        "context": { "$ref": "#/$defs/routeRebindDocumentContext" },
+        "context_digest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "freshness": {
+          "type": "object",
+          "required": [ "source_revision", "cache_incarnation_digest" ],
+          "properties": {
+            "source_revision": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "cache_incarnation_digest": { "$ref": "common.schema.json#/$defs/sha256" }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "routeRebindDocumentContext": {
+      "type": "object",
+      "required": [ "documents", "active_document", "active_view" ],
+      "properties": {
+        "documents": { "$ref": "common.schema.json#/$defs/documents" },
+        "active_document": {
+          "oneOf": [
+            { "$ref": "common.schema.json#/$defs/nonEmptyString" },
+            { "type": "null" }
+          ]
+        },
+        "active_view": {
+          "oneOf": [
+            { "$ref": "#/$defs/activeView" },
+            { "type": "null" }
+          ]
+        },
+        "discipline_hint": { "$ref": "common.schema.json#/$defs/boundedString" }
+      },
+      "additionalProperties": false
     },
     "resumeAck": {
       "type": "object",

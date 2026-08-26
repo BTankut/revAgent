@@ -1,5 +1,11 @@
 # M1 O1/RBP v1.0 Semantic-Freeze and Deferred Tag Evidence
 
+> **WP12-C39-ROUTE-REBIND-V1 amendment (2026-08-26):** implementation and
+> verification are authorized by the recovered Decision Freeze only. The
+> capability-gated `session_resume.route_rebind_proof` semantics are not an M1
+> acceptance, tag, merge, or deployment claim. Required aggregate WSS and
+> Streamable HTTP/SSE C39 evidence plus C38/C29/C28 regressions remain pending.
+
 **Document state:** M1 closing accepted; protected merge closes semantic
 freeze; deferred tag ledger remains open
 

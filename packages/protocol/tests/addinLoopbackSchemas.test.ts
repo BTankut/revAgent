@@ -475,6 +475,21 @@ describe("add-in loopback v1 schemas", () => {
     expect(documentContextSemanticErrors(documentContext)).toEqual([]);
   });
 
+  it("admits an optional cache incarnation only with a positive source revision", () => {
+    const admitted = structuredClone(documentContext);
+    const admittedResult = object(admitted.response.result, "get_document_context.result");
+    admittedResult.revision = 1;
+    admittedResult.cacheIncarnationDigest = `sha256:${"a".repeat(64)}`;
+    expect(
+      validateInstance("get-document-context", admitted.response),
+      schemaErrors(validators["get-document-context"]),
+    ).toBe(true);
+
+    const rejected = structuredClone(admitted);
+    object(rejected.response.result, "get_document_context.result").revision = 0;
+    expect(validateInstance("get-document-context", rejected.response)).toBe(false);
+  });
+
   it.each([
     ["commit", batchCommit],
     ["rollback", batchRollback],

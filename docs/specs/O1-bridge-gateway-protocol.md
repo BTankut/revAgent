@@ -486,6 +486,31 @@ The Gateway returns:
 `last_rx_seq` is the largest contiguous data sequence durably accepted from the other peer. Both peers
 retransmit unacknowledged data messages in ascending sequence order under Section 5.2.
 
+#### Amendment WP12-C39-ROUTE-REBIND-V1: capability-gated resume route proof
+
+`session_resume.route_rebind_proof` is the only sequence-free document-route
+authority. It is allowed only with the mutually granted connection capability
+`route_rebind_proof_v1`; no RBP message type is added and the proof advances no
+data sequence or accepted-inbound ACK. Its exact v1 keys are `version`,
+`connection_id` (the current `hello_ack.connection_id` UUIDv7), `proof_id`
+(UUIDv7), `context`, bare lower-case `context_digest`, and `freshness`.
+`context` has only `documents`, `active_document`, `active_view`, and optional
+non-null bounded `discipline_hint`; its digest is
+`SHA256("revagent:doc-context-payload:v1\\n" || RFC8785(context))`.
+`freshness` has only positive `source_revision` and a `sha256:`-prefixed cache
+incarnation digest.
+
+The Gateway derives owner, principal, effective-MCP, ticket, and binding facts.
+Within the existing per-RSID resume CAS it atomically records normal ACK
+reconciliation, current transport, discriminated proof-route provenance, one
+immutable `(rsid,current_connection_id)` receipt, and the durable `resume_ack`
+lease. Exact receipt replay may retransmit that ACK; altered/new same-connection
+proofs, stale connections, generation drift, and cross-owner/session/binding
+attempts fail closed. A later sequenced `doc_context_update` supersedes the
+proof provenance. Legacy resume remains route-null. This amendment is
+design-frozen for implementation/verification only and makes no acceptance
+claim.
+
 - Pending Gateway invocations are held for 10 minutes after disconnect.
 - An `rsid` remains resumable for 24 hours unless explicitly unregistered or revoked.
 - Resume state is durable Gateway state; a Gateway process restart MUST NOT erase it.
