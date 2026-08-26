@@ -97,6 +97,25 @@ describe("C39 real trio fixture profiles", () => {
   });
 });
 
+describe("C39 recovery timeout diagnostics", () => {
+  it("formats only fixed audit, commit, and canonical phase counts", () => {
+    const worker = [
+      c39WorkerObservation(`sha256:${"a".repeat(64)}`, "materialized", 9, 1, "b"),
+      c39WorkerObservation(`sha256:${"a".repeat(64)}`, "write", 9, 2, "b"),
+      c39WorkerObservation(`sha256:${"a".repeat(64)}`, "ack", 9, 3, "b"),
+    ];
+    const reconnect = [
+      { phase: "resume_ack_applied" },
+      { phase: "watcher_started" },
+      { phase: "watcher_started" },
+    ] as unknown as C39ReconnectWatchObservations;
+    const message = c39RecoveryTimeoutMessage(true, "pending", worker, reconnect);
+    expect(message).toBe("real C39 recovery evidence did not become coherent [audit_joined=true;partial_carrier_commit_failure=pending;materialized=1;write=1;restart_resend=0;ack=1;total=3;resume_ack_applied=1;watcher_started=2]");
+    expect(message).not.toContain("sha256:");
+    expect(message).not.toContain("9");
+  });
+});
+
 describe.sequential("WP-12 direct real trio runtime fixture", () => {
   it.each(["wss", "streamable_http_sse"] as const)(
     "runs C38's public core UI probe against the real %s Worker binding",
@@ -628,6 +647,9 @@ function withC39OwnerResourceReadDiagnostic(
 
 type C39RecoveryCarrierObservations = Awaited<ReturnType<
   Awaited<ReturnType<typeof startRealTrioRuntimeFixture>>["supervisor"]["readRecoveryCarrierObservations"]
+>>;
+type C39ReconnectWatchObservations = Awaited<ReturnType<
+  Awaited<ReturnType<typeof startRealTrioRuntimeFixture>>["supervisor"]["readReconnectWatchObservations"]
 >>;
 type C39TerminalSettlementRuntime = Pick<
   Awaited<ReturnType<typeof startRealTrioRuntimeFixture>>,
@@ -1286,6 +1308,37 @@ async function readCompleteFixtureEvidence(
   throw new Error("fixture evidence did not complete within page bound");
 }
 
+type C39PartialCarrierCommitFailure =
+  | "none"
+  | "ticket"
+  | "pending"
+  | "sequence_gap"
+  | "sequence_ack_beyond_sent"
+  | "sequence_wrong_rsid"
+  | "sequence_unsafe"
+  | "sequence_duplicate_identity_mismatch"
+  | "sequence_exhausted"
+  | "sequence_other"
+  | "normalized_plan_or_cas"
+  | "storage_callback";
+
+function c39RecoveryTimeoutMessage(
+  auditJoined: boolean,
+  partialCarrierCommitFailure: C39PartialCarrierCommitFailure,
+  worker: C39RecoveryCarrierObservations,
+  reconnect: C39ReconnectWatchObservations,
+): string {
+  const workerCount = (phase: C39RecoveryCarrierObservations[number]["phase"]): number =>
+    worker.filter((entry) => entry.phase === phase).length;
+  const reconnectCount = (phase: C39ReconnectWatchObservations[number]["phase"]): number =>
+    reconnect.filter((entry) => entry.phase === phase).length;
+  return "real C39 recovery evidence did not become coherent " +
+    `[audit_joined=${String(auditJoined)};partial_carrier_commit_failure=${partialCarrierCommitFailure};` +
+    `materialized=${String(workerCount("materialized"))};write=${String(workerCount("write"))};` +
+    `restart_resend=${String(workerCount("restart_resend"))};ack=${String(workerCount("ack"))};total=${String(worker.length)};` +
+    `resume_ack_applied=${String(reconnectCount("resume_ack_applied"))};watcher_started=${String(reconnectCount("watcher_started"))}]`;
+}
+
 async function waitForC39Recovery(
   client: RealTrioNorthMcpClient,
   runtime: Awaited<ReturnType<typeof startRealTrioRuntimeFixture>>,
@@ -1294,7 +1347,9 @@ async function waitForC39Recovery(
   timeoutMs: number,
 ): Promise<{ readonly content: Record<string, unknown> }> {
   const deadline = Date.now() + timeoutMs;
-  let partialCarrierCommitFailure = "none";
+  let partialCarrierCommitFailure: C39PartialCarrierCommitFailure = "none";
+  let auditJoined = false;
+  let latestWorker: C39RecoveryCarrierObservations = Object.freeze([]);
   for (;;) {
     try {
       // Keep the current authenticated MCP client/session.  Post-control D2
@@ -1328,12 +1383,17 @@ async function waitForC39Recovery(
       candidate === "storage_callback"
     ) partialCarrierCommitFailure = candidate;
     const worker = await runtime.supervisor.readRecoveryCarrierObservations();
-    if (object(audit?.c39Recovery)?.status === "joined" && worker.length > 0) {
+    latestWorker = worker;
+    auditJoined = object(audit?.c39Recovery)?.status === "joined";
+    if (auditJoined && worker.length > 0) {
       const result = await recovery;
       if (result.content.state === "completed") return result;
       throw new Error("real C39 one-shot recovery did not complete");
     }
-    if (Date.now() >= deadline) throw new Error(`real C39 recovery evidence did not become coherent [${partialCarrierCommitFailure}]`);
+    if (Date.now() >= deadline) {
+      const reconnect = await runtime.supervisor.readReconnectWatchObservations();
+      throw new Error(c39RecoveryTimeoutMessage(auditJoined, partialCarrierCommitFailure, latestWorker, reconnect));
+    }
     await new Promise<void>((resolve) => setTimeout(resolve, 200));
   }
 }
