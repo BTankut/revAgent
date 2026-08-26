@@ -390,6 +390,8 @@ describe("WP-12 fixture attestation supervisor configuration", () => {
 });
 
 describe("WP-12 real-trio v2 session smoke reader", () => {
+  const WSS_CONNECTION_GRANTS = ["artifact_result_v1", "chunked_results", "journal_v1", "route_rebind_proof_v1"];
+  const HTTP_CONNECTION_GRANTS = [...WSS_CONNECTION_GRANTS, "transport_streamable_http"];
   const v2Snapshot = {
     sessions: [{
       namespace: "gateway.rbp-session/v2",
@@ -402,7 +404,7 @@ describe("WP-12 real-trio v2 session smoke reader", () => {
             phase: "steady",
             nextAttemptIndex: 0,
             selectedProtocol: 1,
-            grantedCapabilities: ["journal_v1", "route_rebind_proof_v1"],
+            grantedCapabilities: WSS_CONNECTION_GRANTS,
             retryPauseReason: null,
             lastRetryDecision: null,
           },
@@ -417,42 +419,59 @@ describe("WP-12 real-trio v2 session smoke reader", () => {
     }],
   };
 
+  const snapshotForPersistedBinding = (binding: "wss" | "http_sse") => {
+    const snapshot = structuredClone(v2Snapshot);
+    snapshot.sessions[0]!.value.binding.binding = binding;
+    snapshot.sessions[0]!.value.lifecycle.connectionLifecycle.grantedCapabilities =
+      binding === "http_sse" ? [...HTTP_CONNECTION_GRANTS] : [...WSS_CONNECTION_GRANTS];
+    return snapshot;
+  };
+
   it("reads only split v2 session and hello_ack grants before STOP", () => {
-    expect(readRbpSessionV2Readiness(v2Snapshot, "wss")).toEqual({
+    expect(readRbpSessionV2Readiness(v2Snapshot, "wss")).toMatchObject({
       rsid: "018f7f7e-1234-7abc-8def-1234567890ab",
       localSessionKey: "port:8080:pid:42:started:99",
       grantedCapabilities: ["batch_atomic", "doc_context_cached_v1"],
     });
+    expect(readRbpSessionV2Readiness(v2Snapshot, "wss").connectionGrantOrderHash).toMatch(/^sha256:[0-9a-f]{64}$/u);
   });
 
   it("accepts the canonical nested HTTP lifecycle row without using timestamps as readiness", () => {
-    const snapshot = structuredClone(v2Snapshot);
+    const snapshot = snapshotForPersistedBinding("http_sse");
     const value = snapshot.sessions[0]!.value;
-    value.binding.binding = "streamable_http_sse";
     value.lifecycle = { ...value.lifecycle, createdAtMs: 100, updatedAtMs: 200 };
-    expect(readRbpSessionV2Readiness(snapshot, "streamable_http_sse")).toEqual({
+    expect(readRbpSessionV2Readiness(snapshot, "http_sse")).toMatchObject({
       rsid: "018f7f7e-1234-7abc-8def-1234567890ab",
       localSessionKey: "port:8080:pid:42:started:99",
       grantedCapabilities: ["batch_atomic", "doc_context_cached_v1"],
     });
   });
 
-  it.each(["wss", "streamable_http_sse"] as const)("requires a persisted split grant for %s", (binding) => {
-    const snapshot = structuredClone(v2Snapshot);
-    snapshot.sessions[0]!.value.binding.binding = binding;
-    expect(readRbpSessionV2Readiness(snapshot, binding).grantedCapabilities).toEqual(["batch_atomic", "doc_context_cached_v1"]);
+  it.each(["wss", "http_sse"] as const)("requires canonical persisted split grants for %s", (binding) => {
+    const readiness = readRbpSessionV2Readiness(snapshotForPersistedBinding(binding), binding);
+    expect(readiness.grantedCapabilities).toEqual(["batch_atomic", "doc_context_cached_v1"]);
+    expect(readiness.connectionGrantOrderHash).toMatch(/^sha256:[0-9a-f]{64}$/u);
+  });
+
+  it("returns a full redacted connection-grant admission fence for each persisted binding", () => {
+    const wss = readRbpSessionV2Readiness(snapshotForPersistedBinding("wss"), "wss");
+    const http = readRbpSessionV2Readiness(snapshotForPersistedBinding("http_sse"), "http_sse");
+    expect(wss.connectionGrantOrderHash).toMatch(/^sha256:[0-9a-f]{64}$/u);
+    expect(http.connectionGrantOrderHash).toMatch(/^sha256:[0-9a-f]{64}$/u);
+    expect(wss.connectionGrantOrderHash).not.toBe(http.connectionGrantOrderHash);
+    expect(JSON.stringify(wss)).not.toContain("route_rebind_proof_v1");
   });
 
   it("rejects a route proof capability placed only in session grants", () => {
-    const snapshot = structuredClone(v2Snapshot);
+    const snapshot = snapshotForPersistedBinding("wss");
     snapshot.sessions[0]!.value.binding.grantedCapabilities.push("route_rebind_proof_v1");
-    snapshot.sessions[0]!.value.lifecycle.connectionLifecycle.grantedCapabilities = [];
+    snapshot.sessions[0]!.value.lifecycle.connectionLifecycle.grantedCapabilities = [...WSS_CONNECTION_GRANTS];
     expect(() => readRbpSessionV2Readiness(snapshot, "wss")).toThrow(/nested grants/u);
   });
 
   it("traces a route proof capability placed only in session grants as redacted missing-route readiness", async () => {
     let time = 0;
-    const snapshot = structuredClone(v2Snapshot);
+    const snapshot = snapshotForPersistedBinding("wss");
     snapshot.sessions[0]!.value.binding.grantedCapabilities.push("route_rebind_proof_v1");
     snapshot.sessions[0]!.value.lifecycle.connectionLifecycle.grantedCapabilities = [];
     await expect(pollRbpSessionV2Readiness({
@@ -472,7 +491,7 @@ describe("WP-12 real-trio v2 session smoke reader", () => {
 
   it("traces an absent session batch grant distinctly from a connection route grant", async () => {
     let time = 0;
-    const snapshot = structuredClone(v2Snapshot);
+    const snapshot = snapshotForPersistedBinding("wss");
     snapshot.sessions[0]!.value.binding.grantedCapabilities = ["doc_context_cached_v1"];
     await expect(pollRbpSessionV2Readiness({
       expectedBinding: "wss",
@@ -494,9 +513,22 @@ describe("WP-12 real-trio v2 session smoke reader", () => {
     { connectionLifecycle: { grantedCapabilities: "route_rebind_proof_v1" } },
     { connectionLifecycle: { grantedCapabilities: ["route_rebind_proof_v1", 7] } },
   ])("rejects malformed connection lifecycle %#", ({ connectionLifecycle }) => {
-    const snapshot = structuredClone(v2Snapshot);
+    const snapshot = snapshotForPersistedBinding("wss");
     (snapshot.sessions[0]!.value.lifecycle as { connectionLifecycle: unknown }).connectionLifecycle = connectionLifecycle;
     expect(() => readRbpSessionV2Readiness(snapshot, "wss")).toThrow(/v2 session row is malformed|nested grants/u);
+  });
+
+  it.each([
+    ["wss duplicate connection grant", "wss", (snapshot: ReturnType<typeof snapshotForPersistedBinding>) => snapshot.sessions[0]!.value.lifecycle.connectionLifecycle.grantedCapabilities.push("route_rebind_proof_v1")],
+    ["http reordered connection grant", "http_sse", (snapshot: ReturnType<typeof snapshotForPersistedBinding>) => snapshot.sessions[0]!.value.lifecycle.connectionLifecycle.grantedCapabilities.reverse()],
+    ["wss missing connection grant", "wss", (snapshot: ReturnType<typeof snapshotForPersistedBinding>) => { snapshot.sessions[0]!.value.lifecycle.connectionLifecycle.grantedCapabilities = [...WSS_CONNECTION_GRANTS.slice(1)]; }],
+    ["http extra session grant", "http_sse", (snapshot: ReturnType<typeof snapshotForPersistedBinding>) => snapshot.sessions[0]!.value.binding.grantedCapabilities.push("route_rebind_proof_v1")],
+    ["wss batch in connection grants", "wss", (snapshot: ReturnType<typeof snapshotForPersistedBinding>) => snapshot.sessions[0]!.value.lifecycle.connectionLifecycle.grantedCapabilities.push("batch_atomic")],
+    ["http route in session grants", "http_sse", (snapshot: ReturnType<typeof snapshotForPersistedBinding>) => snapshot.sessions[0]!.value.binding.grantedCapabilities.push("route_rebind_proof_v1")],
+  ] as const)("rejects noncanonical exact-domain grant lists: %s", (_label, binding, mutate) => {
+    const snapshot = snapshotForPersistedBinding(binding);
+    mutate(snapshot);
+    expect(() => readRbpSessionV2Readiness(snapshot, binding)).toThrow(/nested grants/u);
   });
 
   it.each([
@@ -566,7 +598,7 @@ describe("WP-12 real-trio v2 session smoke reader", () => {
     })).rejects.toMatchObject({ message: expect.stringMatching(/bridge exited/u), audits: [] });
   });
 
-  it("traces alternating grant order as a stable-fingerprint reset without retaining grants", async () => {
+  it("does not admit two reads when the persisted connection-grant order drifts", async () => {
     let time = 0;
     let reads = 0;
     await expect(pollRbpSessionV2Readiness({
@@ -574,9 +606,8 @@ describe("WP-12 real-trio v2 session smoke reader", () => {
       isBridgeExited: () => false,
       readSnapshot: async () => {
         reads += 1;
-        const snapshot = structuredClone(v2Snapshot);
-        if (reads % 2 === 0) {
-          snapshot.sessions[0]!.value.binding.grantedCapabilities.reverse();
+        const snapshot = snapshotForPersistedBinding("wss");
+        if (reads === 2) {
           snapshot.sessions[0]!.value.lifecycle.connectionLifecycle.grantedCapabilities.reverse();
         }
         return snapshot;
@@ -588,9 +619,10 @@ describe("WP-12 real-trio v2 session smoke reader", () => {
     })).rejects.toSatisfy((error: unknown) =>
       error instanceof RealTrioSessionReadinessPollError &&
       error.readinessTrace.length === 3 &&
-      error.readinessTrace.every((trace) => trace.outcome === "VALID") &&
-      error.readinessTrace.some((trace) => trace.resetReason === "fingerprint_changed") &&
-      !JSON.stringify(error.readinessTrace).includes("batch_atomic"));
+      error.readinessTrace[0]?.outcome === "VALID" &&
+      error.readinessTrace[1]?.outcome === "INVALID_CONNECTION_GRANTS" &&
+      error.readinessTrace[2]?.outcome === "VALID" &&
+      !JSON.stringify(error.readinessTrace).includes("route_rebind_proof_v1"));
   });
 
   it("traces an invalid poll then records the reset without exposing values", async () => {

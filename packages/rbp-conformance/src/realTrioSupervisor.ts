@@ -236,6 +236,8 @@ export interface RealTrioSessionReadiness {
   readonly rsid: string;
   readonly localSessionKey: string;
   readonly grantedCapabilities: readonly string[];
+  /** Full domain-separated digest of the exact persisted hello_ack grant order. */
+  readonly connectionGrantOrderHash: `sha256:${string}`;
 }
 
 export interface RealTrioDocumentContextFailureState {
@@ -292,6 +294,33 @@ export function persistedBindingForReadiness(
   return binding === "streamable_http_sse" ? "http_sse" : binding;
 }
 
+/**
+ * Gateway's durable session projection serializes each granted-capability
+ * domain in its canonical lexical order.  The expected lists are derived from
+ * the same request helper that provisions the real credential, so issuance
+ * and readiness cannot silently diverge.
+ */
+function canonicalPersistedGrantList(requested: readonly string[]): readonly string[] {
+  return Object.freeze([...requested].sort());
+}
+
+function expectedReadinessGrantDomains(expectedBinding: PersistedRealTrioBinding): Readonly<{
+  session: readonly string[];
+  connection: readonly string[];
+}> {
+  const credential = realTrioCredentialRequest(
+    expectedBinding === "http_sse" ? "streamable_http_sse" : "wss",
+  );
+  return Object.freeze({
+    session: canonicalPersistedGrantList(credential.sessionCapabilities),
+    connection: canonicalPersistedGrantList(credential.connectionCapabilities),
+  });
+}
+
+function hasExactGrantList(actual: readonly string[], expected: readonly string[]): boolean {
+  return actual.length === expected.length && actual.every((capability, index) => capability === expected[index]);
+}
+
 /** Exact public control payload; no permissive argument bag is accepted. */
 export function issueDeviceCredentialControlPayload(
   request: RealTrioCredentialRequest,
@@ -320,19 +349,39 @@ export interface RealTrioFailureDiagnostics {
   readonly gatewayAudits: readonly JsonObject[];
   /** Only schema-valid value-free worker observations are retained. */
   readonly bridgeTranscript: readonly ProcessTranscriptRecord[];
-  readonly readinessTrace: readonly RealTrioReadinessTrace[];
+  /** Legacy failure artifact vocabulary stays bounded across the parent seam. */
+  readonly readinessTrace: readonly RealTrioFailureReadinessTrace[];
   /** Bounded redacted process evidence retained before parent cleanup. */
   readonly processDiagnostics: readonly ProcessDiagnosticSnapshot[];
 }
 
 export interface RealTrioReadinessTrace {
-  readonly outcome: "VALID" | "NO_ROW" | "MULTIPLE" | "LEGACY" | "INVALID_BINDING" | "RSID_MISMATCH" | "MISSING_BATCH" | "MISSING_ROUTE_REBIND" | "INVALID_LIFECYCLE" | "ERROR_TYPE";
+  readonly outcome: "VALID" | "NO_ROW" | "MULTIPLE" | "LEGACY" | "INVALID_BINDING" | "RSID_MISMATCH" | "MISSING_BATCH" | "MISSING_ROUTE_REBIND" | "INVALID_SESSION_GRANTS" | "INVALID_CONNECTION_GRANTS" | "INVALID_LIFECYCLE" | "ERROR_TYPE";
   readonly fingerprint: string | null;
   readonly rsidEqual: boolean | null;
   readonly batchAtomicPresent: boolean;
   readonly grantOrderHash: string | null;
   readonly stableCount: number;
   readonly resetReason: "initial" | "fingerprint_changed" | "invalid" | "error";
+}
+
+type RealTrioFailureReadinessTrace = Omit<RealTrioReadinessTrace, "outcome"> & Readonly<{
+  outcome: "VALID" | "NO_ROW" | "MULTIPLE" | "LEGACY" | "INVALID_BINDING" | "RSID_MISMATCH" | "MISSING_BATCH" | "INVALID_LIFECYCLE" | "ERROR_TYPE";
+}>;
+
+function isFailureReadinessOutcome(
+  outcome: RealTrioReadinessTrace["outcome"],
+): outcome is RealTrioFailureReadinessTrace["outcome"] {
+  return outcome !== "MISSING_ROUTE_REBIND" &&
+    outcome !== "INVALID_SESSION_GRANTS" &&
+    outcome !== "INVALID_CONNECTION_GRANTS";
+}
+
+function retainFailureReadinessTrace(trace: RealTrioReadinessTrace): RealTrioFailureReadinessTrace {
+  if (!isFailureReadinessOutcome(trace.outcome)) {
+    return Object.freeze({ ...trace, outcome: "ERROR_TYPE" });
+  }
+  return Object.freeze({ ...trace, outcome: trace.outcome });
 }
 
 function boundedText(value: unknown, maximum: number): string | null {
@@ -742,7 +791,11 @@ export class RealTrioSessionReadinessPollError extends Error {
         .slice(-32)
         .map((audit) => redactGatewayAudit(audit)),
       bridgeTranscript: redactBridgeTranscript(this.bridgeReceiveTranscript),
-      readinessTrace: Object.freeze([...this.readinessTrace].slice(-MAX_REAL_TRIO_READINESS_TRACE)),
+      readinessTrace: Object.freeze(
+        [...this.readinessTrace]
+          .slice(-MAX_REAL_TRIO_READINESS_TRACE)
+          .map((trace) => retainFailureReadinessTrace(trace)),
+      ),
       processDiagnostics: Object.freeze([]),
     });
   }
@@ -750,6 +803,13 @@ export class RealTrioSessionReadinessPollError extends Error {
 
 function hashPrefix(value: string): string {
   return createHash("sha256").update(value).digest("hex").slice(0, 16);
+}
+
+function connectionGrantOrderHash(grants: readonly string[]): `sha256:${string}` {
+  return `sha256:${createHash("sha256")
+    .update("revagent/rbp-conformance/real-trio/connection-grant-order/v1\u0000")
+    .update(grants.join("\u0000"))
+    .digest("hex")}`;
 }
 
 function traceReadinessSnapshot(
@@ -778,8 +838,11 @@ function traceReadinessSnapshot(
   }
   const sessionGrants = binding.grantedCapabilities as string[];
   const connectionGrants = value.lifecycle.connectionLifecycle.grantedCapabilities as string[];
+  const expectedGrants = expectedReadinessGrantDomains(expectedBinding);
   if (!sessionGrants.includes("batch_atomic")) return invalid("MISSING_BATCH");
   if (!connectionGrants.includes("route_rebind_proof_v1")) return invalid("MISSING_ROUTE_REBIND");
+  if (!hasExactGrantList(sessionGrants, expectedGrants.session)) return invalid("INVALID_SESSION_GRANTS");
+  if (!hasExactGrantList(connectionGrants, expectedGrants.connection)) return invalid("INVALID_CONNECTION_GRANTS");
   if (typeof lifecycle.localSessionKey !== "string" || lifecycle.localSessionKey.length === 0 || lifecycle.phase !== "registered" || lifecycle.dispatchAllowed !== true) return invalid("INVALID_LIFECYCLE");
   const fingerprint = hashPrefix(`${value.rsid}\u0000${lifecycle.localSessionKey}\u0000${sessionGrants.join("\u0001")}\u0000${connectionGrants.join("\u0001")}`);
   const nextStable = fingerprint === priorFingerprint ? stableCount + 1 : 1;
@@ -1014,10 +1077,15 @@ export function readRbpSessionV2Readiness(
   }
   if (value.binding.binding !== expectedBinding || !Array.isArray(value.binding.grantedCapabilities) ||
       !value.binding.grantedCapabilities.every((capability) => typeof capability === "string") ||
-      !value.binding.grantedCapabilities.includes("batch_atomic") ||
       !Array.isArray(value.lifecycle.connectionLifecycle.grantedCapabilities) ||
-      !value.lifecycle.connectionLifecycle.grantedCapabilities.every((capability) => typeof capability === "string") ||
-      !value.lifecycle.connectionLifecycle.grantedCapabilities.includes("route_rebind_proof_v1")) {
+      !value.lifecycle.connectionLifecycle.grantedCapabilities.every((capability) => typeof capability === "string")) {
+    throw new Error("real trio v2 session binding or nested grants are invalid");
+  }
+  const expectedGrants = expectedReadinessGrantDomains(expectedBinding);
+  const sessionGrants = value.binding.grantedCapabilities as string[];
+  const connectionGrants = value.lifecycle.connectionLifecycle.grantedCapabilities as string[];
+  if (!hasExactGrantList(sessionGrants, expectedGrants.session) ||
+      !hasExactGrantList(connectionGrants, expectedGrants.connection)) {
     throw new Error("real trio v2 session binding or nested grants are invalid");
   }
   const lifecycle = value.lifecycle.sessionLifecycle;
@@ -1033,7 +1101,8 @@ export function readRbpSessionV2Readiness(
   return Object.freeze({
     rsid: value.rsid,
     localSessionKey,
-    grantedCapabilities: Object.freeze([...value.binding.grantedCapabilities]),
+    grantedCapabilities: Object.freeze([...sessionGrants]),
+    connectionGrantOrderHash: connectionGrantOrderHash(connectionGrants),
   });
 }
 
