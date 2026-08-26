@@ -101,6 +101,52 @@ async function injectDurableD2Claim(
   if (!staged.ok) throw new Error(staged.message);
 }
 
+async function mutateDurableRoute(
+  fixture: ReturnType<typeof createRestartableTestStore>,
+  rsid: string,
+  mutate: (
+    route: Record<string, unknown>,
+    root: { binding: { sessionVersion: number } },
+  ) => void,
+): Promise<void> {
+  const root = fixture.snapshot().records.find((row) =>
+    row.namespace === GATEWAY_RBP_SESSION_V2_NAMESPACE && row.key === rsid,
+  );
+  const marker = fixture.snapshot().records.find((row) =>
+    row.namespace === GATEWAY_RBP_SESSION_CUTOVER_V2_NAMESPACE && row.key === rsid,
+  );
+  if (root === undefined || marker === undefined) throw new Error("normalized fixture session is missing");
+  const nextRoot = structuredClone(root.value) as {
+    rootVersion: number;
+    lifecycle: { liveDocumentRoute: Record<string, unknown> | null };
+    binding: { sessionVersion: number };
+  };
+  const route = nextRoot.lifecycle.liveDocumentRoute;
+  if (route === null) throw new Error("fixture route is missing");
+  mutate(route, nextRoot);
+  nextRoot.rootVersion += 1;
+  const nextMarker = {
+    ...(marker.value as Record<string, unknown>),
+    rootVersion: nextRoot.rootVersion,
+    rootDigest: normalizedDigest(nextRoot),
+  };
+  const staged = await fixture.store.transact({ tenantId: TENANT_ID }, (tx) => {
+    tx.stage({
+      namespace: GATEWAY_RBP_SESSION_V2_NAMESPACE,
+      key: rsid,
+      value: nextRoot as unknown as GatewayJsonObject,
+      expect: { kind: "version", version: root.version },
+    });
+    tx.stage({
+      namespace: GATEWAY_RBP_SESSION_CUTOVER_V2_NAMESPACE,
+      key: rsid,
+      value: nextMarker as GatewayJsonObject,
+      expect: { kind: "version", version: marker.version },
+    });
+  });
+  if (!staged.ok) throw new Error(staged.message);
+}
+
 function identity(capabilities: {
   readonly connectionCapabilities?: readonly string[];
   readonly sessionCapabilities?: readonly string[];
@@ -310,6 +356,8 @@ function resumeWithRouteProof(input: {
   readonly lastRxSeq?: number;
   readonly proofId?: string;
   readonly context?: Record<string, unknown>;
+  readonly sourceRevision?: number;
+  readonly cacheIncarnationDigest?: string;
 }): Extract<RbpEnvelope, { type: "session_resume" }> {
   const context = input.context ?? {
     documents: [document("document-rebound", true)],
@@ -335,8 +383,8 @@ function resumeWithRouteProof(input: {
           .update(canonicalizeJson(context as JsonValue), "utf8")
           .digest("hex"),
         freshness: {
-          source_revision: 1,
-          cache_incarnation_digest: `sha256:${"c".repeat(64)}`,
+          source_revision: input.sourceRevision ?? 1,
+          cache_incarnation_digest: input.cacheIncarnationDigest ?? `sha256:${"c".repeat(64)}`,
         },
       },
     },
@@ -1101,7 +1149,11 @@ describe("GatewayBridgeSessionAuthority live document routing", () => {
       type: "heartbeat",
       id: id(),
       ts: new Date().toISOString(),
-      payload: { bridge_version: "m4-route-test", acks: [], sessions: [] },
+      payload: {
+        bridge_version: "m4-route-test",
+        acks: [],
+        sessions: [],
+      },
     })).resolves.toBeUndefined();
     expect(openedChannel.frames.some((frame) => frame.type === "heartbeat_ack")).toBe(true);
     releasePut();
@@ -1507,6 +1559,112 @@ describe("GatewayBridgeSessionAuthority live document routing", () => {
     await expect(created.receive(rebound.connectionId, malformed)).rejects.toMatchObject({
       code: "protocol",
       message: "route rebind context digest is invalid",
+    });
+    expectUnavailable(created);
+  });
+
+  it("compares route-proof freshness in the resume CAS and permits a new incarnation only on a new connection", async () => {
+    const fixture = createRestartableTestStore();
+    const created = new GatewayBridgeSessionAuthority(
+      fixture.store,
+      identity({ connectionCapabilities: ["route_rebind_proof_v1"] }),
+    );
+    authorities.push(created);
+    await created.open();
+    const original = await register(created, "route-rebind-freshness");
+    await created.detach(original.connectionId);
+    const first = await openConnection(created, "wss", ["route_rebind_proof_v1"]);
+    const incarnationA = `sha256:${"a".repeat(64)}`;
+    await created.receive(first.connectionId, resumeWithRouteProof({
+      rsid: original.rsid,
+      resumeToken: original.resumeToken,
+      connectionId: first.connectionId,
+      sourceRevision: 2,
+      cacheIncarnationDigest: incarnationA,
+    }));
+    await created.detach(first.connectionId);
+
+    const replacement = await openConnection(created, "wss", ["route_rebind_proof_v1"]);
+    await expect(created.receive(replacement.connectionId, resumeWithRouteProof({
+      rsid: original.rsid,
+      resumeToken: original.resumeToken,
+      connectionId: replacement.connectionId,
+      sourceRevision: 1,
+      cacheIncarnationDigest: incarnationA,
+    }))).rejects.toMatchObject({
+      code: "protocol",
+      message: "route rebind freshness rejected: source revision regressed within cache incarnation",
+    });
+    const changedContext = {
+      documents: [document("document-equal-revision-changed", true)],
+      active_document: "document-equal-revision-changed",
+      active_view: null,
+    };
+    await expect(created.receive(replacement.connectionId, resumeWithRouteProof({
+      rsid: original.rsid,
+      resumeToken: original.resumeToken,
+      connectionId: replacement.connectionId,
+      sourceRevision: 2,
+      cacheIncarnationDigest: incarnationA,
+      context: changedContext,
+    }))).rejects.toMatchObject({
+      code: "protocol",
+      message: "route rebind freshness rejected: context changed at an equal source revision",
+    });
+    expectUnavailable(created);
+
+    const incarnationB = `sha256:${"b".repeat(64)}`;
+    await created.receive(replacement.connectionId, resumeWithRouteProof({
+      rsid: original.rsid,
+      resumeToken: original.resumeToken,
+      connectionId: replacement.connectionId,
+      sourceRevision: 1,
+      cacheIncarnationDigest: incarnationB,
+      context: changedContext,
+    }));
+    expect(resolve(created).documentIdentity).toEqual({
+      kind: "live",
+      session_document_id: "document-equal-revision-changed",
+    });
+  });
+
+  it.each([
+    ["resultant binding version", (route: Record<string, unknown>) => {
+      route.resultantSessionVersion = Number(route.resultantSessionVersion) + 1;
+    }],
+    ["durable binding version", (_route: Record<string, unknown>, root: { binding: { sessionVersion: number } }) => {
+      root.binding.sessionVersion += 1;
+    }],
+    ["authority generation digest", (route: Record<string, unknown>) => {
+      route.authorityGenerationDigest = `sha256:${"d".repeat(64)}`;
+    }],
+  ] as const)("fails closed when durable proof-route %s drifts", async (_name, mutate) => {
+    const fixture = createRestartableTestStore();
+    const created = new GatewayBridgeSessionAuthority(
+      fixture.store,
+      identity({ connectionCapabilities: ["route_rebind_proof_v1"] }),
+    );
+    authorities.push(created);
+    await created.open();
+    const original = await register(created, `route-rebind-drift-${_name}`);
+    await created.detach(original.connectionId);
+    const rebound = await openConnection(created, "wss", ["route_rebind_proof_v1"]);
+    await created.receive(rebound.connectionId, resumeWithRouteProof({
+      rsid: original.rsid,
+      resumeToken: original.resumeToken,
+      connectionId: rebound.connectionId,
+    }));
+    await mutateDurableRoute(fixture, original.rsid, mutate);
+    await created.receive(rebound.connectionId, {
+      v: 1,
+      type: "heartbeat",
+      id: id(),
+      ts: new Date().toISOString(),
+      payload: {
+        bridge_version: "m4-route-test",
+        acks: [{ rsid: original.rsid, seq: 0 }],
+        sessions: [],
+      },
     });
     expectUnavailable(created);
   });

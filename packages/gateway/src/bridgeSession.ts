@@ -2793,6 +2793,37 @@ function liveRouteFromRebindProof(
   };
 }
 
+type RouteRebindFreshnessDecision =
+  | { readonly kind: "accepted" }
+  | { readonly kind: "rejected"; readonly reason: string };
+
+function compareRouteRebindFreshness(
+  prior: DurableLiveDocumentRoute | null,
+  proof: RouteRebindProof,
+  connection: LiveConnection,
+): RouteRebindFreshnessDecision {
+  if (prior === null || prior.source !== "session_resume_route_rebind_v1") {
+    // Legacy/sequenced routes carry no cache-incarnation authority and are
+    // deliberately never promoted into this comparison.
+    return { kind: "accepted" };
+  }
+  const sameIncarnation =
+    prior.cacheIncarnationDigest === proof.freshness.cache_incarnation_digest;
+  if (sameIncarnation && proof.freshness.source_revision < prior.sourceRevision) {
+    return { kind: "rejected", reason: "source revision regressed within cache incarnation" };
+  }
+  if (sameIncarnation && proof.freshness.source_revision === prior.sourceRevision) {
+    if (proof.context_digest !== prior.contextDigest) {
+      return { kind: "rejected", reason: "context changed at an equal source revision" };
+    }
+    return { kind: "rejected", reason: "equal freshness requires exact proof receipt replay" };
+  }
+  if (prior.observedConnectionId === connection.connectionId) {
+    return { kind: "rejected", reason: "new proof cannot replace an active same-connection proof" };
+  }
+  return { kind: "accepted" };
+}
+
 function invocationPolicy(request: GatewayExecutorRequest): InvokeEnvelope["payload"]["policy"] {
   if (request.context.policyClass === "auto") {
     return { class: "auto", decision: "auto", confirmation_id: null };
@@ -6622,6 +6653,53 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     return snapshot !== undefined && this.#connectionMatchesSnapshot(connection, snapshot);
   }
 
+  /**
+   * The one current-route predicate for every consumer.  A resume-proof route
+   * has no data sequence authority; it is current only while its exact
+   * connection, resultant binding, and Gateway-derived authority generation
+   * still match the live durable session.
+   */
+  #hasCurrentLiveDocumentRoute(
+    record: DurableRbpSession,
+    connection: LiveConnection | undefined,
+    authorityTicket?: TenantAuthorityTicket,
+  ): boolean {
+    const route = record.liveDocumentRoute;
+    if (
+      route === null || connection === undefined ||
+      record.connectionId !== connection.connectionId ||
+      route.observedConnectionId !== record.connectionId ||
+      route.observedConnectionId !== connection.connectionId ||
+      !this.#connectionIsCurrentlyAuthorized(connection)
+    ) return false;
+    if (authorityTicket !== undefined) {
+      try {
+        this.#assertAuthorityTicket(authorityTicket, connection, { session: record });
+      } catch {
+        return false;
+      }
+    }
+    let parsed: DurableLiveDocumentRoute | null;
+    try {
+      parsed = parseDurableLiveDocumentRoute(route);
+    } catch {
+      return false;
+    }
+    if (parsed === null || !sameJson(parsed, route)) return false;
+    if (route.source === "data_doc_context_v1") return true;
+    const receipt = record.routeRebindReceipt ?? null;
+    return (
+      route.resultantSessionBindingId === record.sessionBindingId &&
+      route.resultantSessionVersion === record.sessionVersion &&
+      route.authorityGenerationDigest ===
+        routeRebindAuthorityGenerationDigest(record, connection) &&
+      receipt !== null &&
+      receipt.connectionId === connection.connectionId &&
+      receipt.proofId === route.proofId &&
+      receipt.serverProofDigest === route.serverProofDigest
+    );
+  }
+
   public async openConnection(input: {
     readonly deviceToken: string | undefined;
     readonly binding: BindingKind;
@@ -7227,14 +7305,10 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         ) return null;
         const connection = this.#connections.get(active.record.connectionId);
         if (
-          !this.#connectionIsCurrentlyAuthorized(connection) ||
           !active.record.sessionLifecycle.dispatchAllowed ||
           (active.record.connectionLifecycle.phase !== "steady" &&
             active.record.connectionLifecycle.phase !== "degraded") ||
-          active.record.liveDocumentRoute === null ||
-          active.record.liveDocumentRoute === undefined ||
-          active.record.liveDocumentRoute.observedConnectionId !==
-            active.record.connectionId
+          !this.#hasCurrentLiveDocumentRoute(active.record, connection)
         ) return null;
         const evidence = active.record.evidence.some((entry) =>
           entry.terminalInvocationId === input.originInvocationId &&
@@ -7291,13 +7365,10 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       const record = active.record;
       const connection = this.#connections.get(record.connectionId);
       return record.tenantId === input.tenantId &&
-        this.#connectionIsCurrentlyAuthorized(connection) &&
         record.sessionLifecycle.dispatchAllowed &&
         (record.connectionLifecycle.phase === "steady" ||
           record.connectionLifecycle.phase === "degraded") &&
-        record.liveDocumentRoute !== null &&
-        record.liveDocumentRoute !== undefined &&
-        record.liveDocumentRoute.observedConnectionId === record.connectionId;
+        this.#hasCurrentLiveDocumentRoute(record, connection);
     });
     if (candidates.length !== 1) return null;
     const record = candidates[0]!.record;
@@ -7347,13 +7418,10 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         record.tenantId === input.tenantId &&
         record.userId === input.userId &&
         record.deviceId === input.deviceId &&
-        this.#connectionIsCurrentlyAuthorized(connection) &&
         record.sessionLifecycle.dispatchAllowed &&
         (record.connectionLifecycle.phase === "steady" ||
           record.connectionLifecycle.phase === "degraded") &&
-        record.liveDocumentRoute !== null &&
-        record.liveDocumentRoute !== undefined &&
-        record.liveDocumentRoute.observedConnectionId === record.connectionId
+        this.#hasCurrentLiveDocumentRoute(record, connection)
       );
     });
     if (candidates.length !== 1) {
@@ -7399,7 +7467,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     if (
       active === undefined ||
       active.tenantId !== request.context.actor.tenantId ||
-      !this.#connectionIsCurrentlyAuthorized(connection)
+      !this.#hasCurrentLiveDocumentRoute(active.record, connection)
       || !active.record.sessionLifecycle.dispatchAllowed
       || (active.record.connectionLifecycle.phase !== "steady" &&
         active.record.connectionLifecycle.phase !== "degraded")
@@ -7458,7 +7526,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     if (
       active === undefined ||
       active.tenantId !== first.context.actor.tenantId ||
-      !this.#connectionIsCurrentlyAuthorized(connection) ||
+      !this.#hasCurrentLiveDocumentRoute(active.record, connection) ||
       !active.record.sessionLifecycle.dispatchAllowed ||
       !active.record.grantedCapabilities.includes("batch_atomic") ||
       (active.record.connectionLifecycle.phase !== "steady" &&
@@ -7640,6 +7708,17 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
           error: {
             code: "executor_unavailable",
             message: "identity authority denied dispatch",
+          },
+        }),
+      };
+    }
+    if (!this.#hasCurrentLiveDocumentRoute(active.record, connection, authorityTicket)) {
+      return {
+        start: async () => ({
+          state: "failed",
+          error: {
+            code: "executor_unavailable",
+            message: "current document route authority is unavailable",
           },
         }),
       };
@@ -8144,7 +8223,8 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
           (record.pending.effectiveMcpRequestScope?.principalKey !== captured.principalKey) ||
           (record.pending.effectiveMcpRequestScope?.effectiveMcpSessionId !== captured.effectiveMcpSessionId)
         ) return { kind: "blocked" as const };
-        if (!record.sessionLifecycle.dispatchAllowed || record.liveDocumentRoute === null) {
+        if (!record.sessionLifecycle.dispatchAllowed ||
+          !this.#hasCurrentLiveDocumentRoute(record, connection, ticket)) {
           this.#d2RouteRetries.add(record.rsid);
           return { kind: "blocked" as const };
         }
@@ -8948,6 +9028,10 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       // pending unregister finalize as indeterminate rather than replaying.
       return "revoked_after_start";
     }
+    if (reservation.record.liveDocumentRoute !== null &&
+      !this.#hasCurrentLiveDocumentRoute(record, connection, authorityTicket)) {
+      throw new GatewayRbpFault("unavailable", "dispatch route authority is no longer current", 503, 1011);
+    }
     if (record.connectionId !== connection.connectionId ||
         record.sessionBindingId !== reservation.record.sessionBindingId ||
         !record.sessionLifecycle.dispatchAllowed ||
@@ -9084,6 +9168,16 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
             expect: { kind: "version", version: stored.version },
           });
           return { kind: "reserved" as const, record: next, lease: replayLease, serialized: existingReceipt.resumeAckSerialized };
+        }
+        if (suppliedProof !== null) {
+          const freshness = compareRouteRebindFreshness(
+            record.liveDocumentRoute,
+            suppliedProof,
+            connection,
+          );
+          if (freshness.kind === "rejected") {
+            return { kind: "freshness_rejected" as const, reason: freshness.reason };
+          }
         }
         const initialFence = sessionEgressFence(record);
         const nowMs = this.#clock();
@@ -9413,6 +9507,14 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
           throw new GatewayRbpFault(
             "protocol",
             "route rebind proof receipt is immutable",
+            400,
+            4400,
+          );
+        }
+        if (reserved.value.kind === "freshness_rejected") {
+          throw new GatewayRbpFault(
+            "protocol",
+            `route rebind freshness rejected: ${reserved.value.reason}`,
             400,
             4400,
           );
