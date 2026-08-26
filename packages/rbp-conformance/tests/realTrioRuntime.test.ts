@@ -497,31 +497,57 @@ describe("C39 worker ACK-order diagnostics", () => {
     ], expectedSequences)).toBe("ack_before_write");
   });
 
-  it("retries only incomplete ACK or restart evidence", () => {
-    expect(c39WorkerAckOrderRetryable("partial_write_missing")).toBe(true);
-    expect(c39WorkerAckOrderRetryable("partial_ack_missing")).toBe(true);
-    expect(c39WorkerAckOrderRetryable("terminal_write_missing")).toBe(true);
-    expect(c39WorkerAckOrderRetryable("terminal_ack_missing")).toBe(true);
-    for (const terminal of [
-      "duplicate_ack",
-      "ack_before_write",
-      "outer_digest_mismatch",
-      "unexpected_ack",
-      "observation_order_invalid",
-      "other",
-    ] as const) {
-      expect(c39WorkerAckOrderRetryable(terminal)).toBe(false);
-    }
-    const write = observation("write", 5, 1, "a");
-    expect(c39RestartResendState([write], [write])).toBe("absent");
-    expect(c39RestartResendState([
-      write,
-      observation("restart_resend", 5, 2, "a"),
-    ], [write])).toBe("exact");
-    expect(c39RestartResendState([
-      write,
-      observation("restart_resend", 5, 2, "b"),
-    ], [write])).toBe("mismatch");
+  it("permits only a legal ordered prefix to remain pending", () => {
+    expect(c39WorkerRecoveryTraceState([], expectedSequences)).toEqual({ state: "pending" });
+    expect(c39WorkerRecoveryTraceState([
+      materialized(), observation("write", 5, 2, "a"), observation("ack", 5, 3, "a"),
+      observation("write", 6, 4, "b"),
+    ], expectedSequences)).toEqual({ state: "pending" });
+    expect(c39WorkerRecoveryTraceState([
+      materialized(), observation("write", 5, 2, "a"), observation("ack", 5, 3, "a"),
+      observation("write", 6, 4, "b"), observation("write", 6, 5, "b"),
+    ], expectedSequences)).toEqual({ state: "invalid", diagnostic: "terminal_ack_missing" });
+    expect(c39WorkerRecoveryTraceState([
+      materialized(), observation("write", 5, 2, "a"), observation("write", 6, 3, "b"),
+    ], expectedSequences)).toEqual({ state: "invalid", diagnostic: "partial_ack_missing" });
+    expect(c39WorkerRecoveryTraceState([
+      materialized(), observation("ack", 5, 2, "a"), observation("write", 6, 3, "b"),
+    ], expectedSequences)).toEqual({ state: "invalid", diagnostic: "partial_write_missing" });
+    expect(c39WorkerRecoveryTraceState([
+      materialized(), observation("write", 5, 2, "a"), observation("ack", 5, 3, "a"),
+      observation("write", 6, 4, "b"), observation("ack", 6, 5, "b"),
+    ], expectedSequences)).toEqual({ state: "pending" });
+    expect(c39WorkerRecoveryTraceState([
+      materialized(), observation("write", 5, 2, "a"), observation("write", 6, 3, "b"),
+      observation("ack", 6, 4, "b"), observation("ack", 5, 5, "a"),
+    ], expectedSequences)).toEqual({ state: "invalid", diagnostic: "other" });
+    expect(c39WorkerRecoveryTraceState([
+      materialized(), observation("write", 7, 2, "a"),
+    ], expectedSequences)).toEqual({ state: "invalid", diagnostic: "other" });
+    expect(c39WorkerRecoveryTraceState([
+      observation("write", 5, 1, "a"),
+    ], expectedSequences)).toEqual({ state: "invalid", diagnostic: "other" });
+    const fullAcknowledged = [
+      materialized(), observation("write", 5, 2, "a"), observation("ack", 5, 3, "a"),
+      observation("write", 6, 4, "b"), observation("ack", 6, 5, "b"),
+    ];
+    expect(c39WorkerRecoveryTraceState(fullAcknowledged, expectedSequences)).toEqual({ state: "pending" });
+    expect(c39WorkerRecoveryTraceState([
+      ...fullAcknowledged,
+      observation("restart_resend", 5, 6, "b"),
+    ], expectedSequences)).toEqual({ state: "invalid", diagnostic: "other" });
+    expect(c39WorkerRecoveryTraceState([
+      ...fullAcknowledged,
+      observation("restart_resend", 7, 6, "z"),
+    ], expectedSequences)).toEqual({ state: "invalid", diagnostic: "other" });
+    expect(c39WorkerRecoveryTraceState([
+      materialized(), observation("restart_resend", 5, 2, "a"), observation("write", 5, 3, "a"),
+      observation("ack", 5, 4, "a"), observation("write", 6, 5, "b"), observation("ack", 6, 6, "b"),
+    ], expectedSequences)).toEqual({ state: "invalid", diagnostic: "other" });
+    expect(c39WorkerRecoveryTraceState([
+      ...fullAcknowledged,
+      observation("restart_resend", 5, 6, "a"),
+    ], expectedSequences)).toEqual({ state: "exact" });
   });
 });
 
@@ -846,29 +872,20 @@ function observedC39Recovery(
     throw new Error("C39 Gateway audit terminal is not coherent with the exact origin");
   }
   const carrierHash = row.recoveryIdHash as `sha256:${string}`;
+  if (worker.length === 0) return null;
   const oneCarrierIdentity = worker.length > 0 && worker.every((entry) => entry.hashedRecoveryId === carrierHash);
   if (!oneCarrierIdentity) {
     throw new Error("C39 Worker IPC has missing or cross-carrier observations");
   }
-  const materialized = worker.filter((entry) => entry.phase === "materialized");
   const writes = worker.filter((entry) => entry.phase === "write");
   const acknowledgements = worker.filter((entry) => entry.phase === "ack");
   const expectedSequences = [...partials.map((partial) => Number(partial.seq)), Number(terminal.seq)];
-  const observationOrderValid = new Set(worker.map((entry) => entry.ordinal)).size === worker.length &&
-    !worker.some((entry, index) => index > 0 && entry.ordinal <= worker[index - 1]!.ordinal);
-  const exactCarrierAckOrder = materialized.length >= 1 && observationOrderValid && expectedSequences.every((sequence) => {
-    const sent = writes.filter((entry) => entry.sequence === sequence);
-    const acked = acknowledgements.filter((entry) => entry.sequence === sequence);
-    const finalWrite = sent.at(-1);
-    return sent.length >= 1 && acked.length === 1 && finalWrite !== undefined &&
-      acked[0]!.ordinal > finalWrite.ordinal &&
-      acked[0]!.outerDigest === finalWrite.outerDigest;
-  }) && acknowledgements.length === expectedSequences.length;
-  if (!exactCarrierAckOrder) {
-    const diagnostic = c39WorkerAckOrderDiagnostic(worker, expectedSequences);
-    if (c39WorkerAckOrderRetryable(diagnostic)) return null;
-    throw new Error(`C39 Worker IPC did not prove one ordered acknowledgement per carrier sequence [${diagnostic}]`);
+  const trace = c39WorkerRecoveryTraceState(worker, expectedSequences);
+  if (trace.state === "pending") return null;
+  if (trace.state === "invalid") {
+    throw new Error(`C39 Worker IPC did not prove one ordered acknowledgement per carrier sequence [${trace.diagnostic}]`);
   }
+  const exactCarrierAckOrder = true;
   const omittedReplayObserved = row.originDigest === origin.responseDigest &&
     terminal.originDigest === origin.responseDigest && terminal.state === "completed";
   if (!omittedReplayObserved) {
@@ -877,9 +894,6 @@ function observedC39Recovery(
   if (writes.length < expectedSequences.length || acknowledgements.length !== expectedSequences.length) {
     throw new Error("C39 Worker IPC has an unexpected carrier frame count");
   }
-  const restartState = c39RestartResendState(worker, writes);
-  if (restartState === "absent") return null;
-  if (restartState === "mismatch") throw new Error("C39 Worker IPC restart resend changed sequence or outer digest");
   const restartResendExact = true;
   return Object.freeze({
     omittedReplayObserved,
@@ -939,23 +953,67 @@ function c39WorkerAckOrderDiagnostic(
   return "other";
 }
 
-function c39WorkerAckOrderRetryable(diagnostic: C39WorkerAckOrderDiagnostic): boolean {
-  return diagnostic === "partial_write_missing" || diagnostic === "partial_ack_missing" ||
-    diagnostic === "terminal_write_missing" || diagnostic === "terminal_ack_missing";
-}
+type C39WorkerRecoveryTraceState =
+  | Readonly<{ readonly state: "pending" }>
+  | Readonly<{ readonly state: "exact" }>
+  | Readonly<{ readonly state: "invalid"; readonly diagnostic: C39WorkerAckOrderDiagnostic }>;
 
-type C39RestartResendState = "absent" | "exact" | "mismatch";
-
-function c39RestartResendState(
+function c39WorkerRecoveryTraceState(
   worker: C39RecoveryCarrierObservations,
-  writes: readonly C39RecoveryCarrierObservations[number][],
-): C39RestartResendState {
+  expectedSequences: readonly number[],
+): C39WorkerRecoveryTraceState {
+  if (worker.length === 0) return Object.freeze({ state: "pending" });
+  const invalid = (diagnostic: C39WorkerAckOrderDiagnostic): C39WorkerRecoveryTraceState =>
+    Object.freeze({ state: "invalid", diagnostic });
+  if (worker.filter((entry) => entry.phase === "materialized").length < 1) return invalid("other");
+  if (new Set(worker.map((entry) => entry.ordinal)).size !== worker.length ||
+      worker.some((entry, index) => index > 0 && entry.ordinal <= worker[index - 1]!.ordinal)) {
+    return invalid("observation_order_invalid");
+  }
+  const writes = worker.filter((entry) => entry.phase === "write");
+  const acknowledgements = worker.filter((entry) => entry.phase === "ack");
   const restarts = worker.filter((entry) => entry.phase === "restart_resend");
-  if (restarts.length === 0) return "absent";
-  return restarts.every((entry) => {
-    const original = writes.find((write) => write.sequence === entry.sequence);
-    return original !== undefined && original.outerDigest === entry.outerDigest && entry.ordinal > original.ordinal;
-  }) ? "exact" : "mismatch";
+  if (writes.some((entry) => !expectedSequences.includes(entry.sequence)) ||
+      restarts.some((entry) => !expectedSequences.includes(entry.sequence))) return invalid("other");
+  if (acknowledgements.some((entry) => !expectedSequences.includes(entry.sequence))) return invalid("unexpected_ack");
+  for (const entry of restarts) {
+    const original = writes.filter((write) => write.sequence === entry.sequence).at(-1);
+    if (original === undefined || original.outerDigest !== entry.outerDigest || entry.ordinal <= original.ordinal) {
+      return invalid("other");
+    }
+  }
+  let previousAcknowledgementOrdinal = 0;
+  for (const [index, sequence] of expectedSequences.entries()) {
+    const sent = writes.filter((entry) => entry.sequence === sequence);
+    const acked = acknowledgements.filter((entry) => entry.sequence === sequence);
+    const laterSequenceObserved = worker.some((entry) =>
+      (entry.phase === "write" || entry.phase === "ack" || entry.phase === "restart_resend") &&
+      expectedSequences.slice(index + 1).includes(entry.sequence));
+    const diagnostic = index === expectedSequences.length - 1
+      ? { write: "terminal_write_missing", ack: "terminal_ack_missing" } as const
+      : { write: "partial_write_missing", ack: "partial_ack_missing" } as const;
+    const restartForSequence = restarts.some((entry) => entry.sequence === sequence);
+    if (sent.length === 0) {
+      return laterSequenceObserved || acked.length > 0 || restartForSequence
+        ? invalid(diagnostic.write)
+        : Object.freeze({ state: "pending" });
+    }
+    if (acked.length === 0) {
+      if (laterSequenceObserved) return invalid(diagnostic.ack);
+      if (index === expectedSequences.length - 1 && (sent.length !== 1 || restartForSequence)) {
+        return invalid("terminal_ack_missing");
+      }
+      return Object.freeze({ state: "pending" });
+    }
+    if (acked.length !== 1) return invalid("duplicate_ack");
+    const finalWrite = sent.at(-1)!;
+    const acknowledgement = acked[0]!;
+    if (acknowledgement.ordinal <= finalWrite.ordinal) return invalid("ack_before_write");
+    if (acknowledgement.outerDigest !== finalWrite.outerDigest) return invalid("outer_digest_mismatch");
+    if (acknowledgement.ordinal <= previousAcknowledgementOrdinal) return invalid("other");
+    previousAcknowledgementOrdinal = acknowledgement.ordinal;
+  }
+  return restarts.length === 0 ? Object.freeze({ state: "pending" }) : Object.freeze({ state: "exact" });
 }
 
 async function waitForObservedC39Recovery(
