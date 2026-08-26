@@ -15,6 +15,27 @@ namespace RevAgent.Bridge.Tests.Gateway.Connection;
 public sealed partial class RbpConnectionCoordinatorTests
 {
     [Fact]
+    public void RouteAuthorityCheckpointAndConnectionDigestMatchIndependentVectors()
+    {
+        using JsonDocument proof = JsonDocument.Parse("""
+            {"version":1,"connection_id":"019f9add-7a83-7d11-a6a9-d2f8108c0098","proof_id":"019f9add-7a83-7d12-a6a9-d2f8108c0099","context":{},"context_digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","freshness":{"source_revision":7,"cache_incarnation_digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}}
+            """);
+        const string rsid = "rs-vector";
+        Assert.Equal(
+            "sha256:ab4e0489142f3c9021386003710993e264559db902e85909105e6a5866c65518",
+            RbpRouteRebindProof.MakeAuthorityCheckpoint(proof.RootElement, rsid));
+        Assert.Equal(
+            "sha256:9449ea3d182b5308a70be5bdd5266d31c6d586d68500299915a1158022fbb6c6",
+            RbpRouteRebindProof.MakeConnectionDigest(
+                rsid, "019f9add-7a83-7d11-a6a9-d2f8108c0098"));
+        Assert.NotEqual(
+            RbpRouteRebindProof.MakeConnectionDigest(
+                "rs-other", "019f9add-7a83-7d11-a6a9-d2f8108c0098"),
+            RbpRouteRebindProof.MakeConnectionDigest(
+                rsid, "019f9add-7a83-7d11-a6a9-d2f8108c0098"));
+    }
+
+    [Fact]
     public async Task FreshResumeProofReadBypassesWatcherEmissionStateAndRequiresFreshnessPair()
     {
         var channel = new ScriptedDocContextChannel();

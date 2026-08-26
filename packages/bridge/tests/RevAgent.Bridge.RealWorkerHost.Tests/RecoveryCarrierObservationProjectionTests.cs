@@ -36,6 +36,9 @@ public sealed class RecoveryCarrierObservationProjectionTests
         Assert.Equal(2L, document.RootElement[0].GetProperty("ordinal").GetInt64());
         Assert.Equal(3L, document.RootElement[1].GetProperty("ordinal").GetInt64());
         Assert.Equal(Digest, document.RootElement[0].GetProperty("outerDigest").GetString());
+        Assert.True(document.RootElement[0].TryGetProperty("routeAuthorityCheckpoint", out _));
+        Assert.True(document.RootElement[0].TryGetProperty("connectionDigest", out _));
+        Assert.True(document.RootElement[0].TryGetProperty("causalOrdinal", out _));
         Assert.DoesNotContain("payload", json, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("rsid", json, StringComparison.OrdinalIgnoreCase);
     }
@@ -107,6 +110,8 @@ public sealed class RecoveryCarrierObservationProjectionTests
         Assert.Equal(2, json.RootElement.GetArrayLength());
         Assert.Equal(2L, json.RootElement[0].GetProperty("ordinal").GetInt64());
         Assert.Equal("watcher_started", json.RootElement[0].GetProperty("phase").GetString());
+        Assert.True(json.RootElement[0].TryGetProperty("routeAuthorityCheckpoint", out _));
+        Assert.True(json.RootElement[0].TryGetProperty("causalOrdinal", out _));
         Assert.DoesNotContain("rsid\"", json.RootElement.GetRawText());
     }
 
