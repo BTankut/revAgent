@@ -11,6 +11,7 @@ import {
 } from "../src/realTrioCaseDriver.js";
 import {
   parseOmittedPayloadCoordinateCarrier,
+  RealTrioNorthMcpError,
   RealTrioOmittedPayloadCoordinateError,
   withRealTrioNorthMcpClient,
   type RealTrioNorthMcpClient,
@@ -37,6 +38,23 @@ const CURRENT_ROUTE_IDENTITY_FIELDS = [
   "connectionDigest",
   "sessionRecordVersion",
 ] as const;
+const C39_PROTECTED_RESOURCE_READ_OUTCOMES = new Set([
+  "owner_scope_mismatch",
+  "completion_missing_or_mismatch",
+  "activation_mismatch",
+  "recovery_reauthorize_denied",
+  "protected_store_read_failed",
+  "protected_integrity_mismatch",
+  "success",
+] as const);
+type C39ProtectedResourceReadOutcome =
+  | "owner_scope_mismatch"
+  | "completion_missing_or_mismatch"
+  | "activation_mismatch"
+  | "recovery_reauthorize_denied"
+  | "protected_store_read_failed"
+  | "protected_integrity_mismatch"
+  | "success";
 
 function assertAcceptedDocumentContextUpdate(audit: unknown): void {
   expect(audit).toMatchObject({ ok: true, action: "read_real_case_audit" });
@@ -157,7 +175,16 @@ describe.sequential("WP-12 direct real trio runtime fixture", () => {
           expect(result).not.toHaveProperty("result");
           const uri = result.uri;
           expect(typeof uri).toBe("string");
-          const ownerRead = await client.readResource({ uri: uri as string, requestId: `wp12-c39-owner-read-${binding}` });
+          let ownerRead;
+          try {
+            ownerRead = await client.readResource({ uri: uri as string, requestId: `wp12-c39-owner-read-${binding}` });
+          } catch (error) {
+            // This is the sole C39 owner resource-read diagnostic. The audit is
+            // deliberately queried before runtime teardown, and only its fixed
+            // conformance stage enum can annotate the original wire failure.
+            const audit = await readC39OwnerResourceReadAudit(runtime);
+            throw withC39OwnerResourceReadDiagnostic(error, audit);
+          }
           expect(ownerRead).toMatchObject({ response: expect.any(Object) });
           const ownerReadSucceeded = object(ownerRead.response) !== null;
           expect(ownerReadSucceeded).toBe(true);
@@ -252,6 +279,78 @@ describe.sequential("WP-12 direct real trio runtime fixture", () => {
     300_000,
   );
 });
+
+describe("C39 owner resource-read diagnostics", () => {
+  it("keeps only allowlisted audit outcomes and preserves absent or malformed values as null", () => {
+    expect(c39OwnerResourceReadOutcome({
+      c39ProtectedResourceReadFirst: "owner_scope_mismatch",
+      c39ProtectedResourceReadLast: "success",
+      leaked: "must-not-escape",
+    })).toBe("success");
+    expect(c39OwnerResourceReadOutcome({
+      c39ProtectedResourceReadFirst: "activation_mismatch",
+      c39ProtectedResourceReadLast: "untrusted-detail",
+    })).toBe("activation_mismatch");
+    expect(c39OwnerResourceReadOutcome({
+      c39ProtectedResourceReadFirst: { unexpected: "value" },
+      c39ProtectedResourceReadLast: ["untrusted-detail"],
+    })).toBeNull();
+  });
+
+  it("retains the original MCP error class and wire code while adding one fixed outcome suffix", () => {
+    const evidence = Object.freeze({
+      schemaVersion: "rbp-real-trio-north-evidence/v1" as const,
+      requestSha256: `sha256:${"a".repeat(64)}` as const,
+      responseSha256: `sha256:${"b".repeat(64)}` as const,
+      methodSha256: `sha256:${"c".repeat(64)}` as const,
+      requestBytes: 1,
+      responseBytes: 1,
+      statusCode: 404,
+      jsonRpcErrorCode: -32_001,
+      mcpSessionHeaderPresent: true,
+    });
+    const original = new RealTrioNorthMcpError("real trio MCP resources/read returned JSON-RPC error -32001", evidence);
+    const diagnostic = withC39OwnerResourceReadDiagnostic(original, "protected_store_read_failed");
+    expect(diagnostic).toBeInstanceOf(RealTrioNorthMcpError);
+    expect((diagnostic as RealTrioNorthMcpError).evidence).toBe(evidence);
+    expect(diagnostic.message).toBe("real trio MCP resources/read returned JSON-RPC error -32001 [protected_store_read_failed]");
+  });
+});
+
+async function readC39OwnerResourceReadAudit(
+  runtime: Awaited<ReturnType<typeof startRealTrioRuntimeFixture>>,
+): Promise<C39ProtectedResourceReadOutcome | null> {
+  try {
+    return c39OwnerResourceReadOutcome(await runtime.supervisor.readRealCaseAudit());
+  } catch {
+    return null;
+  }
+}
+
+function c39OwnerResourceReadOutcome(value: unknown): C39ProtectedResourceReadOutcome | null {
+  const audit = object(value);
+  if (audit === null) return null;
+  const first = c39ProtectedResourceReadOutcome(audit.c39ProtectedResourceReadFirst);
+  const last = c39ProtectedResourceReadOutcome(audit.c39ProtectedResourceReadLast);
+  return last ?? first;
+}
+
+function c39ProtectedResourceReadOutcome(value: unknown): C39ProtectedResourceReadOutcome | null {
+  return typeof value === "string" && C39_PROTECTED_RESOURCE_READ_OUTCOMES.has(value as C39ProtectedResourceReadOutcome)
+    ? value as C39ProtectedResourceReadOutcome
+    : null;
+}
+
+function withC39OwnerResourceReadDiagnostic(
+  error: unknown,
+  outcome: C39ProtectedResourceReadOutcome | null,
+): Error {
+  const suffix = outcome ?? "null";
+  if (error instanceof RealTrioNorthMcpError) {
+    return new RealTrioNorthMcpError(`${error.message} [${suffix}]`, error.evidence, error.toolResultEvidence);
+  }
+  return new Error(`C39 owner resources/read failed [${suffix}]`, { cause: error });
+}
 
 interface C39OriginProvenance {
   readonly requestId: string;
