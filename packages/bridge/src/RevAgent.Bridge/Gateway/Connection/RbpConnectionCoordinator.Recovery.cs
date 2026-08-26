@@ -401,6 +401,8 @@ internal sealed partial class RbpConnectionCoordinator
                 string.Equals(claim.RecoveryInvocationId, recoveryInvocationId,
                     StringComparison.Ordinal) &&
                 claim.ReservedSequence <= throughSequence);
+            RemoveRecoveryCarrierOuterDigests(
+                recoveryInvocationId, throughSequence);
         }
     }
 
@@ -414,10 +416,9 @@ internal sealed partial class RbpConnectionCoordinator
                 ReferenceEquals(gate.Context, context));
             _recoveryTerminalClaims.RemoveWhere(claim =>
                 ReferenceEquals(claim.Context, context));
-            _recoveryCarrierOuterDigests.Keys
-                .Where(key => ReferenceEquals(key.Context, context))
-                .ToList()
-                .ForEach(key => _recoveryCarrierOuterDigests.Remove(key));
+            // Do not clear the digest here: a resume receipt may arrive on
+            // the next connection cycle. It is consumed by acknowledgement,
+            // or removed with the related recovery claim/tombstone.
         }
     }
 
@@ -476,10 +477,20 @@ internal sealed partial class RbpConnectionCoordinator
     {
         try
         {
-            var key = new RecoveryCarrierDigestCycleKey(context,
-                recoveryInvocationId, sequence);
+            var key = new RecoveryCarrierDigestKey(recoveryInvocationId,
+                sequence);
             lock (_recoveryCarrierClaimSync)
             {
+                if (_recoveryCarrierOuterDigests.TryGetValue(key,
+                        out string? prior) &&
+                    !string.Equals(prior, outerDigest,
+                        StringComparison.Ordinal))
+                {
+                    // A resend with different bytes is not acknowledgement
+                    // evidence. Suppress any later false positive.
+                    _recoveryCarrierOuterDigests.Remove(key);
+                    return;
+                }
                 _recoveryCarrierOuterDigests[key] = outerDigest;
             }
             long ordinal = Interlocked.Increment(
@@ -512,8 +523,8 @@ internal sealed partial class RbpConnectionCoordinator
             string? outerDigest;
             lock (_recoveryCarrierClaimSync)
             {
-                var key = new RecoveryCarrierDigestCycleKey(context,
-                    recoveryInvocationId, acknowledgedSequence);
+                var key = new RecoveryCarrierDigestKey(recoveryInvocationId,
+                    acknowledgedSequence);
                 _recoveryCarrierOuterDigests.TryGetValue(key, out outerDigest);
                 _recoveryCarrierOuterDigests.Remove(key);
             }
@@ -561,7 +572,28 @@ internal sealed partial class RbpConnectionCoordinator
                 ReferenceEquals(claim.Context, context) &&
                 string.Equals(claim.RecoveryInvocationId, recoveryInvocationId,
                     StringComparison.Ordinal) &&
-                claim.ReservedSequence <= throughSequence);
+                    claim.ReservedSequence <= throughSequence);
+            RemoveRecoveryCarrierOuterDigests(
+                recoveryInvocationId, throughSequence);
+        }
+    }
+
+    private void RemoveRecoveryCarrierOuterDigests(
+        string recoveryInvocationId, long throughSequence)
+    {
+        _recoveryCarrierOuterDigests.Keys
+            .Where(key => string.Equals(key.RecoveryInvocationId,
+                recoveryInvocationId, StringComparison.Ordinal) &&
+                key.Sequence <= throughSequence)
+            .ToList()
+            .ForEach(key => _recoveryCarrierOuterDigests.Remove(key));
+    }
+
+    private void ClearAllRecoveryCarrierOuterDigests()
+    {
+        lock (_recoveryCarrierClaimSync)
+        {
+            _recoveryCarrierOuterDigests.Clear();
         }
     }
 
@@ -584,8 +616,7 @@ internal sealed partial class RbpConnectionCoordinator
         long ReservedSequence,
         int PlanVersion);
 
-    private sealed record RecoveryCarrierDigestCycleKey(
-        ConnectionCycleContext Context,
+    private sealed record RecoveryCarrierDigestKey(
         string RecoveryInvocationId,
         long Sequence);
 }

@@ -86,7 +86,10 @@ internal sealed partial class RbpConnectionCoordinator
     private readonly HashSet<RecoveryCarrierAckGateKey> _recoveryCarrierAckGates = new();
     private readonly HashSet<RecoveryTerminalDeliveryKey> _recoveryTerminalDeliveries = new();
     private readonly HashSet<RecoveryTerminalCycleKey> _recoveryTerminalClaims = new();
-    private readonly Dictionary<RecoveryCarrierDigestCycleKey, string>
+    // Observations are volatile only, but a recovery receipt can arrive on a
+    // later connection cycle. Keep the one unacknowledged digest by durable
+    // recovery identity rather than a socket-cycle object.
+    private readonly Dictionary<RecoveryCarrierDigestKey, string>
         _recoveryCarrierOuterDigests = new();
     private long _recoveryCarrierObservationOrdinal;
     private long _reconnectObservationOrdinal;
@@ -328,6 +331,7 @@ internal sealed partial class RbpConnectionCoordinator
                         RbpConnectionEventType.ShutdownRequested));
             }
 
+            ClearAllRecoveryCarrierOuterDigests();
             Interlocked.Exchange(ref _runStarted, 0);
         }
     }

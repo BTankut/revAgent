@@ -413,11 +413,13 @@ public sealed partial class RbpConnectionCoordinatorTests
                 ? RecoveryResumeAck(clock, envelope,
                     reservation.CurrentReservedSequence + 1)
                 : envelope.Type == "heartbeat" ? null : responder.Respond(envelope));
+        var observations = new RecordingRecoveryCarrierObservationSink();
         var coordinator = Coordinator(
             new FakeConnectionCycleFactory(first, second), store,
             new MutableSessionCatalog(LocalSession(8080, 1000)), clock,
             new RecordingInboundJournal(),
-            invocationDispatcher: new RecoveryDispatcher(reservation));
+            invocationDispatcher: new RecoveryDispatcher(reservation),
+            recoveryCarrierObservationSink: observations);
         using var stop = new CancellationTokenSource();
 
         Task run = coordinator.RunAsync(stop.Token);
@@ -428,8 +430,10 @@ public sealed partial class RbpConnectionCoordinatorTests
         await EventuallyAsync(() => first.Sent.Any(item => item.Type == "heartbeat"));
         first.Deliver(HeartbeatAck(clock, Id(9746), reservation.Rsid,
             reservation.CurrentReservedSequence));
-        _ = await EventuallySentAsync(first, item => item.Type == "result" &&
+        RbpEnvelope terminal = await EventuallySentAsync(first, item => item.Type == "result" &&
             item.Id == reservation.RecoveryInvocationId);
+        string terminalDigest = "sha256:" + Convert.ToHexString(
+            SHA256.HashData(RbpEnvelopeCodec.Encode(terminal))).ToLowerInvariant();
 
         first.Fail(new IOException("resume carries the terminal receipt"));
         await EventuallyAsync(() => coordinator.GetSnapshot().ConnectionGeneration == 2);
@@ -441,6 +445,21 @@ public sealed partial class RbpConnectionCoordinatorTests
         await Task.Delay(25);
         Assert.DoesNotContain(second.Sent, item => item.Type == "result" &&
             item.Id == reservation.RecoveryInvocationId);
+        RbpRecoveryCarrierObservation acknowledgement = Assert.Single(
+            observations.Rows, item => item.Phase ==
+                RbpRecoveryCarrierObservationPhase.Acknowledged &&
+                item.Sequence == terminal.Sequence);
+        Assert.Equal(terminal.Sequence, acknowledgement.Sequence);
+        Assert.Equal(terminalDigest, acknowledgement.OuterDigest);
+
+        // The observation digest is consumed once, so a later duplicate ACK
+        // cannot report the same receipt again.
+        second.Deliver(HeartbeatAck(clock, Id(9747), reservation.Rsid,
+            terminal.Sequence!.Value));
+        await Task.Delay(25);
+        _ = Assert.Single(observations.Rows, item => item.Phase ==
+            RbpRecoveryCarrierObservationPhase.Acknowledged &&
+            item.Sequence == terminal.Sequence);
 
         stop.Cancel();
         await run.WaitAsync(TimeSpan.FromSeconds(5));

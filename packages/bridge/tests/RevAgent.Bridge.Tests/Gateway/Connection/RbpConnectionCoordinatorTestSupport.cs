@@ -25,7 +25,9 @@ public sealed partial class RbpConnectionCoordinatorTests
         IRbpInvocationDispatcher? invocationDispatcher = null,
         TimeSpan? invocationDrainTimeout = null,
         Func<RbpConnectionFailureObservation, ValueTask>?
-            onConnectionFailureObservation = null) =>
+            onConnectionFailureObservation = null,
+        IRbpRecoveryCarrierObservationSink?
+            recoveryCarrierObservationSink = null) =>
         new(
             factory,
             store,
@@ -44,7 +46,9 @@ public sealed partial class RbpConnectionCoordinatorTests
             clock,
             random ?? new FixedRandomSource(0),
             onConnectionFailureObservation:
-                onConnectionFailureObservation);
+                onConnectionFailureObservation,
+            recoveryCarrierObservationSink:
+                recoveryCarrierObservationSink);
 
     private static RbpJournalStore OpenStore(
         RbpJournalTestDirectory directory,
