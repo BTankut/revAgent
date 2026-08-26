@@ -50,13 +50,15 @@ public sealed class RbpHelloFactoryTests
     }
 
     [Fact]
-    public void ProductionProfileDeclaresTheImplementedJournalCapabilityOnly()
+    public void ProductionProfileDeclaresImplementedJournalAndRouteRebindCapabilities()
     {
         var profile = RbpHelloProfile.Production(
             "0.1.0-test",
             Array.Empty<string>());
 
-        Assert.Equal(new[] { "journal_v1" }, profile.Capabilities);
+        Assert.Equal(
+            new[] { "journal_v1", "route_rebind_proof_v1" },
+            profile.Capabilities);
         Assert.DoesNotContain("chunked_results", profile.Capabilities);
         Assert.DoesNotContain("artifact_result_v1", profile.Capabilities);
         Assert.DoesNotContain("partial_progress", profile.Capabilities);
