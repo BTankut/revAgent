@@ -458,6 +458,45 @@ function routeRebindContextJson(context: RouteRebindDocumentContext): JsonValue 
   };
 }
 
+describe("C39 route-authority digest vectors", () => {
+  it("locks the checkpoint and connection-digest domains to exact canonical vectors", () => {
+    // These values are the shared Bridge/Gateway C39 fixture vector.  The
+    // hardcoded digests below make a domain-string or JCS field-order drift
+    // visible without relying on a self-derived expected value.
+    const rsid = "rs-vector";
+    const connectionId = "019f9add-7a83-7d11-a6a9-d2f8108c0098";
+    const proofId = "019f9add-7a83-7d12-a6a9-d2f8108c0099";
+    const contextDigest = "a".repeat(64);
+    const cacheIncarnationDigest = `sha256:${"b".repeat(64)}`;
+    const checkpointCanonical = canonicalizeJson({
+      rsid,
+      connection_id: connectionId,
+      proof_id: proofId,
+      context_digest: contextDigest,
+      freshness: {
+        source_revision: 7,
+        cache_incarnation_digest: cacheIncarnationDigest,
+      },
+    } as JsonValue);
+    const connectionCanonical = canonicalizeJson({ rsid, connection_id: connectionId } as JsonValue);
+
+    expect(checkpointCanonical).toBe(
+      `{"connection_id":"${connectionId}","context_digest":"${contextDigest}","freshness":{"cache_incarnation_digest":"${cacheIncarnationDigest}","source_revision":7},"proof_id":"${proofId}","rsid":"${rsid}"}`,
+    );
+    expect(connectionCanonical).toBe(`{"connection_id":"${connectionId}","rsid":"${rsid}"}`);
+    expect(`sha256:${createHash("sha256")
+      .update("revagent/c39-route-authority-checkpoint/v1\0", "utf8")
+      .update(checkpointCanonical, "utf8").digest("hex")}`).toBe(
+      "sha256:ab4e0489142f3c9021386003710993e264559db902e85909105e6a5866c65518",
+    );
+    expect(`sha256:${createHash("sha256")
+      .update("revagent/c39-route-authority-connection/v1\0", "utf8")
+      .update(connectionCanonical, "utf8").digest("hex")}`).toBe(
+      "sha256:9449ea3d182b5308a70be5bdd5266d31c6d586d68500299915a1158022fbb6c6",
+    );
+  });
+});
+
 async function register(
   authority: GatewayBridgeSessionAuthority,
   localSessionKey = "local-route",

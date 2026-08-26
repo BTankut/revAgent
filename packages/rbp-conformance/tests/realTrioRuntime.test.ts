@@ -117,7 +117,10 @@ describe("C39 recovery timeout diagnostics", () => {
 });
 
 describe("C39 route-rebind audit projection", () => {
-  it("accepts only the fixed value-free current state", () => {
+  const digest = (character: string): `sha256:${string}` =>
+    `sha256:${character.repeat(64)}` as `sha256:${string}`;
+
+  it("accepts only the bounded digest-only current authority tuple", () => {
     expect(readC39RouteRebindAudit({
       status: "current",
       candidateCount: 1,
@@ -126,6 +129,11 @@ describe("C39 route-rebind audit projection", () => {
       resumeCasCurrent: true,
       routeProvenanceCurrent: true,
       currentConnection: true,
+      routeAuthorityCheckpoint: digest("a"),
+      connectionDigest: digest("b"),
+      serverProofDigest: digest("c"),
+      authorityGenerationDigest: digest("d"),
+      proofCasRecordVersion: 7,
     })).toMatchObject({ status: "current", candidateCount: 1 });
     expect(() => readC39RouteRebindAudit({
       status: "current",
@@ -135,8 +143,61 @@ describe("C39 route-rebind audit projection", () => {
       resumeCasCurrent: true,
       routeProvenanceCurrent: true,
       currentConnection: true,
-      proofDigest: `sha256:${"a".repeat(64)}`,
-    })).toThrow(/value-bearing/u);
+      routeAuthorityCheckpoint: digest("a"),
+      connectionDigest: digest("b"),
+      serverProofDigest: digest("c"),
+      authorityGenerationDigest: digest("d"),
+      proofCasRecordVersion: 7,
+      rawRsid: "must-not-escape",
+    })).toThrow(/malformed or unredacted/u);
+    expect(() => readC39RouteRebindAudit({
+      status: "current", candidateCount: 1, capabilityGranted: true,
+      receiptCurrent: true, resumeCasCurrent: true, routeProvenanceCurrent: true,
+      currentConnection: true, routeAuthorityCheckpoint: null, connectionDigest: digest("b"),
+      serverProofDigest: digest("c"), authorityGenerationDigest: digest("d"), proofCasRecordVersion: 7,
+    })).toThrow(/malformed or unredacted/u);
+  });
+
+  it("rejects proofless, substituted, and causally unordered terminal traces", () => {
+    const checkpoint = digest("a");
+    const connection = digest("b");
+    const audit = readC39RouteRebindAudit({
+      status: "current", candidateCount: 1, capabilityGranted: true,
+      receiptCurrent: true, resumeCasCurrent: true, routeProvenanceCurrent: true,
+      currentConnection: true, routeAuthorityCheckpoint: checkpoint, connectionDigest: connection,
+      serverProofDigest: digest("c"), authorityGenerationDigest: digest("d"), proofCasRecordVersion: 7,
+    });
+    const row = {
+      terminal: { seq: 9, originDigest: digest("e"), state: "completed" },
+      routeAuthority: {
+        routeAuthorityCheckpoint: checkpoint, connectionDigest: connection,
+        serverProofDigest: digest("c"), authorityGenerationDigest: digest("d"),
+        resultantSessionVersion: 2, proofCasRecordVersion: 7,
+        provenance: "session_resume_route_rebind_v1",
+      },
+    };
+    const observation = (phase: C39RecoveryCarrierObservations[number]["phase"], causalOrdinal: number) => ({
+      phase, hashedRecoveryId: digest("f"), sequence: 9, outerDigest: digest("0"), ordinal: causalOrdinal,
+      routeAuthorityCheckpoint: checkpoint, connectionDigest: connection,
+      routeRebindProofGranted: true, causalOrdinal,
+    });
+    const reconnect = [{
+      phase: "resume_ack_applied", generation: 2, ordinal: 1, rsidHash: digest("1"),
+      sessionBindingDigest: digest("2"), connectionDigest: connection,
+      routeAuthorityCheckpoint: checkpoint, routeRebindProofGranted: true, causalOrdinal: 1,
+    }] as const;
+    const exact = [observation("restart_resend", 2), observation("ack", 3)];
+    expect(() => assertC39CausalRouteAuthority(row, audit, exact, reconnect)).not.toThrow();
+    expect(() => assertC39CausalRouteAuthority(row, audit, [
+      { ...observation("restart_resend", 2), routeAuthorityCheckpoint: null }, observation("ack", 3),
+    ], reconnect)).toThrow(/proofless, stale, or substituted/u);
+    expect(() => assertC39CausalRouteAuthority(row, audit, [
+      observation("ack", 2), observation("restart_resend", 3),
+    ], reconnect)).toThrow(/resume_ack_applied < restart_resend < terminal ack/u);
+    expect(() => assertC39CausalRouteAuthority({
+      ...row,
+      routeAuthority: { ...row.routeAuthority, connectionDigest: digest("9") },
+    }, audit, exact, reconnect)).toThrow(/exact current Gateway route-authority tuple/u);
   });
 });
 
@@ -212,7 +273,7 @@ describe.sequential("WP-12 direct real trio runtime fixture", () => {
           // The recovery-proof CAS must be current before the retained
           // terminal can be observed or retried. In particular, C39 no
           // longer uses a sequenced document-context edge to escape N-1.
-          await waitForC39RouteRebindCurrent(runtime, 45_000);
+          const routeAuthorityBeforeOwnerRead = await waitForC39RouteRebindCurrent(runtime, 45_000);
           let originSettledBeforeRouteEdge = false;
           void originPromise.then(
             () => { originSettledBeforeRouteEdge = true; },
@@ -253,6 +314,11 @@ describe.sequential("WP-12 direct real trio runtime fixture", () => {
           expect(ownerRead).toMatchObject({ response: expect.any(Object) });
           const ownerReadSucceeded = object(ownerRead.response) !== null;
           expect(ownerReadSucceeded).toBe(true);
+          // The terminal audit join and the owner-read fence must retain the
+          // exact same immutable Gateway tuple; neither path may backfill or
+          // substitute a later proof/current connection.
+          expect(await waitForC39RouteRebindCurrent(runtime, 45_000))
+            .toEqual(routeAuthorityBeforeOwnerRead);
 
           let samePrincipalDenied = false;
           const rebound = await runtime.issueReboundNorthCredential();
@@ -920,9 +986,82 @@ function objectArray(value: unknown, label: string): readonly Record<string, unk
   }));
 }
 
+interface C39TerminalRouteAuthority {
+  readonly routeAuthorityCheckpoint: `sha256:${string}`;
+  readonly connectionDigest: `sha256:${string}`;
+  readonly serverProofDigest: `sha256:${string}`;
+  readonly authorityGenerationDigest: `sha256:${string}`;
+  readonly resultantSessionVersion: number;
+  readonly proofCasRecordVersion: number;
+  readonly provenance: "session_resume_route_rebind_v1";
+}
+
+function readC39TerminalRouteAuthority(value: unknown): C39TerminalRouteAuthority {
+  const record = object(value);
+  const expected = [
+    "authorityGenerationDigest", "connectionDigest", "proofCasRecordVersion", "provenance",
+    "resultantSessionVersion", "routeAuthorityCheckpoint", "serverProofDigest",
+  ];
+  if (record === null || Object.keys(record).sort().join("\u0000") !== expected.join("\u0000") ||
+      typeof record.routeAuthorityCheckpoint !== "string" || !SHA256.test(record.routeAuthorityCheckpoint) ||
+      typeof record.connectionDigest !== "string" || !SHA256.test(record.connectionDigest) ||
+      typeof record.serverProofDigest !== "string" || !SHA256.test(record.serverProofDigest) ||
+      typeof record.authorityGenerationDigest !== "string" || !SHA256.test(record.authorityGenerationDigest) ||
+      !Number.isSafeInteger(record.resultantSessionVersion) || Number(record.resultantSessionVersion) < 1 ||
+      !Number.isSafeInteger(record.proofCasRecordVersion) || Number(record.proofCasRecordVersion) < 1 ||
+      record.provenance !== "session_resume_route_rebind_v1") {
+    throw new Error("C39 terminal route authority is malformed or unredacted");
+  }
+  return Object.freeze(record as unknown as C39TerminalRouteAuthority);
+}
+
+function assertC39CausalRouteAuthority(
+  row: Record<string, unknown>,
+  routeRebind: C39RouteRebindAudit,
+  worker: C39RecoveryCarrierObservations,
+  reconnect: C39ReconnectWatchObservations,
+): void {
+  const terminal = object(row.terminal);
+  const routeAuthority = readC39TerminalRouteAuthority(row.routeAuthority);
+  if (terminal === null || !Number.isSafeInteger(terminal.seq) || Number(terminal.seq) < 1 ||
+      routeRebind.status !== "current" || routeRebind.routeAuthorityCheckpoint === null ||
+      routeRebind.connectionDigest === null || routeRebind.serverProofDigest === null ||
+      routeRebind.authorityGenerationDigest === null || routeRebind.proofCasRecordVersion === null ||
+      routeAuthority.routeAuthorityCheckpoint !== routeRebind.routeAuthorityCheckpoint ||
+      routeAuthority.connectionDigest !== routeRebind.connectionDigest ||
+      routeAuthority.serverProofDigest !== routeRebind.serverProofDigest ||
+      routeAuthority.authorityGenerationDigest !== routeRebind.authorityGenerationDigest ||
+      routeAuthority.proofCasRecordVersion !== routeRebind.proofCasRecordVersion) {
+    throw new Error("C39 terminal evidence is not the exact current Gateway route-authority tuple");
+  }
+  const sameTuple = (entry: {
+    readonly routeAuthorityCheckpoint: `sha256:${string}` | null;
+    readonly connectionDigest: `sha256:${string}` | null;
+    readonly routeRebindProofGranted: boolean;
+  }): boolean => entry.routeRebindProofGranted &&
+    entry.routeAuthorityCheckpoint === routeAuthority.routeAuthorityCheckpoint &&
+    entry.connectionDigest === routeAuthority.connectionDigest;
+  const resumeAcknowledgements = reconnect.filter((entry) =>
+    entry.phase === "resume_ack_applied" && sameTuple(entry));
+  const restarts = worker.filter((entry) => entry.phase === "restart_resend" && sameTuple(entry));
+  const terminalAcknowledgements = worker.filter((entry) =>
+    entry.phase === "ack" && entry.sequence === terminal.seq && sameTuple(entry));
+  if (worker.some((entry) => !sameTuple(entry) || entry.causalOrdinal < 1) ||
+      reconnect.some((entry) => entry.phase === "resume_ack_applied" && !sameTuple(entry))) {
+    throw new Error("C39 recovery trace contains a proofless, stale, or substituted route authority tuple");
+  }
+  if (resumeAcknowledgements.length !== 1 || restarts.length < 1 || terminalAcknowledgements.length !== 1 ||
+      !restarts.some((restart) =>
+        resumeAcknowledgements[0]!.causalOrdinal < restart.causalOrdinal &&
+        restart.causalOrdinal < terminalAcknowledgements[0]!.causalOrdinal)) {
+    throw new Error("C39 causal route authority lacks resume_ack_applied < restart_resend < terminal ack");
+  }
+}
+
 function observedC39Recovery(
   audit: Record<string, unknown>,
   worker: Awaited<ReturnType<Awaited<ReturnType<typeof startRealTrioRuntimeFixture>>["supervisor"]["readRecoveryCarrierObservations"]>>,
+  reconnect: C39ReconnectWatchObservations,
   origin: C39OriginProvenance,
   resultRefDigest: `sha256:${string}`,
 ): ObservedC39Recovery | C39RecoveryPending {
@@ -966,6 +1105,7 @@ function observedC39Recovery(
   if (trace.state === "invalid") {
     throw new Error(`C39 Worker IPC did not prove one ordered acknowledgement per carrier sequence [${trace.diagnostic}]`);
   }
+  assertC39CausalRouteAuthority(row, readC39RouteRebindAudit(audit.c39RouteRebind), worker, reconnect);
   const exactCarrierAckOrder = true;
   const omittedReplayObserved = row.originDigest === origin.responseDigest &&
     terminal.originDigest === origin.responseDigest && terminal.state === "completed";
@@ -1160,7 +1300,8 @@ async function waitForObservedC39Recovery(
     const audit = object(await runtime.supervisor.readRealCaseAudit());
     if (audit === null) throw new Error("C39 Gateway audit is not an object");
     const worker = await runtime.supervisor.readRecoveryCarrierObservations();
-    const observed = observedC39Recovery(audit, worker, origin, resultRefDigest);
+    const reconnect = await runtime.supervisor.readReconnectWatchObservations();
+    const observed = observedC39Recovery(audit, worker, reconnect, origin, resultRefDigest);
     if (!("pendingReason" in observed)) return observed;
     latestPending = observed.pendingReason;
     latestWorker = worker;
@@ -1307,6 +1448,11 @@ interface C39RouteRebindAudit {
   readonly resumeCasCurrent: boolean;
   readonly routeProvenanceCurrent: boolean;
   readonly currentConnection: boolean;
+  readonly routeAuthorityCheckpoint: `sha256:${string}` | null;
+  readonly connectionDigest: `sha256:${string}` | null;
+  readonly serverProofDigest: `sha256:${string}` | null;
+  readonly authorityGenerationDigest: `sha256:${string}` | null;
+  readonly proofCasRecordVersion: number | null;
 }
 
 function readC39RouteRebindAudit(value: unknown): C39RouteRebindAudit {
@@ -1315,6 +1461,11 @@ function readC39RouteRebindAudit(value: unknown): C39RouteRebindAudit {
     "candidateCount",
     "capabilityGranted",
     "currentConnection",
+    "routeAuthorityCheckpoint",
+    "connectionDigest",
+    "serverProofDigest",
+    "authorityGenerationDigest",
+    "proofCasRecordVersion",
     "receiptCurrent",
     "resumeCasCurrent",
     "routeProvenanceCurrent",
@@ -1329,8 +1480,23 @@ function readC39RouteRebindAudit(value: unknown): C39RouteRebindAudit {
       typeof record.receiptCurrent !== "boolean" ||
       typeof record.resumeCasCurrent !== "boolean" ||
       typeof record.routeProvenanceCurrent !== "boolean" ||
-      typeof record.currentConnection !== "boolean") {
-    throw new Error("C39 route-rebind audit projection is malformed or value-bearing");
+      typeof record.currentConnection !== "boolean" ||
+      !(record.routeAuthorityCheckpoint === null ||
+        (typeof record.routeAuthorityCheckpoint === "string" && SHA256.test(record.routeAuthorityCheckpoint))) ||
+      !(record.connectionDigest === null ||
+        (typeof record.connectionDigest === "string" && SHA256.test(record.connectionDigest))) ||
+      !(record.serverProofDigest === null ||
+        (typeof record.serverProofDigest === "string" && SHA256.test(record.serverProofDigest))) ||
+      !(record.authorityGenerationDigest === null ||
+        (typeof record.authorityGenerationDigest === "string" && SHA256.test(record.authorityGenerationDigest))) ||
+      !(record.proofCasRecordVersion === null ||
+        (Number.isSafeInteger(record.proofCasRecordVersion) && Number(record.proofCasRecordVersion) > 0)) ||
+      (record.status === "current" && (
+        record.routeAuthorityCheckpoint === null || record.connectionDigest === null ||
+        record.serverProofDigest === null || record.authorityGenerationDigest === null ||
+        record.proofCasRecordVersion === null
+      ))) {
+    throw new Error("C39 route-rebind audit projection is malformed or unredacted");
   }
   return Object.freeze(record as unknown as C39RouteRebindAudit);
 }
@@ -1346,7 +1512,10 @@ async function waitForC39RouteRebindCurrent(
     if (routeRebind.status === "current") {
       if (routeRebind.candidateCount !== 1 || !routeRebind.capabilityGranted ||
           !routeRebind.receiptCurrent || !routeRebind.resumeCasCurrent ||
-          !routeRebind.routeProvenanceCurrent || !routeRebind.currentConnection) {
+          !routeRebind.routeProvenanceCurrent || !routeRebind.currentConnection ||
+          routeRebind.routeAuthorityCheckpoint === null || routeRebind.connectionDigest === null ||
+          routeRebind.serverProofDigest === null || routeRebind.authorityGenerationDigest === null ||
+          routeRebind.proofCasRecordVersion === null) {
         throw new Error("C39 route-rebind audit reports a non-current proof CAS");
       }
       return routeRebind;
@@ -1470,7 +1639,10 @@ async function waitForC39Recovery(
     const routeRebindCurrent = routeRebind.status === "current" &&
       routeRebind.candidateCount === 1 && routeRebind.capabilityGranted &&
       routeRebind.receiptCurrent && routeRebind.resumeCasCurrent &&
-      routeRebind.routeProvenanceCurrent && routeRebind.currentConnection;
+      routeRebind.routeProvenanceCurrent && routeRebind.currentConnection &&
+      routeRebind.routeAuthorityCheckpoint !== null && routeRebind.connectionDigest !== null &&
+      routeRebind.serverProofDigest !== null && routeRebind.authorityGenerationDigest !== null &&
+      routeRebind.proofCasRecordVersion !== null;
     if (auditJoined && routeRebindCurrent && worker.length > 0) {
       const result = await recovery;
       if (result.content.state === "completed") return result;
