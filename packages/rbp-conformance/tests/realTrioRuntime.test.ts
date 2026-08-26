@@ -805,6 +805,10 @@ function c39WorkerObservation(
     sequence,
     outerDigest: `sha256:${digestCharacter.repeat(64)}` as `sha256:${string}`,
     ordinal,
+    routeAuthorityCheckpoint: null,
+    connectionDigest: null,
+    routeRebindProofGranted: false,
+    causalOrdinal: ordinal,
   });
 }
 

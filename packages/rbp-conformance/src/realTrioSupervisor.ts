@@ -132,6 +132,10 @@ export interface RealTrioRecoveryCarrierObservation {
   readonly sequence: number;
   readonly outerDigest: `sha256:${string}`;
   readonly ordinal: number;
+  readonly routeAuthorityCheckpoint: `sha256:${string}` | null;
+  readonly connectionDigest: `sha256:${string}` | null;
+  readonly routeRebindProofGranted: boolean;
+  readonly causalOrdinal: number;
 }
 
 export interface RealTrioRecoveryCarrierObservationState {
@@ -146,6 +150,9 @@ export interface RealTrioReconnectWatchObservation {
   readonly rsidHash: `sha256:${string}`;
   readonly sessionBindingDigest: `sha256:${string}`;
   readonly connectionDigest: `sha256:${string}`;
+  readonly routeAuthorityCheckpoint: `sha256:${string}` | null;
+  readonly routeRebindProofGranted: boolean;
+  readonly causalOrdinal: number;
 }
 
 export type RealTrioAuditControlErrorKind =
@@ -917,7 +924,11 @@ function recoveryCarrierObservationState(value: JsonValue): RealTrioRecoveryCarr
         typeof row.outerDigest !== "string" || !SHA256.test(row.outerDigest) ||
         typeof row.sequence !== "number" || !Number.isSafeInteger(row.sequence) || row.sequence < 1 ||
         typeof row.ordinal !== "number" || !Number.isSafeInteger(row.ordinal) || row.ordinal < 1 ||
-        Object.keys(row).length !== 5) {
+        typeof row.routeRebindProofGranted !== "boolean" ||
+        !(row.routeAuthorityCheckpoint === null || (typeof row.routeAuthorityCheckpoint === "string" && SHA256.test(row.routeAuthorityCheckpoint))) ||
+        !(row.connectionDigest === null || (typeof row.connectionDigest === "string" && SHA256.test(row.connectionDigest))) ||
+        typeof row.causalOrdinal !== "number" || !Number.isSafeInteger(row.causalOrdinal) || row.causalOrdinal < 1 ||
+        Object.keys(row).length !== 9) {
       throw new Error("real worker recovery observation IPC is invalid");
     }
     rows.push(Object.freeze({
@@ -926,6 +937,10 @@ function recoveryCarrierObservationState(value: JsonValue): RealTrioRecoveryCarr
       sequence: row.sequence,
       outerDigest: row.outerDigest as `sha256:${string}`,
       ordinal: row.ordinal,
+      routeAuthorityCheckpoint: row.routeAuthorityCheckpoint as `sha256:${string}` | null,
+      connectionDigest: row.connectionDigest as `sha256:${string}` | null,
+      routeRebindProofGranted: row.routeRebindProofGranted,
+      causalOrdinal: row.causalOrdinal,
     }));
   }
   return Object.freeze({ routeRebindProofGranted: value.routeRebindProofGranted, observations: Object.freeze(rows) });
@@ -951,12 +966,18 @@ function reconnectWatchObservations(value: JsonValue): readonly RealTrioReconnec
         typeof row.rsidHash !== "string" || !SHA256.test(row.rsidHash) ||
         typeof row.sessionBindingDigest !== "string" || !SHA256.test(row.sessionBindingDigest) ||
         typeof row.connectionDigest !== "string" || !SHA256.test(row.connectionDigest) ||
-        Object.keys(row).length !== 6) throw new Error("real worker reconnect observation IPC is invalid");
+        !(row.routeAuthorityCheckpoint === null || (typeof row.routeAuthorityCheckpoint === "string" && SHA256.test(row.routeAuthorityCheckpoint))) ||
+        typeof row.routeRebindProofGranted !== "boolean" ||
+        typeof row.causalOrdinal !== "number" || !Number.isSafeInteger(row.causalOrdinal) || row.causalOrdinal < 1 ||
+        Object.keys(row).length !== 9) throw new Error("real worker reconnect observation IPC is invalid");
     rows.push(Object.freeze({
       phase: row.phase, generation: row.generation, ordinal: row.ordinal,
       rsidHash: row.rsidHash as `sha256:${string}`,
       sessionBindingDigest: row.sessionBindingDigest as `sha256:${string}`,
       connectionDigest: row.connectionDigest as `sha256:${string}`,
+      routeAuthorityCheckpoint: row.routeAuthorityCheckpoint as `sha256:${string}` | null,
+      routeRebindProofGranted: row.routeRebindProofGranted,
+      causalOrdinal: row.causalOrdinal,
     }));
   }
   return Object.freeze(rows);
