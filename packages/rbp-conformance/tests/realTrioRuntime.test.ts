@@ -175,7 +175,14 @@ describe.sequential("WP-12 direct real trio runtime fixture", () => {
           expect(result).not.toHaveProperty("result");
           const uri = result.uri;
           expect(typeof uri).toBe("string");
-          await waitForC39TerminalSettlementAndLiveFence(runtime, origin, 45_000);
+          // Owner reads are permitted only after the complete recovery proof,
+          // including the restart-resend byte identity, has settled. Refreshing
+          // this one current route edge then updates the expected fence for the
+          // same still-open owner client before its resources/read request.
+          const observed = await waitForC39ObservedRecoveryAndRefreshFence(
+            waitForObservedC39Recovery(runtime, origin, result.digest as `sha256:${string}`, 45_000),
+            runtime,
+          );
           let ownerRead;
           try {
             ownerRead = await client.readResource({ uri: uri as string, requestId: `wp12-c39-owner-read-${binding}` });
@@ -235,10 +242,6 @@ describe.sequential("WP-12 direct real trio runtime fixture", () => {
           assertC39OriginProvenance(
             readC39OriginProvenance(await runtime.supervisor.fixtureControl("read_c39_origin_provenance")),
             origin.responseDigest, 1,
-          );
-
-          const observed = await waitForObservedC39Recovery(
-            runtime, origin, result.digest as `sha256:${string}`, 45_000,
           );
 
           await runtime.supervisor.restartBridge();
@@ -406,6 +409,30 @@ describe("C39 terminal settlement before owner resource read", () => {
     )).rejects.toThrow("bounded refresh failure");
     expect(steps).toEqual([]);
   });
+
+  it("does not release the owner-read fence until observed recovery, then refreshes and verifies once", async () => {
+    const steps: string[] = [];
+    let resolveObserved: ((value: ObservedC39Recovery) => void) | undefined;
+    const observed = new Promise<ObservedC39Recovery>((resolve) => { resolveObserved = resolve; });
+    const fenced = waitForC39ObservedRecoveryAndRefreshFence(observed, {
+      refreshNorthDispatchFenceAfterControl: async () => { steps.push("refresh"); },
+      verifyNorthDispatchFence: async () => { steps.push("verify"); },
+    });
+    await Promise.resolve();
+    expect(steps).toEqual([]);
+    resolveObserved?.({
+      omittedReplayObserved: true,
+      exactCarrierAckOrder: true,
+      oneCarrierIdentity: true,
+      restartResendExact: true,
+      protectedC2Completed: true,
+      resultRefDigest: `sha256:${"d".repeat(64)}`,
+      partialCount: 1,
+      workerEventCount: 3,
+    });
+    await fenced;
+    expect(steps).toEqual(["refresh", "verify"]);
+  });
 });
 
 async function readC39OwnerResourceReadAudit(
@@ -450,6 +477,10 @@ type C39TerminalSettlementRuntime = Pick<
   Awaited<ReturnType<typeof startRealTrioRuntimeFixture>>,
   "supervisor" | "refreshNorthDispatchFenceAfterControl" | "verifyNorthDispatchFence"
 >;
+type C39OwnerReadFenceRuntime = Pick<
+  Awaited<ReturnType<typeof startRealTrioRuntimeFixture>>,
+  "refreshNorthDispatchFenceAfterControl" | "verifyNorthDispatchFence"
+>;
 
 interface C39TerminalSettlement {
   readonly carrierHash: `sha256:${string}`;
@@ -459,6 +490,16 @@ interface C39TerminalSettlement {
 interface C39TerminalSettlementWaitOptions {
   readonly now?: () => number;
   readonly sleep?: () => Promise<void>;
+}
+
+async function waitForC39ObservedRecoveryAndRefreshFence<T>(
+  observedRecovery: Promise<T>,
+  runtime: C39OwnerReadFenceRuntime,
+): Promise<T> {
+  const observed = await observedRecovery;
+  await runtime.refreshNorthDispatchFenceAfterControl();
+  await runtime.verifyNorthDispatchFence();
+  return observed;
 }
 
 async function waitForC39TerminalSettlementAndLiveFence(
