@@ -496,6 +496,33 @@ describe("C39 worker ACK-order diagnostics", () => {
       observation("write", 6, 4, "c"), observation("ack", 6, 5, "c"),
     ], expectedSequences)).toBe("ack_before_write");
   });
+
+  it("retries only incomplete ACK or restart evidence", () => {
+    expect(c39WorkerAckOrderRetryable("partial_write_missing")).toBe(true);
+    expect(c39WorkerAckOrderRetryable("partial_ack_missing")).toBe(true);
+    expect(c39WorkerAckOrderRetryable("terminal_write_missing")).toBe(true);
+    expect(c39WorkerAckOrderRetryable("terminal_ack_missing")).toBe(true);
+    for (const terminal of [
+      "duplicate_ack",
+      "ack_before_write",
+      "outer_digest_mismatch",
+      "unexpected_ack",
+      "observation_order_invalid",
+      "other",
+    ] as const) {
+      expect(c39WorkerAckOrderRetryable(terminal)).toBe(false);
+    }
+    const write = observation("write", 5, 1, "a");
+    expect(c39RestartResendState([write], [write])).toBe("absent");
+    expect(c39RestartResendState([
+      write,
+      observation("restart_resend", 5, 2, "a"),
+    ], [write])).toBe("exact");
+    expect(c39RestartResendState([
+      write,
+      observation("restart_resend", 5, 2, "b"),
+    ], [write])).toBe("mismatch");
+  });
 });
 
 async function readC39OwnerResourceReadAudit(
@@ -839,6 +866,7 @@ function observedC39Recovery(
   }) && acknowledgements.length === expectedSequences.length;
   if (!exactCarrierAckOrder) {
     const diagnostic = c39WorkerAckOrderDiagnostic(worker, expectedSequences);
+    if (c39WorkerAckOrderRetryable(diagnostic)) return null;
     throw new Error(`C39 Worker IPC did not prove one ordered acknowledgement per carrier sequence [${diagnostic}]`);
   }
   const omittedReplayObserved = row.originDigest === origin.responseDigest &&
@@ -849,12 +877,10 @@ function observedC39Recovery(
   if (writes.length < expectedSequences.length || acknowledgements.length !== expectedSequences.length) {
     throw new Error("C39 Worker IPC has an unexpected carrier frame count");
   }
-  const restarts = worker.filter((entry) => entry.phase === "restart_resend");
-  const restartResendExact = restarts.length > 0 && restarts.every((entry) => {
-    const original = writes.find((write) => write.sequence === entry.sequence);
-    return original !== undefined && original.outerDigest === entry.outerDigest && entry.ordinal > original.ordinal;
-  });
-  if (!restartResendExact) throw new Error("C39 Worker IPC restart resend changed sequence or outer digest");
+  const restartState = c39RestartResendState(worker, writes);
+  if (restartState === "absent") return null;
+  if (restartState === "mismatch") throw new Error("C39 Worker IPC restart resend changed sequence or outer digest");
+  const restartResendExact = true;
   return Object.freeze({
     omittedReplayObserved,
     exactCarrierAckOrder,
@@ -911,6 +937,25 @@ function c39WorkerAckOrderDiagnostic(
     if (acknowledgement.outerDigest !== finalWrite.outerDigest) return "outer_digest_mismatch";
   }
   return "other";
+}
+
+function c39WorkerAckOrderRetryable(diagnostic: C39WorkerAckOrderDiagnostic): boolean {
+  return diagnostic === "partial_write_missing" || diagnostic === "partial_ack_missing" ||
+    diagnostic === "terminal_write_missing" || diagnostic === "terminal_ack_missing";
+}
+
+type C39RestartResendState = "absent" | "exact" | "mismatch";
+
+function c39RestartResendState(
+  worker: C39RecoveryCarrierObservations,
+  writes: readonly C39RecoveryCarrierObservations[number][],
+): C39RestartResendState {
+  const restarts = worker.filter((entry) => entry.phase === "restart_resend");
+  if (restarts.length === 0) return "absent";
+  return restarts.every((entry) => {
+    const original = writes.find((write) => write.sequence === entry.sequence);
+    return original !== undefined && original.outerDigest === entry.outerDigest && entry.ordinal > original.ordinal;
+  }) ? "exact" : "mismatch";
 }
 
 async function waitForObservedC39Recovery(
