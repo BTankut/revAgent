@@ -501,25 +501,22 @@ describe("C39 worker ACK-order diagnostics", () => {
     expect(c39WorkerRecoveryTraceState([], expectedSequences)).toEqual({ state: "pending" });
     expect(c39WorkerRecoveryTraceState([
       materialized(), observation("write", 5, 2, "a"), observation("ack", 5, 3, "a"),
-      observation("write", 6, 4, "b"),
+      observation("materialized", 6, 4, "b"), observation("write", 6, 5, "b"),
     ], expectedSequences)).toEqual({ state: "pending" });
     expect(c39WorkerRecoveryTraceState([
       materialized(), observation("write", 5, 2, "a"), observation("ack", 5, 3, "a"),
-      observation("write", 6, 4, "b"), observation("write", 6, 5, "b"),
-    ], expectedSequences)).toEqual({ state: "invalid", diagnostic: "terminal_ack_missing" });
+      observation("materialized", 6, 4, "b"), observation("write", 6, 5, "b"),
+      observation("materialized", 6, 6, "b"), observation("write", 6, 7, "b"),
+    ], expectedSequences)).toEqual({ state: "invalid", diagnostic: "other" });
     expect(c39WorkerRecoveryTraceState([
-      materialized(), observation("write", 5, 2, "a"), observation("write", 6, 3, "b"),
+      materialized(), observation("write", 5, 2, "a"), observation("materialized", 6, 3, "b"), observation("write", 6, 4, "b"),
     ], expectedSequences)).toEqual({ state: "invalid", diagnostic: "partial_ack_missing" });
     expect(c39WorkerRecoveryTraceState([
-      materialized(), observation("ack", 5, 2, "a"), observation("write", 6, 3, "b"),
+      observation("ack", 5, 1, "a"), observation("materialized", 6, 2, "b"), observation("write", 6, 3, "b"),
     ], expectedSequences)).toEqual({ state: "invalid", diagnostic: "partial_write_missing" });
     expect(c39WorkerRecoveryTraceState([
-      materialized(), observation("write", 5, 2, "a"), observation("ack", 5, 3, "a"),
-      observation("write", 6, 4, "b"), observation("ack", 6, 5, "b"),
-    ], expectedSequences)).toEqual({ state: "pending" });
-    expect(c39WorkerRecoveryTraceState([
-      materialized(), observation("write", 5, 2, "a"), observation("write", 6, 3, "b"),
-      observation("ack", 6, 4, "b"), observation("ack", 5, 5, "a"),
+      materialized(), observation("write", 5, 2, "a"), observation("materialized", 6, 3, "b"), observation("write", 6, 4, "b"),
+      observation("ack", 6, 5, "b"), observation("ack", 5, 6, "a"),
     ], expectedSequences)).toEqual({ state: "invalid", diagnostic: "other" });
     expect(c39WorkerRecoveryTraceState([
       materialized(), observation("write", 7, 2, "a"),
@@ -529,25 +526,38 @@ describe("C39 worker ACK-order diagnostics", () => {
     ], expectedSequences)).toEqual({ state: "invalid", diagnostic: "other" });
     const fullAcknowledged = [
       materialized(), observation("write", 5, 2, "a"), observation("ack", 5, 3, "a"),
-      observation("write", 6, 4, "b"), observation("ack", 6, 5, "b"),
+      observation("materialized", 6, 4, "b"), observation("write", 6, 5, "b"), observation("ack", 6, 6, "b"),
     ];
     expect(c39WorkerRecoveryTraceState(fullAcknowledged, expectedSequences)).toEqual({ state: "pending" });
     expect(c39WorkerRecoveryTraceState([
       ...fullAcknowledged,
-      observation("restart_resend", 5, 6, "b"),
+      observation("materialized", 5, 7, "b"), observation("restart_resend", 5, 8, "b"),
     ], expectedSequences)).toEqual({ state: "invalid", diagnostic: "other" });
     expect(c39WorkerRecoveryTraceState([
       ...fullAcknowledged,
-      observation("restart_resend", 7, 6, "z"),
+      observation("materialized", 7, 7, "z"), observation("restart_resend", 7, 8, "z"),
     ], expectedSequences)).toEqual({ state: "invalid", diagnostic: "other" });
     expect(c39WorkerRecoveryTraceState([
-      materialized(), observation("restart_resend", 5, 2, "a"), observation("write", 5, 3, "a"),
-      observation("ack", 5, 4, "a"), observation("write", 6, 5, "b"), observation("ack", 6, 6, "b"),
+      materialized(), observation("restart_resend", 5, 2, "a"), observation("materialized", 5, 3, "a"), observation("write", 5, 4, "a"),
+      observation("ack", 5, 5, "a"), observation("materialized", 6, 6, "b"), observation("write", 6, 7, "b"), observation("ack", 6, 8, "b"),
     ], expectedSequences)).toEqual({ state: "invalid", diagnostic: "other" });
     expect(c39WorkerRecoveryTraceState([
       ...fullAcknowledged,
-      observation("restart_resend", 5, 6, "a"),
+      observation("materialized", 5, 7, "a"), observation("restart_resend", 5, 8, "a"),
     ], expectedSequences)).toEqual({ state: "exact" });
+    expect(c39WorkerRecoveryTraceState([
+      observation("write", 5, 1, "a"), observation("materialized", 5, 2, "a"), observation("ack", 5, 3, "a"),
+      observation("write", 6, 4, "b"), observation("ack", 6, 5, "b"), observation("restart_resend", 5, 6, "a"),
+    ], expectedSequences)).toEqual({ state: "invalid", diagnostic: "other" });
+    expect(c39WorkerRecoveryTraceState([
+      observation("materialized", 7, 1, "z"),
+    ], expectedSequences)).toEqual({ state: "invalid", diagnostic: "other" });
+    expect(c39WorkerRecoveryTraceState([
+      observation("materialized", 5, 1, "b"), observation("write", 5, 2, "a"),
+    ], expectedSequences)).toEqual({ state: "invalid", diagnostic: "other" });
+    expect(c39WorkerRecoveryTraceState([
+      materialized(), observation("write", 5, 2, "a"), observation("materialized", 5, 3, "a"), observation("write", 5, 4, "a"),
+    ], expectedSequences)).toEqual({ state: "invalid", diagnostic: "other" });
   });
 });
 
@@ -973,11 +983,36 @@ function c39WorkerRecoveryTraceState(
   const writes = worker.filter((entry) => entry.phase === "write");
   const acknowledgements = worker.filter((entry) => entry.phase === "ack");
   const restarts = worker.filter((entry) => entry.phase === "restart_resend");
-  if (writes.some((entry) => !expectedSequences.includes(entry.sequence)) ||
+  const materialized = worker.filter((entry) => entry.phase === "materialized");
+  if (materialized.some((entry) => !expectedSequences.includes(entry.sequence)) ||
+      writes.some((entry) => !expectedSequences.includes(entry.sequence)) ||
       restarts.some((entry) => !expectedSequences.includes(entry.sequence))) return invalid("other");
   if (acknowledgements.some((entry) => !expectedSequences.includes(entry.sequence))) return invalid("unexpected_ack");
+  // Production emits Materialized before each Write or RestartResend. Its
+  // post-materialization durable confirmation can await while an earlier ACK
+  // arrives, so ACKs may interleave; another carrier-send observation may not.
+  let awaitingMaterialization: C39RecoveryCarrierObservations[number] | null = null;
+  const ordinaryWrites = new Map<number, number>();
+  for (const entry of worker) {
+    if (entry.phase === "materialized") {
+      if (awaitingMaterialization !== null) return invalid("other");
+      awaitingMaterialization = entry;
+      continue;
+    }
+    if (entry.phase !== "write" && entry.phase !== "restart_resend") continue;
+    const source = awaitingMaterialization;
+    if (source === null || source.sequence !== entry.sequence ||
+        source.outerDigest !== entry.outerDigest || source.ordinal >= entry.ordinal) return invalid("other");
+    awaitingMaterialization = null;
+    if (entry.phase === "write") {
+      const count = (ordinaryWrites.get(entry.sequence) ?? 0) + 1;
+      if (count !== 1) return invalid("other");
+      ordinaryWrites.set(entry.sequence, count);
+    }
+  }
+  if (awaitingMaterialization !== null) return Object.freeze({ state: "pending" });
   for (const entry of restarts) {
-    const original = writes.filter((write) => write.sequence === entry.sequence).at(-1);
+    const original = writes.find((write) => write.sequence === entry.sequence);
     if (original === undefined || original.outerDigest !== entry.outerDigest || entry.ordinal <= original.ordinal) {
       return invalid("other");
     }
@@ -993,7 +1028,7 @@ function c39WorkerRecoveryTraceState(
       ? { write: "terminal_write_missing", ack: "terminal_ack_missing" } as const
       : { write: "partial_write_missing", ack: "partial_ack_missing" } as const;
     const restartForSequence = restarts.some((entry) => entry.sequence === sequence);
-    if (sent.length === 0) {
+    if (ordinaryWrites.get(sequence) !== 1 || sent.length !== 1) {
       return laterSequenceObserved || acked.length > 0 || restartForSequence
         ? invalid(diagnostic.write)
         : Object.freeze({ state: "pending" });
