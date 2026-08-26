@@ -115,6 +115,31 @@ public sealed class RecoveryCarrierObservationProjectionTests
         Assert.DoesNotContain("rsid\"", json.RootElement.GetRawText());
     }
 
+    [Fact]
+    public void CausalProjectionKeepsProoflessRowsNullAndNeverRendersRawAuthorityValues()
+    {
+        const string rawConnection = "019f9add-7a83-7d11-a6a9-d2f8108c0098";
+        const string rawProof = "019f9add-7a83-7d12-a6a9-d2f8108c0099";
+        const string rawContext = "sensitive-context";
+        Type type = BridgeAssembly.GetType(
+            "RevAgent.Bridge.Gateway.Connection.RbpRecoveryCarrierObservation",
+            throwOnError: true)!;
+        Type phaseType = BridgeAssembly.GetType(
+            "RevAgent.Bridge.Gateway.Connection.RbpRecoveryCarrierObservationPhase",
+            throwOnError: true)!;
+        object proofless = Activator.CreateInstance(type, new object?[]
+        {
+            Enum.Parse(phaseType, "RestartResend"), Digest, 6L, Digest, 2L,
+            null, Digest, false, 12L,
+        })!;
+        string json = JsonSerializer.Serialize(proofless);
+        Assert.Contains("\"routeAuthorityCheckpoint\":null", json, StringComparison.Ordinal);
+        Assert.Contains("\"causalOrdinal\":12", json, StringComparison.Ordinal);
+        Assert.DoesNotContain(rawConnection, json, StringComparison.Ordinal);
+        Assert.DoesNotContain(rawProof, json, StringComparison.Ordinal);
+        Assert.DoesNotContain(rawContext, json, StringComparison.Ordinal);
+    }
+
     private static object Observation(string phase, long ordinal)
     {
         Type type = BridgeAssembly.GetType(
