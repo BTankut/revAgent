@@ -498,11 +498,11 @@ describe("C39 worker ACK-order diagnostics", () => {
   });
 
   it("permits only a legal ordered prefix to remain pending", () => {
-    expect(c39WorkerRecoveryTraceState([], expectedSequences)).toEqual({ state: "pending" });
+    expect(c39WorkerRecoveryTraceState([], expectedSequences)).toEqual({ state: "pending", reason: "empty_worker" });
     expect(c39WorkerRecoveryTraceState([
       materialized(), observation("write", 5, 2, "a"), observation("ack", 5, 3, "a"),
       observation("materialized", 6, 4, "b"), observation("write", 6, 5, "b"),
-    ], expectedSequences)).toEqual({ state: "pending" });
+    ], expectedSequences)).toEqual({ state: "pending", reason: "terminal_ack_missing" });
     expect(c39WorkerRecoveryTraceState([
       materialized(), observation("write", 5, 2, "a"), observation("ack", 5, 3, "a"),
       observation("materialized", 6, 4, "b"), observation("write", 6, 5, "b"),
@@ -528,7 +528,7 @@ describe("C39 worker ACK-order diagnostics", () => {
       materialized(), observation("write", 5, 2, "a"), observation("ack", 5, 3, "a"),
       observation("materialized", 6, 4, "b"), observation("write", 6, 5, "b"), observation("ack", 6, 6, "b"),
     ];
-    expect(c39WorkerRecoveryTraceState(fullAcknowledged, expectedSequences)).toEqual({ state: "pending" });
+    expect(c39WorkerRecoveryTraceState(fullAcknowledged, expectedSequences)).toEqual({ state: "pending", reason: "restart_missing" });
     expect(c39WorkerRecoveryTraceState([
       ...fullAcknowledged,
       observation("materialized", 5, 7, "b"), observation("restart_resend", 5, 8, "b"),
@@ -562,6 +562,19 @@ describe("C39 worker ACK-order diagnostics", () => {
     expect(c39WorkerRecoveryTraceState([
       materialized(), observation("write", 5, 2, "a"), observation("materialized", 5, 3, "a"), observation("write", 5, 4, "a"),
     ], expectedSequences)).toEqual({ state: "invalid", diagnostic: "other" });
+  });
+
+  it("formats only fixed pending reasons and canonical phase counts", () => {
+    const worker = [materialized(), observation("write", 5, 2, "a"), observation("ack", 5, 3, "a")];
+    for (const reason of [
+      "pre_audit_not_joined", "empty_worker", "unconsumed_materialization", "partial_write_missing",
+      "partial_ack_missing", "terminal_write_missing", "terminal_ack_missing", "restart_missing",
+    ] as const) {
+      const message = c39PendingTimeoutMessage(reason, worker);
+      expect(message).toBe(`C39 observed recovery evidence did not become coherent [${reason};materialized=1;write=1;restart_resend=0;ack=1;total=3]`);
+      expect(message).not.toContain(carrierHash);
+      expect(message).not.toContain("sha256:");
+    }
   });
 });
 
@@ -858,9 +871,9 @@ function observedC39Recovery(
   worker: Awaited<ReturnType<Awaited<ReturnType<typeof startRealTrioRuntimeFixture>>["supervisor"]["readRecoveryCarrierObservations"]>>,
   origin: C39OriginProvenance,
   resultRefDigest: `sha256:${string}`,
-): ObservedC39Recovery | null {
+): ObservedC39Recovery | C39RecoveryPending {
   const recovery = object(audit.c39Recovery);
-  if (recovery === null || recovery.status !== "joined") return null;
+  if (recovery === null || recovery.status !== "joined") return c39Pending("pre_audit_not_joined");
   const rows = objectArray(recovery.rows, "C39 Gateway audit rows");
   const originIdHash = c39AuditHash("origin", origin.requestId);
   const matches = rows.filter((row) => row.originIdHash === originIdHash && row.originDigest === origin.responseDigest);
@@ -886,7 +899,7 @@ function observedC39Recovery(
     throw new Error("C39 Gateway audit terminal is not coherent with the exact origin");
   }
   const carrierHash = row.recoveryIdHash as `sha256:${string}`;
-  if (worker.length === 0) return null;
+  if (worker.length === 0) return c39Pending("empty_worker");
   const oneCarrierIdentity = worker.length > 0 && worker.every((entry) => entry.hashedRecoveryId === carrierHash);
   if (!oneCarrierIdentity) {
     throw new Error("C39 Worker IPC has missing or cross-carrier observations");
@@ -895,7 +908,7 @@ function observedC39Recovery(
   const acknowledgements = worker.filter((entry) => entry.phase === "ack");
   const expectedSequences = [...partials.map((partial) => Number(partial.seq)), Number(terminal.seq)];
   const trace = c39WorkerRecoveryTraceState(worker, expectedSequences);
-  if (trace.state === "pending") return null;
+  if (trace.state === "pending") return c39Pending(trace.reason);
   if (trace.state === "invalid") {
     throw new Error(`C39 Worker IPC did not prove one ordered acknowledgement per carrier sequence [${trace.diagnostic}]`);
   }
@@ -968,7 +981,7 @@ function c39WorkerAckOrderDiagnostic(
 }
 
 type C39WorkerRecoveryTraceState =
-  | Readonly<{ readonly state: "pending" }>
+  | Readonly<{ readonly state: "pending"; readonly reason: C39PendingReason }>
   | Readonly<{ readonly state: "exact" }>
   | Readonly<{ readonly state: "invalid"; readonly diagnostic: C39WorkerAckOrderDiagnostic }>;
 
@@ -976,7 +989,7 @@ function c39WorkerRecoveryTraceState(
   worker: C39RecoveryCarrierObservations,
   expectedSequences: readonly number[],
 ): C39WorkerRecoveryTraceState {
-  if (worker.length === 0) return Object.freeze({ state: "pending" });
+  if (worker.length === 0) return Object.freeze({ state: "pending", reason: "empty_worker" });
   const invalid = (diagnostic: C39WorkerAckOrderDiagnostic): C39WorkerRecoveryTraceState =>
     Object.freeze({ state: "invalid", diagnostic });
   if (worker.filter((entry) => entry.phase === "materialized").length < 1) return invalid("other");
@@ -1014,7 +1027,7 @@ function c39WorkerRecoveryTraceState(
       ordinaryWrites.set(entry.sequence, count);
     }
   }
-  if (awaitingMaterialization !== null) return Object.freeze({ state: "pending" });
+  if (awaitingMaterialization !== null) return Object.freeze({ state: "pending", reason: "unconsumed_materialization" });
   for (const entry of restarts) {
     const original = writes.find((write) => write.sequence === entry.sequence);
     if (original === undefined || original.outerDigest !== entry.outerDigest || entry.ordinal <= original.ordinal) {
@@ -1035,14 +1048,14 @@ function c39WorkerRecoveryTraceState(
     if (ordinaryWrites.get(sequence) !== 1 || sent.length !== 1) {
       return laterSequenceObserved || acked.length > 0 || restartForSequence
         ? invalid(diagnostic.write)
-        : Object.freeze({ state: "pending" });
+        : Object.freeze({ state: "pending", reason: diagnostic.write });
     }
     if (acked.length === 0) {
       if (laterSequenceObserved) return invalid(diagnostic.ack);
       if (index === expectedSequences.length - 1 && (sent.length !== 1 || restartForSequence)) {
         return invalid("terminal_ack_missing");
       }
-      return Object.freeze({ state: "pending" });
+      return Object.freeze({ state: "pending", reason: diagnostic.ack });
     }
     if (acked.length !== 1) return invalid("duplicate_ack");
     const latestEmission = worker.filter((entry) => (entry.phase === "write" || entry.phase === "restart_resend") &&
@@ -1053,7 +1066,31 @@ function c39WorkerRecoveryTraceState(
     if (acknowledgement.ordinal <= previousAcknowledgementOrdinal) return invalid("other");
     previousAcknowledgementOrdinal = acknowledgement.ordinal;
   }
-  return restarts.length === 0 ? Object.freeze({ state: "pending" }) : Object.freeze({ state: "exact" });
+  return restarts.length === 0
+    ? Object.freeze({ state: "pending", reason: "restart_missing" })
+    : Object.freeze({ state: "exact" });
+}
+
+type C39PendingReason =
+  | "pre_audit_not_joined"
+  | "empty_worker"
+  | "unconsumed_materialization"
+  | "partial_write_missing"
+  | "partial_ack_missing"
+  | "terminal_write_missing"
+  | "terminal_ack_missing"
+  | "restart_missing";
+
+interface C39RecoveryPending { readonly pendingReason: C39PendingReason; }
+
+function c39Pending(pendingReason: C39PendingReason): C39RecoveryPending {
+  return Object.freeze({ pendingReason });
+}
+
+function c39PendingTimeoutMessage(reason: C39PendingReason, worker: C39RecoveryCarrierObservations): string {
+  const count = (phase: C39RecoveryCarrierObservations[number]["phase"]): number =>
+    worker.filter((entry) => entry.phase === phase).length;
+  return `C39 observed recovery evidence did not become coherent [${reason};materialized=${String(count("materialized"))};write=${String(count("write"))};restart_resend=${String(count("restart_resend"))};ack=${String(count("ack"))};total=${String(worker.length)}]`;
 }
 
 async function waitForObservedC39Recovery(
@@ -1063,13 +1100,17 @@ async function waitForObservedC39Recovery(
   timeoutMs: number,
 ): Promise<ObservedC39Recovery> {
   const deadline = Date.now() + timeoutMs;
+  let latestPending: C39PendingReason = "pre_audit_not_joined";
+  let latestWorker: C39RecoveryCarrierObservations = Object.freeze([]);
   for (;;) {
     const audit = object(await runtime.supervisor.readRealCaseAudit());
     if (audit === null) throw new Error("C39 Gateway audit is not an object");
     const worker = await runtime.supervisor.readRecoveryCarrierObservations();
     const observed = observedC39Recovery(audit, worker, origin, resultRefDigest);
-    if (observed !== null) return observed;
-    if (Date.now() >= deadline) throw new Error("C39 observed recovery evidence did not become coherent");
+    if (!("pendingReason" in observed)) return observed;
+    latestPending = observed.pendingReason;
+    latestWorker = worker;
+    if (Date.now() >= deadline) throw new Error(c39PendingTimeoutMessage(latestPending, latestWorker));
     await new Promise<void>((resolve) => setTimeout(resolve, 200));
   }
 }
