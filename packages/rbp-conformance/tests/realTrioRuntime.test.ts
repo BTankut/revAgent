@@ -444,7 +444,7 @@ describe("C39 worker ACK-order diagnostics", () => {
     ordinal: number,
     digestCharacter: string,
   ) => c39WorkerObservation(carrierHash, phase, sequence, ordinal, digestCharacter);
-  const materialized = () => observation("materialized", 5, 1, "m");
+  const materialized = () => observation("materialized", 5, 1, "a");
 
   it("classifies every fixed ACK-order failure without emitting worker values", () => {
     expect(c39WorkerAckOrderDiagnostic([
