@@ -466,6 +466,107 @@ public sealed partial class RbpConnectionCoordinatorTests
     }
 
     [Fact]
+    public async Task C39C1dPrePeerTerminalFaultRetainsAuthorityThenRestartsExactlyOnce()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        var clock = new ManualCoordinatorClock();
+        await using RbpJournalStore store = RbpJournalStore.Open(
+            directory.JournalPath, new TestResumeTokenProtector(),
+            RbpJournalTestData.Options(), new TestRecoveryPayloadProtector());
+        var responder = new ScriptedGatewayResponder(clock);
+        var first = new FakeConnectionCycle(envelope =>
+            envelope.Type == "heartbeat" ? null : responder.Respond(envelope));
+        RbpRecoveryCarrierReservation reservation =
+            await PrepareRecoveryReservationAsync(store);
+        var second = new FakeConnectionCycle(envelope =>
+            envelope.Type == "session_resume"
+                ? RecoveryResumeAck(clock, envelope,
+                    reservation.CurrentReservedSequence)
+                : envelope.Type == "heartbeat" ? null : responder.Respond(envelope));
+        var observations = new RecordingRecoveryCarrierObservationSink();
+        int prePeerCalls = 0;
+        var prePeerEntered = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var coordinator = new RbpConnectionCoordinator(
+            new FakeConnectionCycleFactory(first, second), store,
+            new MutableSessionCatalog(LocalSession(8080, 1000)),
+            new RbpConnectionCoordinatorOptions(
+                new Uri("wss://gateway.revagent.app/bridge/v1"),
+                new RbpHelloProfile("0.1.0", "WS01", "Windows 11",
+                    new[] { "2026.07.26.0" })),
+            new RecoveryDispatcher(reservation), new RecordingInboundJournal(),
+            clock, new FixedRandomSource(0),
+            beforeRecoveryTerminalWrite: _ =>
+            {
+                if (Interlocked.Increment(ref prePeerCalls) == 1)
+                {
+                    prePeerEntered.TrySetResult();
+                    throw new RbpGatewayTransportException(
+                        RbpGatewayFailureKind.Network,
+                        "test terminal pre-peer fault");
+                }
+                return Task.CompletedTask;
+            },
+            recoveryCarrierObservationSink: observations);
+        using var stop = new CancellationTokenSource();
+
+        Task run = coordinator.RunAsync(stop.Token);
+        await EventuallyAsync(() => coordinator.GetSnapshot().ActiveRsids.Count == 1);
+        RbpEnvelope partial = await EventuallySentAsync(first, item =>
+            item.Type == "partial" && item.Id == reservation.RecoveryInvocationId);
+        clock.Advance(TimeSpan.FromSeconds(15));
+        await EventuallyAsync(() => first.Sent.Any(item => item.Type == "heartbeat"));
+        first.Deliver(HeartbeatAck(clock, Id(9751), reservation.Rsid,
+            reservation.CurrentReservedSequence));
+        await prePeerEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(1, Volatile.Read(ref prePeerCalls));
+        Assert.DoesNotContain(first.Sent, item => item.Type == "result" &&
+            item.Id == reservation.RecoveryInvocationId);
+        RbpRecoveryTerminalPlan durable = Assert.Single(
+            await store.ListActiveRecoveryTerminalPlansAsync());
+        Assert.Equal(reservation.CurrentReservedSequence + 1,
+            durable.FinalSequence);
+        Assert.NotNull(await store.GetCorrelatedRecoveryPayloadAsync(
+            reservation.Rsid, reservation.OriginInvocationId,
+            reservation.ResultDigest));
+        Assert.Empty((await store.LoadSequenceAsync(reservation.Rsid)).Outbox);
+
+        await EventuallyAsync(() => coordinator.GetSnapshot().ConnectionGeneration == 2);
+        RbpEnvelope restart = await EventuallySentAsync(second, item =>
+            item.Type == "result" && item.Id == reservation.RecoveryInvocationId);
+        Assert.Equal(durable.FinalSequence, restart.Sequence);
+        Assert.Equal(2, Volatile.Read(ref prePeerCalls));
+        _ = Assert.Single(second.Sent, item => item.Type == "result" &&
+            item.Id == reservation.RecoveryInvocationId);
+        RbpRecoveryCarrierObservation[] terminalWrites = observations.Rows
+            .Where(item => item.Sequence == durable.FinalSequence &&
+                item.Phase is RbpRecoveryCarrierObservationPhase.Write or
+                    RbpRecoveryCarrierObservationPhase.RestartResend)
+            .ToArray();
+        Assert.Equal(2, terminalWrites.Length);
+        Assert.Equal(terminalWrites[0].OuterDigest, terminalWrites[1].OuterDigest);
+        Assert.Equal(RbpRecoveryCarrierObservationPhase.RestartResend,
+            terminalWrites[1].Phase);
+
+        clock.Advance(TimeSpan.FromSeconds(15));
+        await EventuallyAsync(() => second.Sent.Any(item => item.Type == "heartbeat"));
+        second.Deliver(HeartbeatAck(clock, Id(9752), reservation.Rsid,
+            restart.Sequence!.Value));
+        await EventuallyAsync(async () =>
+            !(await store.ListActiveRecoveryTerminalPlansAsync()).Any());
+        Assert.Null(await store.GetCorrelatedRecoveryPayloadAsync(
+            reservation.Rsid, reservation.OriginInvocationId,
+            reservation.ResultDigest));
+        _ = Assert.Single(observations.Rows, item =>
+            item.Phase == RbpRecoveryCarrierObservationPhase.Acknowledged &&
+            item.Sequence == restart.Sequence);
+        Assert.Equal(partial.Sequence!.Value + 1, restart.Sequence);
+
+        stop.Cancel();
+        await run.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    [Fact]
     public async Task C39C1cCrashAfterFinalConfirmationBeforeWriteReconnectsOneExactReservedFrame()
     {
         using var directory = new RbpJournalTestDirectory();
