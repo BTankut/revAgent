@@ -396,6 +396,57 @@ public sealed partial class RbpConnectionCoordinatorTests
     }
 
     [Fact]
+    public async Task C39C1dResumeReceiptAtTerminalSequenceConfirmsBeforeAnyResend()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        var clock = new ManualCoordinatorClock();
+        await using RbpJournalStore store = RbpJournalStore.Open(
+            directory.JournalPath, new TestResumeTokenProtector(),
+            RbpJournalTestData.Options(), new TestRecoveryPayloadProtector());
+        var responder = new ScriptedGatewayResponder(clock);
+        var first = new FakeConnectionCycle(envelope =>
+            envelope.Type == "heartbeat" ? null : responder.Respond(envelope));
+        RbpRecoveryCarrierReservation reservation =
+            await PrepareRecoveryReservationAsync(store);
+        var second = new FakeConnectionCycle(envelope =>
+            envelope.Type == "session_resume"
+                ? RecoveryResumeAck(clock, envelope,
+                    reservation.CurrentReservedSequence + 1)
+                : envelope.Type == "heartbeat" ? null : responder.Respond(envelope));
+        var coordinator = Coordinator(
+            new FakeConnectionCycleFactory(first, second), store,
+            new MutableSessionCatalog(LocalSession(8080, 1000)), clock,
+            new RecordingInboundJournal(),
+            invocationDispatcher: new RecoveryDispatcher(reservation));
+        using var stop = new CancellationTokenSource();
+
+        Task run = coordinator.RunAsync(stop.Token);
+        await EventuallyAsync(() => coordinator.GetSnapshot().ActiveRsids.Count == 1);
+        _ = await EventuallySentAsync(first, item => item.Type == "partial" &&
+            item.Id == reservation.RecoveryInvocationId);
+        clock.Advance(TimeSpan.FromSeconds(15));
+        await EventuallyAsync(() => first.Sent.Any(item => item.Type == "heartbeat"));
+        first.Deliver(HeartbeatAck(clock, Id(9746), reservation.Rsid,
+            reservation.CurrentReservedSequence));
+        _ = await EventuallySentAsync(first, item => item.Type == "result" &&
+            item.Id == reservation.RecoveryInvocationId);
+
+        first.Fail(new IOException("resume carries the terminal receipt"));
+        await EventuallyAsync(() => coordinator.GetSnapshot().ConnectionGeneration == 2);
+        await EventuallyAsync(async () =>
+            !(await store.ListActiveRecoveryTerminalPlansAsync()).Any());
+        Assert.Null(await store.GetCorrelatedRecoveryPayloadAsync(
+            reservation.Rsid, reservation.OriginInvocationId,
+            reservation.ResultDigest));
+        await Task.Delay(25);
+        Assert.DoesNotContain(second.Sent, item => item.Type == "result" &&
+            item.Id == reservation.RecoveryInvocationId);
+
+        stop.Cancel();
+        await run.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    [Fact]
     public async Task C39C1cCrashAfterFinalConfirmationBeforeWriteReconnectsOneExactReservedFrame()
     {
         using var directory = new RbpJournalTestDirectory();
