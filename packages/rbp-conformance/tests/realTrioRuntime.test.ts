@@ -121,7 +121,7 @@ describe("C39 route-rebind audit projection", () => {
     `sha256:${character.repeat(64)}` as `sha256:${string}`;
 
   it("accepts only the bounded digest-only current authority tuple", () => {
-    expect(readC39RouteRebindAudit({
+    const current = {
       status: "current",
       candidateCount: 1,
       capabilityGranted: true,
@@ -134,28 +134,37 @@ describe("C39 route-rebind audit projection", () => {
       serverProofDigest: digest("c"),
       authorityGenerationDigest: digest("d"),
       proofCasRecordVersion: 7,
-    })).toMatchObject({ status: "current", candidateCount: 1 });
-    expect(() => readC39RouteRebindAudit({
-      status: "current",
-      candidateCount: 1,
-      capabilityGranted: true,
-      receiptCurrent: true,
-      resumeCasCurrent: true,
-      routeProvenanceCurrent: true,
-      currentConnection: true,
-      routeAuthorityCheckpoint: digest("a"),
-      connectionDigest: digest("b"),
-      serverProofDigest: digest("c"),
-      authorityGenerationDigest: digest("d"),
-      proofCasRecordVersion: 7,
-      rawRsid: "must-not-escape",
-    })).toThrow(/malformed or unredacted/u);
-    expect(() => readC39RouteRebindAudit({
-      status: "current", candidateCount: 1, capabilityGranted: true,
-      receiptCurrent: true, resumeCasCurrent: true, routeProvenanceCurrent: true,
-      currentConnection: true, routeAuthorityCheckpoint: null, connectionDigest: digest("b"),
-      serverProofDigest: digest("c"), authorityGenerationDigest: digest("d"), proofCasRecordVersion: 7,
-    })).toThrow(/malformed or unredacted/u);
+    } as const;
+    const nonCurrent = {
+      ...current,
+      status: "not_current",
+      candidateCount: 0,
+      capabilityGranted: false,
+      receiptCurrent: false,
+      resumeCasCurrent: false,
+      routeProvenanceCurrent: false,
+      currentConnection: false,
+      routeAuthorityCheckpoint: null,
+      connectionDigest: null,
+      serverProofDigest: null,
+      authorityGenerationDigest: null,
+      proofCasRecordVersion: null,
+    } as const;
+    expect(readC39RouteRebindAudit(current)).toMatchObject({ status: "current", candidateCount: 1 });
+    expect(readC39RouteRebindAudit(nonCurrent)).toMatchObject({ status: "not_current", candidateCount: 0 });
+
+    const { receiptCurrent: _receiptCurrent, ...missingKey } = current;
+    expect(() => readC39RouteRebindAudit(missingKey)).toThrow(/malformed or unredacted/u);
+    expect(() => readC39RouteRebindAudit({ ...current, rawRsid: "must-not-escape" }))
+      .toThrow(/malformed or unredacted/u);
+    expect(() => readC39RouteRebindAudit({ ...current, routeAuthorityCheckpoint: null }))
+      .toThrow(/malformed or unredacted/u);
+    expect(() => readC39RouteRebindAudit({ ...current, connectionDigest: "sha256:invalid" }))
+      .toThrow(/malformed or unredacted/u);
+    expect(() => readC39RouteRebindAudit({ ...current, proofCasRecordVersion: 0 }))
+      .toThrow(/malformed or unredacted/u);
+    expect(() => readC39RouteRebindAudit({ ...current, proofCasRecordVersion: -1 }))
+      .toThrow(/malformed or unredacted/u);
   });
 
   it("rejects proofless, substituted, and causally unordered terminal traces", () => {
@@ -1470,7 +1479,7 @@ function readC39RouteRebindAudit(value: unknown): C39RouteRebindAudit {
     "resumeCasCurrent",
     "routeProvenanceCurrent",
     "status",
-  ];
+  ].sort();
   if (record === null ||
       Object.keys(record).sort().join("\u0000") !== expected.join("\u0000") ||
       (record.status !== "current" && record.status !== "none" && record.status !== "ambiguous" &&
