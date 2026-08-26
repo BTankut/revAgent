@@ -20,6 +20,7 @@ import { runRealTrioCli } from "../src/realTrioCli.js";
 import {
   buildRealTrioRuntimeFixture,
   rethrowRealTrioC38Failure,
+  resolveRealTrioC39WorkerProfile,
   startRealTrioRuntimeFixture,
 } from "./realTrioRuntimeFixture.js";
 
@@ -84,6 +85,18 @@ function assertAcceptedDocumentContextUpdate(audit: unknown): void {
   }
 }
 
+describe("C39 real trio fixture profiles", () => {
+  it("keeps D0 compatibility, selects terminal pre-peer, and rejects combined profiles", () => {
+    expect(resolveRealTrioC39WorkerProfile({})).toBe("none");
+    expect(resolveRealTrioC39WorkerProfile({ c39D0PostWriteFault: true })).toBe("d0_postwrite_once");
+    expect(resolveRealTrioC39WorkerProfile({ c39TerminalPrePeerFault: true })).toBe("c39_terminal_prepeer_once");
+    expect(() => resolveRealTrioC39WorkerProfile({
+      c39D0PostWriteFault: true,
+      c39TerminalPrePeerFault: true,
+    })).toThrow("C39 real trio worker fault profiles are mutually exclusive");
+  });
+});
+
 describe.sequential("WP-12 direct real trio runtime fixture", () => {
   it.each(["wss", "streamable_http_sse"] as const)(
     "runs C38's public core UI probe against the real %s Worker binding",
@@ -126,19 +139,19 @@ describe.sequential("WP-12 direct real trio runtime fixture", () => {
       const launched = await runRealTrioCli(
         ["real-trio", binding],
         async (selectedBinding) => await startRealTrioRuntimeFixture(selectedBinding, {
-          evidenceDirectory, c39D0PostWriteFault: true,
+          evidenceDirectory, c39TerminalPrePeerFault: true,
         }),
       );
       const runtime = launched.result;
       try {
-        expect(runtime.supervisor.bridgeReadiness.c39Profile).toBe("d0_postwrite_once");
+        expect(runtime.supervisor.bridgeReadiness.c39Profile).toBe("c39_terminal_prepeer_once");
         await withRealTrioNorthMcpClient({
           endpoint: runtime.endpoint,
           certificateSha256: runtime.certificateSha256,
           credential: runtime.credential,
         }, async (client) => {
-          // D0 suppresses the normal terminal only after the real C# journal
-          // committed it. The public origin call therefore need not return a
+          // The terminal profile faults only after its durable Bridge write
+          // observation and before peer delivery. The public origin call therefore need not return a
           // successful MCP tool result; fixture provenance is the sole origin
           // observation and does not manufacture a replay/result/reference.
           await runtime.verifyNorthDispatchFence();

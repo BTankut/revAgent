@@ -239,11 +239,26 @@ export interface RealTrioRuntimeFixtureOptions {
   readonly documentContextTimeoutMs?: number;
   /** C39-only fixed worker launch profile; never a production selector. */
   readonly c39D0PostWriteFault?: boolean;
+  /** C39-only terminal fault after durable write observation, before peer delivery. */
+  readonly c39TerminalPrePeerFault?: boolean;
   /** Unit-only supervisor/credential seam; production paths never supply it. */
   readonly controlledHarness?: Readonly<{
     readonly supervisor: RealTrioSupervisorResult;
     readonly issueNorthCredential: () => Promise<Record<string, unknown>>;
   }>;
+}
+
+export type RealTrioC39WorkerProfile = "none" | "d0_postwrite_once" | "c39_terminal_prepeer_once";
+
+export function resolveRealTrioC39WorkerProfile(options: Pick<
+  RealTrioRuntimeFixtureOptions,
+  "c39D0PostWriteFault" | "c39TerminalPrePeerFault"
+>): RealTrioC39WorkerProfile {
+  if (options.c39D0PostWriteFault === true && options.c39TerminalPrePeerFault === true) {
+    throw new Error("C39 real trio worker fault profiles are mutually exclusive");
+  }
+  if (options.c39TerminalPrePeerFault === true) return "c39_terminal_prepeer_once";
+  return options.c39D0PostWriteFault === true ? "d0_postwrite_once" : "none";
 }
 
 export const REAL_TRIO_RUNTIME_FAILURE_SCHEMA =
@@ -1869,6 +1884,7 @@ export async function startRealTrioRuntimeFixture(
   binding: RealTrioBinding,
   options: RealTrioRuntimeFixtureOptions,
 ): Promise<RealTrioRuntimeFixture> {
+  const c39Profile = resolveRealTrioC39WorkerProfile(options);
   const root = mkdtempSync(path.join(tmpdir(), "revagent-wp12-real-trio-"));
   mkdirSync(path.join(root, "install"), { recursive: true });
   mkdirSync(path.join(root, "state"), { recursive: true });
@@ -1901,8 +1917,8 @@ export async function startRealTrioRuntimeFixture(
         "--fingerprint", `sha256:${"a".repeat(64)}`,
         "--certificate-sha256", "{{gateway_certificate_sha256}}",
         "--test-heartbeat-interval-ms", "{{test_heartbeat_interval_ms}}",
-        ...(options.c39D0PostWriteFault === true
-          ? ["--test-c39-profile", "d0_postwrite_once"]
+        ...(c39Profile !== "none"
+          ? ["--test-c39-profile", c39Profile]
           : []),
       ],
       workingDirectory: repoRoot,
@@ -1916,7 +1932,7 @@ export async function startRealTrioRuntimeFixture(
     bridgeExpected: {
       component: "bridge_worker",
       contract: "wp12-real-worker-host/v1",
-      c39Profile: options.c39D0PostWriteFault === true ? "d0_postwrite_once" : "none",
+      c39Profile,
     },
     fixtureExpected: { component: "addin_loopback_fixture", contract: "addin-loopback/v1" },
     csharpPublishPath: worker,
