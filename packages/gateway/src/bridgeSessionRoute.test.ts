@@ -1099,7 +1099,16 @@ describe("GatewayBridgeSessionAuthority live document routing", () => {
     for (const value of [original.rsid, rebound.connectionId, TENANT_ID, USER_ID, DEVICE_ID]) {
       expect(serialized).not.toContain(value);
     }
-    expect(Object.values(projection).some((value) => typeof value === "string" && value.startsWith("sha256:"))).toBe(false);
+    expect(Object.entries(projection)
+      .filter(([, value]) => typeof value === "string" && value.startsWith("sha256:"))
+      .map(([key]) => key)
+      .sort())
+      .toEqual([
+        "authorityGenerationDigest",
+        "connectionDigest",
+        "routeAuthorityCheckpoint",
+        "serverProofDigest",
+      ]);
   });
 
   it.each(["wss", "http_sse"] as const)(
@@ -2567,14 +2576,14 @@ describe("Gateway omitted-payload recovery admission", () => {
     });
     const created = new GatewayBridgeSessionAuthority(
       fixture.store,
-      identity({ connectionCapabilities: ["chunked_results"] }),
+      identity({ connectionCapabilities: ["chunked_results", "route_rebind_proof_v1"] }),
       { resourceAuthority: resources },
     );
     authorityRef.current = created;
     await created.open();
     try {
       const offered = hello();
-      offered.payload.capabilities = ["chunked_results"];
+      offered.payload.capabilities = ["chunked_results", "route_rebind_proof_v1"];
       const openedChannel = channel();
       const opened = await created.openConnection({
         deviceToken: DEVICE_TOKEN, binding: "wss", hello: offered, channel: openedChannel,
@@ -2593,7 +2602,20 @@ describe("Gateway omitted-payload recovery admission", () => {
         bridgeRequest(session.payload.rsid, originInvocationId),
       );
       const originInvoke = await emittedInvokeFor(openedChannel, originInvocationId);
-      await created.receive(opened.connectionId, {
+      await created.detach(opened.connectionId);
+      const rebound = await openConnection(created, "wss", ["chunked_results", "route_rebind_proof_v1"]);
+      await created.receive(rebound.connectionId, resumeWithRouteProof({
+        rsid: session.payload.rsid,
+        resumeToken: session.payload.resume_token,
+        connectionId: rebound.connectionId,
+        lastRxSeq: originInvoke.seq,
+      }));
+      await expect(created.readRouteRebindAuditSnapshot({ tenantId: TENANT_ID }))
+        .resolves.toMatchObject({
+          status: "current",
+          capabilityGranted: true,
+        });
+      await created.receive(rebound.connectionId, {
         v: 1, type: "result", id: id(), rsid: session.payload.rsid, seq: 2,
         ack: originInvoke.seq, ts: new Date().toISOString(), payload: {
           kind: "invocation", invocation_id: originInvocationId, status: "completed",
@@ -2620,7 +2642,7 @@ describe("Gateway omitted-payload recovery admission", () => {
       const recovery = created.createExecutor().execute(recoveryBridgeRequest(
         session.payload.rsid, recoveryId, originInvocationId, originDigest,
       ));
-      const recoveryInvoke = await emittedInvokeFor(openedChannel, recoveryId);
+      const recoveryInvoke = await emittedInvokeFor(rebound.channel, recoveryId);
       expect(recoveryInvoke.payload).toMatchObject({
         invocation_id: recoveryId, method: "dispatch_payload_recovery",
         params: { origin_invocation_id: originInvocationId, expected_result_digest: originDigest },
@@ -2634,11 +2656,11 @@ describe("Gateway omitted-payload recovery admission", () => {
           data: raw.toString("base64"),
         },
       };
-      await expect(created.receive(opened.connectionId, {
+      await expect(created.receive(rebound.connectionId, {
         ...partial, payload: { ...partial.payload, invocation_id: id() },
       })).rejects.toBeDefined();
       expect(fixture.snapshot().records.filter((row) => row.namespace === "gateway.recovery-chunk/v1")).toEqual([]);
-      await expect(created.receive(opened.connectionId, partial)).resolves.toBeUndefined();
+      await expect(created.receive(rebound.connectionId, partial)).resolves.toBeUndefined();
       const afterPartial = fixture.snapshot().records;
       expect(afterPartial.find((row) => row.namespace === "gateway.recovery-chunk/v1")?.value)
         .toMatchObject({ state: "active", bridgeSequence: 3, chunkIndex: 0 });
@@ -2647,7 +2669,7 @@ describe("Gateway omitted-payload recovery admission", () => {
       expect(objects.keys().length).toBeGreaterThanOrEqual(1);
 
       expect(afterPartial.some((row) => row.namespace === "gateway.carrier-ack/v1")).toBe(false);
-      await created.receive(opened.connectionId, {
+      await created.receive(rebound.connectionId, {
         v: 1, type: "result", id: id(), rsid: session.payload.rsid,
         seq: 4, ack: recoveryInvoke.seq, ts: new Date().toISOString(), payload: {
           kind: "invocation", invocation_id: recoveryId, status: "completed",
@@ -2670,11 +2692,11 @@ describe("Gateway omitted-payload recovery admission", () => {
         });
       expect(terminalRecords.find((row) => row.namespace === "gateway.rbp-session/v2")?.value)
         .toMatchObject({ sequence: { sequence: { lastRxSeq: 4 } } });
-      await created.receive(opened.connectionId, {
+      await created.receive(rebound.connectionId, {
         v: 1, type: "heartbeat", id: id(), ts: new Date().toISOString(),
         payload: { bridge_version: "m4-route-test", acks: [], sessions: [] },
       });
-      expect(openedChannel.frames.some((frame) => frame.type === "heartbeat_ack")).toBe(true);
+      expect(rebound.channel.frames.some((frame) => frame.type === "heartbeat_ack")).toBe(true);
     } finally {
       await created.close().catch(() => undefined);
     }
