@@ -25,7 +25,9 @@ public sealed partial class RbpConnectionCoordinatorTests
             RbpJournalTestData.Options(),
             new TestRecoveryPayloadProtector());
         var responder = new ScriptedGatewayResponder(clock);
-        var cycle = new FakeConnectionCycle(responder.Respond);
+        var cycle = new FakeConnectionCycle(responder.Respond,
+            grantedConnectionCapabilities: RouteProofCapabilities(),
+            connectionId: "019f9add-7a83-7d11-a6a9-d2f8108c0101");
         RbpRecoveryCarrierReservation reservation =
             await PrepareRecoveryReservationAsync(store);
         var coordinator = Coordinator(
@@ -34,7 +36,9 @@ public sealed partial class RbpConnectionCoordinatorTests
             new MutableSessionCatalog(LocalSession(8080, 1000)),
             clock,
             new RecordingInboundJournal(),
-            invocationDispatcher: new RecoveryDispatcher(reservation));
+            invocationDispatcher: new RecoveryDispatcher(reservation),
+            helloProfile: RouteProofHelloProfile(),
+            docContextWatcher: RouteProofWatcher(clock));
         using var stop = new CancellationTokenSource();
 
         Task run = coordinator.RunAsync(stop.Token);
@@ -230,7 +234,9 @@ public sealed partial class RbpConnectionCoordinatorTests
             new TestRecoveryPayloadProtector());
         var responder = new ScriptedGatewayResponder(clock);
         var cycle = new FakeConnectionCycle(envelope =>
-            envelope.Type == "heartbeat" ? null : responder.Respond(envelope));
+            envelope.Type == "heartbeat" ? null : responder.Respond(envelope),
+            grantedConnectionCapabilities: RouteProofCapabilities(),
+            connectionId: "019f9add-7a83-7d11-a6a9-d2f8108c0102");
         RbpRecoveryCarrierReservation reservation =
             await PrepareRecoveryReservationAsync(store);
         var coordinator = Coordinator(
@@ -239,7 +245,9 @@ public sealed partial class RbpConnectionCoordinatorTests
             new MutableSessionCatalog(LocalSession(8080, 1000)),
             clock,
             new RecordingInboundJournal(),
-            invocationDispatcher: new RecoveryDispatcher(reservation));
+            invocationDispatcher: new RecoveryDispatcher(reservation),
+            helloProfile: RouteProofHelloProfile(),
+            docContextWatcher: RouteProofWatcher(clock));
         using var stop = new CancellationTokenSource();
 
         Task run = coordinator.RunAsync(stop.Token);
@@ -351,18 +359,24 @@ public sealed partial class RbpConnectionCoordinatorTests
             RbpJournalTestData.Options(), new TestRecoveryPayloadProtector());
         var responder = new ScriptedGatewayResponder(clock);
         var first = new FakeConnectionCycle(envelope =>
-            envelope.Type == "heartbeat" ? null : responder.Respond(envelope));
+            envelope.Type == "heartbeat" ? null : responder.Respond(envelope),
+            grantedConnectionCapabilities: RouteProofCapabilities(),
+            connectionId: "019f9add-7a83-7d11-a6a9-d2f8108c0103");
         RbpRecoveryCarrierReservation reservation =
             await PrepareRecoveryReservationAsync(store);
         var second = new FakeConnectionCycle(envelope =>
             envelope.Type == "session_resume"
                 ? RecoveryResumeAck(clock, envelope, reservation.CurrentReservedSequence)
-                : envelope.Type == "heartbeat" ? null : responder.Respond(envelope));
+                : envelope.Type == "heartbeat" ? null : responder.Respond(envelope),
+            grantedConnectionCapabilities: RouteProofCapabilities(),
+            connectionId: "019f9add-7a83-7d11-a6a9-d2f8108c0104");
         var coordinator = Coordinator(
             new FakeConnectionCycleFactory(first, second), store,
             new MutableSessionCatalog(LocalSession(8080, 1000)), clock,
             new RecordingInboundJournal(),
-            invocationDispatcher: new RecoveryDispatcher(reservation));
+            invocationDispatcher: new RecoveryDispatcher(reservation),
+            helloProfile: RouteProofHelloProfile(),
+            docContextWatcher: RouteProofWatcher(clock));
         using var stop = new CancellationTokenSource();
 
         Task run = coordinator.RunAsync(stop.Token);
@@ -867,6 +881,22 @@ public sealed partial class RbpConnectionCoordinatorTests
             "_routeAuthorityCheckpoints", BindingFlags.Instance |
             BindingFlags.NonPublic)!;
         return ((ICollection)field.GetValue(coordinator)!).Count;
+    }
+
+    private static string[] RouteProofCapabilities() =>
+        [RbpHelloProfile.RouteRebindProofCapability];
+
+    private static RbpHelloProfile RouteProofHelloProfile() =>
+        new("0.1.0", "WS01", "Windows 11", new[] { "2026.07.26.0" },
+            RouteProofCapabilities());
+
+    private static RbpDocContextWatcher RouteProofWatcher(
+        ManualCoordinatorClock clock)
+    {
+        var channel = new ScriptedDocContextChannel();
+        channel.SetSnapshot(1, "Project A",
+            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        return new RbpDocContextWatcher(channel, clock);
     }
 
     private static RbpEnvelope RecoveryResumeAck(

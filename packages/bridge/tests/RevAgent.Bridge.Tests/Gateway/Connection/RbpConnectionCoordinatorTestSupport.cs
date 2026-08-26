@@ -28,7 +28,8 @@ public sealed partial class RbpConnectionCoordinatorTests
             onConnectionFailureObservation = null,
         IRbpRecoveryCarrierObservationSink?
             recoveryCarrierObservationSink = null,
-        RbpHelloProfile? helloProfile = null) =>
+        RbpHelloProfile? helloProfile = null,
+        RbpDocContextWatcher? docContextWatcher = null) =>
         new(
             factory,
             store,
@@ -49,7 +50,8 @@ public sealed partial class RbpConnectionCoordinatorTests
             onConnectionFailureObservation:
                 onConnectionFailureObservation,
             recoveryCarrierObservationSink:
-                recoveryCarrierObservationSink);
+                recoveryCarrierObservationSink,
+            docContextWatcher: docContextWatcher);
 
     private static RbpJournalStore OpenStore(
         RbpJournalTestDirectory directory,
