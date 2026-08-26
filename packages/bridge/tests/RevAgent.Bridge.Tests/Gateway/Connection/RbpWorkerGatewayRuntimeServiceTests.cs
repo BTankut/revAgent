@@ -747,6 +747,34 @@ public sealed partial class RbpConnectionCoordinatorTests
     }
 
     [Fact]
+    public async Task WorkerCatalogFreshProofReadRequiresCurrentDocumentContextCapabilityAndEpoch()
+    {
+        string? durableKey = null;
+        var transport = new ScriptedStatusTransport(result =>
+        {
+            result["sessionCapabilities"] = new JArray("batch_atomic");
+            ((JObject)result["capabilityContracts"]!).Remove(
+                "doc_context_cached_v1");
+        });
+        var router = new AddinSessionRouter(transport);
+        var catalog = new WorkerAddinSessionCatalog(
+            new AddinDiscovery(transport, new NoOpProcessAttestor()), router,
+            ScanConfiguration(), () => new FixedCredentialProvider(),
+            (rsid, _) => Task.FromResult<string?>(rsid == "rs-cap" ? durableKey : null),
+            "0.1.0-test", "WS01");
+        RbpLocalSessionSnapshot local = Assert.Single(await catalog.ReadAsync());
+        durableKey = local.LocalSessionKey;
+
+        // Neither a durable exact mapping nor an answering transport is enough
+        // before a coordinator-owned epoch and this session's advertised cap.
+        Assert.Null(await catalog.ReadAsync("rs-cap", CancellationToken.None));
+        Assert.True(catalog.BeginConnectionEpoch(1));
+        Assert.Null(await catalog.ReadAsync("rs-cap", CancellationToken.None));
+        Assert.DoesNotContain("get_document_context", transport.Methods);
+        Assert.Null(catalog.Resolve("rs-cap"));
+    }
+
+    [Fact]
     public async Task WorkerCatalogDoesNotRetainWithdrawnSessionCapability()
     {
         bool batchAdvertised = true;
@@ -859,6 +887,7 @@ public sealed partial class RbpConnectionCoordinatorTests
             "0.1.0-test", "WS01");
         RbpLocalSessionSnapshot active = Assert.Single(await catalog.ReadAsync());
         durableKey = active.LocalSessionKey;
+        Assert.True(catalog.BeginConnectionEpoch(1));
 
         RbpFreshDocumentContext? fresh = await catalog.ReadAsync(
             "rs-direct", CancellationToken.None);
@@ -871,10 +900,15 @@ public sealed partial class RbpConnectionCoordinatorTests
 
         // A stale/previous-cycle global route is never an alternate proof
         // path. The direct reader refuses it before selecting a handle.
-        Assert.True(catalog.BeginConnectionEpoch(1));
         Assert.True(catalog.TryBindRegisteredSession(
             "rs-direct", active.LocalSessionKey, 1));
         Assert.Null(await catalog.ReadAsync("rs-direct", CancellationToken.None));
+        catalog.FenceConnectionEpoch(1);
+        int directCalls = transport.Methods.Count(
+            method => method == "get_document_context");
+        Assert.Null(await catalog.ReadAsync("rs-direct", CancellationToken.None));
+        Assert.Equal(directCalls, transport.Methods.Count(
+            method => method == "get_document_context"));
     }
 
     [Fact]
@@ -903,6 +937,7 @@ public sealed partial class RbpConnectionCoordinatorTests
             "0.1.0-test", "WS01");
         RbpLocalSessionSnapshot active = Assert.Single(await catalog.ReadAsync());
         durableKey = active.LocalSessionKey;
+        Assert.True(catalog.BeginConnectionEpoch(1));
 
         state = "warming";
         Assert.Null(await catalog.ReadAsync("rs-direct", CancellationToken.None));
@@ -917,6 +952,118 @@ public sealed partial class RbpConnectionCoordinatorTests
         driftDuringRead = true;
         Assert.Null(await catalog.ReadAsync("rs-direct", CancellationToken.None));
         Assert.Null(catalog.Resolve("rs-direct"));
+    }
+
+    [Fact]
+    public async Task WorkerCatalogFreshProofCancellationReleasesLeaseAndSecondReadCanProceed()
+    {
+        string? durableKey = null;
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        int blocked = 0;
+        var transport = new ScriptedStatusTransport(
+            beforeResponse: async call =>
+            {
+                if (call.Method == "get_document_context" &&
+                    Interlocked.Increment(ref blocked) == 1)
+                {
+                    entered.TrySetResult();
+                    await release.Task.ConfigureAwait(false);
+                }
+            });
+        var router = new AddinSessionRouter(transport);
+        var catalog = new WorkerAddinSessionCatalog(
+            new AddinDiscovery(transport, new NoOpProcessAttestor()), router,
+            ScanConfiguration(), () => new FixedCredentialProvider(),
+            (rsid, _) => Task.FromResult<string?>(rsid == "rs-cancel" ? durableKey : null),
+            "0.1.0-test", "WS01");
+        RbpLocalSessionSnapshot local = Assert.Single(await catalog.ReadAsync());
+        durableKey = local.LocalSessionKey;
+        Assert.True(catalog.BeginConnectionEpoch(1));
+        using var cancelled = new CancellationTokenSource();
+        Task<RbpFreshDocumentContext?> first = catalog.ReadAsync(
+            "rs-cancel", cancelled.Token);
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        cancelled.Cancel();
+        release.TrySetResult();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => first);
+        Assert.Null(catalog.Resolve("rs-cancel"));
+
+        Assert.NotNull(await catalog.ReadAsync("rs-cancel", CancellationToken.None));
+        Assert.Null(catalog.Resolve("rs-cancel"));
+    }
+
+    [Fact]
+    public async Task WorkerCatalogFreshProofReadRejectsInFlightHandleReplacement()
+    {
+        string? durableKey = null;
+        string addinVersion = "2026.07.22.0";
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var transport = new ScriptedStatusTransport(
+            configure: result => result["addinVersion"] = addinVersion,
+            beforeResponse: async call =>
+            {
+                if (call.Method == "get_document_context")
+                {
+                    entered.TrySetResult();
+                    await release.Task.ConfigureAwait(false);
+                }
+            });
+        var router = new AddinSessionRouter(transport);
+        var catalog = new WorkerAddinSessionCatalog(
+            new AddinDiscovery(transport, new NoOpProcessAttestor()), router,
+            ScanConfiguration(), () => new FixedCredentialProvider(),
+            (rsid, _) => Task.FromResult<string?>(rsid == "rs-replace" ? durableKey : null),
+            "0.1.0-test", "WS01");
+        RbpLocalSessionSnapshot local = Assert.Single(await catalog.ReadAsync());
+        durableKey = local.LocalSessionKey;
+        Assert.True(catalog.BeginConnectionEpoch(1));
+        Task<RbpFreshDocumentContext?> read = catalog.ReadAsync("rs-replace", CancellationToken.None);
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        addinVersion = "2026.07.22.1";
+        _ = Assert.Single(await catalog.ReadAsync());
+        release.TrySetResult();
+
+        Assert.Null(await read);
+        Assert.Null(catalog.Resolve("rs-replace"));
+    }
+
+    [Fact]
+    public async Task WorkerCatalogFreshProofReadRejectsInFlightAttestationDrift()
+    {
+        string? durableKey = null;
+        string image = @"C:\Program Files\Autodesk\Revit 2026\Revit.exe";
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var transport = new ScriptedStatusTransport(
+            attestation: () => new AddinProcessAttestation(
+                new AddinProcessIdentity(4242, ScriptedStartTimeFileTimeUtc), "2026", image),
+            beforeResponse: async call =>
+            {
+                if (call.Method == "get_document_context")
+                {
+                    entered.TrySetResult();
+                    await release.Task.ConfigureAwait(false);
+                }
+            });
+        var router = new AddinSessionRouter(transport);
+        var catalog = new WorkerAddinSessionCatalog(
+            new AddinDiscovery(transport, new NoOpProcessAttestor()), router,
+            ScanConfiguration(), () => new FixedCredentialProvider(),
+            (rsid, _) => Task.FromResult<string?>(rsid == "rs-attestation" ? durableKey : null),
+            "0.1.0-test", "WS01");
+        RbpLocalSessionSnapshot local = Assert.Single(await catalog.ReadAsync());
+        durableKey = local.LocalSessionKey;
+        Assert.True(catalog.BeginConnectionEpoch(1));
+        Task<RbpFreshDocumentContext?> read = catalog.ReadAsync("rs-attestation", CancellationToken.None);
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        image = @"C:\Unexpected\Revit.exe";
+        _ = Assert.Single(await catalog.ReadAsync());
+        release.TrySetResult();
+
+        Assert.Null(await read);
+        Assert.Null(catalog.Resolve("rs-attestation"));
     }
 
     [Fact]
@@ -1153,23 +1300,26 @@ public sealed partial class RbpConnectionCoordinatorTests
         private readonly Action<JObject>? _configure;
         private readonly Action<JObject, string>? _configureCall;
         private readonly Func<AddinProcessAttestation>? _attestation;
+        private readonly Func<AddinCall, Task>? _beforeResponse;
         private readonly Func<bool> _isAvailable;
 
         internal ScriptedStatusTransport(
             Action<JObject>? configure = null,
             Action<JObject, string>? configureCall = null,
             Func<AddinProcessAttestation>? attestation = null,
+            Func<AddinCall, Task>? beforeResponse = null,
             Func<bool>? isAvailable = null)
         {
             _configure = configure;
             _configureCall = configureCall;
             _attestation = attestation;
+            _beforeResponse = beforeResponse;
             _isAvailable = isAvailable ?? (() => true);
         }
 
         internal ConcurrentQueue<string> Methods { get; } = new();
 
-        public Task<AddinCallResult> InvokeAsync(
+        public async Task<AddinCallResult> InvokeAsync(
             AddinEndpoint endpoint,
             AddinCall call,
             CancellationToken preDispatchCancellationToken = default,
@@ -1182,17 +1332,16 @@ public sealed partial class RbpConnectionCoordinatorTests
             transportShutdownToken.ThrowIfCancellationRequested();
             if (endpoint.Port != 8080 || !_isAvailable())
             {
-                return Task.FromException<AddinCallResult>(
-                    new AddinTransportException(
-                        "addin_connect_failed",
-                        "No add-in listener on this port.",
-                        new AddinTransportEvidence(
-                            AddinDispatchState.NotStarted,
-                            RequestPayloadBytes: 0,
-                            RequestFrameBytes: 0,
-                            BytesWrittenLowerBound: 0,
-                            RequestFullyWritten: false,
-                            ResponseBytesObserved: 0)));
+                throw new AddinTransportException(
+                    "addin_connect_failed",
+                    "No add-in listener on this port.",
+                    new AddinTransportEvidence(
+                        AddinDispatchState.NotStarted,
+                        RequestPayloadBytes: 0,
+                        RequestFrameBytes: 0,
+                        BytesWrittenLowerBound: 0,
+                        RequestFullyWritten: false,
+                        ResponseBytesObserved: 0));
             }
 
             JObject result = string.Equals(
@@ -1206,6 +1355,10 @@ public sealed partial class RbpConnectionCoordinatorTests
                 _configure?.Invoke(result);
             }
             _configureCall?.Invoke(result, call.Method);
+            if (_beforeResponse is not null)
+            {
+                await _beforeResponse(call).ConfigureAwait(false);
+            }
             var envelope = new JObject
             {
                 ["jsonrpc"] = "2.0",
@@ -1216,8 +1369,7 @@ public sealed partial class RbpConnectionCoordinatorTests
                 System.Text.Encoding.UTF8.GetBytes(
                     envelope.ToString(Newtonsoft.Json.Formatting.None)),
                 call.InvocationId);
-            return Task.FromResult(
-                new AddinCallResult(
+            return new AddinCallResult(
                     response,
                     new AddinTransportEvidence(
                         AddinDispatchState.ResponseObserved,
@@ -1231,7 +1383,7 @@ public sealed partial class RbpConnectionCoordinatorTests
                             4242,
                             ScriptedStartTimeFileTimeUtc),
                         "2026",
-                        @"C:\Program Files\Autodesk\Revit 2026\Revit.exe")));
+                        @"C:\Program Files\Autodesk\Revit 2026\Revit.exe"));
         }
 
         private static JObject LoadStatusFixtureResult()

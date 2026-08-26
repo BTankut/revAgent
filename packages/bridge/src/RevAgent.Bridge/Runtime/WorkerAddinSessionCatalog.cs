@@ -90,6 +90,8 @@ internal sealed class WorkerAddinSessionCatalog :
 
     private readonly Dictionary<string, AddinSessionRouter.SessionHandle>
         _handlesByLocalKey = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, bool> _documentContextCapabilityByLocalKey =
+        new(StringComparer.Ordinal);
 
     private readonly Dictionary<string, BoundRoute> _routesByRsid =
         new(StringComparer.Ordinal);
@@ -163,6 +165,8 @@ internal sealed class WorkerAddinSessionCatalog :
             reconciled.AvailableSessions.Count);
         var handles = new Dictionary<string, AddinSessionRouter.SessionHandle>(
             StringComparer.Ordinal);
+        var documentContextCapabilities = new Dictionary<string, bool>(
+            StringComparer.Ordinal);
         foreach (AddinSessionRouter.SessionRoute route in
                  reconciled.AvailableSessions)
         {
@@ -172,10 +176,12 @@ internal sealed class WorkerAddinSessionCatalog :
             }
 
             handles[route.Session.LocalSessionKey] = route.Handle;
+            documentContextCapabilities[route.Session.LocalSessionKey] =
+                RbpDocContextWatcher.AdvertisesCachedDocumentContext(snapshot);
             snapshots.Add(snapshot);
         }
 
-        ReplaceHandles(handles);
+        ReplaceHandles(handles, documentContextCapabilities);
         return new ReadOnlyCollection<RbpLocalSessionSnapshot>(snapshots);
     }
 
@@ -230,16 +236,27 @@ internal sealed class WorkerAddinSessionCatalog :
             if (string.IsNullOrEmpty(localKey) || localKey.Length > 512) return null;
 
             AddinSessionRouter.SessionHandle? handle;
+            long epoch;
             lock (_routeSync)
             {
                 // A pre-resume route is authority corruption, not an
                 // alternate way to obtain this proof. Refuse rather than
                 // inheriting a stale connection's dispatch capability.
-                if (_routesByRsid.ContainsKey(rsid)) return null;
+                if (_activeRouteEpoch <= 0 || _routesByRsid.ContainsKey(rsid))
+                {
+                    return null;
+                }
                 if (!_handlesByLocalKey.TryGetValue(localKey, out handle))
                 {
                     return null;
                 }
+                if (!_documentContextCapabilityByLocalKey.TryGetValue(
+                        localKey, out bool hasDocumentContextCapability) ||
+                    !hasDocumentContextCapability)
+                {
+                    return null;
+                }
+                epoch = _activeRouteEpoch;
             }
 
             var call = new AddinCall(
@@ -253,6 +270,7 @@ internal sealed class WorkerAddinSessionCatalog :
             try
             {
                 AddinCallResult result = lease.GetResult();
+                cancellationToken.ThrowIfCancellationRequested();
                 AddinDocumentContextResponse response =
                     AddinDocumentContextParser.ParseResponse(
                         Encoding.UTF8.GetString(result.Response.RawPayload));
@@ -269,15 +287,20 @@ internal sealed class WorkerAddinSessionCatalog :
 
                 string? afterLocalKey = await _localSessionKeyLookup(
                         rsid, cancellationToken).ConfigureAwait(false);
+                cancellationToken.ThrowIfCancellationRequested();
                 if (!string.Equals(localKey, afterLocalKey, StringComparison.Ordinal))
                 {
                     return null;
                 }
                 lock (_routeSync)
                 {
-                    if (_routesByRsid.ContainsKey(rsid) ||
+                    if (_activeRouteEpoch != epoch ||
+                        _routesByRsid.ContainsKey(rsid) ||
                         !_handlesByLocalKey.TryGetValue(localKey, out var current) ||
-                        !SameHandle(handle, current))
+                        !SameHandle(handle, current) ||
+                        !_documentContextCapabilityByLocalKey.TryGetValue(
+                            localKey, out bool hasDocumentContextCapability) ||
+                        !hasDocumentContextCapability)
                     {
                         return null;
                     }
@@ -296,10 +319,11 @@ internal sealed class WorkerAddinSessionCatalog :
                 lease.ReleaseAfterDurableDecision();
             }
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            return null;
+            throw;
         }
+        catch (OperationCanceledException) { return null; }
         catch
         {
             return null;
@@ -386,15 +410,22 @@ internal sealed class WorkerAddinSessionCatalog :
     }
 
     private void ReplaceHandles(
-        IReadOnlyDictionary<string, AddinSessionRouter.SessionHandle> handles)
+        IReadOnlyDictionary<string, AddinSessionRouter.SessionHandle> handles,
+        IReadOnlyDictionary<string, bool> documentContextCapabilities)
     {
         lock (_routeSync)
         {
             _handlesByLocalKey.Clear();
+            _documentContextCapabilityByLocalKey.Clear();
             foreach (KeyValuePair<string, AddinSessionRouter.SessionHandle>
                      pair in handles)
             {
                 _handlesByLocalKey.Add(pair.Key, pair.Value);
+                _documentContextCapabilityByLocalKey.Add(
+                    pair.Key,
+                    documentContextCapabilities.TryGetValue(pair.Key,
+                        out bool hasDocumentContextCapability) &&
+                    hasDocumentContextCapability);
             }
 
             // Discovery is not route authority. A refresh may retain an
