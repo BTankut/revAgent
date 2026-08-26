@@ -47,11 +47,16 @@ internal static class Program
             var postWriteFault = options.TestC39D0PostWriteFault
                 ? new OneShotPostWriteRecoveryFault()
                 : null;
+            var terminalPrePeerFault = options.TestC39TerminalPrePeerFault
+                ? new OneShotTerminalPrePeerRecoveryFault()
+                : null;
             Func<CancellationToken, Task>? postWriteFaultCallback =
                 postWriteFault is null ? null : postWriteFault.InvokeAsync;
+            Func<CancellationToken, Task>? terminalPrePeerFaultCallback =
+                terminalPrePeerFault is null ? null : terminalPrePeerFault.InvokeAsync;
             await using WorkerGatewayRuntime runtime = Compose(options,
                 recoveryObservations, reconnectObservations,
-                postWriteFaultCallback);
+                postWriteFaultCallback, terminalPrePeerFaultCallback);
             using var cancellation = new CancellationTokenSource();
             Task run = runtime.RunAsync(cancellation.Token);
             await Console.Out.WriteLineAsync(JsonSerializer.Serialize(new
@@ -62,8 +67,7 @@ internal static class Program
                 controlVersion = 1,
                 maxControlLineBytes = MaxControlLineBytes,
                 actions = new[] { "read_recovery_observations", "poll_document_context", "shutdown" },
-                c39Profile = options.TestC39D0PostWriteFault
-                    ? "d0_postwrite_once" : "none",
+                c39Profile = options.C39Profile,
                 pid = Environment.ProcessId,
                 bindings = new[] { options.Binding },
                 state_root_redacted = true,
@@ -160,7 +164,8 @@ internal static class Program
         Options options,
         IRbpRecoveryCarrierObservationSink recoveryCarrierObservationSink,
         IRbpReconnectObservationSink reconnectObservationSink,
-        Func<CancellationToken, Task>? afterRecoveryCarrierWriteBeforeAck)
+        Func<CancellationToken, Task>? afterRecoveryCarrierWriteBeforeAck,
+        Func<CancellationToken, Task>? beforeRecoveryTerminalWrite)
     {
         var layout = new BridgeInstallLayout(options.InstallRoot, options.StateRoot);
         Directory.CreateDirectory(layout.StateRoot);
@@ -175,7 +180,8 @@ internal static class Program
             // The D0 observation policy is inseparable from the fixed C39
             // post-write profile. C38 and ordinary real-worker launches stay
             // on the sealed Never policy.
-            var omittedOriginObservation = options.TestC39D0PostWriteFault
+            var omittedOriginObservation = (options.TestC39D0PostWriteFault ||
+                options.TestC39TerminalPrePeerFault)
                 ? RbpConformanceOmittedOriginObservation.CreateFixtureOneShot(
                     fixtureAttestor.ReadLiveFixtureAttestation)
                 : RbpConformanceOmittedOriginObservation.Never;
@@ -229,6 +235,8 @@ internal static class Program
                     RecoveryCarrierObservationSink:
                         recoveryCarrierObservationSink,
                     ReconnectObservationSink: reconnectObservationSink,
+                    BeforeRecoveryTerminalWrite:
+                        beforeRecoveryTerminalWrite,
                     AfterRecoveryCarrierWriteBeforeAck:
                         afterRecoveryCarrierWriteBeforeAck));
             return new WorkerGatewayRuntime(coordinator, catalog, journal, carrierProducer: carrier);
@@ -723,8 +731,31 @@ internal static class Program
         }
     }
 
-    private sealed record Options(Uri GatewayUri, int AddinPort, int FixtureProcessId, string InstallRoot, string StateRoot, string DeviceId, string DeviceToken, string Fingerprint, string CertificateSha256, string Binding, int TestHeartbeatIntervalMilliseconds, bool TestC39D0PostWriteFault)
+    /// <summary>Fixed test-host profile: one failure before a terminal write.</summary>
+    private sealed class OneShotTerminalPrePeerRecoveryFault
     {
+        private int _used;
+
+        internal Task InvokeAsync(CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (Interlocked.Exchange(ref _used, 1) == 0)
+            {
+                throw new RbpGatewayTransportException(
+                    RbpGatewayFailureKind.Network,
+                    "Test-only C39 terminal pre-peer recovery close.");
+            }
+            return Task.CompletedTask;
+        }
+    }
+
+    private sealed record Options(Uri GatewayUri, int AddinPort, int FixtureProcessId, string InstallRoot, string StateRoot, string DeviceId, string DeviceToken, string Fingerprint, string CertificateSha256, string Binding, int TestHeartbeatIntervalMilliseconds, string C39Profile)
+    {
+        internal bool TestC39D0PostWriteFault =>
+            string.Equals(C39Profile, "d0_postwrite_once", StringComparison.Ordinal);
+        internal bool TestC39TerminalPrePeerFault =>
+            string.Equals(C39Profile, "c39_terminal_prepeer_once", StringComparison.Ordinal);
+
         public static Options Parse(IReadOnlyList<string> args)
         {
             if (args.Count is not (22 or 24)) throw new ArgumentException("real worker host requires fixed --key value pairs");
@@ -742,9 +773,11 @@ internal static class Program
             if (!int.TryParse(Required("--addin-port"), out int port) || port is < 1 or > 65535) throw new ArgumentException("invalid addin port");
             if (!int.TryParse(Required("--fixture-pid"), out int fixturePid) || fixturePid <= 0) throw new ArgumentException("invalid fixture pid");
             if (!int.TryParse(Required("--test-heartbeat-interval-ms"), out int testHeartbeatIntervalMilliseconds) || testHeartbeatIntervalMilliseconds is < 250 or > 5_000) throw new ArgumentException("test heartbeat interval must be between 250 and 5000 milliseconds");
-            bool testC39D0PostWriteFault = values.Remove("--test-c39-profile", out string? profile);
-            if (testC39D0PostWriteFault && !string.Equals(profile, "d0_postwrite_once", StringComparison.Ordinal)) throw new ArgumentException("invalid C39 test profile");
-            Options result = new(endpoint, port, fixturePid, Required("--install-root"), Required("--state-root"), Required("--device-id"), Required("--device-token"), Required("--fingerprint"), Required("--certificate-sha256"), binding, testHeartbeatIntervalMilliseconds, testC39D0PostWriteFault);
+            string c39Profile = values.Remove("--test-c39-profile", out string? profile)
+                ? profile ?? throw new ArgumentException("invalid C39 test profile")
+                : "none";
+            if (c39Profile is not ("none" or "d0_postwrite_once" or "c39_terminal_prepeer_once")) throw new ArgumentException("invalid C39 test profile");
+            Options result = new(endpoint, port, fixturePid, Required("--install-root"), Required("--state-root"), Required("--device-id"), Required("--device-token"), Required("--fingerprint"), Required("--certificate-sha256"), binding, testHeartbeatIntervalMilliseconds, c39Profile);
             if (values.Count != 0 || !result.Fingerprint.StartsWith("sha256:", StringComparison.Ordinal) || result.CertificateSha256.Length != 64) throw new ArgumentException("invalid test identity or certificate pin");
             return result;
         }

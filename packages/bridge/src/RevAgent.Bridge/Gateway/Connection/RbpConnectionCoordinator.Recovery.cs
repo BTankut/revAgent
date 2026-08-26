@@ -334,6 +334,10 @@ internal sealed partial class RbpConnectionCoordinator
                         : RbpRecoveryCarrierObservationPhase.Write,
                     plan.RecoveryInvocationId, plan.FinalSequence,
                     plan.TerminalDigest);
+                if (_beforeRecoveryTerminalWrite is { } beforeTerminalWrite)
+                {
+                    await beforeTerminalWrite(context.Token).ConfigureAwait(false);
+                }
                 RecoveryCarrierAckGateKey? ackGate =
                     _afterRecoveryCarrierWriteBeforeAck is null ? null :
                     new RecoveryCarrierAckGateKey(context, plan.Rsid,

@@ -557,6 +557,17 @@ public sealed partial class RbpConnectionCoordinatorTests
                 parameter.ParameterType == typeof(Func<CancellationToken, Task>)));
     }
 
+    [Fact]
+    public void C39C1dExposesTerminalPrePeerCrashHook()
+    {
+        Assert.Contains(typeof(RbpConnectionCoordinator).GetConstructors(
+            System.Reflection.BindingFlags.Instance |
+            System.Reflection.BindingFlags.NonPublic), constructor =>
+            constructor.GetParameters().Any(parameter =>
+                parameter.Name == "beforeRecoveryTerminalWrite" &&
+                parameter.ParameterType == typeof(Func<CancellationToken, Task>)));
+    }
+
     private static RbpEnvelope HeartbeatAck(
         ManualCoordinatorClock clock,
         string id,
