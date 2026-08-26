@@ -442,6 +442,7 @@ public sealed partial class RbpConnectionCoordinatorTests
         RbpEnvelope resume = await EventuallySentAsync(fixture.Cycle,
             envelope => envelope.Type == "session_resume");
         fixture.Cycle.Deliver(ResumeAck(fixture.Clock, "rs-other"));
+        await EventuallyAsync(() => fixture.Cycle.CloseCount > 0);
         await EventuallyAsync(() => !fixture.Routes.IsBound("rs-8080"));
         Assert.Empty(fixture.Routes.Bound);
         Assert.Null(fixture.Routes.Resolve("rs-8080"));
@@ -486,11 +487,44 @@ public sealed partial class RbpConnectionCoordinatorTests
         _ = await EventuallySentAsync(fixture.Cycle,
             envelope => envelope.Type == "session_resume");
         fixture.Cycle.Fail(new IOException("test reset before resume_ack"));
+        await EventuallyAsync(() => fixture.Cycle.CloseCount > 0);
         await EventuallyAsync(() => !fixture.Routes.IsBound("rs-8080"));
         Assert.Empty(fixture.Routes.Bound);
         Assert.Null(fixture.Routes.Resolve("rs-8080"));
         fixture.Stop();
         await fixture.Run.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    [Fact]
+    public async Task GenerationDriftImmediatelyBeforeBindPublishesNoRoute()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        var clock = new ManualCoordinatorClock();
+        await using RbpJournalStore store = OpenStore(directory, clock);
+        RbpLocalSessionSnapshot local = WatchedLocalSession(8080, 1000);
+        var responder = new ScriptedGatewayResponder(clock);
+        var cycle = new FakeConnectionCycle(responder.Respond);
+        var routes = new RecordingRouteAuthority
+        {
+            FenceImmediatelyBeforeBind = true,
+        };
+        RbpConnectionCoordinator coordinator = WorkerGatewayComposition.CreateCoordinator(
+            new WorkerGatewayServices(
+                new FakeConnectionCycleFactory(cycle), store,
+                new MutableSessionCatalog(local),
+                CompositionOptions() with { SessionRouteBindingAuthority = routes },
+                new WorkerAddinDispatchSurface(
+                    new AddinSessionRouter(new NeverInvokedAddinTransport()), routes),
+                clock, new FixedRandomSource(0)));
+        using var stop = new CancellationTokenSource();
+        Task run = coordinator.RunAsync(stop.Token);
+        _ = await EventuallySentAsync(cycle, envelope =>
+            envelope.Type == "session_register");
+        await EventuallyAsync(() => !routes.IsBound("rs-8080"));
+        Assert.Empty(routes.Bound);
+        Assert.Null(routes.Resolve("rs-8080"));
+        stop.Cancel();
+        await run.WaitAsync(TimeSpan.FromSeconds(5));
     }
 
     [Fact]
@@ -1784,6 +1818,7 @@ public sealed partial class RbpConnectionCoordinatorTests
         private readonly ConcurrentDictionary<string, string> _bound =
             new(StringComparer.Ordinal);
         private int _resolveBeforeBindingCount;
+        private long _activeEpoch;
 
         internal ConcurrentQueue<string> Resolved { get; } = new();
 
@@ -1793,6 +1828,8 @@ public sealed partial class RbpConnectionCoordinatorTests
             Volatile.Read(ref _resolveBeforeBindingCount);
 
         internal bool IsBound(string rsid) => _bound.ContainsKey(rsid);
+
+        internal bool FenceImmediatelyBeforeBind { get; set; }
 
         public AddinSessionRouter.SessionHandle? Resolve(string rsid)
         {
@@ -1805,15 +1842,29 @@ public sealed partial class RbpConnectionCoordinatorTests
             return null;
         }
 
-        public bool BeginConnectionEpoch(long epoch) => epoch > 0;
+        public bool BeginConnectionEpoch(long epoch)
+        {
+            _activeEpoch = epoch;
+            return epoch > 0;
+        }
 
-        public void FenceConnectionEpoch(long epoch) => _bound.Clear();
+        public void FenceConnectionEpoch(long epoch)
+        {
+            if (_activeEpoch == epoch) _activeEpoch = 0;
+            _bound.Clear();
+        }
 
         public void RevokeBoundSession(string rsid, long epoch) =>
             _bound.TryRemove(rsid, out _);
 
         public bool TryBindRegisteredSession(string rsid, string localSessionKey, long epoch)
         {
+            if (FenceImmediatelyBeforeBind)
+            {
+                FenceConnectionEpoch(epoch);
+                return false;
+            }
+            if (_activeEpoch != epoch) return false;
             if (_bound.TryGetValue(rsid, out string? existing))
             {
                 return string.Equals(
