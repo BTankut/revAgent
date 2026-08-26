@@ -175,6 +175,7 @@ describe.sequential("WP-12 direct real trio runtime fixture", () => {
           expect(result).not.toHaveProperty("result");
           const uri = result.uri;
           expect(typeof uri).toBe("string");
+          await waitForC39TerminalSettlementAndLiveFence(runtime, origin, 45_000);
           let ownerRead;
           try {
             ownerRead = await client.readResource({ uri: uri as string, requestId: `wp12-c39-owner-read-${binding}` });
@@ -317,6 +318,72 @@ describe("C39 owner resource-read diagnostics", () => {
   });
 });
 
+describe("C39 terminal settlement before owner resource read", () => {
+  const origin = Object.freeze({
+    requestId: "00000000-0000-7000-8000-000000000001",
+    responseDigest: `sha256:${"a".repeat(64)}` as `sha256:${string}`,
+  });
+  const carrierHash = `sha256:${"b".repeat(64)}` as `sha256:${string}`;
+
+  it("requires one ordered terminal acknowledgement with the matching outer digest", () => {
+    const settlement = c39TerminalSettlement(c39TerminalAudit(origin, carrierHash, 9), origin);
+    expect(settlement).toEqual({ carrierHash, terminalSequence: 9 });
+    expect(settlement).not.toHaveProperty("payload");
+    expect(settlement).not.toHaveProperty("uri");
+
+    expect(c39TerminalAckSettled([
+      c39WorkerObservation(carrierHash, "ack", 9, 12, "c"),
+      c39WorkerObservation(carrierHash, "write", 9, 13, "c"),
+    ], settlement)).toBe(false);
+    expect(c39TerminalAckSettled([
+      c39WorkerObservation(carrierHash, "write", 9, 12, "c"),
+      c39WorkerObservation(carrierHash, "ack", 9, 13, "d"),
+    ], settlement)).toBe(false);
+    expect(c39TerminalAckSettled([
+      c39WorkerObservation(carrierHash, "write", 9, 12, "c"),
+      c39WorkerObservation(carrierHash, "ack", 9, 13, "c"),
+      c39WorkerObservation(carrierHash, "ack", 9, 14, "c"),
+    ], settlement)).toBe(false);
+    expect(c39TerminalAckSettled([
+      c39WorkerObservation(carrierHash, "write", 8, 12, "c"),
+      c39WorkerObservation(carrierHash, "ack", 8, 13, "c"),
+    ], settlement)).toBe(false);
+    expect(c39TerminalAckSettled([
+      c39WorkerObservation(carrierHash, "write", 9, 12, "c"),
+      c39WorkerObservation(carrierHash, "ack", 9, 13, "c"),
+    ], settlement)).toBe(true);
+  });
+
+  it("retries the live fence and times out without terminal settlement", async () => {
+    const settlementAudit = c39TerminalAudit(origin, carrierHash, 9);
+    const settledWorker = [
+      c39WorkerObservation(carrierHash, "write", 9, 12, "c"),
+      c39WorkerObservation(carrierHash, "ack", 9, 13, "c"),
+    ];
+    let fenceAttempts = 0;
+    await waitForC39TerminalSettlementAndLiveFence(
+      c39SettlementRuntime(settlementAudit, settledWorker, async () => {
+        fenceAttempts += 1;
+        if (fenceAttempts === 1) throw new Error("transient fence failure");
+      }),
+      origin,
+      1,
+      { now: () => 0, sleep: async () => {} },
+    );
+    expect(fenceAttempts).toBe(2);
+
+    await expect(waitForC39TerminalSettlementAndLiveFence(
+      c39SettlementRuntime(settlementAudit, [
+        c39WorkerObservation(carrierHash, "write", 8, 12, "c"),
+        c39WorkerObservation(carrierHash, "ack", 8, 13, "c"),
+      ], async () => {}),
+      origin,
+      0,
+      { now: () => 0, sleep: async () => {} },
+    )).rejects.toThrow("C39 terminal settlement or live North dispatch fence did not become ready");
+  });
+});
+
 async function readC39OwnerResourceReadAudit(
   runtime: Awaited<ReturnType<typeof startRealTrioRuntimeFixture>>,
 ): Promise<C39ProtectedResourceReadOutcome | null> {
@@ -350,6 +417,141 @@ function withC39OwnerResourceReadDiagnostic(
     return new RealTrioNorthMcpError(`${error.message} [${suffix}]`, error.evidence, error.toolResultEvidence);
   }
   return new Error(`C39 owner resources/read failed [${suffix}]`, { cause: error });
+}
+
+type C39RecoveryCarrierObservations = Awaited<ReturnType<
+  Awaited<ReturnType<typeof startRealTrioRuntimeFixture>>["supervisor"]["readRecoveryCarrierObservations"]
+>>;
+type C39TerminalSettlementRuntime = Pick<
+  Awaited<ReturnType<typeof startRealTrioRuntimeFixture>>,
+  "supervisor" | "verifyNorthDispatchFence"
+>;
+
+interface C39TerminalSettlement {
+  readonly carrierHash: `sha256:${string}`;
+  readonly terminalSequence: number;
+}
+
+interface C39TerminalSettlementWaitOptions {
+  readonly now?: () => number;
+  readonly sleep?: () => Promise<void>;
+}
+
+async function waitForC39TerminalSettlementAndLiveFence(
+  runtime: C39TerminalSettlementRuntime,
+  origin: C39OriginProvenance,
+  timeoutMs: number,
+  options: C39TerminalSettlementWaitOptions = {},
+): Promise<void> {
+  const now = options.now ?? Date.now;
+  const sleep = options.sleep ?? (async () => await new Promise<void>((resolve) => setTimeout(resolve, 200)));
+  const deadline = now() + timeoutMs;
+  let liveFenceVerified = false;
+  for (;;) {
+    const audit = object(await runtime.supervisor.readRealCaseAudit());
+    if (audit === null) throw new Error("C39 Gateway audit is not an object");
+    const terminal = c39TerminalSettlement(audit, origin);
+    const worker = await runtime.supervisor.readRecoveryCarrierObservations();
+    if (!liveFenceVerified) {
+      try {
+        await runtime.verifyNorthDispatchFence();
+        liveFenceVerified = true;
+      } catch {
+        // The same owner North client remains open; only its current dispatch
+        // fence is retried before the protected owner read is permitted.
+      }
+    }
+    if (terminal !== null && c39TerminalAckSettled(worker, terminal) && liveFenceVerified) return;
+    if (now() >= deadline) {
+      throw new Error("C39 terminal settlement or live North dispatch fence did not become ready");
+    }
+    await sleep();
+  }
+}
+
+function c39TerminalSettlement(
+  audit: Record<string, unknown>,
+  origin: C39OriginProvenance,
+): C39TerminalSettlement | null {
+  const recovery = object(audit.c39Recovery);
+  if (recovery === null || recovery.status !== "joined") return null;
+  const originIdHash = c39AuditHash("origin", origin.requestId);
+  const rows = objectArray(recovery.rows, "C39 Gateway audit rows");
+  const matches = rows.filter((row) => row.originIdHash === originIdHash && row.originDigest === origin.responseDigest);
+  if (matches.length === 0) return null;
+  if (matches.length !== 1) throw new Error("C39 Gateway audit has missing or duplicate origin correlation");
+  const row = matches[0]!;
+  const terminal = object(row.terminal);
+  if (terminal === null || terminal.originDigest !== origin.responseDigest || terminal.state !== "completed" ||
+      !Number.isSafeInteger(terminal.seq) || Number(terminal.seq) < 1 ||
+      typeof row.recoveryIdHash !== "string" || !SHA256.test(row.recoveryIdHash)) {
+    return null;
+  }
+  return Object.freeze({ carrierHash: row.recoveryIdHash as `sha256:${string}`, terminalSequence: Number(terminal.seq) });
+}
+
+function c39TerminalAckSettled(
+  worker: C39RecoveryCarrierObservations,
+  terminal: C39TerminalSettlement | null,
+): boolean {
+  if (terminal === null || worker.length === 0 ||
+      new Set(worker.map((entry) => entry.ordinal)).size !== worker.length ||
+      worker.some((entry, index) => index > 0 && entry.ordinal <= worker[index - 1]!.ordinal)) {
+    return false;
+  }
+  const writes = worker.filter((entry) => entry.phase === "write" &&
+    entry.hashedRecoveryId === terminal.carrierHash && entry.sequence === terminal.terminalSequence);
+  const acknowledgements = worker.filter((entry) => entry.phase === "ack" &&
+    entry.hashedRecoveryId === terminal.carrierHash && entry.sequence === terminal.terminalSequence);
+  if (acknowledgements.length !== 1) return false;
+  const acknowledgement = acknowledgements[0]!;
+  return writes.some((write) => write.outerDigest === acknowledgement.outerDigest && write.ordinal < acknowledgement.ordinal);
+}
+
+function c39TerminalAudit(
+  origin: C39OriginProvenance,
+  carrierHash: `sha256:${string}`,
+  terminalSequence: number,
+): Record<string, unknown> {
+  return Object.freeze({ c39Recovery: Object.freeze({
+    status: "joined",
+    rows: Object.freeze([Object.freeze({
+      originIdHash: c39AuditHash("origin", origin.requestId),
+      originDigest: origin.responseDigest,
+      recoveryIdHash: carrierHash,
+      terminal: Object.freeze({ originDigest: origin.responseDigest, state: "completed", seq: terminalSequence }),
+    })]),
+  }) });
+}
+
+function c39WorkerObservation(
+  carrierHash: `sha256:${string}`,
+  phase: C39RecoveryCarrierObservations[number]["phase"],
+  sequence: number,
+  ordinal: number,
+  digestCharacter: string,
+): C39RecoveryCarrierObservations[number] {
+  return Object.freeze({
+    phase,
+    hashedRecoveryId: carrierHash,
+    sequence,
+    outerDigest: `sha256:${digestCharacter.repeat(64)}` as `sha256:${string}`,
+    ordinal,
+  });
+}
+
+function c39SettlementRuntime(
+  audit: Record<string, unknown>,
+  worker: C39RecoveryCarrierObservations,
+  verifyNorthDispatchFence: () => Promise<void>,
+): C39TerminalSettlementRuntime {
+  return Object.freeze({
+    supervisor: Object.freeze({
+      readRealCaseAudit: async () => audit,
+      readRecoveryCarrierObservations: async () => worker,
+    }),
+    verifyNorthDispatchFence,
+  }) as unknown as C39TerminalSettlementRuntime;
 }
 
 interface C39OriginProvenance {
