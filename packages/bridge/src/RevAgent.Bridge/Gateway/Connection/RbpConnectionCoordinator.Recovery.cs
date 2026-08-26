@@ -311,7 +311,7 @@ internal sealed partial class RbpConnectionCoordinator
                     SHA256.HashData(outerBytes)).ToLowerInvariant();
                 ObserveRecoveryCarrier(context,
                     RbpRecoveryCarrierObservationPhase.Materialized,
-                    plan.RecoveryInvocationId, plan.FinalSequence,
+                    plan.RecoveryInvocationId, plan.Rsid, plan.FinalSequence,
                     plan.TerminalDigest);
                 if (!string.Equals(Rfc8785Json.Sha256Digest(
                         materialized.Answer.Payload), plan.TerminalDigest,
@@ -332,7 +332,7 @@ internal sealed partial class RbpConnectionCoordinator
                     restartResend
                         ? RbpRecoveryCarrierObservationPhase.RestartResend
                         : RbpRecoveryCarrierObservationPhase.Write,
-                    plan.RecoveryInvocationId, plan.FinalSequence,
+                    plan.RecoveryInvocationId, plan.Rsid, plan.FinalSequence,
                     plan.TerminalDigest);
                 if (_beforeRecoveryTerminalWrite is { } beforeTerminalWrite)
                 {
@@ -471,12 +471,13 @@ internal sealed partial class RbpConnectionCoordinator
         string outerDigest)
         => ObserveRecoveryCarrier(context, phase,
             reservation.RecoveryInvocationId,
-            reservation.CurrentReservedSequence, outerDigest);
+            reservation.Rsid, reservation.CurrentReservedSequence, outerDigest);
 
     private void ObserveRecoveryCarrier(
         ConnectionCycleContext context,
         RbpRecoveryCarrierObservationPhase phase,
         string recoveryInvocationId,
+        string rsid,
         long sequence,
         string outerDigest)
     {
@@ -498,12 +499,16 @@ internal sealed partial class RbpConnectionCoordinator
                 }
                 _recoveryCarrierOuterDigests[key] = outerDigest;
             }
-            long ordinal = Interlocked.Increment(
-                ref _recoveryCarrierObservationOrdinal);
+            long ordinal = Interlocked.Increment(ref _recoveryCarrierObservationOrdinal);
+            long causalOrdinal = NextC39CausalOrdinal();
             _recoveryCarrierObservationSink.Observe(
                 new RbpRecoveryCarrierObservation(phase,
                     RbpRecoveryCarrierObservation.HashRecoveryId(
-                        recoveryInvocationId), sequence, outerDigest, ordinal));
+                        recoveryInvocationId), sequence, outerDigest, ordinal,
+                    RouteAuthorityCheckpoint: GetRouteAuthorityCheckpoint(context, rsid),
+                    ConnectionDigest: RbpRouteRebindProof.MakeConnectionDigest(rsid, context.Cycle.Acknowledgement.ConnectionId),
+                    RouteRebindProofGranted: context.GrantedConnectionCapabilities.Contains(RbpHelloProfile.RouteRebindProofCapability, StringComparer.Ordinal),
+                    CausalOrdinal: causalOrdinal));
         }
         catch
         {
@@ -516,11 +521,12 @@ internal sealed partial class RbpConnectionCoordinator
         RbpRecoveryCarrierReservation reservation,
         long acknowledgedSequence)
         => ObserveRecoveryCarrierAcknowledgement(context,
-            reservation.RecoveryInvocationId, acknowledgedSequence);
+            reservation.RecoveryInvocationId, reservation.Rsid, acknowledgedSequence);
 
     private void ObserveRecoveryCarrierAcknowledgement(
         ConnectionCycleContext context,
         string recoveryInvocationId,
+        string rsid,
         long acknowledgedSequence)
     {
         try
@@ -534,14 +540,17 @@ internal sealed partial class RbpConnectionCoordinator
                 _recoveryCarrierOuterDigests.Remove(key);
             }
             if (outerDigest is null) return;
-            long ordinal = Interlocked.Increment(
-                ref _recoveryCarrierObservationOrdinal);
+            long ordinal = Interlocked.Increment(ref _recoveryCarrierObservationOrdinal);
             _recoveryCarrierObservationSink.Observe(
                 new RbpRecoveryCarrierObservation(
                     RbpRecoveryCarrierObservationPhase.Acknowledged,
                     RbpRecoveryCarrierObservation.HashRecoveryId(
                         recoveryInvocationId),
-                    acknowledgedSequence, outerDigest, ordinal));
+                    acknowledgedSequence, outerDigest, ordinal,
+                    RouteAuthorityCheckpoint: GetRouteAuthorityCheckpoint(context, rsid),
+                    ConnectionDigest: RbpRouteRebindProof.MakeConnectionDigest(rsid, context.Cycle.Acknowledgement.ConnectionId),
+                    RouteRebindProofGranted: context.GrantedConnectionCapabilities.Contains(RbpHelloProfile.RouteRebindProofCapability, StringComparer.Ordinal),
+                    CausalOrdinal: NextC39CausalOrdinal()));
         }
         catch
         {
@@ -578,14 +587,17 @@ internal sealed partial class RbpConnectionCoordinator
                 }
                 _recoveryCarrierOuterDigests.Remove(key);
             }
-            long ordinal = Interlocked.Increment(
-                ref _recoveryCarrierObservationOrdinal);
+            long ordinal = Interlocked.Increment(ref _recoveryCarrierObservationOrdinal);
             _recoveryCarrierObservationSink.Observe(
                 new RbpRecoveryCarrierObservation(
                     RbpRecoveryCarrierObservationPhase.Acknowledged,
                     RbpRecoveryCarrierObservation.HashRecoveryId(
                         terminal.RecoveryInvocationId),
-                    terminal.FinalSequence, terminal.TerminalDigest, ordinal));
+                    terminal.FinalSequence, terminal.TerminalDigest, ordinal,
+                    RouteAuthorityCheckpoint: GetRouteAuthorityCheckpoint(context, terminal.Rsid),
+                    ConnectionDigest: RbpRouteRebindProof.MakeConnectionDigest(terminal.Rsid, context.Cycle.Acknowledgement.ConnectionId),
+                    RouteRebindProofGranted: context.GrantedConnectionCapabilities.Contains(RbpHelloProfile.RouteRebindProofCapability, StringComparer.Ordinal),
+                    CausalOrdinal: NextC39CausalOrdinal()));
         }
         catch
         {

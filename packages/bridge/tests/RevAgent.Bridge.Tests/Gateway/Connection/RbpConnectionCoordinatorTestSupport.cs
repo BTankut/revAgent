@@ -28,7 +28,8 @@ public sealed partial class RbpConnectionCoordinatorTests
             onConnectionFailureObservation = null,
         IRbpRecoveryCarrierObservationSink?
             recoveryCarrierObservationSink = null,
-        RbpHelloProfile? helloProfile = null) =>
+        RbpHelloProfile? helloProfile = null,
+        RbpDocContextWatcher? docContextWatcher = null) =>
         new(
             factory,
             store,
@@ -49,7 +50,8 @@ public sealed partial class RbpConnectionCoordinatorTests
             onConnectionFailureObservation:
                 onConnectionFailureObservation,
             recoveryCarrierObservationSink:
-                recoveryCarrierObservationSink);
+                recoveryCarrierObservationSink,
+            docContextWatcher: docContextWatcher);
 
     private static RbpJournalStore OpenStore(
         RbpJournalTestDirectory directory,
@@ -497,7 +499,8 @@ public sealed partial class RbpConnectionCoordinatorTests
             bool leaveInboundOpenAfterClose = false,
             Func<FakeConnectionCycle, RbpEnvelope, CancellationToken, Task>?
                 sendBehavior = null,
-            IReadOnlyList<string>? grantedConnectionCapabilities = null)
+            IReadOnlyList<string>? grantedConnectionCapabilities = null,
+            string connectionId = "conn-test")
         {
             _responder = responder;
             _hangCloseAndDispose = hangCloseAndDispose;
@@ -505,7 +508,7 @@ public sealed partial class RbpConnectionCoordinatorTests
             _sendBehavior = sendBehavior;
             Acknowledgement = new RbpHelloAckPayload(
                 1,
-                "conn-test",
+                connectionId,
                 grantedConnectionCapabilities ?? Array.Empty<string>(),
                 15_000,
                 new RbpHelloLimits(

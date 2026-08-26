@@ -9,6 +9,9 @@ namespace RevAgent.Bridge.Gateway.Connection;
 
 internal sealed partial class RbpConnectionCoordinator
 {
+    private sealed record RbpResumeControl(
+        JsonElement Payload,
+        string? RouteAuthorityCheckpoint);
     private static RbpSessionLifecycleState AdvanceSession(
         RbpSessionLifecycleState lifecycle,
         RbpSessionEvent sessionEvent)
@@ -107,6 +110,47 @@ internal sealed partial class RbpConnectionCoordinator
 
         return active?.ContinuousSteadyMilliseconds ?? 0;
     }
+
+    private long NextC39CausalOrdinal() => Interlocked.Increment(ref _c39CausalOrdinal);
+
+    private void MarkRouteAuthorityCheckpoint(ConnectionCycleContext context, string rsid, string checkpoint)
+    {
+        lock (_sync)
+        {
+            _routeAuthorityCheckpoints[new RouteAuthorityCheckpointKey(context, rsid)] = checkpoint;
+        }
+    }
+
+    private string? GetRouteAuthorityCheckpoint(ConnectionCycleContext context, string rsid)
+    {
+        lock (_sync)
+        {
+            return _routeAuthorityCheckpoints.TryGetValue(
+                new RouteAuthorityCheckpointKey(context, rsid), out string? value)
+                ? value : null;
+        }
+    }
+
+    // Checkpoints prove one exact live connection route only.  They must leave
+    // memory with that cycle; retaining an old context key would make a stale
+    // diagnostic correlation observable after its transport authority ended.
+    // The reference comparison is deliberately narrow so a later active cycle
+    // cannot be cleared by teardown of an earlier failed one.
+    private void ClearRouteAuthorityCheckpoints(ConnectionCycleContext context)
+    {
+        lock (_sync)
+        {
+            foreach (RouteAuthorityCheckpointKey key in
+                     _routeAuthorityCheckpoints.Keys.Where(
+                         key => ReferenceEquals(key.Context, context))
+                     .ToArray())
+            {
+                _routeAuthorityCheckpoints.Remove(key);
+            }
+        }
+    }
+
+    private sealed record RouteAuthorityCheckpointKey(ConnectionCycleContext Context, string Rsid);
 
     private void OwnedTaskStarted()
     {

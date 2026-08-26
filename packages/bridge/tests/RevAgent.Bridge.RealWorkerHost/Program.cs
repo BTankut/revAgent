@@ -449,6 +449,10 @@ internal static class Program
                     sequence = row.Sequence,
                     outerDigest = row.OuterDigest,
                     ordinal = row.Ordinal,
+                    routeAuthorityCheckpoint = row.RouteAuthorityCheckpoint,
+                    connectionDigest = row.ConnectionDigest,
+                    routeRebindProofGranted = row.RouteRebindProofGranted,
+                    causalOrdinal = row.CausalOrdinal,
                 }).Cast<object>().ToArray();
             }
         }
@@ -512,6 +516,9 @@ internal static class Program
                     rsidHash = row.RsidHash,
                     sessionBindingDigest = row.SessionBindingDigest,
                     connectionDigest = row.ConnectionDigest,
+                    routeAuthorityCheckpoint = row.RouteAuthorityCheckpoint,
+                    routeRebindProofGranted = row.RouteRebindProofGranted,
+                    causalOrdinal = row.CausalOrdinal,
                 }).Cast<object>().ToArray();
             }
         }

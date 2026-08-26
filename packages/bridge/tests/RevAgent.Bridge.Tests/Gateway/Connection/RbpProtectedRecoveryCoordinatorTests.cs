@@ -1,4 +1,6 @@
+using System.Collections;
 using System.Collections.Concurrent;
+using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -23,7 +25,9 @@ public sealed partial class RbpConnectionCoordinatorTests
             RbpJournalTestData.Options(),
             new TestRecoveryPayloadProtector());
         var responder = new ScriptedGatewayResponder(clock);
-        var cycle = new FakeConnectionCycle(responder.Respond);
+        var cycle = new FakeConnectionCycle(responder.Respond,
+            grantedConnectionCapabilities: RouteProofCapabilities(),
+            connectionId: "019f9add-7a83-7d11-a6a9-d2f8108c0101");
         RbpRecoveryCarrierReservation reservation =
             await PrepareRecoveryReservationAsync(store);
         var coordinator = Coordinator(
@@ -32,7 +36,9 @@ public sealed partial class RbpConnectionCoordinatorTests
             new MutableSessionCatalog(LocalSession(8080, 1000)),
             clock,
             new RecordingInboundJournal(),
-            invocationDispatcher: new RecoveryDispatcher(reservation));
+            invocationDispatcher: new RecoveryDispatcher(reservation),
+            helloProfile: RouteProofHelloProfile(),
+            docContextWatcher: RouteProofWatcher(clock));
         using var stop = new CancellationTokenSource();
 
         Task run = coordinator.RunAsync(stop.Token);
@@ -228,7 +234,9 @@ public sealed partial class RbpConnectionCoordinatorTests
             new TestRecoveryPayloadProtector());
         var responder = new ScriptedGatewayResponder(clock);
         var cycle = new FakeConnectionCycle(envelope =>
-            envelope.Type == "heartbeat" ? null : responder.Respond(envelope));
+            envelope.Type == "heartbeat" ? null : responder.Respond(envelope),
+            grantedConnectionCapabilities: RouteProofCapabilities(),
+            connectionId: "019f9add-7a83-7d11-a6a9-d2f8108c0102");
         RbpRecoveryCarrierReservation reservation =
             await PrepareRecoveryReservationAsync(store);
         var coordinator = Coordinator(
@@ -237,7 +245,9 @@ public sealed partial class RbpConnectionCoordinatorTests
             new MutableSessionCatalog(LocalSession(8080, 1000)),
             clock,
             new RecordingInboundJournal(),
-            invocationDispatcher: new RecoveryDispatcher(reservation));
+            invocationDispatcher: new RecoveryDispatcher(reservation),
+            helloProfile: RouteProofHelloProfile(),
+            docContextWatcher: RouteProofWatcher(clock));
         using var stop = new CancellationTokenSource();
 
         Task run = coordinator.RunAsync(stop.Token);
@@ -349,18 +359,24 @@ public sealed partial class RbpConnectionCoordinatorTests
             RbpJournalTestData.Options(), new TestRecoveryPayloadProtector());
         var responder = new ScriptedGatewayResponder(clock);
         var first = new FakeConnectionCycle(envelope =>
-            envelope.Type == "heartbeat" ? null : responder.Respond(envelope));
+            envelope.Type == "heartbeat" ? null : responder.Respond(envelope),
+            grantedConnectionCapabilities: RouteProofCapabilities(),
+            connectionId: "019f9add-7a83-7d11-a6a9-d2f8108c0103");
         RbpRecoveryCarrierReservation reservation =
             await PrepareRecoveryReservationAsync(store);
         var second = new FakeConnectionCycle(envelope =>
             envelope.Type == "session_resume"
                 ? RecoveryResumeAck(clock, envelope, reservation.CurrentReservedSequence)
-                : envelope.Type == "heartbeat" ? null : responder.Respond(envelope));
+                : envelope.Type == "heartbeat" ? null : responder.Respond(envelope),
+            grantedConnectionCapabilities: RouteProofCapabilities(),
+            connectionId: "019f9add-7a83-7d11-a6a9-d2f8108c0104");
         var coordinator = Coordinator(
             new FakeConnectionCycleFactory(first, second), store,
             new MutableSessionCatalog(LocalSession(8080, 1000)), clock,
             new RecordingInboundJournal(),
-            invocationDispatcher: new RecoveryDispatcher(reservation));
+            invocationDispatcher: new RecoveryDispatcher(reservation),
+            helloProfile: RouteProofHelloProfile(),
+            docContextWatcher: RouteProofWatcher(clock));
         using var stop = new CancellationTokenSource();
 
         Task run = coordinator.RunAsync(stop.Token);
@@ -694,6 +710,195 @@ public sealed partial class RbpConnectionCoordinatorTests
             RbpEnvelope.FreezeAdditionalProperties(
                 new Dictionary<string, JsonElement>()));
 
+    [Fact]
+    public async Task C39ProofBearingResumeCreatesOneCausalCheckpointBeforeRestartResendAndAcknowledgement()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        var clock = new ManualCoordinatorClock();
+        await using RbpJournalStore store = RbpJournalStore.Open(
+            directory.JournalPath, new TestResumeTokenProtector(),
+            RbpJournalTestData.Options(), new TestRecoveryPayloadProtector());
+        RbpRecoveryCarrierReservation reservation =
+            await PrepareRecoveryReservationAsync(store);
+        const string firstConnection = "019f9add-7a83-7d11-a6a9-d2f8108c0001";
+        const string secondConnection = "019f9add-7a83-7d11-a6a9-d2f8108c0002";
+        string[] capability = [RbpHelloProfile.RouteRebindProofCapability];
+        var responder = new ScriptedGatewayResponder(clock);
+        var first = new FakeConnectionCycle(envelope =>
+            envelope.Type == "heartbeat" ? null : responder.Respond(envelope),
+            grantedConnectionCapabilities: capability,
+            connectionId: firstConnection);
+        var second = new FakeConnectionCycle(envelope =>
+            envelope.Type == "heartbeat" ? null : responder.Respond(envelope),
+            grantedConnectionCapabilities: capability,
+            connectionId: secondConnection);
+        var channel = new ScriptedDocContextChannel();
+        channel.SetSnapshot(7, "Project A",
+            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        var watcher = new RbpDocContextWatcher(channel, clock);
+        var recovery = new RecordingRecoveryCarrierObservationSink();
+        var reconnect = new RecordingReconnectObservationSink();
+        var coordinator = new RbpConnectionCoordinator(
+            new FakeConnectionCycleFactory(first, second), store,
+            new MutableSessionCatalog(LocalSession(8080, 1000)),
+            new RbpConnectionCoordinatorOptions(
+                new Uri("wss://gateway.revagent.app/bridge/v1"),
+                new RbpHelloProfile("0.1.0", "WS01", "Windows 11",
+                    new[] { "2026.07.26.0" }, capability)),
+            new RecoveryDispatcher(reservation), new RecordingInboundJournal(),
+            clock, new FixedRandomSource(0), watcher,
+            recoveryCarrierObservationSink: recovery,
+            reconnectObservationSink: reconnect);
+        using var stop = new CancellationTokenSource();
+
+        Task run = coordinator.RunAsync(stop.Token);
+        RbpEnvelope firstResume = await EventuallySentAsync(first,
+            item => item.Type == "session_resume");
+        Assert.True(firstResume.Payload.TryGetProperty("route_rebind_proof", out _));
+        _ = await EventuallySentAsync(first, item => item.Type == "partial" &&
+            item.Id == reservation.RecoveryInvocationId);
+        await EventuallyAsync(() => reconnect.Rows.Any(item =>
+            item.Phase == RbpReconnectObservationPhase.ResumeAcknowledgementApplied &&
+            item.Generation == 1));
+
+        first.Fail(new IOException("force a proof-bearing C39 restart resend"));
+        await EventuallyAsync(() => coordinator.GetSnapshot().ConnectionGeneration == 2);
+        RbpEnvelope secondResume = await EventuallySentAsync(second,
+            item => item.Type == "session_resume");
+        JsonElement proof = secondResume.Payload.GetProperty("route_rebind_proof");
+        string expectedCheckpoint = RbpRouteRebindProof.MakeAuthorityCheckpoint(
+            proof, reservation.Rsid);
+        string expectedConnectionDigest = RbpRouteRebindProof.MakeConnectionDigest(
+            reservation.Rsid, secondConnection);
+        RbpEnvelope resent = await EventuallySentAsync(second,
+            item => item.Type == "partial" &&
+            item.Id == reservation.RecoveryInvocationId);
+
+        await EventuallyAsync(() => recovery.Rows.Any(item =>
+            item.Phase == RbpRecoveryCarrierObservationPhase.RestartResend &&
+            item.ConnectionDigest == expectedConnectionDigest));
+        RbpReconnectObservation resumeApplied = Assert.Single(reconnect.Rows,
+            item => item.Phase ==
+                RbpReconnectObservationPhase.ResumeAcknowledgementApplied &&
+                item.Generation == 2);
+        RbpRecoveryCarrierObservation[] sameRoute = recovery.Rows
+            .Where(item => item.ConnectionDigest == expectedConnectionDigest)
+            .ToArray();
+        RbpRecoveryCarrierObservation materialized = Assert.Single(sameRoute,
+            item => item.Phase == RbpRecoveryCarrierObservationPhase.Materialized);
+        RbpRecoveryCarrierObservation restart = Assert.Single(sameRoute,
+            item => item.Phase == RbpRecoveryCarrierObservationPhase.RestartResend);
+        Assert.Equal(expectedCheckpoint, resumeApplied.RouteAuthorityCheckpoint);
+        Assert.Equal(expectedConnectionDigest, resumeApplied.ConnectionDigest);
+        Assert.True(resumeApplied.RouteRebindProofGranted);
+        Assert.Equal(expectedCheckpoint, materialized.RouteAuthorityCheckpoint);
+        Assert.Equal(expectedCheckpoint, restart.RouteAuthorityCheckpoint);
+        Assert.Equal(expectedConnectionDigest, materialized.ConnectionDigest);
+        Assert.Equal(expectedConnectionDigest, restart.ConnectionDigest);
+        Assert.Equal(materialized.OuterDigest, restart.OuterDigest);
+        Assert.Equal(resent.Sequence, restart.Sequence);
+        Assert.True(resumeApplied.CausalOrdinal < restart.CausalOrdinal);
+
+        clock.Advance(TimeSpan.FromSeconds(15));
+        await EventuallyAsync(() => second.Sent.Any(item => item.Type == "heartbeat"));
+        second.Deliver(HeartbeatAck(clock, Id(9762), reservation.Rsid,
+            reservation.CurrentReservedSequence));
+        await EventuallyAsync(() => recovery.Rows.Any(item =>
+            item.Phase == RbpRecoveryCarrierObservationPhase.Acknowledged &&
+            item.ConnectionDigest == expectedConnectionDigest));
+        RbpRecoveryCarrierObservation acknowledged = Assert.Single(recovery.Rows,
+            item => item.Phase == RbpRecoveryCarrierObservationPhase.Acknowledged &&
+            item.ConnectionDigest == expectedConnectionDigest);
+        Assert.Equal(expectedCheckpoint, acknowledged.RouteAuthorityCheckpoint);
+        Assert.Equal(expectedConnectionDigest, acknowledged.ConnectionDigest);
+        Assert.True(restart.CausalOrdinal < acknowledged.CausalOrdinal);
+
+        // The failed first cycle must not retain a checkpoint alongside the
+        // second cycle, and shutdown must erase the final correlation too.
+        Assert.Equal(1, RouteAuthorityCheckpointCount(coordinator));
+        string diagnostic = JsonSerializer.Serialize(new
+        {
+            reconnect = reconnect.Rows,
+            recovery = recovery.Rows,
+        });
+        Assert.DoesNotContain(reservation.Rsid, diagnostic, StringComparison.Ordinal);
+        Assert.DoesNotContain(secondConnection, diagnostic, StringComparison.Ordinal);
+        Assert.DoesNotContain(proof.GetProperty("proof_id").GetString()!, diagnostic,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain("Project A", diagnostic, StringComparison.Ordinal);
+
+        stop.Cancel();
+        await run.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(0, RouteAuthorityCheckpointCount(coordinator));
+    }
+
+    [Fact]
+    public async Task ProoflessResumePublishesNoCheckpointAuthority()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        var clock = new ManualCoordinatorClock();
+        await using RbpJournalStore store = RbpJournalStore.Open(
+            directory.JournalPath, new TestResumeTokenProtector(),
+            RbpJournalTestData.Options(), new TestRecoveryPayloadProtector());
+        const string rsid = "rs-8080";
+        _ = await store.PersistRegisteredSessionAsync(
+            Registration(LocalSession(8080, 1000), rsid));
+        var responder = new ScriptedGatewayResponder(clock);
+        var cycle = new FakeConnectionCycle(responder.Respond);
+        var reconnect = new RecordingReconnectObservationSink();
+        var coordinator = new RbpConnectionCoordinator(
+            new FakeConnectionCycleFactory(cycle), store,
+            new MutableSessionCatalog(LocalSession(8080, 1000)),
+            new RbpConnectionCoordinatorOptions(
+                new Uri("wss://gateway.revagent.app/bridge/v1"),
+                new RbpHelloProfile("0.1.0", "WS01", "Windows 11",
+                    new[] { "2026.07.26.0" })),
+            new StubInvocationDispatcher(), new RecordingInboundJournal(),
+            clock, new FixedRandomSource(0),
+            reconnectObservationSink: reconnect);
+        using var stop = new CancellationTokenSource();
+
+        Task run = coordinator.RunAsync(stop.Token);
+        RbpEnvelope resume = await EventuallySentAsync(cycle,
+            item => item.Type == "session_resume");
+        Assert.False(resume.Payload.TryGetProperty("route_rebind_proof", out _));
+        await EventuallyAsync(() => reconnect.Rows.Any());
+        RbpReconnectObservation observed = Assert.Single(reconnect.Rows,
+            item => item.Phase ==
+                RbpReconnectObservationPhase.ResumeAcknowledgementApplied);
+        Assert.Null(observed.RouteAuthorityCheckpoint);
+        Assert.False(observed.RouteRebindProofGranted);
+        Assert.Equal(0, RouteAuthorityCheckpointCount(coordinator));
+
+        stop.Cancel();
+        await run.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    private static int RouteAuthorityCheckpointCount(
+        RbpConnectionCoordinator coordinator)
+    {
+        FieldInfo field = typeof(RbpConnectionCoordinator).GetField(
+            "_routeAuthorityCheckpoints", BindingFlags.Instance |
+            BindingFlags.NonPublic)!;
+        return ((ICollection)field.GetValue(coordinator)!).Count;
+    }
+
+    private static string[] RouteProofCapabilities() =>
+        [RbpHelloProfile.RouteRebindProofCapability];
+
+    private static RbpHelloProfile RouteProofHelloProfile() =>
+        new("0.1.0", "WS01", "Windows 11", new[] { "2026.07.26.0" },
+            RouteProofCapabilities());
+
+    private static RbpDocContextWatcher RouteProofWatcher(
+        ManualCoordinatorClock clock)
+    {
+        var channel = new ScriptedDocContextChannel();
+        channel.SetSnapshot(1, "Project A",
+            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        return new RbpDocContextWatcher(channel, clock);
+    }
+
     private static RbpEnvelope RecoveryResumeAck(
         ManualCoordinatorClock clock,
         RbpEnvelope request,
@@ -802,6 +1007,15 @@ public sealed partial class RbpConnectionCoordinatorTests
         internal List<RbpRecoveryCarrierObservation> Rows { get; } = [];
 
         public void Observe(RbpRecoveryCarrierObservation observation) =>
+            Rows.Add(observation);
+    }
+
+    private sealed class RecordingReconnectObservationSink :
+        IRbpReconnectObservationSink
+    {
+        internal List<RbpReconnectObservation> Rows { get; } = [];
+
+        public void Observe(RbpReconnectObservation observation) =>
             Rows.Add(observation);
     }
 }

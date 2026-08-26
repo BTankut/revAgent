@@ -26,7 +26,11 @@ internal sealed record RbpRecoveryCarrierObservation(
     string HashedRecoveryId,
     long Sequence,
     string OuterDigest,
-    long Ordinal)
+    long Ordinal,
+    string? RouteAuthorityCheckpoint = null,
+    string? ConnectionDigest = null,
+    bool RouteRebindProofGranted = false,
+    long CausalOrdinal = 0)
 {
     internal const string ContractVersion =
         "revagent.wp12-recovery-carrier-observation/v1";
@@ -95,7 +99,10 @@ internal sealed record RbpReconnectObservation(
     long Ordinal,
     string RsidHash,
     string SessionBindingDigest,
-    string ConnectionDigest)
+    string ConnectionDigest,
+    string? RouteAuthorityCheckpoint = null,
+    bool RouteRebindProofGranted = false,
+    long CausalOrdinal = 0)
 {
     internal static string Hash(string label, string value)
     {
