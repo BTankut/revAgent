@@ -435,6 +435,69 @@ describe("C39 terminal settlement before owner resource read", () => {
   });
 });
 
+describe("C39 worker ACK-order diagnostics", () => {
+  const carrierHash = `sha256:${"e".repeat(64)}` as `sha256:${string}`;
+  const expectedSequences = [5, 6] as const;
+  const observation = (
+    phase: C39RecoveryCarrierObservations[number]["phase"],
+    sequence: number,
+    ordinal: number,
+    digestCharacter: string,
+  ) => c39WorkerObservation(carrierHash, phase, sequence, ordinal, digestCharacter);
+  const materialized = () => observation("materialized", 5, 1, "m");
+
+  it("classifies every fixed ACK-order failure without emitting worker values", () => {
+    expect(c39WorkerAckOrderDiagnostic([
+      materialized(), observation("ack", 5, 2, "a"), observation("write", 6, 3, "b"), observation("ack", 6, 4, "b"),
+    ], expectedSequences)).toBe("partial_write_missing");
+    expect(c39WorkerAckOrderDiagnostic([
+      materialized(), observation("write", 5, 2, "a"), observation("write", 6, 3, "b"), observation("ack", 6, 4, "b"),
+    ], expectedSequences)).toBe("partial_ack_missing");
+    expect(c39WorkerAckOrderDiagnostic([
+      materialized(), observation("write", 5, 2, "a"), observation("ack", 5, 3, "a"), observation("ack", 6, 4, "b"),
+    ], expectedSequences)).toBe("terminal_write_missing");
+    expect(c39WorkerAckOrderDiagnostic([
+      materialized(), observation("write", 5, 2, "a"), observation("ack", 5, 3, "a"), observation("write", 6, 4, "b"),
+    ], expectedSequences)).toBe("terminal_ack_missing");
+    expect(c39WorkerAckOrderDiagnostic([
+      materialized(), observation("write", 5, 2, "a"), observation("ack", 5, 3, "a"), observation("ack", 5, 4, "a"),
+      observation("write", 6, 5, "b"), observation("ack", 6, 6, "b"),
+    ], expectedSequences)).toBe("duplicate_ack");
+    expect(c39WorkerAckOrderDiagnostic([
+      materialized(), observation("ack", 5, 2, "a"), observation("write", 5, 3, "b"),
+      observation("write", 6, 4, "c"), observation("ack", 6, 5, "c"),
+    ], expectedSequences)).toBe("ack_before_write");
+    expect(c39WorkerAckOrderDiagnostic([
+      materialized(), observation("write", 5, 2, "a"), observation("ack", 5, 3, "b"),
+      observation("write", 6, 4, "c"), observation("ack", 6, 5, "c"),
+    ], expectedSequences)).toBe("outer_digest_mismatch");
+    expect(c39WorkerAckOrderDiagnostic([
+      materialized(), observation("write", 5, 2, "a"), observation("ack", 5, 3, "a"),
+      observation("write", 6, 4, "b"), observation("ack", 6, 5, "b"), observation("ack", 7, 6, "d"),
+    ], expectedSequences)).toBe("unexpected_ack");
+    expect(c39WorkerAckOrderDiagnostic([
+      observation("write", 5, 2, "a"), observation("ack", 7, 2, "d"),
+    ], expectedSequences)).toBe("observation_order_invalid");
+    expect(c39WorkerAckOrderDiagnostic([
+      observation("write", 5, 1, "a"), observation("ack", 5, 2, "a"),
+      observation("write", 6, 3, "b"), observation("ack", 6, 4, "b"),
+    ], expectedSequences)).toBe("other");
+  });
+
+  it("uses the documented stable preference order", () => {
+    expect(c39WorkerAckOrderDiagnostic([
+      materialized(), observation("write", 5, 2, "a"), observation("ack", 7, 2, "d"),
+    ], expectedSequences)).toBe("observation_order_invalid");
+    expect(c39WorkerAckOrderDiagnostic([
+      materialized(), observation("ack", 7, 2, "d"), observation("write", 6, 3, "b"),
+    ], expectedSequences)).toBe("unexpected_ack");
+    expect(c39WorkerAckOrderDiagnostic([
+      materialized(), observation("ack", 5, 2, "a"), observation("write", 5, 3, "b"),
+      observation("write", 6, 4, "c"), observation("ack", 6, 5, "c"),
+    ], expectedSequences)).toBe("ack_before_write");
+  });
+});
+
 async function readC39OwnerResourceReadAudit(
   runtime: Awaited<ReturnType<typeof startRealTrioRuntimeFixture>>,
 ): Promise<C39ProtectedResourceReadOutcome | null> {
@@ -763,12 +826,10 @@ function observedC39Recovery(
   const materialized = worker.filter((entry) => entry.phase === "materialized");
   const writes = worker.filter((entry) => entry.phase === "write");
   const acknowledgements = worker.filter((entry) => entry.phase === "ack");
-  if (materialized.length < 1 || new Set(worker.map((entry) => entry.ordinal)).size !== worker.length ||
-      worker.some((entry, index) => index > 0 && entry.ordinal <= worker[index - 1]!.ordinal)) {
-    throw new Error("C39 Worker IPC has duplicate or unordered observation ordinals");
-  }
   const expectedSequences = [...partials.map((partial) => Number(partial.seq)), Number(terminal.seq)];
-  const exactCarrierAckOrder = expectedSequences.every((sequence) => {
+  const observationOrderValid = new Set(worker.map((entry) => entry.ordinal)).size === worker.length &&
+    !worker.some((entry, index) => index > 0 && entry.ordinal <= worker[index - 1]!.ordinal);
+  const exactCarrierAckOrder = materialized.length >= 1 && observationOrderValid && expectedSequences.every((sequence) => {
     const sent = writes.filter((entry) => entry.sequence === sequence);
     const acked = acknowledgements.filter((entry) => entry.sequence === sequence);
     const finalWrite = sent.at(-1);
@@ -777,7 +838,8 @@ function observedC39Recovery(
       acked[0]!.outerDigest === finalWrite.outerDigest;
   }) && acknowledgements.length === expectedSequences.length;
   if (!exactCarrierAckOrder) {
-    throw new Error("C39 Worker IPC did not prove one ordered acknowledgement per carrier sequence");
+    const diagnostic = c39WorkerAckOrderDiagnostic(worker, expectedSequences);
+    throw new Error(`C39 Worker IPC did not prove one ordered acknowledgement per carrier sequence [${diagnostic}]`);
   }
   const omittedReplayObserved = row.originDigest === origin.responseDigest &&
     terminal.originDigest === origin.responseDigest && terminal.state === "completed";
@@ -803,6 +865,52 @@ function observedC39Recovery(
     partialCount: partials.length,
     workerEventCount: worker.length,
   });
+}
+
+type C39WorkerAckOrderDiagnostic =
+  | "partial_write_missing"
+  | "partial_ack_missing"
+  | "terminal_write_missing"
+  | "terminal_ack_missing"
+  | "duplicate_ack"
+  | "ack_before_write"
+  | "outer_digest_mismatch"
+  | "unexpected_ack"
+  | "observation_order_invalid"
+  | "other";
+
+function c39WorkerAckOrderDiagnostic(
+  worker: C39RecoveryCarrierObservations,
+  expectedSequences: readonly number[],
+): C39WorkerAckOrderDiagnostic {
+  if (new Set(worker.map((entry) => entry.ordinal)).size !== worker.length ||
+      worker.some((entry, index) => index > 0 && entry.ordinal <= worker[index - 1]!.ordinal)) {
+    return "observation_order_invalid";
+  }
+  const writes = worker.filter((entry) => entry.phase === "write");
+  const acknowledgements = worker.filter((entry) => entry.phase === "ack");
+  if (acknowledgements.some((entry) => !expectedSequences.includes(entry.sequence))) return "unexpected_ack";
+  const partialSequences = expectedSequences.slice(0, -1);
+  const terminalSequence = expectedSequences.at(-1);
+  for (const sequence of partialSequences) {
+    if (!writes.some((entry) => entry.sequence === sequence)) return "partial_write_missing";
+    if (!acknowledgements.some((entry) => entry.sequence === sequence)) return "partial_ack_missing";
+  }
+  if (terminalSequence === undefined || !writes.some((entry) => entry.sequence === terminalSequence)) {
+    return "terminal_write_missing";
+  }
+  if (!acknowledgements.some((entry) => entry.sequence === terminalSequence)) return "terminal_ack_missing";
+  if (expectedSequences.some((sequence) => acknowledgements.filter((entry) => entry.sequence === sequence).length !== 1)) {
+    return "duplicate_ack";
+  }
+  for (const sequence of expectedSequences) {
+    const finalWrite = writes.filter((entry) => entry.sequence === sequence).at(-1);
+    const acknowledgement = acknowledgements.find((entry) => entry.sequence === sequence);
+    if (finalWrite === undefined || acknowledgement === undefined) return "other";
+    if (acknowledgement.ordinal <= finalWrite.ordinal) return "ack_before_write";
+    if (acknowledgement.outerDigest !== finalWrite.outerDigest) return "outer_digest_mismatch";
+  }
+  return "other";
 }
 
 async function waitForObservedC39Recovery(
