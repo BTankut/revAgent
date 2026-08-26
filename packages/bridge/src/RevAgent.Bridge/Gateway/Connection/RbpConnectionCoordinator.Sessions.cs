@@ -227,6 +227,13 @@ internal sealed partial class RbpConnectionCoordinator
                     RbpCoordinatorErrorCode.UnexpectedControl,
                     "Recovery terminal resume acknowledgement violated its durable fence.");
             }
+            if (terminal?.State == "confirmed")
+            {
+                ObserveRecoveryCarrierAcknowledgement(context,
+                    terminal.RecoveryInvocationId, terminal.FinalSequence);
+                ReleaseRecoveryTerminalClaims(context, parsed.Rsid,
+                    terminal.RecoveryInvocationId, parsed.LastReceivedSequence);
+            }
             RbpResumeAcknowledgementResult applied =
                 await _journal.ApplyResumeAcknowledgementAsync(
                         parsed.Rsid,
