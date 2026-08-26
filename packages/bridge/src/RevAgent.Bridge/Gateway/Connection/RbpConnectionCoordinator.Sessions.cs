@@ -229,8 +229,7 @@ internal sealed partial class RbpConnectionCoordinator
             }
             if (terminal?.State == "confirmed")
             {
-                ObserveRecoveryCarrierAcknowledgement(context,
-                    terminal.RecoveryInvocationId, terminal.FinalSequence);
+                ObserveRecoveryTerminalAcknowledgement(context, terminal);
                 ReleaseRecoveryTerminalClaims(context, parsed.Rsid,
                     terminal.RecoveryInvocationId, parsed.LastReceivedSequence);
             }

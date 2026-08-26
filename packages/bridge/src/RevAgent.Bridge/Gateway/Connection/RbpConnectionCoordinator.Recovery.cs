@@ -212,8 +212,7 @@ internal sealed partial class RbpConnectionCoordinator
             }
             if (applied?.State == "confirmed")
             {
-                ObserveRecoveryCarrierAcknowledgement(context,
-                    applied.RecoveryInvocationId, applied.FinalSequence);
+                ObserveRecoveryTerminalAcknowledgement(context, applied);
                 ReleaseRecoveryTerminalClaims(context, acknowledgement.Rsid,
                     applied.RecoveryInvocationId, acknowledgement.Sequence);
             }
@@ -312,7 +311,8 @@ internal sealed partial class RbpConnectionCoordinator
                     SHA256.HashData(outerBytes)).ToLowerInvariant();
                 ObserveRecoveryCarrier(context,
                     RbpRecoveryCarrierObservationPhase.Materialized,
-                    plan.RecoveryInvocationId, plan.FinalSequence, outerDigest);
+                    plan.RecoveryInvocationId, plan.FinalSequence,
+                    plan.TerminalDigest);
                 if (!string.Equals(Rfc8785Json.Sha256Digest(
                         materialized.Answer.Payload), plan.TerminalDigest,
                         StringComparison.Ordinal) ||
@@ -332,7 +332,8 @@ internal sealed partial class RbpConnectionCoordinator
                     restartResend
                         ? RbpRecoveryCarrierObservationPhase.RestartResend
                         : RbpRecoveryCarrierObservationPhase.Write,
-                    plan.RecoveryInvocationId, plan.FinalSequence, outerDigest);
+                    plan.RecoveryInvocationId, plan.FinalSequence,
+                    plan.TerminalDigest);
                 RecoveryCarrierAckGateKey? ackGate =
                     _afterRecoveryCarrierWriteBeforeAck is null ? null :
                     new RecoveryCarrierAckGateKey(context, plan.Rsid,
@@ -541,6 +542,50 @@ internal sealed partial class RbpConnectionCoordinator
         catch
         {
             // An observer cannot affect acknowledgement application.
+        }
+    }
+
+    /// <summary>
+    /// A confirmed v9 terminal is the only durable authority for a terminal
+    /// acknowledgement observation. The volatile cache can corroborate the
+    /// exact value but must never be required after a reconnect or restart.
+    /// </summary>
+    private void ObserveRecoveryTerminalAcknowledgement(
+        ConnectionCycleContext context, RbpRecoveryTerminalPlan terminal)
+    {
+        _ = context;
+        try
+        {
+            if (!RbpJournalSerialization.IsSha256Digest(terminal.TerminalDigest))
+            {
+                return;
+            }
+            var key = new RecoveryCarrierDigestKey(
+                terminal.RecoveryInvocationId, terminal.FinalSequence);
+            lock (_recoveryCarrierClaimSync)
+            {
+                if (_recoveryCarrierOuterDigests.TryGetValue(key,
+                        out string? cached) &&
+                    !string.Equals(cached, terminal.TerminalDigest,
+                        StringComparison.Ordinal))
+                {
+                    _recoveryCarrierOuterDigests.Remove(key);
+                    return;
+                }
+                _recoveryCarrierOuterDigests.Remove(key);
+            }
+            long ordinal = Interlocked.Increment(
+                ref _recoveryCarrierObservationOrdinal);
+            _recoveryCarrierObservationSink.Observe(
+                new RbpRecoveryCarrierObservation(
+                    RbpRecoveryCarrierObservationPhase.Acknowledged,
+                    RbpRecoveryCarrierObservation.HashRecoveryId(
+                        terminal.RecoveryInvocationId),
+                    terminal.FinalSequence, terminal.TerminalDigest, ordinal));
+        }
+        catch
+        {
+            // Observation is not a transport or durability authority.
         }
     }
 

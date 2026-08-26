@@ -432,8 +432,8 @@ public sealed partial class RbpConnectionCoordinatorTests
             reservation.CurrentReservedSequence));
         RbpEnvelope terminal = await EventuallySentAsync(first, item => item.Type == "result" &&
             item.Id == reservation.RecoveryInvocationId);
-        string terminalDigest = "sha256:" + Convert.ToHexString(
-            SHA256.HashData(RbpEnvelopeCodec.Encode(terminal))).ToLowerInvariant();
+        RbpRecoveryTerminalPlan terminalPlan = Assert.Single(
+            await store.ListActiveRecoveryTerminalPlansAsync());
 
         first.Fail(new IOException("resume carries the terminal receipt"));
         await EventuallyAsync(() => coordinator.GetSnapshot().ConnectionGeneration == 2);
@@ -450,7 +450,7 @@ public sealed partial class RbpConnectionCoordinatorTests
                 RbpRecoveryCarrierObservationPhase.Acknowledged &&
                 item.Sequence == terminal.Sequence);
         Assert.Equal(terminal.Sequence, acknowledgement.Sequence);
-        Assert.Equal(terminalDigest, acknowledgement.OuterDigest);
+        Assert.Equal(terminalPlan.TerminalDigest, acknowledgement.OuterDigest);
 
         // The observation digest is consumed once, so a later duplicate ACK
         // cannot report the same receipt again.
