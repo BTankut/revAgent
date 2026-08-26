@@ -93,7 +93,9 @@ internal sealed partial class RbpConnectionCoordinator
     private readonly Dictionary<RecoveryCarrierDigestKey, string>
         _recoveryCarrierOuterDigests = new();
     private long _recoveryCarrierObservationOrdinal;
-    private long _reconnectObservationOrdinal;
+    private long _c39CausalOrdinal;
+    private readonly Dictionary<RouteAuthorityCheckpointKey, string>
+        _routeAuthorityCheckpoints = new();
 
     internal RbpConnectionCoordinator(
         IRbpConnectionCycleFactory cycleFactory,
@@ -331,6 +333,16 @@ internal sealed partial class RbpConnectionCoordinator
                 }
 
                 ClearActiveContext(active);
+                lock (_sync)
+                {
+                    foreach (RouteAuthorityCheckpointKey key in
+                             _routeAuthorityCheckpoints.Keys.Where(
+                                 key => ReferenceEquals(key.Context, active))
+                                 .ToArray())
+                    {
+                        _routeAuthorityCheckpoints.Remove(key);
+                    }
+                }
                 active.Dispose();
             }
 

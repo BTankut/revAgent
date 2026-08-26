@@ -197,7 +197,7 @@ internal sealed partial class RbpConnectionCoordinator
 
         try
         {
-            JsonElement payload = await CreateResumePayloadAsync(
+            RbpResumeControl payload = await CreateResumePayloadAsync(
                     context,
                     candidate,
                     local)
@@ -207,7 +207,7 @@ internal sealed partial class RbpConnectionCoordinator
             // occurs here, and a same-cycle wait can only retain these exact
             // bytes; a new connection always re-enters CreateResumePayloadAsync
             // and obtains a new fresh read/proof.
-            RbpEnvelope resume = CreateControlEnvelope("session_resume", payload);
+            RbpEnvelope resume = CreateControlEnvelope("session_resume", payload.Payload);
             Task<RbpEnvelope> response = context.BeginResume(candidate.Session.Rsid);
             await context.Cycle.SendAsync(
                     resume,
@@ -246,6 +246,10 @@ internal sealed partial class RbpConnectionCoordinator
                         parsed.ResumeExpiresAt,
                         context.Token)
                     .ConfigureAwait(false);
+            if (payload.RouteAuthorityCheckpoint is { } checkpoint)
+            {
+                MarkRouteAuthorityCheckpoint(context, parsed.Rsid, checkpoint);
+            }
             lifecycle = AdvanceSession(
                 lifecycle,
                 new RbpSessionEvent(
@@ -259,6 +263,7 @@ internal sealed partial class RbpConnectionCoordinator
             context.AcknowledgeResumeApplied(candidate.Session.Rsid);
             StartDocContextWatch(context, parsed.Rsid, local);
             ObserveReconnectWatchReadiness(context, applied.Session,
+                payload.RouteAuthorityCheckpoint,
                 watcherStarted: _docContextWatcher?.IsWatching(parsed.Rsid) == true);
         }
         catch (Exception exception)
@@ -274,7 +279,7 @@ internal sealed partial class RbpConnectionCoordinator
         }
     }
 
-    private async Task<JsonElement> CreateResumePayloadAsync(
+    private async Task<RbpResumeControl> CreateResumePayloadAsync(
         ConnectionCycleContext context,
         RbpResumeCandidate candidate,
         RbpLocalSessionSnapshot local)
@@ -302,10 +307,10 @@ internal sealed partial class RbpConnectionCoordinator
                     "Protected recovery requires a granted fresh route-rebind proof.");
             }
 
-            return JsonObject(
+            return new RbpResumeControl(JsonObject(
                 ("rsid", candidate.Session.Rsid),
                 ("resume_token", candidate.Session.ResumeToken.Reveal()),
-                ("last_rx_seq", candidate.LastJournaledReceivedSequence));
+                ("last_rx_seq", candidate.LastJournaledReceivedSequence)), null);
         }
 
         RbpFreshDocumentContext? fresh = _docContextWatcher is null
@@ -332,21 +337,22 @@ internal sealed partial class RbpConnectionCoordinator
 
             // Backward-compatible ordinary resume: no proof means the
             // Gateway's legacy route-null branch remains authoritative.
-            return JsonObject(
+            return new RbpResumeControl(JsonObject(
                 ("rsid", candidate.Session.Rsid),
                 ("resume_token", candidate.Session.ResumeToken.Reveal()),
-                ("last_rx_seq", candidate.LastJournaledReceivedSequence));
+                ("last_rx_seq", candidate.LastJournaledReceivedSequence)), null);
         }
 
-        JsonElement proof = RbpRouteRebindProof.Create(
+        RbpRouteRebindProofResult proof = RbpRouteRebindProof.Create(
+            candidate.Session.Rsid,
             context.Cycle.Acknowledgement.ConnectionId,
             fresh,
             _identifiers);
-        return JsonObject(
+        return new RbpResumeControl(JsonObject(
             ("rsid", candidate.Session.Rsid),
             ("resume_token", candidate.Session.ResumeToken.Reveal()),
             ("last_rx_seq", candidate.LastJournaledReceivedSequence),
-            ("route_rebind_proof", proof));
+            ("route_rebind_proof", proof.Payload)), proof.AuthorityCheckpoint);
     }
 
     private async Task<bool> HasActiveProtectedRecoveryAsync(
@@ -372,28 +378,31 @@ internal sealed partial class RbpConnectionCoordinator
     private void ObserveReconnectWatchReadiness(
         ConnectionCycleContext context,
         RbpStoredSession session,
+        string? routeAuthorityCheckpoint,
         bool watcherStarted)
     {
         try
         {
-            long resumeOrdinal = Interlocked.Increment(
-                ref _reconnectObservationOrdinal);
+            long resumeOrdinal = NextC39CausalOrdinal();
             string rsidHash = RbpReconnectObservation.Hash("rsid", session.Rsid);
             string bindingDigest = RbpReconnectObservation.Hash(
                 "session_binding", session.RegistrationDigest);
-            string connectionDigest = RbpReconnectObservation.Hash(
-                "connection", $"{context.Generation}:{session.Rsid}");
+            string connectionDigest = RbpRouteRebindProof.MakeConnectionDigest(
+                session.Rsid, context.Cycle.Acknowledgement.ConnectionId);
             _reconnectObservationSink.Observe(new RbpReconnectObservation(
                 RbpReconnectObservationPhase.ResumeAcknowledgementApplied,
                 context.Generation, resumeOrdinal, rsidHash, bindingDigest,
-                connectionDigest));
+                connectionDigest, routeAuthorityCheckpoint,
+                context.GrantedConnectionCapabilities.Contains(RbpHelloProfile.RouteRebindProofCapability, StringComparer.Ordinal),
+                resumeOrdinal));
             if (!watcherStarted) return;
-            long watchOrdinal = Interlocked.Increment(
-                ref _reconnectObservationOrdinal);
+            long watchOrdinal = NextC39CausalOrdinal();
             _reconnectObservationSink.Observe(new RbpReconnectObservation(
                 RbpReconnectObservationPhase.WatcherStarted,
                 context.Generation, watchOrdinal, rsidHash, bindingDigest,
-                connectionDigest));
+                connectionDigest, null,
+                context.GrantedConnectionCapabilities.Contains(RbpHelloProfile.RouteRebindProofCapability, StringComparer.Ordinal),
+                watchOrdinal));
         }
         catch
         {

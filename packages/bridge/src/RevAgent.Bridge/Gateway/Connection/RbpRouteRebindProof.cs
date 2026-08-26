@@ -1,4 +1,6 @@
 using System.Text.Json;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.RegularExpressions;
 using RevAgent.Bridge.Gateway.Protocol;
 
@@ -11,11 +13,16 @@ namespace RevAgent.Bridge.Gateway.Connection;
 /// </summary>
 internal static partial class RbpRouteRebindProof
 {
+    private const string CheckpointDomain =
+        "revagent/c39-route-authority-checkpoint/v1\0";
+    private const string ConnectionDomain =
+        "revagent/c39-route-authority-connection/v1\0";
     private static readonly Regex UuidV7Pattern = new(
         "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
         RegexOptions.CultureInvariant | RegexOptions.NonBacktracking);
 
-    internal static JsonElement Create(
+    internal static RbpRouteRebindProofResult Create(
+        string rsid,
         string connectionId,
         RbpFreshDocumentContext fresh,
         RbpUuidV7 identifiers)
@@ -39,7 +46,7 @@ internal static partial class RbpRouteRebindProof
 
         string contextDigest = RbpDocumentContextObservation
             .MakeContextDigest(fresh.Context);
-        return JsonSerializer.SerializeToElement(
+        JsonElement payload = JsonSerializer.SerializeToElement(
             new Dictionary<string, object?>(StringComparer.Ordinal)
             {
                 ["version"] = 1,
@@ -55,5 +62,56 @@ internal static partial class RbpRouteRebindProof
                         fresh.Freshness.CacheIncarnationDigest,
                 },
             });
+        return new RbpRouteRebindProofResult(
+            payload,
+            MakeAuthorityCheckpoint(payload, rsid));
+    }
+
+    internal static string MakeAuthorityCheckpoint(JsonElement proof, string rsid)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(rsid);
+        JsonElement freshness = proof.GetProperty("freshness");
+        JsonElement checkpoint = JsonSerializer.SerializeToElement(
+            new Dictionary<string, object?>(StringComparer.Ordinal)
+            {
+                ["rsid"] = rsid,
+                ["connection_id"] = proof.GetProperty("connection_id").GetString(),
+                ["proof_id"] = proof.GetProperty("proof_id").GetString(),
+                ["context_digest"] = proof.GetProperty("context_digest").GetString(),
+                ["freshness"] = new Dictionary<string, object?>
+                {
+                    ["source_revision"] = freshness.GetProperty("source_revision").GetInt64(),
+                    ["cache_incarnation_digest"] = freshness.GetProperty("cache_incarnation_digest").GetString(),
+                },
+            });
+        return MakeDigest(CheckpointDomain, checkpoint);
+    }
+
+    internal static string MakeConnectionDigest(string rsid, string connectionId)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(rsid);
+        ArgumentException.ThrowIfNullOrEmpty(connectionId);
+        JsonElement value = JsonSerializer.SerializeToElement(
+            new Dictionary<string, object?>
+            {
+                ["rsid"] = rsid,
+                ["connection_id"] = connectionId,
+            });
+        return MakeDigest(ConnectionDomain, value);
+    }
+
+    private static string MakeDigest(string domainText, JsonElement value)
+    {
+        byte[] domain = new UTF8Encoding(false, true).GetBytes(domainText);
+        byte[] canonical = new UTF8Encoding(false, true).GetBytes(
+            Rfc8785Json.Canonicalize(value));
+        byte[] input = new byte[domain.Length + canonical.Length];
+        Buffer.BlockCopy(domain, 0, input, 0, domain.Length);
+        Buffer.BlockCopy(canonical, 0, input, domain.Length, canonical.Length);
+        return "sha256:" + Convert.ToHexString(SHA256.HashData(input)).ToLowerInvariant();
     }
 }
+
+internal sealed record RbpRouteRebindProofResult(
+    JsonElement Payload,
+    string AuthorityCheckpoint);

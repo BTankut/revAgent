@@ -64,10 +64,12 @@ public sealed partial class RbpConnectionCoordinatorTests
         RbpFreshDocumentContext fresh = (await watcher
             .ReadFreshResumeProofContextAsync("rs-8091", CancellationToken.None))!;
 
-        JsonElement proof = RbpRouteRebindProof.Create(
+        RbpRouteRebindProofResult result = RbpRouteRebindProof.Create(
+            "rs-8091",
             "019f9add-7a83-7d11-a6a9-d2f8108c0098",
             fresh,
             new RbpUuidV7());
+        JsonElement proof = result.Payload;
 
         Assert.Equal(1, proof.GetProperty("version").GetInt32());
         Assert.Equal(
