@@ -333,16 +333,7 @@ internal sealed partial class RbpConnectionCoordinator
                 }
 
                 ClearActiveContext(active);
-                lock (_sync)
-                {
-                    foreach (RouteAuthorityCheckpointKey key in
-                             _routeAuthorityCheckpoints.Keys.Where(
-                                 key => ReferenceEquals(key.Context, active))
-                                 .ToArray())
-                    {
-                        _routeAuthorityCheckpoints.Remove(key);
-                    }
-                }
+                ClearRouteAuthorityCheckpoints(active);
                 active.Dispose();
             }
 
@@ -491,6 +482,7 @@ internal sealed partial class RbpConnectionCoordinator
                         _options.EffectiveCloseTimeout)
                     .ConfigureAwait(false);
                 ClearActiveContext(context);
+                ClearRouteAuthorityCheckpoints(context);
                 context.Dispose();
 
                 if (!ownedTasksDrained)

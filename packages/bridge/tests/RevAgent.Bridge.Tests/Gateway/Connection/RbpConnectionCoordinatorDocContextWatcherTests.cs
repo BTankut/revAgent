@@ -33,6 +33,17 @@ public sealed partial class RbpConnectionCoordinatorTests
                 "rs-other", "019f9add-7a83-7d11-a6a9-d2f8108c0098"),
             RbpRouteRebindProof.MakeConnectionDigest(
                 rsid, "019f9add-7a83-7d11-a6a9-d2f8108c0098"));
+        Assert.NotEqual(
+            RbpRouteRebindProof.MakeAuthorityCheckpoint(proof.RootElement, rsid),
+            RbpRouteRebindProof.MakeAuthorityCheckpoint(proof.RootElement,
+                "rs-other"));
+        using JsonDocument wrongConnection = JsonDocument.Parse("""
+            {"version":1,"connection_id":"019f9add-7a83-7d11-a6a9-d2f8108c0097","proof_id":"019f9add-7a83-7d12-a6a9-d2f8108c0099","context":{},"context_digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","freshness":{"source_revision":7,"cache_incarnation_digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}}
+            """);
+        Assert.NotEqual(
+            RbpRouteRebindProof.MakeAuthorityCheckpoint(proof.RootElement, rsid),
+            RbpRouteRebindProof.MakeAuthorityCheckpoint(
+                wrongConnection.RootElement, rsid));
     }
 
     [Fact]

@@ -131,6 +131,25 @@ internal sealed partial class RbpConnectionCoordinator
         }
     }
 
+    // Checkpoints prove one exact live connection route only.  They must leave
+    // memory with that cycle; retaining an old context key would make a stale
+    // diagnostic correlation observable after its transport authority ended.
+    // The reference comparison is deliberately narrow so a later active cycle
+    // cannot be cleared by teardown of an earlier failed one.
+    private void ClearRouteAuthorityCheckpoints(ConnectionCycleContext context)
+    {
+        lock (_sync)
+        {
+            foreach (RouteAuthorityCheckpointKey key in
+                     _routeAuthorityCheckpoints.Keys.Where(
+                         key => ReferenceEquals(key.Context, context))
+                     .ToArray())
+            {
+                _routeAuthorityCheckpoints.Remove(key);
+            }
+        }
+    }
+
     private sealed record RouteAuthorityCheckpointKey(ConnectionCycleContext Context, string Rsid);
 
     private void OwnedTaskStarted()
