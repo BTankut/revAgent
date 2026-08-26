@@ -288,8 +288,8 @@ describe("WP-12 real-trio public credential provisioning", () => {
   });
 
   it.each([
-    ["wss", ["journal_v1", "chunked_results", "artifact_result_v1"]],
-    ["streamable_http_sse", ["journal_v1", "chunked_results", "artifact_result_v1", "transport_streamable_http"]],
+    ["wss", ["journal_v1", "chunked_results", "artifact_result_v1", "route_rebind_proof_v1"]],
+    ["streamable_http_sse", ["journal_v1", "chunked_results", "artifact_result_v1", "route_rebind_proof_v1", "transport_streamable_http"]],
   ] as const)("uses one exact credential schema for %s with non-empty session grants", (binding, connectionCapabilities) => {
     expect(realTrioCredentialRequest(binding)).toEqual({
       binding,
@@ -308,6 +308,7 @@ describe("WP-12 real-trio public credential provisioning", () => {
         "journal_v1",
         "chunked_results",
         "artifact_result_v1",
+        "route_rebind_proof_v1",
         "transport_streamable_http",
       ],
       sessionCapabilities: ["batch_atomic", "doc_context_cached_v1"],
@@ -395,7 +396,7 @@ describe("WP-12 real-trio v2 session smoke reader", () => {
       value: {
         schema: "gateway.rbp-session/v2",
         rsid: "018f7f7e-1234-7abc-8def-1234567890ab",
-        binding: { binding: "wss", grantedCapabilities: ["batch_atomic", "doc_context_cached_v1"] },
+        binding: { binding: "wss", grantedCapabilities: ["batch_atomic", "doc_context_cached_v1", "route_rebind_proof_v1"] },
         lifecycle: { sessionLifecycle: {
           localSessionKey: "port:8080:pid:42:started:99",
           phase: "registered",
@@ -410,7 +411,7 @@ describe("WP-12 real-trio v2 session smoke reader", () => {
     expect(readRbpSessionV2Readiness(v2Snapshot, "wss")).toEqual({
       rsid: "018f7f7e-1234-7abc-8def-1234567890ab",
       localSessionKey: "port:8080:pid:42:started:99",
-      grantedCapabilities: ["batch_atomic", "doc_context_cached_v1"],
+      grantedCapabilities: ["batch_atomic", "doc_context_cached_v1", "route_rebind_proof_v1"],
     });
   });
 
@@ -422,7 +423,7 @@ describe("WP-12 real-trio v2 session smoke reader", () => {
     expect(readRbpSessionV2Readiness(snapshot, "streamable_http_sse")).toEqual({
       rsid: "018f7f7e-1234-7abc-8def-1234567890ab",
       localSessionKey: "port:8080:pid:42:started:99",
-      grantedCapabilities: ["batch_atomic", "doc_context_cached_v1"],
+      grantedCapabilities: ["batch_atomic", "doc_context_cached_v1", "route_rebind_proof_v1"],
     });
   });
 
@@ -432,6 +433,7 @@ describe("WP-12 real-trio v2 session smoke reader", () => {
     [{ sessions: [{ namespace: "gateway.rbp-session/v2", value: { schema: "gateway.rbp-session/v2", rsid: "r", binding: { binding: "wss", grantedCapabilities: ["batch_atomic"] }, lifecycle: { sessionLifecycle: { localSessionKey: "k" } }, grantedCapabilities: ["batch_atomic"] } }] }, /v2 session row is malformed/u],
     [{ sessions: [{ namespace: "gateway.rbp-session/v2", value: { schema: "gateway.rbp-session/v2", rsid: "r", binding: { binding: "streamable_http_sse", grantedCapabilities: ["batch_atomic"] }, lifecycle: { createdAtMs: 1, updatedAtMs: 2 } } }] }, /v2 session row is malformed/u],
     [{ sessions: [{ namespace: "gateway.rbp-session/v2", value: { schema: "gateway.rbp-session/v2", rsid: "r", binding: { binding: "wss", grantedCapabilities: [] }, lifecycle: { sessionLifecycle: { localSessionKey: "k", phase: "registered", dispatchAllowed: true, rsid: "r" } } } }] }, /nested grants/u],
+    [{ sessions: [{ namespace: "gateway.rbp-session/v2", value: { schema: "gateway.rbp-session/v2", rsid: "r", binding: { binding: "wss", grantedCapabilities: ["batch_atomic"] }, lifecycle: { sessionLifecycle: { localSessionKey: "k", phase: "registered", dispatchAllowed: true, rsid: "r" } } } }] }, /nested grants/u],
   ] as const)("rejects absent, legacy, or non-nested v2 session readiness %#", (snapshot, expected) => {
     expect(() => readRbpSessionV2Readiness(snapshot, "wss")).toThrow(expected);
   });

@@ -116,6 +116,30 @@ describe("C39 recovery timeout diagnostics", () => {
   });
 });
 
+describe("C39 route-rebind audit projection", () => {
+  it("accepts only the fixed value-free current state", () => {
+    expect(readC39RouteRebindAudit({
+      status: "current",
+      candidateCount: 1,
+      capabilityGranted: true,
+      receiptCurrent: true,
+      resumeCasCurrent: true,
+      routeProvenanceCurrent: true,
+      currentConnection: true,
+    })).toMatchObject({ status: "current", candidateCount: 1 });
+    expect(() => readC39RouteRebindAudit({
+      status: "current",
+      candidateCount: 1,
+      capabilityGranted: true,
+      receiptCurrent: true,
+      resumeCasCurrent: true,
+      routeProvenanceCurrent: true,
+      currentConnection: true,
+      proofDigest: `sha256:${"a".repeat(64)}`,
+    })).toThrow(/value-bearing/u);
+  });
+});
+
 describe.sequential("WP-12 direct real trio runtime fixture", () => {
   it.each(["wss", "streamable_http_sse"] as const)(
     "runs C38's public core UI probe against the real %s Worker binding",
@@ -164,6 +188,7 @@ describe.sequential("WP-12 direct real trio runtime fixture", () => {
       const runtime = launched.result;
       try {
         expect(runtime.supervisor.bridgeReadiness.c39Profile).toBe("c39_terminal_prepeer_once");
+        expect((await runtime.supervisor.readRecoveryCarrierObservationState()).routeRebindProofGranted).toBe(true);
         await withRealTrioNorthMcpClient({
           endpoint: runtime.endpoint,
           certificateSha256: runtime.certificateSha256,
@@ -184,6 +209,10 @@ describe.sequential("WP-12 direct real trio runtime fixture", () => {
           });
           const initialProvenance = await waitForC39OriginProvenance(runtime, 45_000);
           await waitForC39ReconnectWatch(runtime, 45_000);
+          // The recovery-proof CAS must be current before the retained
+          // terminal can be observed or retried. In particular, C39 no
+          // longer uses a sequenced document-context edge to escape N-1.
+          await waitForC39RouteRebindCurrent(runtime, 45_000);
           let originSettledBeforeRouteEdge = false;
           void originPromise.then(
             () => { originSettledBeforeRouteEdge = true; },
@@ -191,11 +220,6 @@ describe.sequential("WP-12 direct real trio runtime fixture", () => {
           );
           await new Promise<void>((resolve) => setTimeout(resolve, 250));
           expect(originSettledBeforeRouteEdge).toBe(false);
-          const routeEdge = await runtime.refreshNorthDispatchFenceAfterControl();
-          expect(routeEdge).toMatchObject({
-            revision: runtime.documentContextAudit.revision + 1,
-            activeDocumentIdentityHash: expect.stringMatching(SHA256),
-          });
           const carrier = await c39OriginCarrierFromPromise(originPromise);
           const origin = Object.freeze({ requestId: carrier.origin_invocation_id, responseDigest: carrier.expected_result_digest });
           expect(origin.requestId).toMatch(UUID_V7);
@@ -208,13 +232,14 @@ describe.sequential("WP-12 direct real trio runtime fixture", () => {
           const uri = result.uri;
           expect(typeof uri).toBe("string");
           // Owner reads are permitted only after the complete recovery proof,
-          // including the restart-resend byte identity, has settled. Refreshing
-          // this one current route edge then updates the expected fence for the
-          // same still-open owner client before its resources/read request.
+          // including the restart-resend byte identity, has settled. The
+          // existing owner client is then rechecked without inserting a data
+          // route update behind the retained terminal.
           const observed = await waitForC39ObservedRecoveryAndRefreshFence(
             waitForObservedC39Recovery(runtime, origin, result.digest as `sha256:${string}`, 45_000),
             runtime,
           );
+          await waitForC39RouteRebindCurrent(runtime, 45_000);
           let ownerRead;
           try {
             ownerRead = await client.readResource({ uri: uri as string, requestId: `wp12-c39-owner-read-${binding}` });
@@ -275,8 +300,10 @@ describe.sequential("WP-12 direct real trio runtime fixture", () => {
             readC39OriginProvenance(await runtime.supervisor.fixtureControl("read_c39_origin_provenance")),
             origin.responseDigest, 1,
           );
+          await waitForC39RouteRebindCurrent(runtime, 45_000);
 
           await runtime.supervisor.restartBridge();
+          expect((await runtime.supervisor.readRecoveryCarrierObservationState()).routeRebindProofGranted).toBe(true);
           await runtime.verifyNorthDispatchFence();
           const restartResourceDenied = await c39ResourceReadDenied(client, {
             uri: uri as string, requestId: `wp12-c39-post-rebind-read-${binding}`,
@@ -389,7 +416,7 @@ describe("C39 terminal settlement before owner resource read", () => {
     ], settlement)).toBe(true);
   });
 
-  it("refreshes exactly once after settlement, then retries the live fence", async () => {
+  it("rechecks the live fence after settlement without creating a route edge", async () => {
     const settlementAudit = c39TerminalAudit(origin, carrierHash, 9);
     const settledWorker = [
       c39WorkerObservation(carrierHash, "write", 9, 12, "c"),
@@ -401,7 +428,6 @@ describe("C39 terminal settlement before owner resource read", () => {
       c39SettlementRuntime(
         settlementAudit,
         settledWorker,
-        async () => { steps.push("refresh"); },
         async () => {
           steps.push("verify");
           fenceAttempts += 1;
@@ -413,17 +439,17 @@ describe("C39 terminal settlement before owner resource read", () => {
       { now: () => 0, sleep: async () => {} },
     );
     expect(fenceAttempts).toBe(2);
-    expect(steps).toEqual(["refresh", "verify", "verify"]);
+    expect(steps).toEqual(["verify", "verify"]);
   });
 
-  it("does not refresh or verify before settlement, and does not verify after refresh failure", async () => {
+  it("does not verify before settlement and retains the ordinary fence failure", async () => {
     const settlementAudit = c39TerminalAudit(origin, carrierHash, 9);
     const steps: string[] = [];
     await expect(waitForC39TerminalSettlementAndLiveFence(
       c39SettlementRuntime(settlementAudit, [
         c39WorkerObservation(carrierHash, "write", 8, 12, "c"),
         c39WorkerObservation(carrierHash, "ack", 8, 13, "c"),
-      ], async () => { steps.push("refresh"); }, async () => { steps.push("verify"); }),
+      ], async () => { steps.push("verify"); }),
       origin,
       0,
       { now: () => 0, sleep: async () => {} },
@@ -434,20 +460,19 @@ describe("C39 terminal settlement before owner resource read", () => {
       c39SettlementRuntime(settlementAudit, [
         c39WorkerObservation(carrierHash, "write", 9, 12, "c"),
         c39WorkerObservation(carrierHash, "ack", 9, 13, "c"),
-      ], async () => { throw new Error("bounded refresh failure"); }, async () => { steps.push("verify"); }),
+      ], async () => { throw new Error("bounded fence failure"); }),
       origin,
       1,
       { now: () => 0, sleep: async () => {} },
-    )).rejects.toThrow("bounded refresh failure");
+    )).rejects.toThrow("bounded fence failure");
     expect(steps).toEqual([]);
   });
 
-  it("does not release the owner-read fence until observed recovery, then refreshes and verifies once", async () => {
+  it("does not release the owner-read fence until observed recovery, then verifies once", async () => {
     const steps: string[] = [];
     let resolveObserved: ((value: ObservedC39Recovery) => void) | undefined;
     const observed = new Promise<ObservedC39Recovery>((resolve) => { resolveObserved = resolve; });
     const fenced = waitForC39ObservedRecoveryAndRefreshFence(observed, {
-      refreshNorthDispatchFenceAfterControl: async () => { steps.push("refresh"); },
       verifyNorthDispatchFence: async () => { steps.push("verify"); },
     });
     await Promise.resolve();
@@ -463,7 +488,7 @@ describe("C39 terminal settlement before owner resource read", () => {
       workerEventCount: 3,
     });
     await fenced;
-    expect(steps).toEqual(["refresh", "verify"]);
+    expect(steps).toEqual(["verify"]);
   });
 });
 
@@ -653,11 +678,11 @@ type C39ReconnectWatchObservations = Awaited<ReturnType<
 >>;
 type C39TerminalSettlementRuntime = Pick<
   Awaited<ReturnType<typeof startRealTrioRuntimeFixture>>,
-  "supervisor" | "refreshNorthDispatchFenceAfterControl" | "verifyNorthDispatchFence"
+  "supervisor" | "verifyNorthDispatchFence"
 >;
 type C39OwnerReadFenceRuntime = Pick<
   Awaited<ReturnType<typeof startRealTrioRuntimeFixture>>,
-  "refreshNorthDispatchFenceAfterControl" | "verifyNorthDispatchFence"
+  "verifyNorthDispatchFence"
 >;
 
 interface C39TerminalSettlement {
@@ -675,7 +700,6 @@ async function waitForC39ObservedRecoveryAndRefreshFence<T>(
   runtime: C39OwnerReadFenceRuntime,
 ): Promise<T> {
   const observed = await observedRecovery;
-  await runtime.refreshNorthDispatchFenceAfterControl();
   await runtime.verifyNorthDispatchFence();
   return observed;
 }
@@ -690,20 +714,13 @@ async function waitForC39TerminalSettlementAndLiveFence(
   const sleep = options.sleep ?? (async () => await new Promise<void>((resolve) => setTimeout(resolve, 200)));
   const deadline = now() + timeoutMs;
   let liveFenceVerified = false;
-  let routeRefreshAttempted = false;
   for (;;) {
     const audit = object(await runtime.supervisor.readRealCaseAudit());
     if (audit === null) throw new Error("C39 Gateway audit is not an object");
     const terminal = c39TerminalSettlement(audit, origin);
     const worker = await runtime.supervisor.readRecoveryCarrierObservations();
     const terminalSettled = terminal !== null && c39TerminalAckSettled(worker, terminal);
-    if (terminalSettled && !routeRefreshAttempted) {
-      // This one bounded route-control edge refreshes the runtime's expected
-      // fence baseline. It never replaces the already-open owner MCP client.
-      routeRefreshAttempted = true;
-      await runtime.refreshNorthDispatchFenceAfterControl();
-    }
-    if (routeRefreshAttempted && !liveFenceVerified) {
+    if (terminalSettled && !liveFenceVerified) {
       try {
         await runtime.verifyNorthDispatchFence();
         liveFenceVerified = true;
@@ -712,7 +729,7 @@ async function waitForC39TerminalSettlementAndLiveFence(
         // fence is retried before the protected owner read is permitted.
       }
     }
-    if (terminalSettled && routeRefreshAttempted && liveFenceVerified) return;
+    if (terminalSettled && liveFenceVerified) return;
     if (now() >= deadline) {
       throw new Error("C39 terminal settlement or live North dispatch fence did not become ready");
     }
@@ -794,7 +811,6 @@ function c39WorkerObservation(
 function c39SettlementRuntime(
   audit: Record<string, unknown>,
   worker: C39RecoveryCarrierObservations,
-  refreshNorthDispatchFenceAfterControl: () => Promise<void>,
   verifyNorthDispatchFence: () => Promise<void>,
 ): C39TerminalSettlementRuntime {
   return Object.freeze({
@@ -802,7 +818,6 @@ function c39SettlementRuntime(
       readRealCaseAudit: async () => audit,
       readRecoveryCarrierObservations: async () => worker,
     }),
-    refreshNorthDispatchFenceAfterControl,
     verifyNorthDispatchFence,
   }) as unknown as C39TerminalSettlementRuntime;
 }
@@ -1280,6 +1295,68 @@ async function waitForC39ReconnectWatch(
   }
 }
 
+interface C39RouteRebindAudit {
+  readonly status: "current" | "none" | "ambiguous" | "invalid" | "not_current";
+  readonly candidateCount: 0 | 1 | 2;
+  readonly capabilityGranted: boolean;
+  readonly receiptCurrent: boolean;
+  readonly resumeCasCurrent: boolean;
+  readonly routeProvenanceCurrent: boolean;
+  readonly currentConnection: boolean;
+}
+
+function readC39RouteRebindAudit(value: unknown): C39RouteRebindAudit {
+  const record = object(value);
+  const expected = [
+    "candidateCount",
+    "capabilityGranted",
+    "currentConnection",
+    "receiptCurrent",
+    "resumeCasCurrent",
+    "routeProvenanceCurrent",
+    "status",
+  ];
+  if (record === null ||
+      Object.keys(record).sort().join("\u0000") !== expected.join("\u0000") ||
+      (record.status !== "current" && record.status !== "none" && record.status !== "ambiguous" &&
+        record.status !== "invalid" && record.status !== "not_current") ||
+      (record.candidateCount !== 0 && record.candidateCount !== 1 && record.candidateCount !== 2) ||
+      typeof record.capabilityGranted !== "boolean" ||
+      typeof record.receiptCurrent !== "boolean" ||
+      typeof record.resumeCasCurrent !== "boolean" ||
+      typeof record.routeProvenanceCurrent !== "boolean" ||
+      typeof record.currentConnection !== "boolean") {
+    throw new Error("C39 route-rebind audit projection is malformed or value-bearing");
+  }
+  return Object.freeze(record as unknown as C39RouteRebindAudit);
+}
+
+async function waitForC39RouteRebindCurrent(
+  runtime: Awaited<ReturnType<typeof startRealTrioRuntimeFixture>>,
+  timeoutMs: number,
+): Promise<C39RouteRebindAudit> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const audit = object(await runtime.supervisor.readRealCaseAudit());
+    const routeRebind = readC39RouteRebindAudit(audit?.c39RouteRebind);
+    if (routeRebind.status === "current") {
+      if (routeRebind.candidateCount !== 1 || !routeRebind.capabilityGranted ||
+          !routeRebind.receiptCurrent || !routeRebind.resumeCasCurrent ||
+          !routeRebind.routeProvenanceCurrent || !routeRebind.currentConnection) {
+        throw new Error("C39 route-rebind audit reports a non-current proof CAS");
+      }
+      return routeRebind;
+    }
+    if (routeRebind.status === "ambiguous" || routeRebind.status === "invalid") {
+      throw new Error("C39 route-rebind audit failed closed before retained terminal evidence");
+    }
+    if (Date.now() >= deadline) {
+      throw new Error("C39 route-rebind proof CAS did not become current before retained terminal evidence");
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, 100));
+  }
+}
+
 async function readCompleteFixtureEvidence(
   runtime: Awaited<ReturnType<typeof startRealTrioRuntimeFixture>>,
 ): Promise<Record<string, unknown>> {
@@ -1385,7 +1462,12 @@ async function waitForC39Recovery(
     const worker = await runtime.supervisor.readRecoveryCarrierObservations();
     latestWorker = worker;
     auditJoined = object(audit?.c39Recovery)?.status === "joined";
-    if (auditJoined && worker.length > 0) {
+    const routeRebind = readC39RouteRebindAudit(audit?.c39RouteRebind);
+    const routeRebindCurrent = routeRebind.status === "current" &&
+      routeRebind.candidateCount === 1 && routeRebind.capabilityGranted &&
+      routeRebind.receiptCurrent && routeRebind.resumeCasCurrent &&
+      routeRebind.routeProvenanceCurrent && routeRebind.currentConnection;
+    if (auditJoined && routeRebindCurrent && worker.length > 0) {
       const result = await recovery;
       if (result.content.state === "completed") return result;
       throw new Error("real C39 one-shot recovery did not complete");

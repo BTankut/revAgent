@@ -100,6 +100,8 @@ export interface RealTrioSupervisorResult {
   readonly readRealCaseAuditOutcome: () => Promise<RealTrioAuditControlOutcome>;
   /** Fixed C39 worker IPC projection; no raw transcript or generic control. */
   readonly readRecoveryCarrierObservations: () => Promise<readonly RealTrioRecoveryCarrierObservation[]>;
+  /** Actual Bridge hello_ack grant, retained only as one fixed boolean. */
+  readonly readRecoveryCarrierObservationState: () => Promise<RealTrioRecoveryCarrierObservationState>;
   readonly pollDocumentContext: () => Promise<"emitted" | "no_send" | "cancelled" | "fault">;
   /** Fixed C39 reconnect readiness projection; no raw worker control/transcript. */
   readonly readReconnectWatchObservations: () => Promise<readonly RealTrioReconnectWatchObservation[]>;
@@ -130,6 +132,11 @@ export interface RealTrioRecoveryCarrierObservation {
   readonly sequence: number;
   readonly outerDigest: `sha256:${string}`;
   readonly ordinal: number;
+}
+
+export interface RealTrioRecoveryCarrierObservationState {
+  readonly routeRebindProofGranted: boolean;
+  readonly observations: readonly RealTrioRecoveryCarrierObservation[];
 }
 
 export interface RealTrioReconnectWatchObservation {
@@ -247,6 +254,7 @@ const REAL_TRIO_CONNECTION_CAPABILITIES = Object.freeze([
   "journal_v1",
   "chunked_results",
   "artifact_result_v1",
+  "route_rebind_proof_v1",
 ]);
 
 /**
@@ -757,7 +765,9 @@ function traceReadinessSnapshot(
   if (typeof lifecycle.rsid !== "string" || lifecycle.rsid !== value.rsid) return invalid("RSID_MISMATCH");
   if (!Array.isArray(binding.grantedCapabilities) || !binding.grantedCapabilities.every((item) => typeof item === "string")) return invalid("ERROR_TYPE", "error");
   const grants = binding.grantedCapabilities as string[];
-  if (!grants.includes("batch_atomic")) return invalid("MISSING_BATCH");
+  if (!grants.includes("batch_atomic") || !grants.includes("route_rebind_proof_v1")) {
+    return invalid("MISSING_BATCH");
+  }
   if (typeof lifecycle.localSessionKey !== "string" || lifecycle.localSessionKey.length === 0 || lifecycle.phase !== "registered" || lifecycle.dispatchAllowed !== true) return invalid("INVALID_LIFECYCLE");
   const fingerprint = hashPrefix(`${value.rsid}\u0000${lifecycle.localSessionKey}\u0000${grants.join("\u0001")}`);
   const nextStable = fingerprint === priorFingerprint ? stableCount + 1 : 1;
@@ -890,9 +900,10 @@ function isObject(value: unknown): value is JsonObject {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function recoveryCarrierObservations(value: JsonValue): readonly RealTrioRecoveryCarrierObservation[] {
-  if (!isObject(value) || Object.keys(value).length !== 2 ||
+function recoveryCarrierObservationState(value: JsonValue): RealTrioRecoveryCarrierObservationState {
+  if (!isObject(value) || Object.keys(value).length !== 3 ||
       !Object.hasOwn(value, "observations") || !Object.hasOwn(value, "reconnectWatchObservations") ||
+      !Object.hasOwn(value, "routeRebindProofGranted") || typeof value.routeRebindProofGranted !== "boolean" ||
       !Array.isArray(value.observations) || !Array.isArray(value.reconnectWatchObservations) ||
       value.observations.length > MAX_REAL_TRIO_RECOVERY_CARRIER_OBSERVATIONS) {
     throw new Error("real worker recovery observation IPC is malformed");
@@ -917,12 +928,17 @@ function recoveryCarrierObservations(value: JsonValue): readonly RealTrioRecover
       ordinal: row.ordinal,
     }));
   }
-  return Object.freeze(rows);
+  return Object.freeze({ routeRebindProofGranted: value.routeRebindProofGranted, observations: Object.freeze(rows) });
+}
+
+function recoveryCarrierObservations(value: JsonValue): readonly RealTrioRecoveryCarrierObservation[] {
+  return recoveryCarrierObservationState(value).observations;
 }
 
 function reconnectWatchObservations(value: JsonValue): readonly RealTrioReconnectWatchObservation[] {
-  if (!isObject(value) || Object.keys(value).length !== 2 ||
+  if (!isObject(value) || Object.keys(value).length !== 3 ||
       !Object.hasOwn(value, "observations") || !Object.hasOwn(value, "reconnectWatchObservations") ||
+      !Object.hasOwn(value, "routeRebindProofGranted") || typeof value.routeRebindProofGranted !== "boolean" ||
       !Array.isArray(value.observations) || !Array.isArray(value.reconnectWatchObservations) ||
       value.reconnectWatchObservations.length > MAX_REAL_TRIO_RECOVERY_CARRIER_OBSERVATIONS) {
     throw new Error("real worker reconnect observation IPC is malformed");
@@ -970,7 +986,8 @@ export function readRbpSessionV2Readiness(
   }
   if (value.binding.binding !== expectedBinding || !Array.isArray(value.binding.grantedCapabilities) ||
       !value.binding.grantedCapabilities.every((capability) => typeof capability === "string") ||
-      !value.binding.grantedCapabilities.includes("batch_atomic")) {
+      !value.binding.grantedCapabilities.includes("batch_atomic") ||
+      !value.binding.grantedCapabilities.includes("route_rebind_proof_v1")) {
     throw new Error("real trio v2 session binding or nested grants are invalid");
   }
   const lifecycle = value.lifecycle.sessionLifecycle;
@@ -1332,6 +1349,8 @@ export async function startRealTrioSupervisor(input: RealTrioSupervisorLaunch): 
         };
         const readRecoveryCarrierObservations = async (): Promise<readonly RealTrioRecoveryCarrierObservation[]> =>
           recoveryCarrierObservations(await bridge.request("read_recovery_observations"));
+        const readRecoveryCarrierObservationState = async (): Promise<RealTrioRecoveryCarrierObservationState> =>
+          recoveryCarrierObservationState(await bridge.request("read_recovery_observations"));
         const pollDocumentContext = async (): Promise<"emitted" | "no_send" | "cancelled" | "fault"> => {
           const result = await bridge.request("poll_document_context");
           if (!isObject(result) || typeof result.state !== "string" ||
@@ -1372,6 +1391,7 @@ export async function startRealTrioSupervisor(input: RealTrioSupervisorLaunch): 
         readRealCaseAudit,
         readRealCaseAuditOutcome,
         readRecoveryCarrierObservations,
+        readRecoveryCarrierObservationState,
         pollDocumentContext,
         readReconnectWatchObservations,
         readDocumentContextSnapshot: () => documentContextJournal.snapshot(bridge.transcript),
