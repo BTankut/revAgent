@@ -19,6 +19,14 @@ internal sealed class RbpHelloProfile
 
     internal const string ArtifactResultCapability = "artifact_result_v1";
 
+    /// <summary>
+    /// Opt-in authority extension for a fresh, unsequenced route proof on a
+    /// resumed connection.  Merely offering this capability never enables the
+    /// proof; the current hello_ack must grant it.
+    /// </summary>
+    internal const string RouteRebindProofCapability =
+        "route_rebind_proof_v1";
+
     internal RbpHelloProfile(
         string bridgeVersion,
         string hostname,
@@ -65,7 +73,7 @@ internal sealed class RbpHelloProfile
             Environment.OSVersion.VersionString,
             addinVersions,
             capabilities: requestedConnectionCapabilities ??
-                [JournalCapability]);
+                [JournalCapability, RouteRebindProofCapability]);
 
     private static IReadOnlyList<string> FreezeConnectionCapabilities(
         IReadOnlyList<string> values,
@@ -91,7 +99,8 @@ internal sealed class RbpHelloProfile
 
     private static bool IsImplementedConnectionCapability(string capability) =>
         capability is JournalCapability or StreamableHttpCapability or
-            ChunkedResultsCapability or ArtifactResultCapability;
+            ChunkedResultsCapability or ArtifactResultCapability or
+            RouteRebindProofCapability;
 
     private static IReadOnlyList<string> FreezeUnique(
         IReadOnlyList<string> values,

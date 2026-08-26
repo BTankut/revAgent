@@ -15,6 +15,78 @@ namespace RevAgent.Bridge.Tests.Gateway.Connection;
 public sealed partial class RbpConnectionCoordinatorTests
 {
     [Fact]
+    public async Task FreshResumeProofReadBypassesWatcherEmissionStateAndRequiresFreshnessPair()
+    {
+        var channel = new ScriptedDocContextChannel();
+        channel.SetSnapshot(
+            revision: 7,
+            title: "Project A",
+            incarnation:
+                "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        var watcher = new RbpDocContextWatcher(channel);
+
+        RbpFreshDocumentContext? first = await watcher
+            .ReadFreshResumeProofContextAsync("rs-8091", CancellationToken.None);
+        RbpFreshDocumentContext? second = await watcher
+            .ReadFreshResumeProofContextAsync("rs-8091", CancellationToken.None);
+
+        Assert.NotNull(first);
+        Assert.NotNull(second);
+        Assert.Equal(2, channel.CallCount);
+        Assert.Equal(7, first!.Freshness.SourceRevision);
+        Assert.Equal(
+            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            first.Freshness.CacheIncarnationDigest);
+        Assert.Equal(
+            first.Context.GetRawText(),
+            second!.Context.GetRawText());
+        Assert.True(channel.AllLeasesReleased);
+
+        channel.SetSnapshot(
+            revision: 0,
+            title: "Project A",
+            incarnation:
+                "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        Assert.Null(await watcher.ReadFreshResumeProofContextAsync(
+            "rs-8091", CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task FreshResumeProofHasOnlyCanonicalRouteAuthorityFields()
+    {
+        var channel = new ScriptedDocContextChannel();
+        channel.SetSnapshot(
+            revision: 9,
+            title: "Project A",
+            incarnation:
+                "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc");
+        var watcher = new RbpDocContextWatcher(channel);
+        RbpFreshDocumentContext fresh = (await watcher
+            .ReadFreshResumeProofContextAsync("rs-8091", CancellationToken.None))!;
+
+        JsonElement proof = RbpRouteRebindProof.Create(
+            "019f9add-7a83-7d11-a6a9-d2f8108c0098",
+            fresh,
+            new RbpUuidV7());
+
+        Assert.Equal(1, proof.GetProperty("version").GetInt32());
+        Assert.Equal(
+            "019f9add-7a83-7d11-a6a9-d2f8108c0098",
+            proof.GetProperty("connection_id").GetString());
+        Assert.Matches(
+            "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            proof.GetProperty("proof_id").GetString()!);
+        Assert.Equal(
+            RbpDocumentContextObservation.MakeContextDigest(
+                fresh.Context),
+            proof.GetProperty("context_digest").GetString());
+        Assert.Equal(9, proof.GetProperty("freshness")
+            .GetProperty("source_revision").GetInt64());
+        Assert.False(proof.TryGetProperty("principal", out _));
+        Assert.False(proof.TryGetProperty("rsid", out _));
+    }
+
+    [Fact]
     public void DocumentContextDigestVectorsMatchPinnedRfc8785Canonicalization()
     {
         using JsonDocument fixture = LoadDocumentContextDigestFixture();

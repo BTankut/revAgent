@@ -22,6 +22,15 @@ internal delegate Task<bool> RbpDocContextEmit(
 internal enum RbpImmediatePollOutcome { Emitted, NoSend, Cancelled, Fault }
 
 /// <summary>
+/// A newly-read, proof-admissible cached document context.  This is confined
+/// to one connection cycle: it is neither an RBP data envelope nor journal
+/// state and therefore cannot consume a data sequence or survive a restart.
+/// </summary>
+internal sealed record RbpFreshDocumentContext(
+    JsonElement Context,
+    RbpDocumentContextDiagnosticPair Freshness);
+
+/// <summary>
 /// Local-only, value-free correlation carried from one validated add-in
 /// snapshot through its queue/send lifecycle. It is never an RBP payload,
 /// envelope, or journal field.
@@ -356,6 +365,62 @@ internal sealed class RbpDocContextWatcher
         {
             if (!_loops.TryGetValue(rsid, out WatchLoop? loop)) return null;
             return loop.Request();
+        }
+    }
+
+    /// <summary>
+    /// Performs an unconditional, bounded cached-context read for the
+    /// capability-gated session-resume route proof.  Unlike the standing
+    /// watcher this intentionally never observes or updates <c>_emitted</c>:
+    /// an unchanged prior snapshot is not fresh route evidence after a new
+    /// hello_ack.
+    /// </summary>
+    internal async Task<RbpFreshDocumentContext?>
+        ReadFreshResumeProofContextAsync(
+            string rsid,
+            CancellationToken token)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(rsid);
+        SnapshotRead read;
+        try
+        {
+            read = await ReadSnapshotAsync(rsid, token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch
+        {
+            return null;
+        }
+
+        AddinDocumentContextSnapshot? snapshot = read.Snapshot;
+        if (read.RouteFailure || snapshot is null ||
+            snapshot.CacheState != DocumentContextCacheState.Ready ||
+            !RbpDocumentContextDiagnosticPair.TryCreate(
+                snapshot.Revision,
+                snapshot.CacheIncarnationDigest,
+                out RbpDocumentContextDiagnosticPair? freshness))
+        {
+            return null;
+        }
+
+        try
+        {
+            string normalized = DocumentContextMapper
+                .NormalizeForComparison(snapshot);
+            using JsonDocument document = JsonDocument.Parse(normalized);
+            return new RbpFreshDocumentContext(
+                document.RootElement.Clone(),
+                freshness!);
+        }
+        catch
+        {
+            // The local response was completed but cannot be represented as
+            // the frozen RBP context.  It is never downgraded to a legacy
+            // proof or an earlier watcher emission.
+            return null;
         }
     }
 

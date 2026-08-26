@@ -205,6 +205,7 @@ internal static class Program
                 RbpHelloProfile.StreamableHttpCapability,
                 RbpHelloProfile.ChunkedResultsCapability,
                 RbpHelloProfile.ArtifactResultCapability,
+                RbpHelloProfile.RouteRebindProofCapability,
             };
             IRbpConnectionCycleFactory wss = new WssRbpConnectionCycleFactory(
                 new RbpGatewayHandshakeClient(claims, new WssGatewayBinding(new PinnedSocketFactory(options.CertificateSha256))));

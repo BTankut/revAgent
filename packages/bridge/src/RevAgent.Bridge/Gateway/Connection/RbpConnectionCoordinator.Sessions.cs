@@ -195,16 +195,22 @@ internal sealed partial class RbpConnectionCoordinator
             lifecycle,
             new RbpSessionEvent(RbpSessionEventType.ResumeRequested));
 
-        Task<RbpEnvelope> response =
-            context.BeginResume(candidate.Session.Rsid);
         try
         {
-            JsonElement payload = JsonObject(
-                ("rsid", candidate.Session.Rsid),
-                ("resume_token", candidate.Session.ResumeToken.Reveal()),
-                ("last_rx_seq", candidate.LastJournaledReceivedSequence));
+            JsonElement payload = await CreateResumePayloadAsync(
+                    context,
+                    candidate,
+                    local)
+                .ConfigureAwait(false);
+            // The control envelope is deliberately composed once, before the
+            // pending flight is installed.  No data sequence/outbox allocation
+            // occurs here, and a same-cycle wait can only retain these exact
+            // bytes; a new connection always re-enters CreateResumePayloadAsync
+            // and obtains a new fresh read/proof.
+            RbpEnvelope resume = CreateControlEnvelope("session_resume", payload);
+            Task<RbpEnvelope> response = context.BeginResume(candidate.Session.Rsid);
             await context.Cycle.SendAsync(
-                    CreateControlEnvelope("session_resume", payload),
+                    resume,
                     context.Token)
                 .ConfigureAwait(false);
             RbpResumeAck parsed = ParseResumeAck(
@@ -266,6 +272,101 @@ internal sealed partial class RbpConnectionCoordinator
         {
             context.EndResume(candidate.Session.Rsid);
         }
+    }
+
+    private async Task<JsonElement> CreateResumePayloadAsync(
+        ConnectionCycleContext context,
+        RbpResumeCandidate candidate,
+        RbpLocalSessionSnapshot local)
+    {
+        if (!IsCurrentContext(context))
+        {
+            throw new RbpCoordinatorException(
+                RbpCoordinatorErrorCode.SessionAuthorityConflict,
+                "The resume connection generation is no longer current.");
+        }
+
+        bool protectedRecovery = await HasActiveProtectedRecoveryAsync(
+                candidate.Session.Rsid,
+                context.Token)
+            .ConfigureAwait(false);
+        bool proofGranted = context.GrantedConnectionCapabilities.Contains(
+            RbpHelloProfile.RouteRebindProofCapability,
+            StringComparer.Ordinal);
+        if (!proofGranted)
+        {
+            if (protectedRecovery)
+            {
+                throw new RbpCoordinatorException(
+                    RbpCoordinatorErrorCode.SessionAuthorityConflict,
+                    "Protected recovery requires a granted fresh route-rebind proof.");
+            }
+
+            return JsonObject(
+                ("rsid", candidate.Session.Rsid),
+                ("resume_token", candidate.Session.ResumeToken.Reveal()),
+                ("last_rx_seq", candidate.LastJournaledReceivedSequence));
+        }
+
+        RbpFreshDocumentContext? fresh = _docContextWatcher is null
+            ? null
+            : await _docContextWatcher.ReadFreshResumeProofContextAsync(
+                    candidate.Session.Rsid,
+                    context.Token)
+                .ConfigureAwait(false);
+        if (!IsCurrentContext(context))
+        {
+            throw new RbpCoordinatorException(
+                RbpCoordinatorErrorCode.SessionAuthorityConflict,
+                "The resume connection generation changed during the fresh route read.");
+        }
+
+        if (fresh is null)
+        {
+            if (protectedRecovery)
+            {
+                throw new RbpCoordinatorException(
+                    RbpCoordinatorErrorCode.SessionAuthorityConflict,
+                    "Protected recovery requires a ready current document route proof.");
+            }
+
+            // Backward-compatible ordinary resume: no proof means the
+            // Gateway's legacy route-null branch remains authoritative.
+            return JsonObject(
+                ("rsid", candidate.Session.Rsid),
+                ("resume_token", candidate.Session.ResumeToken.Reveal()),
+                ("last_rx_seq", candidate.LastJournaledReceivedSequence));
+        }
+
+        JsonElement proof = RbpRouteRebindProof.Create(
+            context.Cycle.Acknowledgement.ConnectionId,
+            fresh,
+            _identifiers);
+        return JsonObject(
+            ("rsid", candidate.Session.Rsid),
+            ("resume_token", candidate.Session.ResumeToken.Reveal()),
+            ("last_rx_seq", candidate.LastJournaledReceivedSequence),
+            ("route_rebind_proof", proof));
+    }
+
+    private async Task<bool> HasActiveProtectedRecoveryAsync(
+        string rsid,
+        CancellationToken token)
+    {
+        IReadOnlyList<RbpRecoveryCarrierReservation> carriers = await _journal
+            .ListActiveRecoveryCarrierReservationsAsync(token)
+            .ConfigureAwait(false);
+        if (carriers.Any(item => string.Equals(
+                item.Rsid, rsid, StringComparison.Ordinal)))
+        {
+            return true;
+        }
+
+        IReadOnlyList<RbpRecoveryTerminalPlan> terminals = await _journal
+            .ListActiveRecoveryTerminalPlansAsync(token)
+            .ConfigureAwait(false);
+        return terminals.Any(item => string.Equals(
+            item.Rsid, rsid, StringComparison.Ordinal));
     }
 
     private void ObserveReconnectWatchReadiness(
