@@ -7,6 +7,7 @@ using RevAgent.Bridge.Gateway.Connection;
 using RevAgent.Bridge.Gateway.Dispatch;
 using RevAgent.Bridge.Gateway.Protocol;
 using RevAgent.Bridge.Gateway.Storage;
+using RevAgent.Bridge.Runtime;
 using RevAgent.Bridge.Tests.Gateway.Protocol;
 using RevAgent.Bridge.Tests.Gateway.Storage;
 
@@ -55,7 +56,13 @@ public sealed partial class RbpConnectionCoordinatorTests
             title: "Project A",
             incarnation:
                 "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
-        var watcher = new RbpDocContextWatcher(channel);
+        var reader = new ScriptedFreshResumeProofReader();
+        reader.SetSnapshot(
+            revision: 7,
+            incarnation:
+                "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        var watcher = new RbpDocContextWatcher(
+            channel, freshResumeProofReader: reader);
 
         RbpFreshDocumentContext? first = await watcher
             .ReadFreshResumeProofContextAsync("rs-8091", CancellationToken.None);
@@ -64,7 +71,8 @@ public sealed partial class RbpConnectionCoordinatorTests
 
         Assert.NotNull(first);
         Assert.NotNull(second);
-        Assert.Equal(2, channel.CallCount);
+        Assert.Equal(2, reader.CallCount);
+        Assert.Equal(0, channel.CallCount);
         Assert.Equal(7, first!.Freshness.SourceRevision);
         Assert.Equal(
             "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -74,9 +82,8 @@ public sealed partial class RbpConnectionCoordinatorTests
             second!.Context.GetRawText());
         Assert.True(channel.AllLeasesReleased);
 
-        channel.SetSnapshot(
+        reader.SetSnapshot(
             revision: 0,
-            title: "Project A",
             incarnation:
                 "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
         Assert.Null(await watcher.ReadFreshResumeProofContextAsync(
@@ -92,7 +99,11 @@ public sealed partial class RbpConnectionCoordinatorTests
             title: "Project A",
             incarnation:
                 "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc");
-        var watcher = new RbpDocContextWatcher(channel);
+        var reader = new ScriptedFreshResumeProofReader();
+        reader.SetSnapshot(9,
+            "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc");
+        var watcher = new RbpDocContextWatcher(
+            channel, freshResumeProofReader: reader);
         RbpFreshDocumentContext fresh = (await watcher
             .ReadFreshResumeProofContextAsync("rs-8091", CancellationToken.None))!;
 
@@ -1026,6 +1037,46 @@ public sealed partial class RbpConnectionCoordinatorTests
             _stop.Dispose();
             await _store.DisposeAsync();
             _directory.Dispose();
+        }
+    }
+
+    /// <summary>Test-only fresh-reader seam; it has no routed-channel fallback.</summary>
+    private sealed class ScriptedFreshResumeProofReader :
+        IRbpFreshResumeProofContextReader
+    {
+        private RbpFreshDocumentContext? _current;
+
+        internal int CallCount { get; private set; }
+
+        internal ScriptedFreshResumeProofReader() => SetSnapshot(
+            1,
+            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+
+        internal void SetSnapshot(long revision, string incarnation)
+        {
+            if (!RbpDocumentContextDiagnosticPair.TryCreate(
+                    revision, incarnation,
+                    out RbpDocumentContextDiagnosticPair? freshness))
+            {
+                _current = null;
+                return;
+            }
+
+            using JsonDocument document = JsonDocument.Parse("""
+                {"documents":[],"active_document":null,"active_view":null}
+                """);
+            _current = new RbpFreshDocumentContext(
+                document.RootElement.Clone(), freshness!);
+        }
+
+        public Task<RbpFreshDocumentContext?> ReadAsync(
+            string rsid,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Assert.False(string.IsNullOrEmpty(rsid));
+            CallCount++;
+            return Task.FromResult(_current);
         }
     }
 }

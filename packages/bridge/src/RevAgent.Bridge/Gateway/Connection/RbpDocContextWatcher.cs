@@ -5,6 +5,7 @@ using Newtonsoft.Json.Linq;
 using RevAgent.Bridge.AddinLoopback;
 using RevAgent.Bridge.Gateway.Dispatch;
 using RevAgent.Bridge.Gateway.Protocol;
+using RevAgent.Bridge.Runtime;
 using RevAgent.Contracts.Rbp;
 
 namespace RevAgent.Bridge.Gateway.Connection;
@@ -248,6 +249,7 @@ internal sealed class RbpDocContextWatcher
 
     private readonly object _sync = new();
     private readonly IRbpInvocationChannel _channel;
+    private readonly IRbpFreshResumeProofContextReader? _freshResumeProofReader;
     private readonly IRbpCoordinatorClock _clock;
     private readonly TimeSpan _pollTimeout;
     private readonly Func<RbpDocumentContextObservation, ValueTask>?
@@ -261,11 +263,13 @@ internal sealed class RbpDocContextWatcher
         IRbpInvocationChannel channel,
         IRbpCoordinatorClock? clock = null,
         TimeSpan? pollTimeout = null,
+        IRbpFreshResumeProofContextReader? freshResumeProofReader = null,
         Func<RbpDocumentContextObservation, ValueTask>?
             onObservation = null)
     {
         _channel = channel ??
             throw new ArgumentNullException(nameof(channel));
+        _freshResumeProofReader = freshResumeProofReader;
         _clock = clock ?? SystemRbpCoordinatorClock.Instance;
         if (pollTimeout is { } timeout && timeout <= TimeSpan.Zero)
         {
@@ -381,47 +385,13 @@ internal sealed class RbpDocContextWatcher
             CancellationToken token)
     {
         ArgumentException.ThrowIfNullOrEmpty(rsid);
-        SnapshotRead read;
-        try
-        {
-            read = await ReadSnapshotAsync(rsid, token).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch
-        {
-            return null;
-        }
-
-        AddinDocumentContextSnapshot? snapshot = read.Snapshot;
-        if (read.RouteFailure || snapshot is null ||
-            snapshot.CacheState != DocumentContextCacheState.Ready ||
-            !RbpDocumentContextDiagnosticPair.TryCreate(
-                snapshot.Revision,
-                snapshot.CacheIncarnationDigest,
-                out RbpDocumentContextDiagnosticPair? freshness))
-        {
-            return null;
-        }
-
-        try
-        {
-            string normalized = DocumentContextMapper
-                .NormalizeForComparison(snapshot);
-            using JsonDocument document = JsonDocument.Parse(normalized);
-            return new RbpFreshDocumentContext(
-                document.RootElement.Clone(),
-                freshness!);
-        }
-        catch
-        {
-            // The local response was completed but cannot be represented as
-            // the frozen RBP context.  It is never downgraded to a legacy
-            // proof or an earlier watcher emission.
-            return null;
-        }
+        // Pre-resume authority is deliberately a different, least-authority
+        // path from the standing routed watcher.  No route fallback is safe:
+        // an absent route before matching resume_ack must remain absent.
+        return _freshResumeProofReader is null
+            ? null
+            : await _freshResumeProofReader.ReadAsync(rsid, token)
+                .ConfigureAwait(false);
     }
 
     /// <summary>

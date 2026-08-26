@@ -164,8 +164,12 @@ public sealed partial class RbpConnectionCoordinatorTests
             RbpJournalTestData.Options(),
             new TestRecoveryPayloadProtector());
         var responder = new ScriptedGatewayResponder(clock);
-        var first = new FakeConnectionCycle(responder.Respond);
-        var second = new FakeConnectionCycle(responder.Respond);
+        var first = new FakeConnectionCycle(responder.Respond,
+            grantedConnectionCapabilities: RouteProofCapabilities(),
+            connectionId: "019f9add-7a83-7d11-a6a9-d2f8108c0201");
+        var second = new FakeConnectionCycle(responder.Respond,
+            grantedConnectionCapabilities: RouteProofCapabilities(),
+            connectionId: "019f9add-7a83-7d11-a6a9-d2f8108c0202");
         RbpRecoveryCarrierReservation reservation =
             await PrepareRecoveryReservationAsync(store);
         var observations = new RecordingRecoveryCarrierObservationSink();
@@ -175,12 +179,12 @@ public sealed partial class RbpConnectionCoordinatorTests
             new MutableSessionCatalog(LocalSession(8080, 1000)),
             new RbpConnectionCoordinatorOptions(
                 new Uri("wss://gateway.revagent.app/bridge/v1"),
-                new RbpHelloProfile("0.1.0", "WS01", "Windows 11",
-                    new[] { "2026.07.26.0" })),
+                RouteProofHelloProfile()),
             new RecoveryDispatcher(reservation),
             new RecordingInboundJournal(),
             clock,
             new FixedRandomSource(0),
+            docContextWatcher: RouteProofWatcher(clock),
             recoveryCarrierObservationSink: observations);
         using var stop = new CancellationTokenSource();
 
@@ -289,7 +293,9 @@ public sealed partial class RbpConnectionCoordinatorTests
             RbpJournalTestData.Options(), new TestRecoveryPayloadProtector());
         var responder = new ScriptedGatewayResponder(clock);
         var cycle = new FakeConnectionCycle(envelope =>
-            envelope.Type == "heartbeat" ? null : responder.Respond(envelope));
+            envelope.Type == "heartbeat" ? null : responder.Respond(envelope),
+            grantedConnectionCapabilities: RouteProofCapabilities(),
+            connectionId: "019f9add-7a83-7d11-a6a9-d2f8108c0205");
         RbpRecoveryCarrierReservation reservation =
             await PrepareRecoveryReservationAsync(store);
         var observations = new RecordingRecoveryCarrierObservationSink();
@@ -298,10 +304,9 @@ public sealed partial class RbpConnectionCoordinatorTests
             new MutableSessionCatalog(LocalSession(8080, 1000)),
             new RbpConnectionCoordinatorOptions(
                 new Uri("wss://gateway.revagent.app/bridge/v1"),
-                new RbpHelloProfile("0.1.0", "WS01", "Windows 11",
-                    new[] { "2026.07.26.0" })),
+                RouteProofHelloProfile()),
             new RecoveryDispatcher(reservation), new RecordingInboundJournal(),
-            clock, new FixedRandomSource(0),
+            clock, new FixedRandomSource(0), RouteProofWatcher(clock),
             recoveryCarrierObservationSink: observations);
         using var stop = new CancellationTokenSource();
 
@@ -421,20 +426,26 @@ public sealed partial class RbpConnectionCoordinatorTests
             RbpJournalTestData.Options(), new TestRecoveryPayloadProtector());
         var responder = new ScriptedGatewayResponder(clock);
         var first = new FakeConnectionCycle(envelope =>
-            envelope.Type == "heartbeat" ? null : responder.Respond(envelope));
+            envelope.Type == "heartbeat" ? null : responder.Respond(envelope),
+            grantedConnectionCapabilities: RouteProofCapabilities(),
+            connectionId: "019f9add-7a83-7d11-a6a9-d2f8108c0203");
         RbpRecoveryCarrierReservation reservation =
             await PrepareRecoveryReservationAsync(store);
         var second = new FakeConnectionCycle(envelope =>
             envelope.Type == "session_resume"
                 ? RecoveryResumeAck(clock, envelope,
                     reservation.CurrentReservedSequence + 1)
-                : envelope.Type == "heartbeat" ? null : responder.Respond(envelope));
+                : envelope.Type == "heartbeat" ? null : responder.Respond(envelope),
+            grantedConnectionCapabilities: RouteProofCapabilities(),
+            connectionId: "019f9add-7a83-7d11-a6a9-d2f8108c0204");
         var observations = new RecordingRecoveryCarrierObservationSink();
         var coordinator = Coordinator(
             new FakeConnectionCycleFactory(first, second), store,
             new MutableSessionCatalog(LocalSession(8080, 1000)), clock,
             new RecordingInboundJournal(),
             invocationDispatcher: new RecoveryDispatcher(reservation),
+            helloProfile: RouteProofHelloProfile(),
+            docContextWatcher: RouteProofWatcher(clock),
             recoveryCarrierObservationSink: observations);
         using var stop = new CancellationTokenSource();
 
@@ -491,14 +502,18 @@ public sealed partial class RbpConnectionCoordinatorTests
             RbpJournalTestData.Options(), new TestRecoveryPayloadProtector());
         var responder = new ScriptedGatewayResponder(clock);
         var first = new FakeConnectionCycle(envelope =>
-            envelope.Type == "heartbeat" ? null : responder.Respond(envelope));
+            envelope.Type == "heartbeat" ? null : responder.Respond(envelope),
+            grantedConnectionCapabilities: RouteProofCapabilities(),
+            connectionId: "019f9add-7a83-7d11-a6a9-d2f8108c0203");
         RbpRecoveryCarrierReservation reservation =
             await PrepareRecoveryReservationAsync(store);
         var second = new FakeConnectionCycle(envelope =>
             envelope.Type == "session_resume"
                 ? RecoveryResumeAck(clock, envelope,
                     reservation.CurrentReservedSequence)
-                : envelope.Type == "heartbeat" ? null : responder.Respond(envelope));
+                : envelope.Type == "heartbeat" ? null : responder.Respond(envelope),
+            grantedConnectionCapabilities: RouteProofCapabilities(),
+            connectionId: "019f9add-7a83-7d11-a6a9-d2f8108c0204");
         var observations = new RecordingRecoveryCarrierObservationSink();
         int prePeerCalls = 0;
         var prePeerEntered = new TaskCompletionSource(
@@ -508,10 +523,10 @@ public sealed partial class RbpConnectionCoordinatorTests
             new MutableSessionCatalog(LocalSession(8080, 1000)),
             new RbpConnectionCoordinatorOptions(
                 new Uri("wss://gateway.revagent.app/bridge/v1"),
-                new RbpHelloProfile("0.1.0", "WS01", "Windows 11",
-                    new[] { "2026.07.26.0" })),
+                RouteProofHelloProfile()),
             new RecoveryDispatcher(reservation), new RecordingInboundJournal(),
             clock, new FixedRandomSource(0),
+            docContextWatcher: RouteProofWatcher(clock),
             beforeRecoveryTerminalWrite: _ =>
             {
                 if (Interlocked.Increment(ref prePeerCalls) == 1)
@@ -573,7 +588,10 @@ public sealed partial class RbpConnectionCoordinatorTests
         Assert.Null(await store.GetCorrelatedRecoveryPayloadAsync(
             reservation.Rsid, reservation.OriginInvocationId,
             reservation.ResultDigest));
-        _ = Assert.Single(observations.Rows, item =>
+        await EventuallyAsync(() => observations.Rows.ToArray().Any(item =>
+            item.Phase == RbpRecoveryCarrierObservationPhase.Acknowledged &&
+            item.Sequence == restart.Sequence));
+        _ = Assert.Single(observations.Rows.ToArray(), item =>
             item.Phase == RbpRecoveryCarrierObservationPhase.Acknowledged &&
             item.Sequence == restart.Sequence);
         Assert.Equal(partial.Sequence!.Value + 1, restart.Sequence);
@@ -593,8 +611,12 @@ public sealed partial class RbpConnectionCoordinatorTests
             RbpJournalTestData.Options(),
             new TestRecoveryPayloadProtector());
         var responder = new ScriptedGatewayResponder(clock);
-        var first = new FakeConnectionCycle(responder.Respond);
-        var second = new FakeConnectionCycle(responder.Respond);
+        var first = new FakeConnectionCycle(responder.Respond,
+            grantedConnectionCapabilities: RouteProofCapabilities(),
+            connectionId: "019f9add-7a83-7d11-a6a9-d2f8108c0206");
+        var second = new FakeConnectionCycle(responder.Respond,
+            grantedConnectionCapabilities: RouteProofCapabilities(),
+            connectionId: "019f9add-7a83-7d11-a6a9-d2f8108c0207");
         RbpRecoveryCarrierReservation reservation =
             await PrepareRecoveryReservationAsync(store);
         var dispatcher = new RecoveryDispatcher(reservation);
@@ -610,12 +632,11 @@ public sealed partial class RbpConnectionCoordinatorTests
             new MutableSessionCatalog(LocalSession(8080, 1000)),
             new RbpConnectionCoordinatorOptions(
                 new Uri("wss://gateway.revagent.app/bridge/v1"),
-                new RbpHelloProfile("0.1.0", "WS01", "Windows 11",
-                    new[] { "2026.07.26.0" })),
+                RouteProofHelloProfile()),
             dispatcher,
             new RecordingInboundJournal(),
             clock,
-            new FixedRandomSource(0),
+            new FixedRandomSource(0), RouteProofWatcher(clock),
             onDispatchDiagnostic: diagnostics.Enqueue,
             beforeRecoveryCarrierWrite: _ =>
             {
@@ -735,7 +756,9 @@ public sealed partial class RbpConnectionCoordinatorTests
         var channel = new ScriptedDocContextChannel();
         channel.SetSnapshot(7, "Project A",
             "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
-        var watcher = new RbpDocContextWatcher(channel, clock);
+        var watcher = new RbpDocContextWatcher(
+            channel, clock,
+            freshResumeProofReader: new ScriptedFreshResumeProofReader());
         var recovery = new RecordingRecoveryCarrierObservationSink();
         var reconnect = new RecordingReconnectObservationSink();
         var coordinator = new RbpConnectionCoordinator(
@@ -896,7 +919,9 @@ public sealed partial class RbpConnectionCoordinatorTests
         var channel = new ScriptedDocContextChannel();
         channel.SetSnapshot(1, "Project A",
             "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
-        return new RbpDocContextWatcher(channel, clock);
+        return new RbpDocContextWatcher(
+            channel, clock,
+            freshResumeProofReader: new ScriptedFreshResumeProofReader());
     }
 
     private static RbpEnvelope RecoveryResumeAck(

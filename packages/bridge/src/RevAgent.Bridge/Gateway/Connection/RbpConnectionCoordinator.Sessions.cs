@@ -246,6 +246,12 @@ internal sealed partial class RbpConnectionCoordinator
                         parsed.ResumeExpiresAt,
                         context.Token)
                     .ConfigureAwait(false);
+            if (!IsCurrentContext(context))
+            {
+                throw new RbpCoordinatorException(
+                    RbpCoordinatorErrorCode.SessionAuthorityConflict,
+                    "The resume connection generation changed before route publication.");
+            }
             if (payload.RouteAuthorityCheckpoint is { } checkpoint)
             {
                 MarkRouteAuthorityCheckpoint(context, parsed.Rsid, checkpoint);
@@ -255,9 +261,9 @@ internal sealed partial class RbpConnectionCoordinator
                 new RbpSessionEvent(
                     RbpSessionEventType.Resumed,
                     Rsid: parsed.Rsid));
-            BindRegisteredRoute(parsed.Rsid, local);
             context.AddBoundSession(
                 new BoundSession(local, applied.Session, lifecycle));
+            BindRegisteredRoute(context, parsed.Rsid, local, lifecycle);
             context.QueueRetransmit(applied.Retransmit);
 
             context.AcknowledgeResumeApplied(candidate.Session.Rsid);
@@ -452,14 +458,20 @@ internal sealed partial class RbpConnectionCoordinator
                             parsed.GrantedCapabilities),
                         context.Token)
                     .ConfigureAwait(false);
+            if (!IsCurrentContext(context))
+            {
+                throw new RbpCoordinatorException(
+                    RbpCoordinatorErrorCode.SessionAuthorityConflict,
+                    "The registration connection generation changed before route publication.");
+            }
             lifecycle = AdvanceSession(
                 lifecycle,
                 new RbpSessionEvent(
                     RbpSessionEventType.Registered,
                     Rsid: parsed.Rsid));
-            BindRegisteredRoute(parsed.Rsid, local);
             context.AddBoundSession(
                 new BoundSession(local, stored, lifecycle));
+            BindRegisteredRoute(context, parsed.Rsid, local, lifecycle);
             context.AcknowledgeRegistrationApplied(
                 local.LocalSessionKey);
             StartDocContextWatch(context, parsed.Rsid, local);
@@ -478,8 +490,10 @@ internal sealed partial class RbpConnectionCoordinator
     }
 
     private void BindRegisteredRoute(
+        ConnectionCycleContext context,
         string rsid,
-        RbpLocalSessionSnapshot local)
+        RbpLocalSessionSnapshot local,
+        RbpSessionLifecycleState lifecycle)
     {
         IRbpSessionRouteBindingAuthority? authority =
             _options.SessionRouteBindingAuthority;
@@ -488,7 +502,10 @@ internal sealed partial class RbpConnectionCoordinator
             return;
         }
 
-        if (!authority.TryBindRegisteredSession(rsid, local.LocalSessionKey))
+        if (!IsCurrentContext(context) ||
+            lifecycle.Phase != RbpSessionPhase.Registered ||
+            !authority.TryBindRegisteredSession(
+                rsid, local.LocalSessionKey, context.Generation))
         {
             throw new RbpCoordinatorException(
                 RbpCoordinatorErrorCode.SessionRouteBindingFailed,
@@ -502,6 +519,7 @@ internal sealed partial class RbpConnectionCoordinator
         BoundSession session,
         RbpSessionUnregisterReason reason)
     {
+        RevokeBoundRoute(context, session.Stored.Rsid);
         RbpUnregisterTombstone tombstone =
             await _journal.RecordUnregisterIntentAsync(
                     session.Stored.Rsid,
@@ -567,6 +585,7 @@ internal sealed partial class RbpConnectionCoordinator
         string rsid,
         RbpSessionUnregisterReason reason)
     {
+        RevokeBoundRoute(context, rsid);
         RbpUnregisterTombstone tombstone =
             await _journal.RecordUnregisterIntentAsync(
                     rsid,
@@ -576,6 +595,25 @@ internal sealed partial class RbpConnectionCoordinator
         StopDocContextWatch(rsid);
         await SendUnregisterAsync(context, tombstone).ConfigureAwait(false);
     }
+
+    private void BeginRouteAuthorityEpoch(long epoch)
+    {
+        IRbpSessionRouteBindingAuthority? authority =
+            _options.SessionRouteBindingAuthority;
+        if (authority is not null && !authority.BeginConnectionEpoch(epoch))
+        {
+            throw new RbpCoordinatorException(
+                RbpCoordinatorErrorCode.SessionRouteBindingFailed,
+                "The route authority rejected the new connection epoch.");
+        }
+    }
+
+    private void FenceRouteAuthorityEpoch(long epoch) =>
+        _options.SessionRouteBindingAuthority?.FenceConnectionEpoch(epoch);
+
+    private void RevokeBoundRoute(ConnectionCycleContext context, string rsid) =>
+        _options.SessionRouteBindingAuthority?.RevokeBoundSession(
+            rsid, context.Generation);
 
     private async Task SendUnregisterAsync(
         ConnectionCycleContext context,

@@ -238,7 +238,10 @@ internal static class Program
                         beforeRecoveryTerminalWrite,
                     AfterRecoveryCarrierWriteBeforeAck:
                         afterRecoveryCarrierWriteBeforeAck));
-            return new WorkerGatewayRuntime(coordinator, catalog, journal, carrierProducer: carrier);
+            return new WorkerGatewayRuntime(
+                coordinator,
+                ownedJournal: journal,
+                carrierProducer: carrier);
         }
         catch
         {

@@ -325,12 +325,7 @@ public sealed partial class RbpConnectionCoordinatorTests
                         new RecordingRouteResolver()),
                     clock,
                     new FixedRandomSource(0)));
-        var binder = new RecordingRouteBinder();
-        await using var runtime = new WorkerGatewayRuntime(
-            coordinator,
-            binder,
-            ownedJournal: null,
-            bindingRefreshInterval: TimeSpan.FromMilliseconds(10));
+        await using var runtime = new WorkerGatewayRuntime(coordinator);
         var service = new WorkerGatewayRuntimeService(
             () => runtime,
             new RuntimeLifetime(),
@@ -340,17 +335,15 @@ public sealed partial class RbpConnectionCoordinatorTests
         await service.StartAsync(CancellationToken.None);
         try
         {
-            await EventuallyAsync(() => binder.Bound.Contains("rs-8080"));
+            await EventuallyAsync(() => coordinator.GetSnapshot().ActiveRsids.Contains("rs-8080"));
         }
         finally
         {
             await service.StopAsync(CancellationToken.None);
         }
 
-        // The pump never outlives the connection.
-        int settled = binder.PassCount;
-        await Task.Delay(60);
-        Assert.Equal(settled, binder.PassCount);
+        // There is no resolver-miss/background binding pump: route authority
+        // is published only by the acknowledged lifecycle path.
     }
 
     [Fact]
@@ -816,12 +809,18 @@ public sealed partial class RbpConnectionCoordinatorTests
 
         RbpLocalSessionSnapshot active = Assert.Single(
             await catalog.ReadAsync());
-        catalog.Bind("rs-revoked", active.LocalSessionKey);
+        Assert.True(catalog.BeginConnectionEpoch(1));
+        Assert.True(catalog.TryBindRegisteredSession("rs-revoked", active.LocalSessionKey, 1));
         Assert.NotNull(catalog.Resolve("rs-revoked"));
 
+        catalog.RevokeBoundSession("rs-revoked", 1);
         listenerAvailable = false;
         Assert.Empty(await catalog.ReadAsync());
         Assert.Null(catalog.Resolve("rs-revoked"));
+        // A late duplicate registration/resume acknowledgement from this
+        // epoch may not resurrect a session that was revoked.
+        Assert.False(catalog.TryBindRegisteredSession(
+            "rs-revoked", active.LocalSessionKey, 1));
     }
 
     [Fact]
@@ -838,15 +837,90 @@ public sealed partial class RbpConnectionCoordinatorTests
             "0.1.0-test",
             "WS01");
 
-        Assert.False(catalog.TryBindRegisteredSession("rs-preflight", "key"));
+        Assert.True(catalog.BeginConnectionEpoch(1));
+        Assert.False(catalog.TryBindRegisteredSession("rs-preflight", "key", 1));
         RbpLocalSessionSnapshot active = Assert.Single(await catalog.ReadAsync());
         Assert.True(catalog.TryBindRegisteredSession(
-            "rs-preflight", active.LocalSessionKey));
+            "rs-preflight", active.LocalSessionKey, 1));
         Assert.NotNull(catalog.Resolve("rs-preflight"));
     }
 
     [Fact]
-    public async Task WorkerCatalogRefreshPublishesNewHandleForBoundRsid()
+    public async Task WorkerCatalogFreshProofReadUsesExactDurableRsidWithoutPublishingRoute()
+    {
+        string? durableKey = null;
+        var transport = new ScriptedStatusTransport();
+        var router = new AddinSessionRouter(transport);
+        var catalog = new WorkerAddinSessionCatalog(
+            new AddinDiscovery(transport, new NoOpProcessAttestor()), router,
+            ScanConfiguration(), () => new FixedCredentialProvider(),
+            (rsid, _) => Task.FromResult<string?>(
+                rsid == "rs-direct" ? durableKey : null),
+            "0.1.0-test", "WS01");
+        RbpLocalSessionSnapshot active = Assert.Single(await catalog.ReadAsync());
+        durableKey = active.LocalSessionKey;
+
+        RbpFreshDocumentContext? fresh = await catalog.ReadAsync(
+            "rs-direct", CancellationToken.None);
+
+        Assert.NotNull(fresh);
+        Assert.Null(catalog.Resolve("rs-direct"));
+        Assert.Null(await catalog.ReadAsync("rs-wrong", CancellationToken.None));
+        Assert.Equal(1, transport.Methods.Count(
+            method => method == "get_document_context"));
+
+        // A stale/previous-cycle global route is never an alternate proof
+        // path. The direct reader refuses it before selecting a handle.
+        Assert.True(catalog.BeginConnectionEpoch(1));
+        Assert.True(catalog.TryBindRegisteredSession(
+            "rs-direct", active.LocalSessionKey, 1));
+        Assert.Null(await catalog.ReadAsync("rs-direct", CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task WorkerCatalogFreshProofReadFailsClosedOnWarmingTransportAndKeyDrift()
+    {
+        string? durableKey = null;
+        bool available = true;
+        string state = "ready";
+        int directLookupCount = 0;
+        bool driftDuringRead = false;
+        var transport = new ScriptedStatusTransport(
+            configureCall: (result, method) =>
+            {
+                if (method == "get_document_context") result["cacheState"] = state;
+            },
+            isAvailable: () => available);
+        var router = new AddinSessionRouter(transport);
+        var catalog = new WorkerAddinSessionCatalog(
+            new AddinDiscovery(transport, new NoOpProcessAttestor()), router,
+            ScanConfiguration(), () => new FixedCredentialProvider(),
+            (rsid, _) => Task.FromResult<string?>(rsid == "rs-direct"
+                ? driftDuringRead && ++directLookupCount == 2
+                    ? "other-key"
+                    : durableKey
+                : null),
+            "0.1.0-test", "WS01");
+        RbpLocalSessionSnapshot active = Assert.Single(await catalog.ReadAsync());
+        durableKey = active.LocalSessionKey;
+
+        state = "warming";
+        Assert.Null(await catalog.ReadAsync("rs-direct", CancellationToken.None));
+        state = "ready";
+        available = false;
+        Assert.Null(await catalog.ReadAsync("rs-direct", CancellationToken.None));
+        available = true;
+        durableKey = "other-key";
+        Assert.Null(await catalog.ReadAsync("rs-direct", CancellationToken.None));
+        durableKey = active.LocalSessionKey;
+        directLookupCount = 0;
+        driftDuringRead = true;
+        Assert.Null(await catalog.ReadAsync("rs-direct", CancellationToken.None));
+        Assert.Null(catalog.Resolve("rs-direct"));
+    }
+
+    [Fact]
+    public async Task WorkerCatalogRefreshFencesChangedHandleUntilNewAcknowledgedBind()
     {
         string addinVersion = "2026.07.22.0";
         var transport = new ScriptedStatusTransport(result =>
@@ -862,17 +936,42 @@ public sealed partial class RbpConnectionCoordinatorTests
             "WS01");
 
         RbpLocalSessionSnapshot first = Assert.Single(await catalog.ReadAsync());
-        Assert.True(catalog.TryBindRegisteredSession("rs-refresh", first.LocalSessionKey));
+        Assert.True(catalog.BeginConnectionEpoch(1));
+        Assert.True(catalog.TryBindRegisteredSession("rs-refresh", first.LocalSessionKey, 1));
         AddinSessionRouter.SessionHandle before = Assert.IsType<AddinSessionRouter.SessionHandle>(
             catalog.Resolve("rs-refresh"));
 
         addinVersion = "2026.07.22.1";
         _ = Assert.Single(await catalog.ReadAsync());
 
-        AddinSessionRouter.SessionHandle after = Assert.IsType<AddinSessionRouter.SessionHandle>(
-            catalog.Resolve("rs-refresh"));
-        Assert.NotSame(before, after);
-        Assert.True(after.Generation > before.Generation);
+        // Discovery/attestation refresh cannot republish an existing rsid to a
+        // different handle. A new matching session lifecycle acknowledgement
+        // is required before anything becomes dispatchable again.
+        Assert.Null(catalog.Resolve("rs-refresh"));
+    }
+
+    [Fact]
+    public async Task WorkerCatalogAttestationImageDriftFencesBoundRoute()
+    {
+        string image = @"C:\Program Files\Autodesk\Revit 2026\Revit.exe";
+        var transport = new ScriptedStatusTransport(
+            attestation: () => new AddinProcessAttestation(
+                new AddinProcessIdentity(4242, ScriptedStartTimeFileTimeUtc),
+                "2026", image));
+        var router = new AddinSessionRouter(transport);
+        var catalog = new WorkerAddinSessionCatalog(
+            new AddinDiscovery(transport, new NoOpProcessAttestor()), router,
+            ScanConfiguration(), () => new FixedCredentialProvider(),
+            (_, _) => Task.FromResult<string?>(null), "0.1.0-test", "WS01");
+        RbpLocalSessionSnapshot active = Assert.Single(await catalog.ReadAsync());
+        Assert.True(catalog.BeginConnectionEpoch(1));
+        Assert.True(catalog.TryBindRegisteredSession("rs-attested", active.LocalSessionKey, 1));
+        Assert.NotNull(catalog.Resolve("rs-attested"));
+
+        image = @"C:\Unexpected\Revit.exe";
+        _ = Assert.Single(await catalog.ReadAsync());
+
+        Assert.Null(catalog.Resolve("rs-attested"));
     }
 
     [Fact]
@@ -891,7 +990,8 @@ public sealed partial class RbpConnectionCoordinatorTests
             "0.1.0-test",
             "WS01");
         RbpLocalSessionSnapshot active = Assert.Single(await catalog.ReadAsync());
-        Assert.True(catalog.TryBindRegisteredSession("rs-removed", active.LocalSessionKey));
+        Assert.True(catalog.BeginConnectionEpoch(1));
+        Assert.True(catalog.TryBindRegisteredSession("rs-removed", active.LocalSessionKey, 1));
         var channel = new RbpRoutedInvocationChannel(router, catalog);
 
         listenerAvailable = false;
@@ -920,7 +1020,8 @@ public sealed partial class RbpConnectionCoordinatorTests
             "0.1.0-test",
             "WS01");
         RbpLocalSessionSnapshot active = Assert.Single(await catalog.ReadAsync());
-        Assert.True(catalog.TryBindRegisteredSession("rs-document", active.LocalSessionKey));
+        Assert.True(catalog.BeginConnectionEpoch(1));
+        Assert.True(catalog.TryBindRegisteredSession("rs-document", active.LocalSessionKey, 1));
         var channel = new RbpRoutedInvocationChannel(router, catalog);
 
         RbpAddinOutcome outcome = await channel.InvokeAsync(
@@ -960,12 +1061,20 @@ public sealed partial class RbpConnectionCoordinatorTests
             "WS01");
         RbpLocalSessionSnapshot active = Assert.Single(await catalog.ReadAsync());
 
-        Assert.False(catalog.TryBindRegisteredSession("rs-bind", "unknown"));
+        Assert.True(catalog.BeginConnectionEpoch(1));
+        Assert.False(catalog.TryBindRegisteredSession("rs-bind", "unknown", 1));
         Assert.True(catalog.TryBindRegisteredSession(
-            "rs-bind", active.LocalSessionKey));
+            "rs-bind", active.LocalSessionKey, 1));
         Assert.False(catalog.TryBindRegisteredSession(
-            "rs-bind", "other-local-session"));
+            "rs-bind", "other-local-session", 1));
         Assert.NotNull(catalog.Resolve("rs-bind"));
+        catalog.FenceConnectionEpoch(1);
+        Assert.Null(catalog.Resolve("rs-bind"));
+        Assert.False(catalog.TryBindRegisteredSession(
+            "rs-bind", active.LocalSessionKey, 1));
+        Assert.True(catalog.BeginConnectionEpoch(2));
+        Assert.True(catalog.TryBindRegisteredSession(
+            "rs-bind", active.LocalSessionKey, 2));
     }
 
     [Fact]
@@ -1042,15 +1151,23 @@ public sealed partial class RbpConnectionCoordinatorTests
     private sealed class ScriptedStatusTransport : IAddinTransport
     {
         private readonly Action<JObject>? _configure;
+        private readonly Action<JObject, string>? _configureCall;
+        private readonly Func<AddinProcessAttestation>? _attestation;
         private readonly Func<bool> _isAvailable;
 
         internal ScriptedStatusTransport(
             Action<JObject>? configure = null,
+            Action<JObject, string>? configureCall = null,
+            Func<AddinProcessAttestation>? attestation = null,
             Func<bool>? isAvailable = null)
         {
             _configure = configure;
+            _configureCall = configureCall;
+            _attestation = attestation;
             _isAvailable = isAvailable ?? (() => true);
         }
+
+        internal ConcurrentQueue<string> Methods { get; } = new();
 
         public Task<AddinCallResult> InvokeAsync(
             AddinEndpoint endpoint,
@@ -1060,6 +1177,7 @@ public sealed partial class RbpConnectionCoordinatorTests
             IAddinProcessAttestor? processAttestor = null)
         {
             _ = processAttestor;
+            Methods.Enqueue(call.Method);
             preDispatchCancellationToken.ThrowIfCancellationRequested();
             transportShutdownToken.ThrowIfCancellationRequested();
             if (endpoint.Port != 8080 || !_isAvailable())
@@ -1087,6 +1205,7 @@ public sealed partial class RbpConnectionCoordinatorTests
             {
                 _configure?.Invoke(result);
             }
+            _configureCall?.Invoke(result, call.Method);
             var envelope = new JObject
             {
                 ["jsonrpc"] = "2.0",
@@ -1107,7 +1226,7 @@ public sealed partial class RbpConnectionCoordinatorTests
                         BytesWrittenLowerBound: 5,
                         RequestFullyWritten: true,
                         ResponseBytesObserved: 5),
-                    new AddinProcessAttestation(
+                    _attestation?.Invoke() ?? new AddinProcessAttestation(
                         new AddinProcessIdentity(
                             4242,
                             ScriptedStartTimeFileTimeUtc),
@@ -1145,6 +1264,7 @@ public sealed partial class RbpConnectionCoordinatorTests
               "documentContextContractVersion":1,
               "capturedAtUtc":"2026-08-24T00:00:00.000Z",
               "revision":1,
+              "cache_incarnation_digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
               "cacheState":"ready",
               "unavailableReason":null,
               "documents":[],
@@ -1317,7 +1437,14 @@ public sealed partial class RbpConnectionCoordinatorTests
             return null;
         }
 
-        public bool TryBindRegisteredSession(string rsid, string localSessionKey)
+        public bool BeginConnectionEpoch(long epoch) => epoch > 0;
+
+        public void FenceConnectionEpoch(long epoch) => _bound.Clear();
+
+        public void RevokeBoundSession(string rsid, long epoch) =>
+            _bound.TryRemove(rsid, out _);
+
+        public bool TryBindRegisteredSession(string rsid, string localSessionKey, long epoch)
         {
             if (_bound.TryGetValue(rsid, out string? existing))
             {
@@ -1334,29 +1461,6 @@ public sealed partial class RbpConnectionCoordinatorTests
             }
 
             return false;
-        }
-    }
-
-    private sealed class RecordingRouteBinder : IRbpSessionRouteBinder
-    {
-        private int _passCount;
-
-        internal ConcurrentQueue<string> Bound { get; } = new();
-
-        internal int PassCount => Volatile.Read(ref _passCount);
-
-        public Task BindAsync(
-            IReadOnlyList<string> rsids,
-            CancellationToken cancellationToken)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            Interlocked.Increment(ref _passCount);
-            foreach (string rsid in rsids)
-            {
-                Bound.Enqueue(rsid);
-            }
-
-            return Task.CompletedTask;
         }
     }
 

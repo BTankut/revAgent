@@ -284,5 +284,18 @@ internal interface IRbpSessionRouteResolver
 /// </summary>
 internal interface IRbpSessionRouteBindingAuthority
 {
-    bool TryBindRegisteredSession(string rsid, string localSessionKey);
+    /// <summary>Begins one coordinator-owned route epoch and fences all prior routes.</summary>
+    bool BeginConnectionEpoch(long epoch);
+
+    /// <summary>Fences exactly the active epoch before its work is cancelled or drained.</summary>
+    void FenceConnectionEpoch(long epoch);
+
+    /// <summary>
+    /// Publishes a route only after the matching lifecycle acknowledgement is
+    /// durable and the coordinator has proved this exact epoch current.
+    /// </summary>
+    bool TryBindRegisteredSession(string rsid, string localSessionKey, long epoch);
+
+    /// <summary>Revokes the exact epoch's route when its session is withdrawn.</summary>
+    void RevokeBoundSession(string rsid, long epoch);
 }

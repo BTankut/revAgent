@@ -34,13 +34,6 @@ namespace RevAgent.Bridge.Runtime;
 internal sealed class WorkerGatewayRuntime : IAsyncDisposable
 {
     /// <summary>
-    /// How often the background pump reconciles the coordinator's active
-    /// <c>rsid</c> set against the durable session bindings.
-    /// </summary>
-    internal static readonly TimeSpan DefaultBindingRefreshInterval =
-        TimeSpan.FromMilliseconds(250);
-
-    /// <summary>
     /// The carrier producer's constructor sweep is recovery-only.  This pump
     /// keeps the seven-day terminal-fenced expiry policy alive for a long-lived
     /// worker without making any send path a cleanup authority.
@@ -49,35 +42,23 @@ internal sealed class WorkerGatewayRuntime : IAsyncDisposable
         TimeSpan.FromHours(1);
 
     private readonly RbpConnectionCoordinator _coordinator;
-    private readonly IRbpSessionRouteBinder? _binder;
     private readonly RbpJournalStore? _ownedJournal;
     private readonly RbpArtifactCarrierProducer? _carrierProducer;
-    private readonly TimeSpan _bindingRefreshInterval;
     private readonly TimeSpan _carrierSweepInterval;
     private int _disposed;
 
     internal WorkerGatewayRuntime(
         RbpConnectionCoordinator coordinator,
-        IRbpSessionRouteBinder? binder = null,
         RbpJournalStore? ownedJournal = null,
-        TimeSpan? bindingRefreshInterval = null,
         RbpArtifactCarrierProducer? carrierProducer = null,
         TimeSpan? carrierSweepInterval = null)
     {
         _coordinator = coordinator ??
             throw new ArgumentNullException(nameof(coordinator));
-        _binder = binder;
         _ownedJournal = ownedJournal;
         _carrierProducer = carrierProducer;
-        _bindingRefreshInterval =
-            bindingRefreshInterval ?? DefaultBindingRefreshInterval;
         _carrierSweepInterval =
             carrierSweepInterval ?? DefaultCarrierSweepInterval;
-        if (_bindingRefreshInterval <= TimeSpan.Zero)
-        {
-            throw new ArgumentOutOfRangeException(
-                nameof(bindingRefreshInterval));
-        }
         if (_carrierSweepInterval <= TimeSpan.Zero)
         {
             throw new ArgumentOutOfRangeException(nameof(carrierSweepInterval));
@@ -93,7 +74,6 @@ internal sealed class WorkerGatewayRuntime : IAsyncDisposable
         BridgeInstallLayout layout,
         ResolvedBridgeConfiguration configuration,
         RbpJournalOpenOptions? journalOptions = null,
-        TimeSpan? bindingRefreshInterval = null,
         Action<AddinDiscoveryEvidence>? onDiscovered = null,
         Action<string>? onDispatchDiagnostic = null,
         Func<RbpConnectionFailureObservation, ValueTask>?
@@ -159,7 +139,7 @@ internal sealed class WorkerGatewayRuntime : IAsyncDisposable
                                         .ConnectionCapabilities),
                             CredentialClaimInvalidator: credentialClaims,
                             SessionRouteBindingAuthority: catalog),
-                        new WorkerAddinDispatchSurface(router, catalog),
+                        new WorkerAddinDispatchSurface(router, catalog, catalog),
                         Clock: null,
                         Random: null,
                         OnDispatchDiagnostic: onDispatchDiagnostic,
@@ -169,10 +149,8 @@ internal sealed class WorkerGatewayRuntime : IAsyncDisposable
 
             return new WorkerGatewayRuntime(
                 coordinator,
-                catalog,
-                journal,
-                bindingRefreshInterval,
-                carrierProducer);
+                ownedJournal: journal,
+                carrierProducer: carrierProducer);
         }
         catch
         {
@@ -188,22 +166,18 @@ internal sealed class WorkerGatewayRuntime : IAsyncDisposable
     /// </summary>
     /// <remarks>
     /// The coordinator's own contract decides everything about retry. This
-    /// method only guarantees that the background binding pump never outlives
-    /// the connection and that a coordinator fault reaches the caller intact —
+    /// method only guarantees that bounded maintenance never outlives the
+    /// connection and that a coordinator fault reaches the caller intact —
     /// including <see cref="RbpCoordinatorErrorCode.NonDrainingConnectionAuthority"/>,
     /// which the host must turn into a process exit.
     /// </remarks>
     internal async Task RunAsync(CancellationToken cancellationToken)
     {
-        using var pumpCancellation =
-            CancellationTokenSource.CreateLinkedTokenSource(
-                cancellationToken);
-        Task pump = _binder is null
-            ? Task.CompletedTask
-            : RunBindingPumpAsync(pumpCancellation.Token);
+        using var backgroundCancellation =
+            CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         Task carrierSweep = _carrierProducer is null
             ? Task.CompletedTask
-            : RunCarrierSweepAsync(pumpCancellation.Token);
+            : RunCarrierSweepAsync(backgroundCancellation.Token);
         try
         {
             await _coordinator.RunAsync(cancellationToken)
@@ -211,8 +185,7 @@ internal sealed class WorkerGatewayRuntime : IAsyncDisposable
         }
         finally
         {
-            pumpCancellation.Cancel();
-            await pump.ConfigureAwait(false);
+            backgroundCancellation.Cancel();
             await carrierSweep.ConfigureAwait(false);
         }
     }
@@ -227,43 +200,6 @@ internal sealed class WorkerGatewayRuntime : IAsyncDisposable
         if (_ownedJournal is not null)
         {
             await _ownedJournal.DisposeAsync().ConfigureAwait(false);
-        }
-    }
-
-    private async Task RunBindingPumpAsync(CancellationToken cancellationToken)
-    {
-        IRbpSessionRouteBinder binder = _binder!;
-        while (!cancellationToken.IsCancellationRequested)
-        {
-            try
-            {
-                await binder
-                    .BindAsync(
-                        _coordinator.GetSnapshot().ActiveRsids,
-                        cancellationToken)
-                    .ConfigureAwait(false);
-            }
-            catch (OperationCanceledException)
-                when (cancellationToken.IsCancellationRequested)
-            {
-                return;
-            }
-            catch (Exception)
-            {
-                // Route binding is an optimisation over the fail-closed
-                // default: an unbound rsid resolves to a provable
-                // non-dispatch, so a failed pass is retried, never escalated.
-            }
-
-            try
-            {
-                await Task.Delay(_bindingRefreshInterval, cancellationToken)
-                    .ConfigureAwait(false);
-            }
-            catch (OperationCanceledException)
-            {
-                return;
-            }
         }
     }
 

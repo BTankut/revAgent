@@ -1,5 +1,5 @@
-using System.Collections.Concurrent;
 using System.Collections.ObjectModel;
+using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using RevAgent.Bridge.AddinLoopback;
@@ -8,6 +8,7 @@ using RevAgent.Bridge.Enrollment;
 using RevAgent.Bridge.Gateway.Connection;
 using RevAgent.Bridge.Gateway.Dispatch;
 using RevAgent.Contracts.AddinLoopback;
+using RevAgent.Contracts.Rbp;
 
 namespace RevAgent.Bridge.Runtime;
 
@@ -15,17 +16,15 @@ namespace RevAgent.Bridge.Runtime;
 /// Learns the durable <c>rsid</c> to local-session binding for the sessions
 /// the coordinator currently owns.
 /// </summary>
-/// <remarks>
-/// <see cref="IRbpSessionRouteResolver.Resolve"/> is synchronous by contract,
-/// while the binding it needs lives in SQLite. Rather than block a dispatch
-/// thread on the journal, the runtime pumps this seam in the background and an
-/// unbound <c>rsid</c> resolves to <see langword="null"/> — a provable
-/// non-dispatch — until the binding is known.
-/// </remarks>
-internal interface IRbpSessionRouteBinder
+/// <summary>
+/// Capability-scoped, read-only pre-resume context acquisition.  It accepts
+/// only an RBP session id; callers cannot select a handle, endpoint, process,
+/// method, parameters, or timeout.
+/// </summary>
+internal interface IRbpFreshResumeProofContextReader
 {
-    Task BindAsync(
-        IReadOnlyList<string> rsids,
+    Task<RbpFreshDocumentContext?> ReadAsync(
+        string rsid,
         CancellationToken cancellationToken);
 }
 
@@ -54,7 +53,7 @@ internal interface IRbpSessionRouteBinder
 internal sealed class WorkerAddinSessionCatalog :
     IRbpLocalSessionCatalog,
     IRbpSessionRouteResolver,
-    IRbpSessionRouteBinder,
+    IRbpFreshResumeProofContextReader,
     IRbpSessionRouteBindingAuthority
 {
     private static readonly Regex CapabilityPattern = new(
@@ -94,9 +93,10 @@ internal sealed class WorkerAddinSessionCatalog :
 
     private readonly Dictionary<string, BoundRoute> _routesByRsid =
         new(StringComparer.Ordinal);
-
-    private readonly ConcurrentDictionary<string, byte> _bindingsInFlight =
+    private readonly HashSet<string> _revokedRsidsInEpoch =
         new(StringComparer.Ordinal);
+    private long _activeRouteEpoch;
+    private long _highestRouteEpoch;
 
     internal WorkerAddinSessionCatalog(
         AddinDiscovery discovery,
@@ -190,6 +190,7 @@ internal sealed class WorkerAddinSessionCatalog :
         lock (_routeSync)
         {
             if (_routesByRsid.TryGetValue(rsid, out BoundRoute? route) &&
+                route.Epoch == _activeRouteEpoch &&
                 _handlesByLocalKey.TryGetValue(
                     route.LocalSessionKey,
                     out AddinSessionRouter.SessionHandle? current) &&
@@ -205,51 +206,138 @@ internal sealed class WorkerAddinSessionCatalog :
         }
 
         // Unknown or superseded binding. Returning null is the fail-closed
-        // answer: the routed channel reports a known non-dispatch and nothing
-        // reaches an add-in session whose identity was not proved here.
-        BeginBinding(rsid);
+        // answer: a resolver miss is pure lookup and can never construct a
+        // dispatch route by consulting the durable journal in the background.
         return null;
     }
 
-    /// <inheritdoc />
-    public async Task BindAsync(
-        IReadOnlyList<string> rsids,
+    /// <summary>
+    /// Reads the sole capability-scoped pre-resume proof input without using
+    /// route resolution or the routed invocation channel.  The durable
+    /// rsid-to-local-key relation and the catalog's current attested handle
+    /// are both re-read around the fixed, empty-parameter call.
+    /// </summary>
+    public async Task<RbpFreshDocumentContext?> ReadAsync(
+        string rsid,
         CancellationToken cancellationToken)
     {
-        ArgumentNullException.ThrowIfNull(rsids);
-        foreach (string rsid in rsids)
+        if (string.IsNullOrEmpty(rsid) || rsid.Length > 256) return null;
+
+        try
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            if (string.IsNullOrEmpty(rsid))
+            string? localKey = await _localSessionKeyLookup(rsid, cancellationToken)
+                .ConfigureAwait(false);
+            if (string.IsNullOrEmpty(localKey) || localKey.Length > 512) return null;
+
+            AddinSessionRouter.SessionHandle? handle;
+            lock (_routeSync)
             {
-                continue;
+                // A pre-resume route is authority corruption, not an
+                // alternate way to obtain this proof. Refuse rather than
+                // inheriting a stale connection's dispatch capability.
+                if (_routesByRsid.ContainsKey(rsid)) return null;
+                if (!_handlesByLocalKey.TryGetValue(localKey, out handle))
+                {
+                    return null;
+                }
             }
 
-            string? localKey = await _localSessionKeyLookup(
-                    rsid,
-                    cancellationToken)
+            var call = new AddinCall(
+                "route-proof-" + Guid.NewGuid().ToString("N"),
+                RbpDocContextWatcher.CachedContextMethod,
+                new Newtonsoft.Json.Linq.JObject(),
+                TimeSpan.FromSeconds(10));
+            AddinSessionRouter.InvocationLease lease = await _router
+                .InvokeAsync(handle, call, cancellationToken, cancellationToken)
                 .ConfigureAwait(false);
-            if (localKey is { Length: > 0 })
+            try
             {
-                _ = TryBindRegisteredSession(rsid, localKey);
+                AddinCallResult result = lease.GetResult();
+                AddinDocumentContextResponse response =
+                    AddinDocumentContextParser.ParseResponse(
+                        Encoding.UTF8.GetString(result.Response.RawPayload));
+                if (!string.Equals(response.RequestId, call.InvocationId,
+                        StringComparison.Ordinal) ||
+                    response.Context.CacheState != DocumentContextCacheState.Ready ||
+                    !RbpDocumentContextDiagnosticPair.TryCreate(
+                        response.Context.Revision,
+                        response.Context.CacheIncarnationDigest,
+                        out RbpDocumentContextDiagnosticPair? freshness))
+                {
+                    return null;
+                }
+
+                string? afterLocalKey = await _localSessionKeyLookup(
+                        rsid, cancellationToken).ConfigureAwait(false);
+                if (!string.Equals(localKey, afterLocalKey, StringComparison.Ordinal))
+                {
+                    return null;
+                }
+                lock (_routeSync)
+                {
+                    if (_routesByRsid.ContainsKey(rsid) ||
+                        !_handlesByLocalKey.TryGetValue(localKey, out var current) ||
+                        !SameHandle(handle, current))
+                    {
+                        return null;
+                    }
+                }
+
+                string normalized = DocumentContextMapper.NormalizeForComparison(
+                    response.Context);
+                using JsonDocument document = JsonDocument.Parse(normalized);
+                return new RbpFreshDocumentContext(
+                    document.RootElement.Clone(), freshness!);
+            }
+            finally
+            {
+                // The read is effect-free. Do not retain its single-flight
+                // lease after the response/durable mapping decision.
+                lease.ReleaseAfterDurableDecision();
             }
         }
-    }
-
-    /// <summary>
-    /// Test and recovery seam: records a known durable binding directly.
-    /// </summary>
-    internal void Bind(string rsid, string localSessionKey)
-    {
-        if (!TryBindRegisteredSession(rsid, localSessionKey))
+        catch (OperationCanceledException)
         {
-            throw new InvalidOperationException(
-                "The requested RBP route binding is not authoritative.");
+            return null;
+        }
+        catch
+        {
+            return null;
         }
     }
 
     /// <inheritdoc />
-    public bool TryBindRegisteredSession(string rsid, string localSessionKey)
+    public bool BeginConnectionEpoch(long epoch)
+    {
+        if (epoch <= 0) return false;
+        lock (_routeSync)
+        {
+            if (epoch <= _highestRouteEpoch) return false;
+            _highestRouteEpoch = epoch;
+            _activeRouteEpoch = epoch;
+            _routesByRsid.Clear();
+            _revokedRsidsInEpoch.Clear();
+            return true;
+        }
+    }
+
+    /// <inheritdoc />
+    public void FenceConnectionEpoch(long epoch)
+    {
+        lock (_routeSync)
+        {
+            if (_activeRouteEpoch != epoch) return;
+            _routesByRsid.Clear();
+            _revokedRsidsInEpoch.Clear();
+            _activeRouteEpoch = 0;
+        }
+    }
+
+    /// <inheritdoc />
+    public bool TryBindRegisteredSession(
+        string rsid,
+        string localSessionKey,
+        long epoch)
     {
         if (string.IsNullOrEmpty(rsid) || string.IsNullOrEmpty(localSessionKey))
         {
@@ -258,6 +346,8 @@ internal sealed class WorkerAddinSessionCatalog :
 
         lock (_routeSync)
         {
+            if (_activeRouteEpoch != epoch ||
+                _revokedRsidsInEpoch.Contains(rsid)) return false;
             if (!_handlesByLocalKey.TryGetValue(
                     localSessionKey,
                     out AddinSessionRouter.SessionHandle? current))
@@ -271,40 +361,28 @@ internal sealed class WorkerAddinSessionCatalog :
                     existing.LocalSessionKey,
                     localSessionKey,
                     StringComparison.Ordinal) &&
-                    SameHandle(existing.Handle, current);
+                    existing.Epoch == epoch && SameHandle(existing.Handle, current);
             }
 
             _routesByRsid.Add(
                 rsid,
-                new BoundRoute(localSessionKey, current));
+                new BoundRoute(localSessionKey, current, epoch));
             return true;
         }
     }
 
-    private void BeginBinding(string rsid)
+    /// <inheritdoc />
+    public void RevokeBoundSession(string rsid, long epoch)
     {
-        if (!_bindingsInFlight.TryAdd(rsid, 0))
+        if (string.IsNullOrEmpty(rsid)) return;
+        lock (_routeSync)
         {
-            return;
+            if (_activeRouteEpoch == epoch &&
+                _revokedRsidsInEpoch.Add(rsid))
+            {
+                _ = _routesByRsid.Remove(rsid);
+            }
         }
-
-        _ = Task.Run(async () =>
-        {
-            try
-            {
-                await BindAsync([rsid], CancellationToken.None)
-                    .ConfigureAwait(false);
-            }
-            catch (Exception)
-            {
-                // A binding miss stays fail-closed; the journal read is
-                // retried on the next dispatch attempt or background pump.
-            }
-            finally
-            {
-                _ = _bindingsInFlight.TryRemove(rsid, out _);
-            }
-        });
     }
 
     private void ReplaceHandles(
@@ -319,9 +397,11 @@ internal sealed class WorkerAddinSessionCatalog :
                 _handlesByLocalKey.Add(pair.Key, pair.Value);
             }
 
-            // Re-publish every bound rsid to the exact current router handle.
-            // Removing an unavailable key is equally atomic: no stale route
-            // can survive a successful reconciliation without its attestation.
+            // Discovery is not route authority. A refresh may retain an
+            // already-authorized route only when its exact handle identity and
+            // epoch still match; it must never publish/rebind an absent or
+            // replaced handle. Process-attestation drift is included in the
+            // router's registration identity, therefore produces a new handle.
             foreach (string rsid in _routesByRsid.Keys.ToArray())
             {
                 BoundRoute route = _routesByRsid[rsid];
@@ -332,10 +412,11 @@ internal sealed class WorkerAddinSessionCatalog :
                     _ = _routesByRsid.Remove(rsid);
                     continue;
                 }
-
-                _routesByRsid[rsid] = new BoundRoute(
-                    route.LocalSessionKey,
-                    current);
+                if (route.Epoch != _activeRouteEpoch ||
+                    !SameHandle(route.Handle, current))
+                {
+                    _ = _routesByRsid.Remove(rsid);
+                }
             }
         }
     }
@@ -352,7 +433,8 @@ internal sealed class WorkerAddinSessionCatalog :
 
     private sealed record BoundRoute(
         string LocalSessionKey,
-        AddinSessionRouter.SessionHandle Handle);
+        AddinSessionRouter.SessionHandle Handle,
+        long Epoch);
 
     private string ReadMachineFingerprint()
     {

@@ -18,7 +18,8 @@ namespace RevAgent.Bridge;
 /// </summary>
 internal sealed record WorkerAddinDispatchSurface(
     AddinSessionRouter SessionRouter,
-    IRbpSessionRouteResolver SessionRoutes);
+    IRbpSessionRouteResolver SessionRoutes,
+    IRbpFreshResumeProofContextReader? FreshResumeProofReader = null);
 
 /// <summary>
 /// Everything the worker host needs before it may own an RBP connection.
@@ -238,6 +239,8 @@ internal static class WorkerGatewayComposition
         var docContextWatcher = new RbpDocContextWatcher(
             channel,
             services.Clock,
+            freshResumeProofReader: surface.FreshResumeProofReader ??
+                surface.SessionRoutes as IRbpFreshResumeProofContextReader,
             onObservation: services.OnDocumentContextObservation);
 
         // Section 11 execution shares the routed channel and journal with the

@@ -374,6 +374,7 @@ internal sealed partial class RbpConnectionCoordinator
             .ConfigureAwait(false);
 
         ConnectionCycleContext? context = null;
+        long? routeAuthorityEpoch = null;
         try
         {
             ValidateCycleAcknowledgement(cycle.Acknowledgement);
@@ -391,6 +392,8 @@ internal sealed partial class RbpConnectionCoordinator
                         cycle.Acknowledgement.GrantedCapabilities));
 
             long generation = NextConnectionGeneration();
+            routeAuthorityEpoch = generation;
+            BeginRouteAuthorityEpoch(generation);
             await _journal.ActivateConnectionGenerationAsync(
                     generation,
                     serviceCancellationToken)
@@ -453,8 +456,17 @@ internal sealed partial class RbpConnectionCoordinator
         }
         finally
         {
+            // This also covers failure between BeginConnectionEpoch and
+            // context construction/journal activation.
+            if (routeAuthorityEpoch is { } begunEpoch)
+            {
+                FenceRouteAuthorityEpoch(begunEpoch);
+            }
             if (context is not null)
             {
+                // Route authority ends before cancellation/drain.  Any late
+                // callback from this connection must observe no dispatchable
+                // route, not a route retained until transport close finishes.
                 ClearRecoveryCarrierClaims(context);
                 bool serviceShutdown =
                     serviceCancellationToken.IsCancellationRequested;

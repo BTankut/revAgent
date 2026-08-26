@@ -845,6 +845,18 @@ internal sealed class AddinSessionRouter
                 ["build"] = status.Revit.Build,
                 ["processId"] = status.Revit.ProcessId,
             },
+            // The process attestation is part of handle authority, not merely
+            // an invocation-time check. Image/version/start identity drift
+            // advances the router handle generation and therefore fences any
+            // previously published RBP route during catalog reconciliation.
+            ["processAttestation"] = new JObject
+            {
+                ["processId"] = session.ProcessAttestation.Identity.ProcessId,
+                ["startTimeFileTimeUtc"] =
+                    session.ProcessAttestation.Identity.StartTimeFileTimeUtc,
+                ["revitVersion"] = session.ProcessAttestation.RevitVersion,
+                ["imagePath"] = session.ProcessAttestation.ImagePath,
+            },
             ["service"] = new JObject
             {
                 ["port"] = status.Service.Port,
