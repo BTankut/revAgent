@@ -354,33 +354,57 @@ describe("C39 terminal settlement before owner resource read", () => {
     ], settlement)).toBe(true);
   });
 
-  it("retries the live fence and times out without terminal settlement", async () => {
+  it("refreshes exactly once after settlement, then retries the live fence", async () => {
     const settlementAudit = c39TerminalAudit(origin, carrierHash, 9);
     const settledWorker = [
       c39WorkerObservation(carrierHash, "write", 9, 12, "c"),
       c39WorkerObservation(carrierHash, "ack", 9, 13, "c"),
     ];
+    const steps: string[] = [];
     let fenceAttempts = 0;
     await waitForC39TerminalSettlementAndLiveFence(
-      c39SettlementRuntime(settlementAudit, settledWorker, async () => {
-        fenceAttempts += 1;
-        if (fenceAttempts === 1) throw new Error("transient fence failure");
-      }),
+      c39SettlementRuntime(
+        settlementAudit,
+        settledWorker,
+        async () => { steps.push("refresh"); },
+        async () => {
+          steps.push("verify");
+          fenceAttempts += 1;
+          if (fenceAttempts === 1) throw new Error("transient fence failure");
+        },
+      ),
       origin,
       1,
       { now: () => 0, sleep: async () => {} },
     );
     expect(fenceAttempts).toBe(2);
+    expect(steps).toEqual(["refresh", "verify", "verify"]);
+  });
 
+  it("does not refresh or verify before settlement, and does not verify after refresh failure", async () => {
+    const settlementAudit = c39TerminalAudit(origin, carrierHash, 9);
+    const steps: string[] = [];
     await expect(waitForC39TerminalSettlementAndLiveFence(
       c39SettlementRuntime(settlementAudit, [
         c39WorkerObservation(carrierHash, "write", 8, 12, "c"),
         c39WorkerObservation(carrierHash, "ack", 8, 13, "c"),
-      ], async () => {}),
+      ], async () => { steps.push("refresh"); }, async () => { steps.push("verify"); }),
       origin,
       0,
       { now: () => 0, sleep: async () => {} },
     )).rejects.toThrow("C39 terminal settlement or live North dispatch fence did not become ready");
+    expect(steps).toEqual([]);
+
+    await expect(waitForC39TerminalSettlementAndLiveFence(
+      c39SettlementRuntime(settlementAudit, [
+        c39WorkerObservation(carrierHash, "write", 9, 12, "c"),
+        c39WorkerObservation(carrierHash, "ack", 9, 13, "c"),
+      ], async () => { throw new Error("bounded refresh failure"); }, async () => { steps.push("verify"); }),
+      origin,
+      1,
+      { now: () => 0, sleep: async () => {} },
+    )).rejects.toThrow("bounded refresh failure");
+    expect(steps).toEqual([]);
   });
 });
 
@@ -424,7 +448,7 @@ type C39RecoveryCarrierObservations = Awaited<ReturnType<
 >>;
 type C39TerminalSettlementRuntime = Pick<
   Awaited<ReturnType<typeof startRealTrioRuntimeFixture>>,
-  "supervisor" | "verifyNorthDispatchFence"
+  "supervisor" | "refreshNorthDispatchFenceAfterControl" | "verifyNorthDispatchFence"
 >;
 
 interface C39TerminalSettlement {
@@ -447,12 +471,20 @@ async function waitForC39TerminalSettlementAndLiveFence(
   const sleep = options.sleep ?? (async () => await new Promise<void>((resolve) => setTimeout(resolve, 200)));
   const deadline = now() + timeoutMs;
   let liveFenceVerified = false;
+  let routeRefreshAttempted = false;
   for (;;) {
     const audit = object(await runtime.supervisor.readRealCaseAudit());
     if (audit === null) throw new Error("C39 Gateway audit is not an object");
     const terminal = c39TerminalSettlement(audit, origin);
     const worker = await runtime.supervisor.readRecoveryCarrierObservations();
-    if (!liveFenceVerified) {
+    const terminalSettled = terminal !== null && c39TerminalAckSettled(worker, terminal);
+    if (terminalSettled && !routeRefreshAttempted) {
+      // This one bounded route-control edge refreshes the runtime's expected
+      // fence baseline. It never replaces the already-open owner MCP client.
+      routeRefreshAttempted = true;
+      await runtime.refreshNorthDispatchFenceAfterControl();
+    }
+    if (routeRefreshAttempted && !liveFenceVerified) {
       try {
         await runtime.verifyNorthDispatchFence();
         liveFenceVerified = true;
@@ -461,7 +493,7 @@ async function waitForC39TerminalSettlementAndLiveFence(
         // fence is retried before the protected owner read is permitted.
       }
     }
-    if (terminal !== null && c39TerminalAckSettled(worker, terminal) && liveFenceVerified) return;
+    if (terminalSettled && routeRefreshAttempted && liveFenceVerified) return;
     if (now() >= deadline) {
       throw new Error("C39 terminal settlement or live North dispatch fence did not become ready");
     }
@@ -543,6 +575,7 @@ function c39WorkerObservation(
 function c39SettlementRuntime(
   audit: Record<string, unknown>,
   worker: C39RecoveryCarrierObservations,
+  refreshNorthDispatchFenceAfterControl: () => Promise<void>,
   verifyNorthDispatchFence: () => Promise<void>,
 ): C39TerminalSettlementRuntime {
   return Object.freeze({
@@ -550,6 +583,7 @@ function c39SettlementRuntime(
       readRealCaseAudit: async () => audit,
       readRecoveryCarrierObservations: async () => worker,
     }),
+    refreshNorthDispatchFenceAfterControl,
     verifyNorthDispatchFence,
   }) as unknown as C39TerminalSettlementRuntime;
 }
