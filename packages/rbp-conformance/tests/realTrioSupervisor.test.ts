@@ -396,22 +396,32 @@ describe("WP-12 real-trio v2 session smoke reader", () => {
       value: {
         schema: "gateway.rbp-session/v2",
         rsid: "018f7f7e-1234-7abc-8def-1234567890ab",
-        binding: { binding: "wss", grantedCapabilities: ["batch_atomic", "doc_context_cached_v1", "route_rebind_proof_v1"] },
-        lifecycle: { sessionLifecycle: {
-          localSessionKey: "port:8080:pid:42:started:99",
-          phase: "registered",
-          dispatchAllowed: true,
-          rsid: "018f7f7e-1234-7abc-8def-1234567890ab",
-        } },
+        binding: { binding: "wss", grantedCapabilities: ["batch_atomic", "doc_context_cached_v1"] },
+        lifecycle: {
+          connectionLifecycle: {
+            phase: "steady",
+            nextAttemptIndex: 0,
+            selectedProtocol: 1,
+            grantedCapabilities: ["journal_v1", "route_rebind_proof_v1"],
+            retryPauseReason: null,
+            lastRetryDecision: null,
+          },
+          sessionLifecycle: {
+            localSessionKey: "port:8080:pid:42:started:99",
+            phase: "registered",
+            dispatchAllowed: true,
+            rsid: "018f7f7e-1234-7abc-8def-1234567890ab",
+          },
+        },
       },
     }],
   };
 
-  it("reads only the v2 nested binding grant and local session key before STOP", () => {
+  it("reads only split v2 session and hello_ack grants before STOP", () => {
     expect(readRbpSessionV2Readiness(v2Snapshot, "wss")).toEqual({
       rsid: "018f7f7e-1234-7abc-8def-1234567890ab",
       localSessionKey: "port:8080:pid:42:started:99",
-      grantedCapabilities: ["batch_atomic", "doc_context_cached_v1", "route_rebind_proof_v1"],
+      grantedCapabilities: ["batch_atomic", "doc_context_cached_v1"],
     });
   });
 
@@ -423,8 +433,70 @@ describe("WP-12 real-trio v2 session smoke reader", () => {
     expect(readRbpSessionV2Readiness(snapshot, "streamable_http_sse")).toEqual({
       rsid: "018f7f7e-1234-7abc-8def-1234567890ab",
       localSessionKey: "port:8080:pid:42:started:99",
-      grantedCapabilities: ["batch_atomic", "doc_context_cached_v1", "route_rebind_proof_v1"],
+      grantedCapabilities: ["batch_atomic", "doc_context_cached_v1"],
     });
+  });
+
+  it.each(["wss", "streamable_http_sse"] as const)("requires a persisted split grant for %s", (binding) => {
+    const snapshot = structuredClone(v2Snapshot);
+    snapshot.sessions[0]!.value.binding.binding = binding;
+    expect(readRbpSessionV2Readiness(snapshot, binding).grantedCapabilities).toEqual(["batch_atomic", "doc_context_cached_v1"]);
+  });
+
+  it("rejects a route proof capability placed only in session grants", () => {
+    const snapshot = structuredClone(v2Snapshot);
+    snapshot.sessions[0]!.value.binding.grantedCapabilities.push("route_rebind_proof_v1");
+    snapshot.sessions[0]!.value.lifecycle.connectionLifecycle.grantedCapabilities = [];
+    expect(() => readRbpSessionV2Readiness(snapshot, "wss")).toThrow(/nested grants/u);
+  });
+
+  it("traces a route proof capability placed only in session grants as redacted missing-route readiness", async () => {
+    let time = 0;
+    const snapshot = structuredClone(v2Snapshot);
+    snapshot.sessions[0]!.value.binding.grantedCapabilities.push("route_rebind_proof_v1");
+    snapshot.sessions[0]!.value.lifecycle.connectionLifecycle.grantedCapabilities = [];
+    await expect(pollRbpSessionV2Readiness({
+      expectedBinding: "wss",
+      isBridgeExited: () => false,
+      readSnapshot: async () => snapshot,
+      timeoutMs: 200,
+      intervalMs: 100,
+      now: () => time,
+      sleep: async (milliseconds) => { time += milliseconds; },
+    })).rejects.toSatisfy((error: unknown) =>
+      error instanceof RealTrioSessionReadinessPollError &&
+      error.readinessTrace.length === 3 &&
+      error.readinessTrace.every((trace) => trace.outcome === "MISSING_ROUTE_REBIND") &&
+      !JSON.stringify(error.readinessTrace).includes("route_rebind_proof_v1"));
+  });
+
+  it("traces an absent session batch grant distinctly from a connection route grant", async () => {
+    let time = 0;
+    const snapshot = structuredClone(v2Snapshot);
+    snapshot.sessions[0]!.value.binding.grantedCapabilities = ["doc_context_cached_v1"];
+    await expect(pollRbpSessionV2Readiness({
+      expectedBinding: "wss",
+      isBridgeExited: () => false,
+      readSnapshot: async () => snapshot,
+      timeoutMs: 200,
+      intervalMs: 100,
+      now: () => time,
+      sleep: async (milliseconds) => { time += milliseconds; },
+    })).rejects.toSatisfy((error: unknown) =>
+      error instanceof RealTrioSessionReadinessPollError &&
+      error.readinessTrace.length === 3 &&
+      error.readinessTrace.every((trace) => trace.outcome === "MISSING_BATCH") &&
+      !JSON.stringify(error.readinessTrace).includes("doc_context_cached_v1"));
+  });
+
+  it.each([
+    { connectionLifecycle: null },
+    { connectionLifecycle: { grantedCapabilities: "route_rebind_proof_v1" } },
+    { connectionLifecycle: { grantedCapabilities: ["route_rebind_proof_v1", 7] } },
+  ])("rejects malformed connection lifecycle %#", ({ connectionLifecycle }) => {
+    const snapshot = structuredClone(v2Snapshot);
+    (snapshot.sessions[0]!.value.lifecycle as { connectionLifecycle: unknown }).connectionLifecycle = connectionLifecycle;
+    expect(() => readRbpSessionV2Readiness(snapshot, "wss")).toThrow(/v2 session row is malformed|nested grants/u);
   });
 
   it.each([
@@ -432,8 +504,8 @@ describe("WP-12 real-trio v2 session smoke reader", () => {
     [{ sessions: [{ namespace: "gateway.rbp-session/v1", value: { grantedCapabilities: ["batch_atomic"] } }] }, /legacy or malformed/u],
     [{ sessions: [{ namespace: "gateway.rbp-session/v2", value: { schema: "gateway.rbp-session/v2", rsid: "r", binding: { binding: "wss", grantedCapabilities: ["batch_atomic"] }, lifecycle: { sessionLifecycle: { localSessionKey: "k" } }, grantedCapabilities: ["batch_atomic"] } }] }, /v2 session row is malformed/u],
     [{ sessions: [{ namespace: "gateway.rbp-session/v2", value: { schema: "gateway.rbp-session/v2", rsid: "r", binding: { binding: "streamable_http_sse", grantedCapabilities: ["batch_atomic"] }, lifecycle: { createdAtMs: 1, updatedAtMs: 2 } } }] }, /v2 session row is malformed/u],
-    [{ sessions: [{ namespace: "gateway.rbp-session/v2", value: { schema: "gateway.rbp-session/v2", rsid: "r", binding: { binding: "wss", grantedCapabilities: [] }, lifecycle: { sessionLifecycle: { localSessionKey: "k", phase: "registered", dispatchAllowed: true, rsid: "r" } } } }] }, /nested grants/u],
-    [{ sessions: [{ namespace: "gateway.rbp-session/v2", value: { schema: "gateway.rbp-session/v2", rsid: "r", binding: { binding: "wss", grantedCapabilities: ["batch_atomic"] }, lifecycle: { sessionLifecycle: { localSessionKey: "k", phase: "registered", dispatchAllowed: true, rsid: "r" } } } }] }, /nested grants/u],
+    [{ sessions: [{ namespace: "gateway.rbp-session/v2", value: { schema: "gateway.rbp-session/v2", rsid: "r", binding: { binding: "wss", grantedCapabilities: [] }, lifecycle: { sessionLifecycle: { localSessionKey: "k", phase: "registered", dispatchAllowed: true, rsid: "r" } } } }] }, /v2 session row is malformed/u],
+    [{ sessions: [{ namespace: "gateway.rbp-session/v2", value: { schema: "gateway.rbp-session/v2", rsid: "r", binding: { binding: "wss", grantedCapabilities: ["batch_atomic"] }, lifecycle: { sessionLifecycle: { localSessionKey: "k", phase: "registered", dispatchAllowed: true, rsid: "r" } } } }] }, /v2 session row is malformed/u],
   ] as const)("rejects absent, legacy, or non-nested v2 session readiness %#", (snapshot, expected) => {
     expect(() => readRbpSessionV2Readiness(snapshot, "wss")).toThrow(expected);
   });
@@ -503,7 +575,10 @@ describe("WP-12 real-trio v2 session smoke reader", () => {
       readSnapshot: async () => {
         reads += 1;
         const snapshot = structuredClone(v2Snapshot);
-        if (reads % 2 === 0) snapshot.sessions[0]!.value.binding.grantedCapabilities.reverse();
+        if (reads % 2 === 0) {
+          snapshot.sessions[0]!.value.binding.grantedCapabilities.reverse();
+          snapshot.sessions[0]!.value.lifecycle.connectionLifecycle.grantedCapabilities.reverse();
+        }
         return snapshot;
       },
       timeoutMs: 200,
@@ -528,7 +603,10 @@ describe("WP-12 real-trio v2 session smoke reader", () => {
         reads += 1;
         if (reads === 1) return { sessions: [] };
         const snapshot = structuredClone(v2Snapshot);
-        if (reads % 2 === 1) snapshot.sessions[0]!.value.binding.grantedCapabilities.reverse();
+        if (reads % 2 === 1) {
+          snapshot.sessions[0]!.value.binding.grantedCapabilities.reverse();
+          snapshot.sessions[0]!.value.lifecycle.connectionLifecycle.grantedCapabilities.reverse();
+        }
         return snapshot;
       },
       timeoutMs: 300,

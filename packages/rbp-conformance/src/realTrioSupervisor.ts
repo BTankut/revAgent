@@ -326,7 +326,7 @@ export interface RealTrioFailureDiagnostics {
 }
 
 export interface RealTrioReadinessTrace {
-  readonly outcome: "VALID" | "NO_ROW" | "MULTIPLE" | "LEGACY" | "INVALID_BINDING" | "RSID_MISMATCH" | "MISSING_BATCH" | "INVALID_LIFECYCLE" | "ERROR_TYPE";
+  readonly outcome: "VALID" | "NO_ROW" | "MULTIPLE" | "LEGACY" | "INVALID_BINDING" | "RSID_MISMATCH" | "MISSING_BATCH" | "MISSING_ROUTE_REBIND" | "INVALID_LIFECYCLE" | "ERROR_TYPE";
   readonly fingerprint: string | null;
   readonly rsidEqual: boolean | null;
   readonly batchAtomicPresent: boolean;
@@ -771,14 +771,19 @@ function traceReadinessSnapshot(
   const lifecycle = value.lifecycle.sessionLifecycle;
   if (typeof lifecycle.rsid !== "string" || lifecycle.rsid !== value.rsid) return invalid("RSID_MISMATCH");
   if (!Array.isArray(binding.grantedCapabilities) || !binding.grantedCapabilities.every((item) => typeof item === "string")) return invalid("ERROR_TYPE", "error");
-  const grants = binding.grantedCapabilities as string[];
-  if (!grants.includes("batch_atomic") || !grants.includes("route_rebind_proof_v1")) {
-    return invalid("MISSING_BATCH");
+  if (!isObject(value.lifecycle.connectionLifecycle) ||
+      !Array.isArray(value.lifecycle.connectionLifecycle.grantedCapabilities) ||
+      !value.lifecycle.connectionLifecycle.grantedCapabilities.every((item) => typeof item === "string")) {
+    return invalid("ERROR_TYPE", "error");
   }
+  const sessionGrants = binding.grantedCapabilities as string[];
+  const connectionGrants = value.lifecycle.connectionLifecycle.grantedCapabilities as string[];
+  if (!sessionGrants.includes("batch_atomic")) return invalid("MISSING_BATCH");
+  if (!connectionGrants.includes("route_rebind_proof_v1")) return invalid("MISSING_ROUTE_REBIND");
   if (typeof lifecycle.localSessionKey !== "string" || lifecycle.localSessionKey.length === 0 || lifecycle.phase !== "registered" || lifecycle.dispatchAllowed !== true) return invalid("INVALID_LIFECYCLE");
-  const fingerprint = hashPrefix(`${value.rsid}\u0000${lifecycle.localSessionKey}\u0000${grants.join("\u0001")}`);
+  const fingerprint = hashPrefix(`${value.rsid}\u0000${lifecycle.localSessionKey}\u0000${sessionGrants.join("\u0001")}\u0000${connectionGrants.join("\u0001")}`);
   const nextStable = fingerprint === priorFingerprint ? stableCount + 1 : 1;
-  return Object.freeze({ outcome: "VALID", fingerprint, rsidEqual: true, batchAtomicPresent: true, grantOrderHash: hashPrefix(grants.join("\u0001")), stableCount: nextStable, resetReason: priorFingerprint === null ? "initial" : fingerprint === priorFingerprint ? "initial" : "fingerprint_changed" });
+  return Object.freeze({ outcome: "VALID", fingerprint, rsidEqual: true, batchAtomicPresent: true, grantOrderHash: hashPrefix(`${sessionGrants.join("\u0001")}\u0000${connectionGrants.join("\u0001")}`), stableCount: nextStable, resetReason: priorFingerprint === null ? "initial" : fingerprint === priorFingerprint ? "initial" : "fingerprint_changed" });
 }
 
 /** Extracts the bounded, redacted real-process diagnostics through error wraps. */
@@ -986,7 +991,8 @@ function reconnectWatchObservations(value: JsonValue): readonly RealTrioReconnec
 /**
  * Reads only normalized v2 session rows from the conformance audit.  Older
  * top-level capability shapes are deliberately not tolerated: the durable
- * schema places grants in value.binding.grantedCapabilities.
+ * schema separates session grants in value.binding.grantedCapabilities from
+ * hello_ack connection grants in value.lifecycle.connectionLifecycle.
  */
 export function readRbpSessionV2Readiness(
   snapshot: JsonObject,
@@ -1002,13 +1008,16 @@ export function readRbpSessionV2Readiness(
   }
   const value = row.value;
   if (value.schema !== "gateway.rbp-session/v2" || typeof value.rsid !== "string" || value.rsid.length === 0 ||
-      !isObject(value.binding) || !isObject(value.lifecycle) || !isObject(value.lifecycle.sessionLifecycle)) {
+      !isObject(value.binding) || !isObject(value.lifecycle) || !isObject(value.lifecycle.sessionLifecycle) ||
+      !isObject(value.lifecycle.connectionLifecycle)) {
     throw new Error("real trio v2 session row is malformed");
   }
   if (value.binding.binding !== expectedBinding || !Array.isArray(value.binding.grantedCapabilities) ||
       !value.binding.grantedCapabilities.every((capability) => typeof capability === "string") ||
       !value.binding.grantedCapabilities.includes("batch_atomic") ||
-      !value.binding.grantedCapabilities.includes("route_rebind_proof_v1")) {
+      !Array.isArray(value.lifecycle.connectionLifecycle.grantedCapabilities) ||
+      !value.lifecycle.connectionLifecycle.grantedCapabilities.every((capability) => typeof capability === "string") ||
+      !value.lifecycle.connectionLifecycle.grantedCapabilities.includes("route_rebind_proof_v1")) {
     throw new Error("real trio v2 session binding or nested grants are invalid");
   }
   const lifecycle = value.lifecycle.sessionLifecycle;

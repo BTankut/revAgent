@@ -102,7 +102,7 @@ jobs:
           $artifactRoot = '.orchestration/artifacts/WP-12/C39/e-real-trio/${{ matrix.binding }}'
           New-Item -ItemType Directory -Force -Path $artifactRoot | Out-Null
           $log = Join-Path $artifactRoot 'real-trio.log'
-          npx vitest run --config packages/rbp-conformance/vitest.real-trio.config.ts -t "C39.*${{ matrix.binding }}" 2>&1 | Tee-Object -FilePath $log
+          npm run test:real-trio --workspace @revagent/rbp-conformance -- --testNamePattern "C39.*${{ matrix.binding }}" 2>&1 | Tee-Object -FilePath $log
           if ($LASTEXITCODE -ne 0) { throw "C39 ${{ matrix.binding }} real trio failed with exit code $LASTEXITCODE" }
           $summaryPath = Join-Path $artifactRoot 'summary.json'
           if (!(Test-Path -LiteralPath $summaryPath)) { throw 'C39 did not emit its bounded success summary.' }
