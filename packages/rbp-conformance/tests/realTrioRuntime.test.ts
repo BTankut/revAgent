@@ -112,7 +112,7 @@ describe("C39 recovery timeout diagnostics", () => {
     const message = c39RecoveryTimeoutMessage(true, "pending", worker, reconnect);
     expect(message).toBe("real C39 recovery evidence did not become coherent [audit_joined=true;partial_carrier_commit_failure=pending;materialized=1;write=1;restart_resend=0;ack=1;total=3;resume_ack_applied=1;watcher_started=2]");
     expect(message).not.toContain("sha256:");
-    expect(message).not.toContain("9");
+    expect(message).not.toContain("b".repeat(64));
   });
 });
 
