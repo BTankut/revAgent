@@ -379,7 +379,8 @@ public sealed partial class RbpConnectionCoordinatorTests
         try
         {
             await EventuallyAsync(() => routes.Resolved.Contains("rs-8080"));
-            Assert.Contains("rs-8080", routes.Bound);
+            _ = Assert.Single(routes.Bound, rsid => rsid == "rs-8080");
+            Assert.True(routes.IsBound("rs-8080"));
             Assert.Equal(0, routes.ResolveBeforeBindingCount);
             Assert.Contains(cycle.Sent, envelope => envelope.Type == "session_resume");
         }
@@ -388,6 +389,7 @@ public sealed partial class RbpConnectionCoordinatorTests
             stop.Cancel();
             await run.WaitAsync(TimeSpan.FromSeconds(5));
         }
+        Assert.False(routes.IsBound("rs-8080"));
     }
 
     [Fact]
@@ -1637,6 +1639,8 @@ public sealed partial class RbpConnectionCoordinatorTests
 
         internal int ResolveBeforeBindingCount =>
             Volatile.Read(ref _resolveBeforeBindingCount);
+
+        internal bool IsBound(string rsid) => _bound.ContainsKey(rsid);
 
         public AddinSessionRouter.SessionHandle? Resolve(string rsid)
         {
