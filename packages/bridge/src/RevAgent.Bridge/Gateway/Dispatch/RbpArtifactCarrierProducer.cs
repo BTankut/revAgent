@@ -47,7 +47,13 @@ internal sealed class RbpArtifactCarrierProducer
         new(RbpArtifactSpoolFileSystem.ForTesting(spool), journal);
 
     internal static IReadOnlyList<string> ConnectionCapabilities { get; } =
-        Array.AsReadOnly(new[] { "journal_v1", "chunked_results", "artifact_result_v1" });
+        Array.AsReadOnly(new[]
+        {
+            RbpHelloProfile.JournalCapability,
+            RbpHelloProfile.ChunkedResultsCapability,
+            RbpHelloProfile.ArtifactResultCapability,
+            RbpHelloProfile.RouteRebindProofCapability,
+        });
 
     internal async Task<RbpCarrierEmission?> TryPrepareAsync(
         string rsid,

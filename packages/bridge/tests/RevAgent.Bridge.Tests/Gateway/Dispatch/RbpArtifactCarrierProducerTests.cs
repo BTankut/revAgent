@@ -11,6 +11,20 @@ namespace RevAgent.Bridge.Tests.Gateway.Dispatch;
 public sealed class RbpArtifactCarrierProducerTests
 {
     [Fact]
+    public void ProductionCarrierCapabilitiesPreserveExistingSetAndOfferRouteRebindProof()
+    {
+        Assert.Equal(
+            new[]
+            {
+                RbpHelloProfile.JournalCapability,
+                RbpHelloProfile.ChunkedResultsCapability,
+                RbpHelloProfile.ArtifactResultCapability,
+                RbpHelloProfile.RouteRebindProofCapability,
+            },
+            RbpArtifactCarrierProducer.ConnectionCapabilities);
+    }
+
+    [Fact]
     public async Task ProducesOrderedDurableArtifactFramesAndTerminalManifest()
     {
         using var directory = new RbpJournalTestDirectory();

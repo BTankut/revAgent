@@ -199,14 +199,10 @@ internal static class Program
             RbpArtifactCarrierProducer? carrier = null;
             try { carrier = RbpArtifactCarrierProducer.CreateProduction(layout.StateRoot, journal); }
             catch (RbpArtifactCarrierException) { }
-            IReadOnlyCollection<string> capabilities = new[]
-            {
-                RbpHelloProfile.JournalCapability,
-                RbpHelloProfile.StreamableHttpCapability,
-                RbpHelloProfile.ChunkedResultsCapability,
-                RbpHelloProfile.ArtifactResultCapability,
-                RbpHelloProfile.RouteRebindProofCapability,
-            };
+            IReadOnlyCollection<string> capabilities = RbpArtifactCarrierProducer
+                .ConnectionCapabilities
+                .Append(RbpHelloProfile.StreamableHttpCapability)
+                .ToArray();
             IRbpConnectionCycleFactory wss = new WssRbpConnectionCycleFactory(
                 new RbpGatewayHandshakeClient(claims, new WssGatewayBinding(new PinnedSocketFactory(options.CertificateSha256))));
             IRbpConnectionCycleFactory cycle = options.Binding == "wss"

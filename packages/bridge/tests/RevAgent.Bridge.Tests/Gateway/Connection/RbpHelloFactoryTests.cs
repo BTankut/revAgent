@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text;
 using RevAgent.Bridge.Gateway.Connection;
+using RevAgent.Bridge.Gateway.Dispatch;
 using RevAgent.Bridge.Gateway.Protocol;
 
 namespace RevAgent.Bridge.Tests.Gateway.Connection;
@@ -115,6 +116,22 @@ public sealed class RbpHelloFactoryTests
             },
             profile.Capabilities);
         Assert.DoesNotContain("partial_progress", profile.Capabilities);
+    }
+
+    [Fact]
+    public void ProductionProfileUsesTheCarrierCapabilityUnionWithoutDroppingRouteRebind()
+    {
+        var profile = RbpHelloProfile.Production(
+            "0.1.0-test",
+            Array.Empty<string>(),
+            RbpArtifactCarrierProducer.ConnectionCapabilities);
+
+        Assert.Equal(
+            RbpArtifactCarrierProducer.ConnectionCapabilities,
+            profile.Capabilities);
+        Assert.Contains(
+            RbpHelloProfile.RouteRebindProofCapability,
+            profile.Capabilities);
     }
 
     [Fact]
