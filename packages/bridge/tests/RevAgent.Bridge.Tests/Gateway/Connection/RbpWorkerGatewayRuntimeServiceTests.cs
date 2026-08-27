@@ -381,6 +381,10 @@ public sealed partial class RbpConnectionCoordinatorTests
             await EventuallyAsync(() => routes.Resolved.Contains("rs-8080"));
             _ = Assert.Single(routes.Bound, rsid => rsid == "rs-8080");
             Assert.True(routes.IsBound("rs-8080"));
+            Assert.Equal(1, routes.BindAttempts);
+            Assert.Equal(1, routes.SuccessfulPublications);
+            Assert.Equal(1, routes.ActiveRouteCount);
+            Assert.Equal(0, routes.RevokeCount);
             Assert.Equal(0, routes.ResolveBeforeBindingCount);
             Assert.Contains(cycle.Sent, envelope => envelope.Type == "session_resume");
         }
@@ -390,6 +394,8 @@ public sealed partial class RbpConnectionCoordinatorTests
             await run.WaitAsync(TimeSpan.FromSeconds(5));
         }
         Assert.False(routes.IsBound("rs-8080"));
+        Assert.Equal(0, routes.ActiveRouteCount);
+        Assert.True(routes.FenceCount >= 1);
     }
 
     [Fact]
@@ -445,6 +451,9 @@ public sealed partial class RbpConnectionCoordinatorTests
         await EventuallyAsync(() => fixture.Cycle.CloseCount > 0);
         await EventuallyAsync(() => !fixture.Routes.IsBound("rs-8080"));
         Assert.Empty(fixture.Routes.Bound);
+        Assert.Equal(0, fixture.Routes.BindAttempts);
+        Assert.Equal(0, fixture.Routes.SuccessfulPublications);
+        Assert.Equal(0, fixture.Routes.ActiveRouteCount);
         Assert.Null(fixture.Routes.Resolve("rs-8080"));
         fixture.Stop();
         await fixture.Run.WaitAsync(TimeSpan.FromSeconds(5));
@@ -457,9 +466,16 @@ public sealed partial class RbpConnectionCoordinatorTests
             respondToResume: true);
         await EventuallyAsync(() => fixture.Routes.IsBound("rs-8080"));
         _ = Assert.Single(fixture.Routes.Bound, rsid => rsid == "rs-8080");
+        Assert.Equal(1, fixture.Routes.BindAttempts);
+        Assert.Equal(1, fixture.Routes.SuccessfulPublications);
+        Assert.Equal(1, fixture.Routes.ActiveRouteCount);
         fixture.Cycle.Deliver(ResumeAck(fixture.Clock, "rs-altered"));
         await EventuallyAsync(() => !fixture.Routes.IsBound("rs-8080"));
         _ = Assert.Single(fixture.Routes.Bound, rsid => rsid == "rs-8080");
+        Assert.Equal(1, fixture.Routes.BindAttempts);
+        Assert.Equal(1, fixture.Routes.SuccessfulPublications);
+        Assert.Equal(0, fixture.Routes.ActiveRouteCount);
+        Assert.True(fixture.Routes.FenceCount >= 1);
         Assert.Null(fixture.Routes.Resolve("rs-8080"));
         fixture.Stop();
         await fixture.Run.WaitAsync(TimeSpan.FromSeconds(5));
@@ -472,11 +488,61 @@ public sealed partial class RbpConnectionCoordinatorTests
             respondToResume: false);
         _ = await EventuallySentAsync(fixture.Cycle,
             envelope => envelope.Type == "session_resume");
+        await EventuallyAsync(() => fixture.Clock.HasDelayDueIn(
+            TimeSpan.FromSeconds(10)));
         Assert.Empty(fixture.Routes.Bound);
+        Assert.Null(fixture.Routes.Resolve("rs-8080"));
+        fixture.Clock.Advance(TimeSpan.FromSeconds(10));
+        await EventuallyAsync(() => fixture.Timeouts.Any(
+            item => item.LifecycleControl == "session_resume"));
+        await EventuallyAsync(() => fixture.Cycle.CloseCount > 0);
+        Assert.Empty(fixture.Routes.Bound);
+        Assert.Equal(0, fixture.Routes.BindAttempts);
+        Assert.Equal(0, fixture.Routes.SuccessfulPublications);
         Assert.Null(fixture.Routes.Resolve("rs-8080"));
         fixture.Stop();
         await fixture.Run.WaitAsync(TimeSpan.FromSeconds(5));
         Assert.Null(fixture.Routes.Resolve("rs-8080"));
+    }
+
+    [Fact]
+    public async Task LostResumeAckTimeoutFencesRouteBeforeTeardown()
+    {
+        using var fixture = await ResumeRouteFixture.CreateAsync(false);
+        _ = await EventuallySentAsync(fixture.Cycle,
+            envelope => envelope.Type == "session_resume");
+        await EventuallyAsync(() => fixture.Clock.HasDelayDueIn(TimeSpan.FromSeconds(10)));
+        Assert.Null(fixture.Routes.Resolve("rs-8080"));
+        fixture.Clock.Advance(TimeSpan.FromSeconds(10));
+        await EventuallyAsync(() => fixture.Timeouts.Any(
+            item => item.LifecycleControl == "session_resume"));
+        await EventuallyAsync(() => fixture.Cycle.CloseCount > 0);
+        Assert.Empty(fixture.Routes.Bound);
+        Assert.Null(fixture.Routes.Resolve("rs-8080"));
+        fixture.Stop();
+        await fixture.Run.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    [Fact]
+    public async Task ResolverMissCannotAsynchronouslyPublishPreResumeRoute()
+    {
+        int durableLookups = 0;
+        var transport = new ScriptedStatusTransport();
+        var router = new AddinSessionRouter(transport);
+        var catalog = new WorkerAddinSessionCatalog(
+            new AddinDiscovery(transport, new NoOpProcessAttestor()), router,
+            ScanConfiguration(), () => new FixedCredentialProvider(),
+            (_, _) =>
+            {
+                Interlocked.Increment(ref durableLookups);
+                return Task.FromResult<string?>("unexpected");
+            },
+            "0.1.0-test", "WS01");
+        Assert.Null(catalog.Resolve("rs-miss"));
+        await Task.Delay(TimeSpan.FromMilliseconds(300));
+        Assert.Equal(0, Volatile.Read(ref durableLookups));
+        Assert.Null(catalog.Resolve("rs-miss"));
+        Assert.DoesNotContain("get_document_context", transport.Methods);
     }
 
     [Fact]
@@ -520,11 +586,140 @@ public sealed partial class RbpConnectionCoordinatorTests
         Task run = coordinator.RunAsync(stop.Token);
         _ = await EventuallySentAsync(cycle, envelope =>
             envelope.Type == "session_register");
-        await EventuallyAsync(() => !routes.IsBound("rs-8080"));
+        await EventuallyAsync(() => routes.BindAttempts == 1);
+        await EventuallyAsync(() => routes.FenceCount >= 1);
+        await EventuallyAsync(() => cycle.CloseCount > 0);
+        Assert.Equal(1, routes.BindAttempts);
+        Assert.Equal(0, routes.SuccessfulPublications);
         Assert.Empty(routes.Bound);
         Assert.Null(routes.Resolve("rs-8080"));
         stop.Cancel();
         await run.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    [Fact]
+    public async Task PriorCycleRouteIsFencedUntilTheNextExactResumeAck()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        var clock = new ManualCoordinatorClock();
+        await using RbpJournalStore store = OpenStore(directory, clock);
+        RbpLocalSessionSnapshot local = WatchedLocalSession(8080, 1000);
+        _ = await store.PersistRegisteredSessionAsync(Registration(local, "rs-8080"));
+        var responder = new ScriptedGatewayResponder(clock);
+        var first = new FakeConnectionCycle(responder.Respond);
+        var second = new FakeConnectionCycle(envelope =>
+            envelope.Type == "session_resume" ? null : responder.Respond(envelope));
+        var factory = new FakeConnectionCycleFactory(first, second);
+        var routes = new RecordingRouteAuthority();
+        RbpConnectionCoordinator coordinator = WorkerGatewayComposition.CreateCoordinator(
+            new WorkerGatewayServices(
+                factory, store, new MutableSessionCatalog(local),
+                CompositionOptions() with { SessionRouteBindingAuthority = routes },
+                new WorkerAddinDispatchSurface(
+                    new AddinSessionRouter(new NeverInvokedAddinTransport()), routes),
+                clock, new FixedRandomSource(0)));
+        using var stop = new CancellationTokenSource();
+        Task run = coordinator.RunAsync(stop.Token);
+        try
+        {
+            await EventuallyAsync(() => routes.IsBound("rs-8080"));
+            Assert.Equal(1, routes.BindAttempts);
+            Assert.Equal(1, routes.SuccessfulPublications);
+            Assert.Equal(1, routes.ActiveRouteCount);
+
+            first.Fail(new IOException("force cycle-one teardown"));
+            await EventuallyAsync(() => first.CloseCount > 0);
+            await EventuallyAsync(() => factory.OpenCount >= 2);
+            _ = await EventuallySentAsync(second,
+                envelope => envelope.Type == "session_resume");
+
+            Assert.False(routes.IsBound("rs-8080"));
+            Assert.Null(routes.Resolve("rs-8080"));
+            Assert.Equal(1, routes.BindAttempts);
+            Assert.Equal(1, routes.SuccessfulPublications);
+            Assert.Equal(0, routes.ActiveRouteCount);
+            Assert.True(routes.FenceCount >= 1);
+
+            second.Deliver(ResumeAck(clock, "rs-8080"));
+            await EventuallyAsync(() => routes.IsBound("rs-8080"));
+            Assert.Equal(2, routes.BindAttempts);
+            Assert.Equal(2, routes.SuccessfulPublications);
+            Assert.Equal(1, routes.ActiveRouteCount);
+        }
+        finally
+        {
+            stop.Cancel();
+            await run.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+        Assert.False(routes.IsBound("rs-8080"));
+    }
+
+    [Fact]
+    public async Task FreshProofConstructionFailureClosesBeforeResumeAndRoutePublication()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        var clock = new ManualCoordinatorClock();
+        await using RbpJournalStore store = OpenStore(directory, clock);
+        RbpLocalSessionSnapshot local = WatchedLocalSession(8080, 1000);
+        _ = await store.PersistRegisteredSessionAsync(Registration(local, "rs-8080"));
+        string[] capability = [RbpHelloProfile.RouteRebindProofCapability];
+        var fresh = new ScriptedFreshResumeProofReader();
+        var watcher = new RbpDocContextWatcher(
+            new ScriptedDocContextChannel(), clock,
+            freshResumeProofReader: fresh);
+        var routes = new RecordingRouteAuthority();
+        var cycle = new FakeConnectionCycle(
+            new ScriptedGatewayResponder(clock).Respond,
+            grantedConnectionCapabilities: capability,
+            connectionId: "019f9add-7a83-7d11-a6a9-d2f8108c0401");
+        RbpConnectionCoordinator coordinator = new(
+            new FakeConnectionCycleFactory(cycle), store,
+            new MutableSessionCatalog(local),
+            new RbpConnectionCoordinatorOptions(
+                new Uri("wss://gateway.revagent.app/bridge/v1"),
+                new RbpHelloProfile("0.1.0", "WS01", "Windows 11",
+                    new[] { "2026.07.26.0" }, capability),
+                SessionRouteBindingAuthority: routes),
+            new StubInvocationDispatcher(), new RecordingInboundJournal(),
+            clock, new ThrowingRandomSource(throwOnFill: 2), watcher);
+        using var stop = new CancellationTokenSource();
+        Task run = coordinator.RunAsync(stop.Token);
+        try
+        {
+            await EventuallyAsync(() => fresh.CallCount == 1);
+            await EventuallyAsync(() => cycle.CloseCount > 0);
+            Assert.DoesNotContain(cycle.Sent, item => item.Type == "session_resume");
+            Assert.Equal(0, routes.BindAttempts);
+            Assert.Equal(0, routes.SuccessfulPublications);
+            Assert.Equal(0, routes.ActiveRouteCount);
+            Assert.Null(routes.Resolve("rs-8080"));
+        }
+        finally
+        {
+            stop.Cancel();
+            await run.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+    }
+
+    [Fact]
+    public async Task WrongResumeLifecycleResponseClosesWithoutApplyingOrBindingRoute()
+    {
+        using var fixture = await ResumeRouteFixture.CreateAsync(
+            respondToResume: false);
+        _ = await EventuallySentAsync(fixture.Cycle,
+            envelope => envelope.Type == "session_resume");
+        fixture.Cycle.Deliver(ResumeAck(fixture.Clock, "rs-8080") with
+        {
+            Type = "session_registered",
+        });
+        await EventuallyAsync(() => fixture.Cycle.CloseCount > 0);
+        Assert.Equal(0, fixture.Routes.BindAttempts);
+        Assert.Equal(0, fixture.Routes.SuccessfulPublications);
+        Assert.Equal(0, fixture.Routes.ActiveRouteCount);
+        Assert.Null(fixture.Routes.Resolve("rs-8080"));
+        fixture.Stop();
+        await fixture.Run.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Null(fixture.Routes.Resolve("rs-8080"));
     }
 
     [Fact]
@@ -1752,18 +1947,21 @@ public sealed partial class RbpConnectionCoordinatorTests
             RbpJournalStore store,
             ManualCoordinatorClock clock,
             FakeConnectionCycle cycle,
-            RecordingRouteAuthority routes)
+            RecordingRouteAuthority routes,
+            ConcurrentQueue<RbpLifecycleTimeoutObservation> timeouts)
         {
             _directory = directory;
             _store = store;
             Clock = clock;
             Cycle = cycle;
             Routes = routes;
+            Timeouts = timeouts;
         }
 
         internal ManualCoordinatorClock Clock { get; }
         internal FakeConnectionCycle Cycle { get; }
         internal RecordingRouteAuthority Routes { get; }
+        internal ConcurrentQueue<RbpLifecycleTimeoutObservation> Timeouts { get; }
         internal Task Run { get; private set; } = Task.CompletedTask;
 
         internal static async Task<ResumeRouteFixture> CreateAsync(
@@ -1781,6 +1979,7 @@ public sealed partial class RbpConnectionCoordinatorTests
                     ? null
                     : responder.Respond(envelope));
             var routes = new RecordingRouteAuthority();
+            var timeouts = new ConcurrentQueue<RbpLifecycleTimeoutObservation>();
             RbpConnectionCoordinator coordinator =
                 WorkerGatewayComposition.CreateCoordinator(
                     new WorkerGatewayServices(
@@ -1793,9 +1992,14 @@ public sealed partial class RbpConnectionCoordinatorTests
                         new WorkerAddinDispatchSurface(
                             new AddinSessionRouter(
                                 new NeverInvokedAddinTransport()), routes),
-                        clock, new FixedRandomSource(0)));
+                        clock, new FixedRandomSource(0),
+                        OnLifecycleTimeoutObservation: observation =>
+                        {
+                            timeouts.Enqueue(observation);
+                            return ValueTask.CompletedTask;
+                        }));
             var fixture = new ResumeRouteFixture(
-                directory, store, clock, cycle, routes);
+                directory, store, clock, cycle, routes, timeouts);
             fixture.Run = coordinator.RunAsync(fixture._stop.Token);
             return fixture;
         }
@@ -1819,6 +2023,10 @@ public sealed partial class RbpConnectionCoordinatorTests
             new(StringComparer.Ordinal);
         private int _resolveBeforeBindingCount;
         private long _activeEpoch;
+        private int _bindAttempts;
+        private int _successfulPublications;
+        private int _revokeCount;
+        private int _fenceCount;
 
         internal ConcurrentQueue<string> Resolved { get; } = new();
 
@@ -1829,7 +2037,14 @@ public sealed partial class RbpConnectionCoordinatorTests
 
         internal bool IsBound(string rsid) => _bound.ContainsKey(rsid);
 
+        internal int ActiveRouteCount => _bound.Count;
+
         internal bool FenceImmediatelyBeforeBind { get; set; }
+
+        internal int BindAttempts => Volatile.Read(ref _bindAttempts);
+        internal int SuccessfulPublications => Volatile.Read(ref _successfulPublications);
+        internal int RevokeCount => Volatile.Read(ref _revokeCount);
+        internal int FenceCount => Volatile.Read(ref _fenceCount);
 
         public AddinSessionRouter.SessionHandle? Resolve(string rsid)
         {
@@ -1850,15 +2065,23 @@ public sealed partial class RbpConnectionCoordinatorTests
 
         public void FenceConnectionEpoch(long epoch)
         {
+            Interlocked.Increment(ref _fenceCount);
             if (_activeEpoch == epoch) _activeEpoch = 0;
             _bound.Clear();
         }
 
         public void RevokeBoundSession(string rsid, long epoch) =>
+            Revoke(rsid);
+
+        private void Revoke(string rsid)
+        {
+            Interlocked.Increment(ref _revokeCount);
             _bound.TryRemove(rsid, out _);
+        }
 
         public bool TryBindRegisteredSession(string rsid, string localSessionKey, long epoch)
         {
+            Interlocked.Increment(ref _bindAttempts);
             if (FenceImmediatelyBeforeBind)
             {
                 FenceConnectionEpoch(epoch);
@@ -1875,12 +2098,43 @@ public sealed partial class RbpConnectionCoordinatorTests
 
             if (_bound.TryAdd(rsid, localSessionKey))
             {
+                Interlocked.Increment(ref _successfulPublications);
                 Bound.Enqueue(rsid);
                 return true;
             }
 
             return false;
         }
+    }
+
+    /// <summary>
+    /// Test-only identifier failure: hello consumes the first fill and the
+    /// fresh route proof consumes the second, so this proves the fresh read
+    /// completed before proof construction failed.
+    /// </summary>
+    private sealed class ThrowingRandomSource : IRbpRandomSource
+    {
+        private readonly int _throwOnFill;
+        private int _fills;
+
+        internal ThrowingRandomSource(int throwOnFill)
+        {
+            _throwOnFill = throwOnFill;
+        }
+
+        public void Fill(Span<byte> destination)
+        {
+            int fill = Interlocked.Increment(ref _fills);
+            if (fill == _throwOnFill)
+            {
+                throw new InvalidOperationException(
+                    "test-only proof identifier construction failure");
+            }
+
+            destination.Clear();
+        }
+
+        public double NextUnitInterval() => 0;
     }
 
     private sealed class RuntimeLifetime : IHostApplicationLifetime
