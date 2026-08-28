@@ -6,7 +6,8 @@
     Performs a locked restore, Release build/tests, formatting verification,
     win-x64 self-contained single-file publishes, bounded hidden version
     smokes, and a bounded worker-side doctor smoke with a generated strict
-    configuration.
+    configuration and an explicitly isolated, owned, empty diagnostic state.
+    The doctor never selects or decrypts production credentials in this gate.
 
     This gate does not install or control a Windows service. SCM lifecycle,
     reboot survival, Event Log registration, and production log-rotation
@@ -146,7 +147,10 @@ function Invoke-BoundedHiddenProcess {
                 }
             }
 
-            [void]$process.WaitForExit(5000)
+            if (-not $process.WaitForExit(5000)) {
+                $script:BridgeSmokeCleanupBlocked = $true
+                throw "Owned smoke child exit is unconfirmed; temporary state cleanup is blocked."
+            }
             return [pscustomobject]@{
                 ExitCode = 124
                 TimedOut = $true
@@ -269,6 +273,33 @@ function Get-RequiredJsonProperty {
 
 $systemTempRoot = [System.IO.Path]::GetFullPath(
     [System.IO.Path]::GetTempPath())
+# Validate TEMP before creating/building anything beneath it. Forbidden roots
+# are compared as strings only; no production directory is opened or queried.
+if ($systemTempRoot -notmatch '^[A-Za-z]:\\' -or
+    $systemTempRoot.Contains('~') -or $systemTempRoot.Substring(2).Contains(':') -or
+    [System.IO.DriveInfo]::new([System.IO.Path]::GetPathRoot($systemTempRoot)).DriveType -eq
+        [System.IO.DriveType]::Network) {
+    throw "Bridge service fixture requires an unaliased local TEMP directory."
+}
+foreach ($forbiddenRoot in @(
+    [System.IO.Path]::Combine([Environment]::GetFolderPath('CommonApplicationData'), 'revAgent', 'bridge'),
+    [System.IO.Path]::Combine([Environment]::GetFolderPath('ProgramFiles'), 'revAgent', 'Bridge')
+)) {
+    if ([string]::Equals($systemTempRoot.TrimEnd('\'), $forbiddenRoot, [StringComparison]::OrdinalIgnoreCase) -or
+        $systemTempRoot.StartsWith($forbiddenRoot + '\', [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Bridge service TEMP must not overlap canonical Bridge state or installation."
+    }
+}
+$ancestorPath = [System.IO.Path]::GetPathRoot($systemTempRoot)
+foreach ($component in $systemTempRoot.Substring($ancestorPath.Length).Split('\', [StringSplitOptions]::RemoveEmptyEntries)) {
+    if ($component.EndsWith('.') -or $component.EndsWith(' ')) {
+        throw "Bridge service TEMP contains an ambiguous component."
+    }
+    $ancestorPath = [System.IO.Path]::Combine($ancestorPath, $component)
+    if (([System.IO.File]::GetAttributes($ancestorPath) -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "Bridge service TEMP crosses a reparse point."
+    }
+}
 $tempPrefix = $systemTempRoot
 if (-not ($tempPrefix.EndsWith(
             [System.IO.Path]::DirectorySeparatorChar.ToString()) -or
@@ -291,7 +322,33 @@ if (-not $workDirectory.StartsWith(
     throw "Refusing to create a Bridge service work directory outside the bounded temp root."
 }
 
-[System.IO.Directory]::CreateDirectory($workDirectory) | Out-Null
+if (Test-Path -LiteralPath $workDirectory) {
+    throw "Refusing to reuse an existing Bridge service fixture."
+}
+# Set security at creation for this test fixture, never repair machine state.
+# Children inherit user/SYSTEM/Administrators access, not unrelated TEMP grants.
+$fixtureIdentity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+try {
+    $fixtureAcl = [System.Security.AccessControl.DirectorySecurity]::new()
+    $fixtureAcl.SetOwner($fixtureIdentity.User)
+    $fixtureAcl.SetAccessRuleProtection($true, $false)
+    foreach ($fixtureSid in @(
+        $fixtureIdentity.User,
+        [System.Security.Principal.SecurityIdentifier]::new('S-1-5-18'),
+        [System.Security.Principal.SecurityIdentifier]::new('S-1-5-32-544')
+    )) {
+        $fixtureAcl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new(
+            $fixtureSid,
+            [System.Security.AccessControl.FileSystemRights]::FullControl,
+            [System.Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit',
+            [System.Security.AccessControl.PropagationFlags]::None,
+            [System.Security.AccessControl.AccessControlType]::Allow))
+    }
+    [System.IO.FileSystemAclExtensions]::CreateDirectory($fixtureAcl, $workDirectory) | Out-Null
+}
+finally {
+    $fixtureIdentity.Dispose()
+}
 $hostPublishDirectory = Join-Path $workDirectory (
     "host-" + [Guid]::NewGuid().ToString("N"))
 $workerPublishDirectory = Join-Path $workDirectory (
@@ -301,6 +358,7 @@ $workerPublishDirectory = Join-Path $workDirectory (
 
 $gatewayListener = $null
 $addinListener = $null
+$script:BridgeSmokeCleanupBlocked = $false
 
 try {
     Push-Location $RepoRoot
@@ -402,9 +460,13 @@ try {
     ).Port
 
     $configurationPath = Join-Path $workDirectory "bridge-config.json"
+    $diagnosticStateRoot = Join-Path $workDirectory "doctor-state"
+    $diagnosticCredentials = Join-Path $diagnosticStateRoot "credentials"
+    [System.IO.Directory]::CreateDirectory($diagnosticCredentials) | Out-Null
     $configuration = [ordered]@{
         schemaVersion = 1
         gateway = [ordered]@{
+            # The production configuration policy requires a DNS hostname.
             uri = "wss://localhost:$gatewayPort/bridge/v1"
         }
         addin = [ordered]@{
@@ -424,7 +486,8 @@ try {
 
     $doctorResult = Invoke-BoundedHiddenProcess `
         -FilePath $workerExecutablePath `
-        -Arguments @("__doctor", "--config", $configurationPath) `
+        -Arguments @("__doctor", "--config", $configurationPath,
+            "--diagnostic-state-root", $diagnosticStateRoot) `
         -WorkingDirectory $workerPublishDirectory `
         -TimeoutSeconds $SmokeTimeoutSeconds `
         -ClearEnvironmentPrefix "REVAGENT_BRIDGE_" `
@@ -460,6 +523,21 @@ try {
     }
     if ($doctor -is [System.Array]) {
         throw "Bridge worker doctor returned an array instead of one JSON object."
+    }
+
+    $stateScope = Get-RequiredJsonProperty -InputObject $doctor -Name "stateScope" -ObjectPath '$'
+    if ($stateScope -cne 'isolated_diagnostic') {
+        throw "Published doctor did not attest explicit diagnostic isolation."
+    }
+    $enrollment = Get-RequiredJsonProperty -InputObject $doctor -Name "enrollment" -ObjectPath '$'
+    $enrolled = Get-RequiredJsonProperty -InputObject $enrollment -Name "enrolled" -ObjectPath '$.enrollment'
+    $reEnrollAttempted = Get-RequiredJsonProperty -InputObject $enrollment -Name "reEnrollAttempted" -ObjectPath '$.enrollment'
+    $reEnrollSucceeded = Get-RequiredJsonProperty -InputObject $enrollment -Name "reEnrollSucceeded" -ObjectPath '$.enrollment'
+    $enrollmentError = Get-RequiredJsonProperty -InputObject $enrollment -Name "error" -ObjectPath '$.enrollment'
+    if ($enrolled -isnot [bool] -or $enrolled -or
+        $reEnrollAttempted -isnot [bool] -or $reEnrollAttempted -or
+        $null -ne $reEnrollSucceeded -or $null -ne $enrollmentError) {
+        throw "Isolated doctor must report empty unenrolled state without re-enrollment or errors."
     }
 
     $doctorSchemaVersion = Get-RequiredJsonProperty `
@@ -519,6 +597,14 @@ try {
     if ($rbpAuthenticated -isnot [bool] -or $rbpAuthenticated) {
         throw "A bare TCP listener must not be reported as an authenticated RBP endpoint."
     }
+    $gatewayProbePort = Get-RequiredJsonProperty -InputObject $gatewayHealth -Name "port" -ObjectPath '$.gateway'
+    $gatewayTcpReachable = Get-RequiredJsonProperty -InputObject $gatewayHealth -Name "tcpReachable" -ObjectPath '$.gateway'
+    $bytesSent = Get-RequiredJsonProperty -InputObject $addinHealth -Name "bytesSent" -ObjectPath '$.addin'
+    if ([int]$gatewayProbePort -ne $gatewayPort -or
+        $gatewayTcpReachable -isnot [bool] -or -not $gatewayTcpReachable -or
+        [int]$bytesSent -ne 0) {
+        throw "Published doctor did not retain owned-listener TCP-only evidence."
+    }
     if ($addinShapeVerified -isnot [bool] -or $addinShapeVerified) {
         throw "A bare TCP listener must not be reported as a shape-verified add-in endpoint."
     }
@@ -546,6 +632,14 @@ try {
         -not $addinProbeReachable) {
         throw "Bridge worker doctor did not reach the explicit add-in listener."
     }
+    $stateEntries = @(Get-ChildItem -LiteralPath $diagnosticStateRoot -Force)
+    if ($stateEntries.Count -ne 1 -or $stateEntries[0].Name -cne 'credentials' -or
+        -not $stateEntries[0].PSIsContainer -or
+        ($stateEntries[0].Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0 -or
+        @(Get-ChildItem -LiteralPath $diagnosticCredentials -Force).Count -ne 0) {
+        throw "Published doctor mutated its empty diagnostic fixture."
+    }
+    Write-Host "Isolated published doctor report: $doctorOutput"
 }
 finally {
     if ($null -ne $addinListener) {
@@ -553,6 +647,9 @@ finally {
     }
     if ($null -ne $gatewayListener) {
         $gatewayListener.Stop()
+    }
+    if ($script:BridgeSmokeCleanupBlocked) {
+        throw "Owned child exit is unconfirmed; fixture preserved without recursive cleanup."
     }
 
     $resolvedWorkDirectory = [System.IO.Path]::GetFullPath($workDirectory)
