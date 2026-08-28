@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
-import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 
 import { ControlResponseError, StrictJsonlProcess, StrictReadyProcess } from "../src/processHarness.js";
@@ -52,6 +52,29 @@ function testIpcSend(child: StrictReadyProcess): { send: TestIpcSend } {
 }
 
 describe("strict JSONL process control", () => {
+  it("waits for child stdio close and retains an unterminated stderr tail after control shutdown", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "wp12-stdio-tail-"));
+    const script = path.join(root, "tail-child.mjs");
+    writeFileSync(script, [
+      "process.stdout.write(JSON.stringify({ready:true,component:'fixture-test',controlVersion:1,maxControlLineBytes:65536,actions:['shutdown']})+'\\n');",
+      "process.stdin.setEncoding('utf8');process.stdin.on('data',chunk=>{const value=JSON.parse(chunk.trim());process.stdout.write(JSON.stringify({controlVersion:1,id:value.id,ok:true,result:{stopped:true}})+'\\n',()=>{process.stderr.write('tail-sentinel-no-newline',()=>process.exit(0));});});",
+    ].join("\n"));
+    try {
+      const child = await StrictJsonlProcess.start({
+        componentId: "addin_loopback_fixture",
+        command: { ...command(), args: [script] },
+        absoluteWorkingDirectory: root,
+        expectedReadinessFields: { component: "fixture-test" },
+        requiredActions: ["shutdown"],
+      });
+      const stopped = await child.stop();
+      expect(stopped.exitCode).toBe(0);
+      expect(stopped.evidence.stderr.safeLines).toContain("tail-sentinel-no-newline");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("uses one opaque STOP generation, accepts only its exact ack, then parent-disconnects", async () => {
     const root = mkdtempSync(path.join(tmpdir(), "wp12-ready-stop-"));
     const marker = path.join(root, "child-stop.json");
