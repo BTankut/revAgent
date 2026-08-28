@@ -4,6 +4,8 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { once } from "node:events";
+import { execFileSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { tmpdir } from "node:os";
 
 import { ControlResponseError, StrictJsonlProcess, StrictReadyProcess } from "../src/processHarness.js";
@@ -55,28 +57,123 @@ describe("strict JSONL process control", () => {
   it("waits for child stdio close and retains an unterminated stderr tail after control shutdown", async () => {
     const root = mkdtempSync(path.join(tmpdir(), "wp12-stdio-tail-"));
     const script = path.join(root, "tail-child.mjs");
+    const evidenceDirectory = path.join(root, "retained");
+    const sentinels = ["BEARER_CANARY", "BASIC_CANARY", "SUBJECT_CANARY", "rs_RSID_CANARY"];
+    const diagnostic = {
+      message: "Authorization: Basic BASIC_CANARY",
+      durabilityEvents: [{ subject: "SUBJECT_CANARY", rsid: "rs_RSID_CANARY", event: "terminal_persisted" }],
+    };
+    const stderr = `Authorization: Bearer BEARER_CANARY\n${JSON.stringify(diagnostic)}\ndiagnostic ${JSON.stringify(diagnostic)}`;
     writeFileSync(script, [
       "process.stdout.write(JSON.stringify({ready:true,component:'fixture-test',controlVersion:1,maxControlLineBytes:65536,actions:['shutdown']})+'\\n');",
-      "process.stdin.setEncoding('utf8');process.stdin.on('data',chunk=>{const value=JSON.parse(chunk.trim());process.stdout.write(JSON.stringify({controlVersion:1,id:value.id,ok:true,result:{stopped:true}})+'\\n',()=>{process.stderr.write('Authorization: Bearer CANARY {\\\"message\\\":\\\"Authorization: Basic CANARY\\\",\\\"subject\\\":\\\"rs_CANARY\\\"}',()=>process.exit(0));});});",
+      `const diagnostic=${JSON.stringify(diagnostic)}; const stderr=${JSON.stringify(stderr)};`,
+      "process.stdin.setEncoding('utf8');process.stdin.on('data',chunk=>{const value=JSON.parse(chunk.trim());process.stdout.write(JSON.stringify({controlVersion:1,id:value.id,ok:true,result:{stopped:true,...diagnostic}})+'\\n',()=>{process.stderr.write(stderr,()=>process.exit(0));});});",
     ].join("\n"));
     try {
       const child = await StrictJsonlProcess.start({
         componentId: "addin_loopback_fixture",
         command: { ...command(), args: [script] },
         absoluteWorkingDirectory: root,
+        evidenceDirectory,
         expectedReadinessFields: { component: "fixture-test" },
         requiredActions: ["shutdown"],
       });
       const stopped = await child.stop();
-      expect(stopped.exitCode).toBe(0);
-      const retained = stopped.evidence.stderr.safeLines.join("\n");
+      expect(stopped).toMatchObject({ exitCode: 0, killEscalated: false, evidence: { exitCode: 0 } });
+      expect(child.transcript.map(({ line }) => line).join("\n")).toContain("SUBJECT_CANARY");
+      const retained = JSON.stringify(stopped.evidence);
       expect(retained).toContain("Authorization=[redacted]");
-      expect(retained).not.toContain("CANARY");
-      expect(retained).not.toContain("rs_CANARY");
+      expect(retained).toContain("durabilityEvents");
+      expect(retained).toContain("terminal_persisted");
+      const persisted = ["stdout", "stderr"].map((stream) =>
+        readFileSync(path.join(evidenceDirectory, `addin_loopback_fixture.${stream}.log`), "utf8")).join("\n");
+      for (const sentinel of sentinels) {
+        expect(retained).not.toContain(sentinel);
+        expect(persisted).not.toContain(sentinel);
+      }
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it.each(["jsonl-shutdown", "ready-natural-exit"] as const)(
+    "drains a real stderr close before delayed readiness without hanging on %s",
+    async (mode) => {
+      const root = mkdtempSync(path.join(tmpdir(), "wp12-early-stderr-"));
+      const jsonl = mode === "jsonl-shutdown";
+      const readiness = { ready: true, component: "fixture-test", controlVersion: 1, maxControlLineBytes: 65536, actions: ["shutdown"] };
+      const source = [
+        `require('node:fs').writeSync(2,'early stderr tail');require('node:fs').closeSync(2);setTimeout(()=>process.stdout.write(${JSON.stringify(JSON.stringify(readiness) + "\n")}),100);`,
+        jsonl
+          ? "process.stdin.setEncoding('utf8');process.stdin.on('data',chunk=>{const value=JSON.parse(chunk.trim());process.stdout.write(JSON.stringify({controlVersion:1,id:value.id,ok:true,result:{stopped:true}})+'\\n',()=>{process.stdin.destroy();process.exitCode=0;});});"
+          : "process.stdin.once('data',()=>{process.stdin.destroy();process.exitCode=0;});",
+      ].join("\n");
+      // Node duplicates Windows std handles before user code, so closing fd 2
+      // alone does not close that pipe. A real child closes the inherited OS
+      // handle directly here. No parent stream events or state are mocked.
+      const windowsExecutable = path.join(root, "early-stderr.exe");
+      let child: StrictJsonlProcess | StrictReadyProcess | undefined;
+      try {
+        if (process.platform === "win32") {
+          const csharp = `
+            using System;
+            using System.Runtime.InteropServices;
+            using System.Text.RegularExpressions;
+            public static class EarlyStderr {
+              [DllImport("kernel32.dll")] static extern IntPtr GetStdHandle(int id);
+              [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
+              public static int Main(string[] args) {
+                Console.Error.Write("early stderr tail"); Console.Error.Flush();
+                if (!CloseHandle(GetStdHandle(-12))) return 3;
+                Console.SetError(System.IO.TextWriter.Null);
+                System.Threading.Thread.Sleep(100);
+                Console.WriteLine(@"${JSON.stringify(readiness).replaceAll('"', '""')}"); Console.Out.Flush();
+                var line = Console.ReadLine();
+                if (args[0] == "jsonl-shutdown") {
+                  var id = Regex.Match(line, "\\\"id\\\"\\\\s*:\\\"([^\\\"]+)\\\"").Groups[1].Value;
+                  Console.WriteLine("{\\\"controlVersion\\\":1,\\\"id\\\":\\\"" + id + "\\\",\\\"ok\\\":true,\\\"result\\\":{\\\"stopped\\\":true}}"); Console.Out.Flush();
+                }
+                return 0;
+              }
+            }`;
+          const compile = `$ErrorActionPreference='Stop'; Add-Type -TypeDefinition '${csharp.replaceAll("'", "''")}' -OutputAssembly '${windowsExecutable.replaceAll("'", "''")}' -OutputType ConsoleApplication`;
+          execFileSync(path.join(process.env.SystemRoot!, "System32/WindowsPowerShell/v1.0/powershell.exe"),
+            ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(compile, "utf16le").toString("base64")],
+            { windowsHide: true, stdio: "pipe", timeout: 5_000 });
+        }
+        const options = {
+          componentId: "addin_loopback_fixture" as const,
+          command: process.platform === "win32"
+            ? { ...command(), executable: windowsExecutable, args: [mode] }
+            : { ...command(), args: ["--eval", source] },
+          absoluteWorkingDirectory: root,
+        };
+        child = jsonl
+          ? await StrictJsonlProcess.start({ ...options, expectedReadinessFields: { component: "fixture-test" }, requiredActions: ["shutdown"] })
+          : await StrictReadyProcess.start({ ...options, validateReadiness(value) { expect(value.ready).toBe(true); } });
+        const handle = (child as unknown as { child: ChildProcessWithoutNullStreams }).child;
+        // This is an observed pipe close, not merely a child-side intent to
+        // close. A second subscription after readiness would miss this event.
+        expect({ closed: handle.stderr.closed, ended: handle.stderr.readableEnded, destroyed: handle.stderr.destroyed }).toEqual({ closed: true, ended: true, destroyed: true });
+        if (mode === "ready-natural-exit") {
+          const exited = once(handle, "exit");
+          handle.stdin.write("exit\n");
+          await exited;
+        }
+        const stopped = await child.stop();
+        expect(stopped).toMatchObject({ exitCode: 0, killEscalated: false, evidence: { exitCode: 0 } });
+        expect(stopped.evidence.stderr.safeLines).toEqual(["early stderr tail"]);
+        expect(stopped.telemetry.acknowledgement).toBe(
+          jsonl ? "response_ok" : "not_requested",
+        );
+        expect(handle.stdout.closed).toBe(true);
+        expect(() => process.kill(child!.pid, 0)).toThrow();
+      } finally {
+        if (child !== undefined && child.process.exitCode === null) await child.stop();
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
 
   it("uses one opaque STOP generation, accepts only its exact ack, then parent-disconnects", async () => {
     const root = mkdtempSync(path.join(tmpdir(), "wp12-ready-stop-"));

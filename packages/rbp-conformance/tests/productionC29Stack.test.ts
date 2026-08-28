@@ -91,6 +91,21 @@ describe.sequential("C29 production batch redelivery and crash recovery", () => 
             : { teardownEvidenceRoot }),
         }),
       );
+      const observedPrivateIdentities = new Set<string>();
+      const collectIdentities = (value: unknown): void => {
+        if (Array.isArray(value)) { value.forEach(collectIdentities); return; }
+        if (value === null || typeof value !== "object") return;
+        for (const [key, entry] of Object.entries(value)) {
+          if (/^(?:subject|rsid)$/iu.test(key) && typeof entry === "string" && entry.length > 0) {
+            observedPrivateIdentities.add(entry);
+          }
+          collectIdentities(entry);
+        }
+      };
+      // Use identifiers actually observed in this production run, including
+      // durability-event subjects, rather than guessed sentinel formats.
+      for (const execution of executions) collectIdentities(execution.evidence.observations);
+      expect(observedPrivateIdentities.size).toBeGreaterThan(0);
 
       for (const execution of executions) {
         const results = canonicalManifest.requiredAssertions[caseId]!.map((assertion) => ({
@@ -174,6 +189,19 @@ describe.sequential("C29 production batch redelivery and crash recovery", () => 
           });
           const components = document.components as Array<Record<string, unknown>>;
           expect(components).toHaveLength(3);
+          for (const component of components) {
+            const processEvidence = component.process as Record<string, unknown>;
+            expect(component).toMatchObject({
+              process: { exitCode: 0, stoppedAt: expect.any(String) },
+              stop: {
+                observed: true,
+                exitCode: 0,
+                killEscalated: false,
+                stoppedAt: processEvidence.stoppedAt,
+                output: { pid: processEvidence.pid, exitCode: 0 },
+              },
+            });
+          }
           const gateway = components.find(({ componentId }) => componentId === "gateway_stub");
           expect(gateway).toMatchObject({
             stop: {
@@ -189,6 +217,9 @@ describe.sequential("C29 production batch redelivery and crash recovery", () => 
           expect(telemetry.correlationId).toEqual(expect.any(String));
           expect(telemetry.acknowledgedAt).toEqual(expect.any(String));
           expect(JSON.stringify(document)).not.toMatch(/(?:[A-Za-z]:\\|"token"\s*:|"proof"\s*:)/u);
+          for (const identity of observedPrivateIdentities) {
+            expect(JSON.stringify(document)).not.toContain(identity);
+          }
         }
       }
     },
