@@ -11,7 +11,7 @@ const SAFE_TOOL_DIAGNOSTIC_ENUMS = new Set([
   "completed", "failed", "guarded", "indeterminate", "unknown",
   "result_delivery_unavailable", "journal_indeterminate", "delivered",
   "not_delivered", "pending", "unavailable", "post_dispatch",
-  "not_reclassified", "dispatch_unavailable",
+  "not_reclassified", "dispatch_unavailable", "recovery_unavailable",
 ]);
 const DISPATCH_UNAVAILABLE_PHASES = new Set([
   "window_acquire", "executor", "result_normalize", "window_release",

@@ -7473,6 +7473,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     readonly tenantId: string;
     readonly userId: string;
     readonly effectiveMcpSessionId: string;
+    readonly effectiveMcpRequestScope: EffectiveMcpRequestScopeV1;
     readonly rsid: string;
     readonly carrierRecoveryInvocationId: string;
   }): Promise<GatewayJsonValue | null> {
@@ -7482,11 +7483,22 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       active.tenantId !== input.tenantId || active.record.userId !== input.userId ||
       !isGatewayUuidV7(input.carrierRecoveryInvocationId)
     ) return null;
-    const { scope, effective } = this.#carrierScope(active.record);
+    const effective = input.effectiveMcpRequestScope;
     if (effective.effectiveMcpSessionId !== input.effectiveMcpSessionId) return null;
+    const scope: GatewayResourceScope = Object.freeze({
+      tenantId: input.tenantId,
+      actorId: input.userId,
+      principalKey: effective.principalKey,
+      mcpSessionId: effective.effectiveMcpSessionId,
+    });
     const recovery = await this.#recoveryCarrierLookup(
       active.record,
       input.carrierRecoveryInvocationId,
+      "completed",
+      Object.freeze({
+        principalKey: effective.principalKey,
+        effectiveMcpSessionId: effective.effectiveMcpSessionId,
+      }),
     );
     if (recovery.kind !== "authorized") return null;
     const result = await this.#resourceAuthority.resumeRecoveryResultRef({
@@ -11974,8 +11986,23 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
   async #recoveryCarrierLookup(
     record: DurableRbpSession,
     carrierRecoveryInvocationId: string,
+    expectedState: OmittedPayloadRecoveryRecord["state"] = "awaiting_correlated_read",
+    northScope?: Readonly<{
+      readonly principalKey: string;
+      readonly effectiveMcpSessionId: string;
+    }>,
   ): Promise<RecoveryCarrierLookup> {
-    const { scope, effective } = this.#carrierScope(record);
+    const carrierScope = northScope === undefined
+      ? this.#carrierScope(record)
+      : null;
+    const scope: GatewayResourceScope = carrierScope?.scope ?? Object.freeze({
+      tenantId: record.tenantId,
+      actorId: record.userId,
+      principalKey: northScope!.principalKey,
+      mcpSessionId: northScope!.effectiveMcpSessionId,
+    });
+    const effectiveMcpSessionId = carrierScope?.effective.effectiveMcpSessionId ??
+      northScope!.effectiveMcpSessionId;
     const found = await this.#sessionRepository.transact(
       { tenantId: record.tenantId },
       async (tx) => {
@@ -11988,7 +12015,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         const recovered = await readOmittedPayloadRecoveryByInvocation(tx, {
           tenantId: record.tenantId,
           userId: record.userId,
-          effectiveMcpSessionId: effective.effectiveMcpSessionId,
+          effectiveMcpSessionId,
           rsid: record.rsid,
           sessionBindingId: record.sessionBindingId,
           sessionVersion: record.sessionVersion,
@@ -12009,7 +12036,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     }
     if (!found.value.reserved) return Object.freeze({ kind: "generic" as const });
     if (found.value.record === null ||
-        found.value.record.state !== "awaiting_correlated_read") {
+        found.value.record.state !== expectedState) {
       return Object.freeze({ kind: "guarded" as const });
     }
     return Object.freeze({

@@ -2703,9 +2703,12 @@ describe("Gateway omitted-payload recovery admission", () => {
       });
       if (claim.kind !== "admitted") throw new Error("C39 C2 claim was not admitted");
       const recoveryId = claim.record.carrierRecoveryInvocationId;
-      const recovery = created.createExecutor().execute(recoveryBridgeRequest(
+      const recoveryRequest = recoveryBridgeRequest(
         session.payload.rsid, recoveryId, originInvocationId, originDigest,
-      ));
+      );
+      const effective = recoveryRequest.context.effectiveMcpRequestScope;
+      if (effective === undefined) throw new Error("C39 C2 request lacks effective MCP scope");
+      const recovery = created.createExecutor().execute(recoveryRequest);
       const recoveryInvoke = await emittedInvokeFor(rebound.channel, recoveryId);
       expect(recoveryInvoke.payload).toMatchObject({
         invocation_id: recoveryId, method: "dispatch_payload_recovery",
@@ -2756,11 +2759,89 @@ describe("Gateway omitted-payload recovery admission", () => {
         });
       expect(terminalRecords.find((row) => row.namespace === "gateway.rbp-session/v2")?.value)
         .toMatchObject({ sequence: { sequence: { lastRxSeq: 4 } } });
+
+      const completedClaim = await created.admitOmittedPayloadRecoveryFromNorth({
+        tenantId: TENANT_ID,
+        userId: USER_ID,
+        effectiveMcpSessionId: effective.effectiveMcpSessionId,
+        rsid: session.payload.rsid,
+        originInvocationId,
+        originResultDigest: originDigest,
+      });
+      expect(completedClaim).toMatchObject({
+        kind: "completed",
+        record: { carrierRecoveryInvocationId: recoveryId },
+      });
+      const invokeCountBeforeReplay = rebound.channel.frames.filter(
+        (frame) => frame.type === "invoke",
+      ).length;
+      await expect(created.replayOmittedPayloadRecoveryReferenceFromNorth({
+        tenantId: TENANT_ID,
+        userId: USER_ID,
+        effectiveMcpSessionId: effective.effectiveMcpSessionId,
+        effectiveMcpRequestScope: effective,
+        rsid: session.payload.rsid,
+        carrierRecoveryInvocationId: recoveryId,
+      })).resolves.toMatchObject({ kind: "result_ref" });
+      expect(rebound.channel.frames.filter((frame) => frame.type === "invoke"))
+        .toHaveLength(invokeCountBeforeReplay);
+      await expect(created.admitOmittedPayloadRecoveryFromNorth({
+        tenantId: TENANT_ID,
+        userId: "foreign-user",
+        effectiveMcpSessionId: effective.effectiveMcpSessionId,
+        rsid: session.payload.rsid,
+        originInvocationId,
+        originResultDigest: originDigest,
+      })).resolves.toEqual({ kind: "guarded" });
+      const foreignEffective = createEffectiveMcpRequestScopeV1({
+        principalKey: effective.principalKey,
+        transportMcpSessionId: "foreign-mcp-session",
+        identityMcpSessionId: null,
+        nowMs: Date.now(),
+      });
+      await expect(created.replayOmittedPayloadRecoveryReferenceFromNorth({
+        tenantId: TENANT_ID,
+        userId: USER_ID,
+        effectiveMcpSessionId: foreignEffective.effectiveMcpSessionId,
+        effectiveMcpRequestScope: foreignEffective,
+        rsid: session.payload.rsid,
+        carrierRecoveryInvocationId: recoveryId,
+      })).resolves.toBeNull();
+
       await created.receive(rebound.connectionId, {
         v: 1, type: "heartbeat", id: id(), ts: new Date().toISOString(),
         payload: { bridge_version: "m4-route-test", acks: [], sessions: [] },
       });
       expect(rebound.channel.frames.some((frame) => frame.type === "heartbeat_ack")).toBe(true);
+
+      await created.detach(rebound.connectionId);
+      const drifted = await openConnection(
+        created,
+        "wss",
+        ["chunked_results", "route_rebind_proof_v1"],
+      );
+      await created.receive(drifted.connectionId, resumeWithRouteProof({
+        rsid: session.payload.rsid,
+        resumeToken: session.payload.resume_token,
+        connectionId: drifted.connectionId,
+        lastRxSeq: recoveryInvoke.seq,
+      }));
+      await expect(created.admitOmittedPayloadRecoveryFromNorth({
+        tenantId: TENANT_ID,
+        userId: USER_ID,
+        effectiveMcpSessionId: effective.effectiveMcpSessionId,
+        rsid: session.payload.rsid,
+        originInvocationId,
+        originResultDigest: originDigest,
+      })).resolves.toEqual({ kind: "guarded" });
+      await expect(created.replayOmittedPayloadRecoveryReferenceFromNorth({
+        tenantId: TENANT_ID,
+        userId: USER_ID,
+        effectiveMcpSessionId: effective.effectiveMcpSessionId,
+        effectiveMcpRequestScope: effective,
+        rsid: session.payload.rsid,
+        carrierRecoveryInvocationId: recoveryId,
+      })).resolves.toBeNull();
     } finally {
       await created.close().catch(() => undefined);
     }

@@ -231,6 +231,7 @@ export interface NorthMcpEndpointOptions {
       readonly tenantId: string;
       readonly userId: string;
       readonly effectiveMcpSessionId: string;
+      readonly effectiveMcpRequestScope: EffectiveMcpRequestScopeV1;
       readonly rsid: string;
       readonly carrierRecoveryInvocationId: string;
     }): Promise<GatewayJsonValue | null>;
@@ -984,6 +985,8 @@ function createSessionServer(input: {
                 tenantId: input.authenticated.authContext.actor.tenantId,
                 userId: input.authenticated.authContext.actor.userId,
                 effectiveMcpSessionId: mcpSessionId,
+                effectiveMcpRequestScope:
+                  input.effectiveMcpRequestScope,
                 rsid: route.rsid,
                 carrierRecoveryInvocationId,
               });

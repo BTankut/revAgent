@@ -373,6 +373,33 @@ describe("strict real-trio Streamable HTTP MCP client", () => {
     } } satisfies Partial<RealTrioNorthToolResultError>);
   });
 
+  it("classifies the bounded C39 recovery denial without retaining tool payloads", async () => {
+    const server = await testServer({ toolCallResult: {
+      isError: true,
+      structuredContent: {
+        state: "failed",
+        error: { code: "recovery_unavailable" },
+      },
+      content: [{ type: "text", text: JSON.stringify({
+        state: "failed",
+        error: { code: "recovery_unavailable" },
+      }) }],
+    } });
+    await expect(withRealTrioNorthMcpClient({ ...server, credential }, async (client) =>
+      await client.toolCall({
+        name: "core.dispatch.payload_recovery",
+        arguments: {},
+        requestId: "c39-recovery-denial",
+      }),
+    )).rejects.toMatchObject({ name: "RealTrioNorthToolResultError", evidence: {
+      isError: true,
+      diagnostic: {
+        state: "failed",
+        nestedErrorCode: "recovery_unavailable",
+      },
+    } } satisfies Partial<RealTrioNorthToolResultError>);
+  });
+
   it("redacts malformed read-only dispatch diagnostic values without retaining arbitrary fields", async () => {
     const secret = "must-not-retain";
     const server = await testServer({ toolCallResult: {
