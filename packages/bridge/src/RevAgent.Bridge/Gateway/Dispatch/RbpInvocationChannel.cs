@@ -26,6 +26,9 @@ internal enum RbpAddinOutcomeKind
     /// <c>journal_indeterminate</c>.
     /// </summary>
     PossiblyDispatched,
+
+    /// <summary>A correlated application failure; never evidence of no effect.</summary>
+    ApplicationError,
 }
 
 /// <summary>
@@ -55,7 +58,73 @@ internal sealed record RbpAddinOutcome(
     bool RouteFailure = false,
     // This is an internal, already post-response-verified attestation from
     // AddinTcpTransport. It is never serialized or exposed to a caller.
-    AddinProcessAttestation? ProcessAttestation = null);
+    AddinProcessAttestation? ProcessAttestation = null)
+{
+    internal RbpAddinOutcome ConservativeClassification() =>
+        Kind == RbpAddinOutcomeKind.KnownNotDispatched &&
+        (RequestBytes != 0 || ResponseBytes != 0 || RawResponsePayload.Length != 0)
+            ? this with { Kind = RbpAddinOutcomeKind.PossiblyDispatched }
+            : this;
+}
+
+/// <summary>
+/// Shared by single/batch owners using the same channel. A failed persistence
+/// decision retains its routed lease across connection epochs and route rebinds.
+/// There is deliberately no reset, timer, or disposal-based release API.
+/// </summary>
+internal sealed class RbpDispatchDecisionQuarantine
+{
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<
+        IRbpInvocationChannel, RbpDispatchDecisionQuarantine> Owners = new();
+    private sealed class Entry
+    {
+        internal IRbpDispatchLease? Lease;
+        internal bool HasOutcome;
+    }
+    private readonly Dictionary<string, Entry> _leases = new(StringComparer.Ordinal);
+    internal static RbpDispatchDecisionQuarantine For(IRbpInvocationChannel channel) =>
+        Owners.GetValue(channel, _ => new());
+
+    internal bool IsBlocked(string rsid)
+    {
+        lock (_leases) return _leases.ContainsKey(rsid) || _leases.Count >= 1024;
+    }
+
+    internal bool IsQuarantined(string rsid)
+    {
+        lock (_leases) return _leases.TryGetValue(rsid, out Entry? entry) && entry.HasOutcome;
+    }
+
+    internal bool TryReserve(string rsid)
+    {
+        lock (_leases)
+        {
+            return _leases.Count < 1024 && _leases.TryAdd(rsid, new Entry());
+        }
+    }
+
+    internal void Own(string rsid, IRbpDispatchLease? lease)
+    {
+        lock (_leases)
+        {
+            if (!_leases.TryGetValue(rsid, out Entry? entry) || entry.HasOutcome)
+                throw new InvalidOperationException("A session already owns an unresolved dispatch decision.");
+            entry.Lease = lease;
+            entry.HasOutcome = true;
+        }
+    }
+
+    internal void ReleaseProven(string rsid, IRbpDispatchLease? lease)
+    {
+        lock (_leases)
+        {
+            if (!_leases.TryGetValue(rsid, out Entry? owned) || !owned.HasOutcome || !ReferenceEquals(owned.Lease, lease))
+                throw new InvalidOperationException("The durable decision does not own this dispatch lease.");
+            lease?.ReleaseAfterDurableDecision();
+            _leases.Remove(rsid);
+        }
+    }
+}
 
 /// <summary>
 /// Ownership of an add-in session for the duration of one invocation.

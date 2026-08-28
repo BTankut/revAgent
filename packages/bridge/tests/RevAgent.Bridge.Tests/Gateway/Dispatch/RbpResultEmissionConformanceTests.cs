@@ -461,7 +461,7 @@ public sealed class RbpResultEmissionConformanceTests
         int code,
         string message) =>
         new(
-            RbpAddinOutcomeKind.KnownNotDispatched,
+            RbpAddinOutcomeKind.ApplicationError,
             default,
             [],
             RequestBytes: 128,

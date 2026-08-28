@@ -252,7 +252,8 @@ internal sealed partial class RbpJournalStore
     internal Task<string?> PersistInvocationTerminalAsync(
         string idempotencyKey,
         RbpInvocationTerminal terminal,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        RbpInvocationIdentity? expectedIdentity = null)
     {
         ValidateIdentifier(idempotencyKey, nameof(idempotencyKey), 293);
         ArgumentNullException.ThrowIfNull(terminal);
@@ -308,7 +309,7 @@ internal sealed partial class RbpJournalStore
         }
         string? resultDigest = terminal.ResultDigest;
         long now = NowMilliseconds();
-        return ExecuteImmediateAsync<string?>(
+        return ExecuteProvenDecisionAsync<string?>(
             context =>
             {
                 RbpStoredInvocation existing =
@@ -316,6 +317,8 @@ internal sealed partial class RbpJournalStore
                     throw new RbpJournalException(
                         RbpJournalErrorCode.ProtocolConflict,
                         "An unknown invocation cannot be terminalized.");
+                if (expectedIdentity is not null)
+                    RequireIdenticalIdentity(existing.Identity, expectedIdentity);
 
                 // Late evidence after an indeterminate terminal is retained
                 // separately and never overwrites the indeterminate state,
@@ -351,6 +354,8 @@ internal sealed partial class RbpJournalStore
                         context,
                         existing.Identity,
                         now);
+                    RequireExactDecisionHold(context, existing.Identity.Rsid,
+                        existing.Identity.MutationScopeJcs!, [idempotencyKey], holdId);
 
                     // The hold id is minted here, so the Section 12.2 rule 4
                     // body — which MUST carry that id — can only be built here
@@ -417,7 +422,92 @@ internal sealed partial class RbpJournalStore
 
                 return holdId;
             },
-            cancellationToken);
+            [idempotencyKey], batchKey: null, cancellationToken,
+            allowRetry: expectedIdentity is not null && terminal.RecoveryPayload is null);
+    }
+
+    /// <summary>
+    /// An exception is not proof of rollback or commit. Compare a single
+    /// bounded snapshot of the exact decision with the pre/post transaction
+    /// projections. Retry persistence once only after exact unchanged-state
+    /// proof; never re-enter the add-in. The projection includes full identities,
+    /// terminal bytes/digests, carrier plans and complete relevant hold records.
+    /// </summary>
+    private async Task<T> ExecuteProvenDecisionAsync<T>(
+        Func<RbpJournalWriteContext, T> operation,
+        IReadOnlyList<string> invocationKeys,
+        string? batchKey,
+        CancellationToken cancellationToken,
+        bool allowRetry = true)
+    {
+        if (invocationKeys.Count is < 1 or > 1024)
+            throw new ArgumentException("A durable decision requires bounded exact invocation keys.");
+        string? before = null, intended = null;
+        T projection = default!;
+        bool produced = false;
+        for (int attempt = 0; ; attempt++)
+        {
+            try
+            {
+                return await ExecuteImmediateAsync(context =>
+                {
+                    string current = CaptureDecisionSnapshot(context, invocationKeys, batchKey);
+                    if (before is not null && !string.Equals(before, current, StringComparison.Ordinal))
+                        throw new RbpJournalException(RbpJournalErrorCode.IntegrityCheckFailed,
+                            "The durable decision changed before its persistence-only retry.");
+                    before = current;
+                    projection = operation(context);
+                    intended = CaptureDecisionSnapshot(context, invocationKeys, batchKey);
+                    produced = true;
+                    return projection;
+                }, cancellationToken).ConfigureAwait(false);
+            }
+            catch
+            {
+                // ReadAsync serializes the snapshot with local writers; the
+                // explicit SQLite read transaction also excludes mixed external
+                // generations. No write fault-injection hook runs on a read.
+                string observed = await ReadAsync(connection =>
+                {
+                    using SqliteTransaction snapshot = connection.BeginTransaction(deferred: true);
+                    var context = new RbpJournalWriteContext(connection, snapshot, _commandTimeoutSeconds);
+                    return CaptureDecisionSnapshot(context, invocationKeys, batchKey);
+                }, CancellationToken.None).ConfigureAwait(false);
+                if (produced && string.Equals(intended, observed, StringComparison.Ordinal))
+                    return projection;
+                if (produced && allowRetry && attempt == 0 && string.Equals(before, observed, StringComparison.Ordinal))
+                    continue;
+                throw;
+            }
+        }
+    }
+
+    private static string CaptureDecisionSnapshot(
+        RbpJournalWriteContext context, IReadOnlyList<string> invocationKeys, string? batchKey)
+    {
+        var rows = new List<RbpStoredInvocation?>(invocationKeys.Count);
+        var holds = new SortedDictionary<string, RbpVerificationHold>(StringComparer.Ordinal);
+        foreach (string key in invocationKeys)
+        {
+            RbpStoredInvocation? row = ReadInvocation(context, key);
+            rows.Add(row);
+            if (row is null) continue;
+            void Include(RbpVerificationHold? hold)
+            {
+                if (hold is not null) holds[hold.VerificationHoldId] = hold;
+            }
+            if (row.VerificationHoldId is { } id)
+                Include(FindHoldById(context, row.Identity.Rsid, id));
+            if (row.Identity.MutationScopeJcs is { } scope)
+                Include(FindHoldByExactScope(context, row.Identity.Rsid, scope));
+            Include(FindHoldByExactScope(context, row.Identity.Rsid, "{\"kind\":\"session\"}"));
+        }
+        return JsonSerializer.Serialize(new
+        {
+            invocations = rows,
+            batch = batchKey is null ? null : ReadBatch(context, batchKey),
+            holds = holds.Values,
+        });
     }
 
     private void TryInsertRecoveryPayload(
@@ -766,6 +856,8 @@ internal sealed partial class RbpJournalStore
         RbpInvocationIdentity incoming)
     {
         bool identical =
+            string.Equals(stored.Rsid, incoming.Rsid, StringComparison.Ordinal) &&
+            string.Equals(stored.InvocationId, incoming.InvocationId, StringComparison.Ordinal) &&
             string.Equals(
                 stored.Method,
                 incoming.Method,
@@ -919,6 +1011,19 @@ internal sealed partial class RbpJournalStore
         }
 
         return holdId;
+    }
+
+    private static void RequireExactDecisionHold(RbpJournalWriteContext context,
+        string rsid, string scopeJcs, IReadOnlyList<string> origins, string holdId)
+    {
+        using JsonDocument scope = JsonDocument.Parse(scopeJcs);
+        string expectedId = Rfc8785Json.MakeVerificationHoldId(rsid, scope.RootElement, origins);
+        RbpVerificationHold? hold = FindHoldById(context, rsid, holdId);
+        if (hold is null || hold.VerificationHoldId != expectedId || hold.ScopeJcs != scopeJcs ||
+            hold.State != RbpHoldState.Active ||
+            !hold.OrderedOriginIdempotencyKeys.SequenceEqual(origins, StringComparer.Ordinal))
+            throw new RbpJournalException(RbpJournalErrorCode.IntegrityCheckFailed,
+                "The current dispatch hold does not represent this exact ordered origin set.");
     }
 
     private static void MarkInvocationIndeterminate(

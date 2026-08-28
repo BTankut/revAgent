@@ -136,14 +136,29 @@ internal sealed partial class RbpJournalStore
     internal Task<RbpStoredBatch> PersistBatchTerminalAsync(
         string batchKey,
         RbpBatchTerminal terminal,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        RbpBatchIdentity? expectedIdentity = null)
     {
         ValidateIdentifier(batchKey, nameof(batchKey), 293);
         ArgumentNullException.ThrowIfNull(terminal);
         RequireSha256(terminal.ResultDigest, nameof(terminal));
         string outcomeJson = Rfc8785Json.Canonicalize(terminal.Outcome);
         long now = NowMilliseconds();
-        return ExecuteImmediateAsync(
+        // The exact ordered member keys participate in aggregate readback.
+        // They are loaded from the durable binding, never caller reconstruction.
+        return PersistBatchDecisionAsync(batchKey, terminal, outcomeJson, now, cancellationToken, expectedIdentity);
+    }
+
+    private async Task<RbpStoredBatch> PersistBatchDecisionAsync(
+        string batchKey, RbpBatchTerminal terminal, string outcomeJson, long now,
+        CancellationToken cancellationToken, RbpBatchIdentity? expectedIdentity)
+    {
+        RbpStoredBatch binding = await GetBatchAsync(batchKey, cancellationToken).ConfigureAwait(false) ??
+            throw MissingStepRow();
+        using JsonDocument ordered = JsonDocument.Parse(binding.StepsJcs);
+        string[] keys = ordered.RootElement.EnumerateArray()
+            .Select(step => binding.Rsid + "/" + step.GetProperty("invocation_id").GetString()).ToArray();
+        return await ExecuteProvenDecisionAsync(
             context =>
             {
                 RbpStoredBatch existing =
@@ -151,8 +166,21 @@ internal sealed partial class RbpJournalStore
                     throw new RbpJournalException(
                         RbpJournalErrorCode.ProtocolConflict,
                         "An unknown batch cannot be terminalized.");
+                if (expectedIdentity is not null)
+                {
+                    RbpBatchIdentity normalized = NormalizeBatchIdentity(expectedIdentity);
+                    RequireIdenticalBatch(existing, normalized, BuildStepsJcs(normalized));
+                    for (int index = 0; index < normalized.Steps.Count; index++)
+                    {
+                        RbpInvocationIdentity member = StepInvocationIdentity(normalized, index);
+                        RequireIdenticalIdentity((ReadInvocation(context, member.IdempotencyKey) ?? throw MissingStepRow()).Identity, member);
+                    }
+                }
                 if (existing.State == RbpBatchState.Terminal)
                 {
+                    if (expectedIdentity is not null && existing.TerminalOutcomeJson == outcomeJson &&
+                        existing.ResultDigest == terminal.ResultDigest)
+                        return existing;
                     throw new RbpJournalException(
                         RbpJournalErrorCode.ProtocolConflict,
                         "A terminal batch outcome is immutable.");
@@ -170,7 +198,48 @@ internal sealed partial class RbpJournalStore
                            "The terminalized batch row disappeared inside " +
                            "its own transaction.");
             },
-            cancellationToken);
+            keys, batchKey, cancellationToken).ConfigureAwait(false);
+    }
+
+    internal Task<string?> PersistBatchStepDecisionAsync(
+        RbpBatchIdentity identity, int index, RbpInvocationTerminal terminal,
+        CancellationToken cancellationToken = default) =>
+        PersistInvocationTerminalAsync(StepInvocationIdentity(identity, index).IdempotencyKey,
+            terminal, cancellationToken, StepInvocationIdentity(identity, index));
+
+    /// <summary>First-delivery failure, not a synthetic admission/redelivery.</summary>
+    internal Task<RbpBatchAdmissionResult> PersistAtomicDispatchFailureAsync(
+        RbpBatchIdentity identity, string? applicationFaultClass = null,
+        CancellationToken cancellationToken = default)
+    {
+        ValidateBatchIdentity(identity);
+        RbpBatchIdentity normalized = NormalizeBatchIdentity(identity);
+        VerifyBatchDigestBinding(normalized);
+        if (!normalized.Atomic || applicationFaultClass is not (null or "unsupported" or "parameter" or "revit_api" or "protocol"))
+            throw new ArgumentException("Invalid atomic dispatch failure classification.");
+        string stepsJcs = BuildStepsJcs(normalized);
+        string[] keys = Enumerable.Range(0, normalized.Steps.Count)
+            .Select(index => StepInvocationIdentity(normalized, index).IdempotencyKey).ToArray();
+        long now = NowMilliseconds();
+        return ExecuteProvenDecisionAsync(context =>
+        {
+            RbpStoredBatch stored = ReadBatch(context, normalized.BatchKey) ?? throw MissingStepRow();
+            RequireIdenticalBatch(stored, normalized, stepsJcs);
+            if (stored.State != RbpBatchState.Dispatched || stored.DispatchedAtMilliseconds is null)
+                throw new RbpJournalException(RbpJournalErrorCode.IntegrityCheckFailed,
+                    "Only the exact dispatched atomic batch can record this decision.");
+            for (int index = 0; index < normalized.Steps.Count; index++)
+            {
+                RbpStoredInvocation row = ReadInvocation(context, keys[index]) ?? throw MissingStepRow();
+                RequireIdenticalIdentity(row.Identity, StepInvocationIdentity(normalized, index));
+                if (row.IsTerminal)
+                    throw new RbpJournalException(RbpJournalErrorCode.IntegrityCheckFailed,
+                        "A first-delivery atomic failure cannot replace an immutable member terminal.");
+            }
+            return ArbitrateAtomicDispatchLoss(context, stored, normalized, now, applicationFaultClass, requireExactOrigins: true)
+                with
+            { ReplayPermitted = false };
+        }, keys, normalized.BatchKey, cancellationToken);
     }
 
     /// <summary>
@@ -542,7 +611,9 @@ internal sealed partial class RbpJournalStore
         RbpJournalWriteContext context,
         RbpStoredBatch stored,
         RbpBatchIdentity identity,
-        long now)
+        long now,
+        string? applicationFaultClass = null,
+        bool requireExactOrigins = false)
     {
         // Spec ~477-480: for an uncertain atomic batch each scope's origin
         // list holds, in input order, every possibly executed mutating step
@@ -553,7 +624,7 @@ internal sealed partial class RbpJournalStore
         // indeterminate; deriving step by step would bind each earlier step
         // to an id the next step's origin invalidates.
         IReadOnlyDictionary<string, string> holdByStepKey =
-            InstallAtomicBatchHolds(context, identity, now);
+            InstallAtomicBatchHolds(context, identity, now, requireExactOrigins);
         var steps =
             new List<RbpBatchStepArbitration>(identity.Steps.Count);
         var holdIds = new List<string>();
@@ -633,7 +704,7 @@ internal sealed partial class RbpJournalStore
                 // Spec ~985-986, ~1128-1129: a read result lost with the
                 // missing carrier is terminalized as the narrow known
                 // environment failure, never as a synthetic success.
-                TerminalizeEnvironmentRead(context, row.Identity, now);
+                TerminalizeEnvironmentRead(context, row.Identity, now, applicationFaultClass);
                 RbpStoredInvocation failed =
                     ReadInvocation(context, stepIdentity.IdempotencyKey) ??
                     throw MissingStepRow();
@@ -694,7 +765,8 @@ internal sealed partial class RbpJournalStore
     private static IReadOnlyDictionary<string, string> InstallAtomicBatchHolds(
         RbpJournalWriteContext context,
         RbpBatchIdentity identity,
-        long now)
+        long now,
+        bool requireExactOrigins = false)
     {
         var uncertain = new List<(string Key, string ScopeJcs)>();
         for (int index = 0; index < identity.Steps.Count; index++)
@@ -745,6 +817,8 @@ internal sealed partial class RbpJournalStore
                 sessionScopeJcs,
                 subsumedOrigins,
                 now);
+            if (requireExactOrigins)
+                RequireExactDecisionHold(context, identity.Rsid, sessionScopeJcs, subsumedOrigins, sessionHoldId);
             foreach (string key in subsumedOrigins)
             {
                 holdByStepKey[key] = sessionHoldId;
@@ -779,6 +853,8 @@ internal sealed partial class RbpJournalStore
                 scopeJcs,
                 scopeOrigins,
                 now);
+            if (requireExactOrigins)
+                RequireExactDecisionHold(context, identity.Rsid, scopeJcs, scopeOrigins, holdId);
             foreach (string key in scopeOrigins)
             {
                 holdByStepKey[key] = holdId;
@@ -812,10 +888,12 @@ internal sealed partial class RbpJournalStore
     private static void TerminalizeEnvironmentRead(
         RbpJournalWriteContext context,
         RbpInvocationIdentity identity,
-        long now)
+        long now,
+        string? applicationFaultClass = null)
     {
         (string outcomeJson, string outcomeDigest) =
-            BuildEnvironmentReadOutcome();
+            applicationFaultClass is null ? BuildEnvironmentReadOutcome() :
+                BuildApplicationReadOutcome(applicationFaultClass);
         using SqliteCommand update = context.CreateCommand(
             """
             UPDATE rbp_invocations
@@ -866,6 +944,24 @@ internal sealed partial class RbpJournalStore
         return (
             Rfc8785Json.Canonicalize(built.RootElement),
             Rfc8785Json.Sha256Digest(built.RootElement));
+    }
+
+    private static (string Json, string Digest) BuildApplicationReadOutcome(string faultClass)
+    {
+        JsonElement body = JsonSerializer.SerializeToElement(new
+        {
+            status = "failed",
+            effect_state = "read_only",
+            error = new
+            {
+                fault_class = faultClass,
+                message = "The add-in atomic response reported an application failure or was unusable.",
+                outcome = "known",
+                retryable = false,
+                verification_required = false,
+            },
+        });
+        return (Rfc8785Json.Canonicalize(body), Rfc8785Json.Sha256Digest(body));
     }
 
     private static (string Json, string Digest) BuildDispatchLossOutcome(
