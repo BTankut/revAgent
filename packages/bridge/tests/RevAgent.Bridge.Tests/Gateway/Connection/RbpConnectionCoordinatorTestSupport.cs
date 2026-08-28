@@ -491,6 +491,7 @@ public sealed partial class RbpConnectionCoordinatorTests
         private readonly bool _leaveInboundOpenAfterClose;
         private readonly Func<FakeConnectionCycle, RbpEnvelope,
             CancellationToken, Task>? _sendBehavior;
+        private readonly Action? _onCloseStarted;
         private int _closeCount;
 
         internal FakeConnectionCycle(
@@ -500,12 +501,14 @@ public sealed partial class RbpConnectionCoordinatorTests
             Func<FakeConnectionCycle, RbpEnvelope, CancellationToken, Task>?
                 sendBehavior = null,
             IReadOnlyList<string>? grantedConnectionCapabilities = null,
-            string connectionId = "conn-test")
+            string connectionId = "conn-test",
+            Action? onCloseStarted = null)
         {
             _responder = responder;
             _hangCloseAndDispose = hangCloseAndDispose;
             _leaveInboundOpenAfterClose = leaveInboundOpenAfterClose;
             _sendBehavior = sendBehavior;
+            _onCloseStarted = onCloseStarted;
             Acknowledgement = new RbpHelloAckPayload(
                 1,
                 connectionId,
@@ -556,6 +559,7 @@ public sealed partial class RbpConnectionCoordinatorTests
         public Task CloseAsync(
             CancellationToken cancellationToken = default)
         {
+            _onCloseStarted?.Invoke();
             Interlocked.Increment(ref _closeCount);
             if (_hangCloseAndDispose)
             {

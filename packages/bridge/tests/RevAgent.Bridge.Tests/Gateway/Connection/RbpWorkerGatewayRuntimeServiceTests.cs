@@ -510,6 +510,8 @@ public sealed partial class RbpConnectionCoordinatorTests
     {
         using var fixture = await ResumeRouteFixture.CreateAsync(false);
         int fenceBaseline = fixture.Routes.FenceCount;
+        Assert.Equal(0, fixture.TeardownOrder.FirstFenceOrdinal);
+        Assert.Equal(0, fixture.TeardownOrder.FirstCloseStartedOrdinal);
         Assert.Null(fixture.Routes.Resolve("rs-8080"));
         Assert.Equal(0, fixture.Routes.ActiveRouteCount);
         _ = await EventuallySentAsync(fixture.Cycle,
@@ -518,6 +520,14 @@ public sealed partial class RbpConnectionCoordinatorTests
         fixture.Clock.Advance(TimeSpan.FromSeconds(10));
         await EventuallyAsync(() => fixture.Timeouts.Any(
             item => item.LifecycleControl == "session_resume"));
+        await EventuallyAsync(() => fixture.TeardownOrder.FirstFenceOrdinal > 0);
+        await EventuallyAsync(() => fixture.TeardownOrder.FirstCloseStartedOrdinal > 0);
+        long fenceOrdinal = fixture.TeardownOrder.FirstFenceOrdinal;
+        long closeStartedOrdinal = fixture.TeardownOrder.FirstCloseStartedOrdinal;
+        Assert.True(
+            fenceOrdinal < closeStartedOrdinal,
+            $"Route authority fence ordinal {fenceOrdinal} must precede " +
+            $"transport close-start ordinal {closeStartedOrdinal}.");
         await EventuallyAsync(() => fixture.Routes.FenceCount > fenceBaseline);
         await EventuallyAsync(() => fixture.Routes.ActiveRouteCount == 0);
         await EventuallyAsync(() => fixture.Routes.Resolve("rs-8080") is null);
@@ -527,6 +537,10 @@ public sealed partial class RbpConnectionCoordinatorTests
         fixture.Stop();
         await fixture.Run.WaitAsync(TimeSpan.FromSeconds(5));
         Assert.True(fixture.Routes.FenceCount > fenceBaseline);
+        Assert.Equal(fenceOrdinal, fixture.TeardownOrder.FirstFenceOrdinal);
+        Assert.Equal(
+            closeStartedOrdinal,
+            fixture.TeardownOrder.FirstCloseStartedOrdinal);
         Assert.Equal(0, fixture.Routes.ActiveRouteCount);
         Assert.Null(fixture.Routes.Resolve("rs-8080"));
     }
@@ -2019,7 +2033,8 @@ public sealed partial class RbpConnectionCoordinatorTests
             ManualCoordinatorClock clock,
             FakeConnectionCycle cycle,
             RecordingRouteAuthority routes,
-            ConcurrentQueue<RbpLifecycleTimeoutObservation> timeouts)
+            ConcurrentQueue<RbpLifecycleTimeoutObservation> timeouts,
+            TeardownOrderProbe teardownOrder)
         {
             _directory = directory;
             _store = store;
@@ -2027,12 +2042,14 @@ public sealed partial class RbpConnectionCoordinatorTests
             Cycle = cycle;
             Routes = routes;
             Timeouts = timeouts;
+            TeardownOrder = teardownOrder;
         }
 
         internal ManualCoordinatorClock Clock { get; }
         internal FakeConnectionCycle Cycle { get; }
         internal RecordingRouteAuthority Routes { get; }
         internal ConcurrentQueue<RbpLifecycleTimeoutObservation> Timeouts { get; }
+        internal TeardownOrderProbe TeardownOrder { get; }
         internal Task Run { get; private set; } = Task.CompletedTask;
 
         internal static async Task<ResumeRouteFixture> CreateAsync(
@@ -2045,11 +2062,14 @@ public sealed partial class RbpConnectionCoordinatorTests
             _ = await store.PersistRegisteredSessionAsync(
                 Registration(local, "rs-8080"));
             var responder = new ScriptedGatewayResponder(clock);
-            var cycle = new FakeConnectionCycle(envelope =>
-                envelope.Type == "session_resume" && !respondToResume
-                    ? null
-                    : responder.Respond(envelope));
-            var routes = new RecordingRouteAuthority();
+            var teardownOrder = new TeardownOrderProbe();
+            var cycle = new FakeConnectionCycle(
+                envelope =>
+                    envelope.Type == "session_resume" && !respondToResume
+                        ? null
+                        : responder.Respond(envelope),
+                onCloseStarted: teardownOrder.RecordCloseStarted);
+            var routes = new RecordingRouteAuthority(teardownOrder.RecordFence);
             var timeouts = new ConcurrentQueue<RbpLifecycleTimeoutObservation>();
             RbpConnectionCoordinator coordinator =
                 WorkerGatewayComposition.CreateCoordinator(
@@ -2070,7 +2090,8 @@ public sealed partial class RbpConnectionCoordinatorTests
                             return ValueTask.CompletedTask;
                         }));
             var fixture = new ResumeRouteFixture(
-                directory, store, clock, cycle, routes, timeouts);
+                directory, store, clock, cycle, routes, timeouts,
+                teardownOrder);
             fixture.Run = coordinator.RunAsync(fixture._stop.Token);
             return fixture;
         }
@@ -2086,18 +2107,57 @@ public sealed partial class RbpConnectionCoordinatorTests
         }
     }
 
+    private sealed class TeardownOrderProbe
+    {
+        private long _nextOrdinal;
+        private long _firstFenceOrdinal;
+        private long _firstCloseStartedOrdinal;
+
+        internal long FirstFenceOrdinal =>
+            Volatile.Read(ref _firstFenceOrdinal);
+
+        internal long FirstCloseStartedOrdinal =>
+            Volatile.Read(ref _firstCloseStartedOrdinal);
+
+        internal void RecordFence(long epoch)
+        {
+            _ = epoch;
+            long ordinal = Interlocked.Increment(ref _nextOrdinal);
+            _ = Interlocked.CompareExchange(
+                ref _firstFenceOrdinal,
+                ordinal,
+                0);
+        }
+
+        internal void RecordCloseStarted()
+        {
+            long ordinal = Interlocked.Increment(ref _nextOrdinal);
+            _ = Interlocked.CompareExchange(
+                ref _firstCloseStartedOrdinal,
+                ordinal,
+                0);
+        }
+    }
+
     private sealed class RecordingRouteAuthority :
         IRbpSessionRouteResolver,
         IRbpSessionRouteBindingAuthority
     {
         private readonly ConcurrentDictionary<string, string> _bound =
             new(StringComparer.Ordinal);
+        private readonly Action<long>? _onFenceObserved;
         private int _resolveBeforeBindingCount;
         private long _activeEpoch;
         private int _bindAttempts;
         private int _successfulPublications;
         private int _revokeCount;
         private int _fenceCount;
+
+        internal RecordingRouteAuthority(
+            Action<long>? onFenceObserved = null)
+        {
+            _onFenceObserved = onFenceObserved;
+        }
 
         internal ConcurrentQueue<string> Resolved { get; } = new();
 
@@ -2136,6 +2196,7 @@ public sealed partial class RbpConnectionCoordinatorTests
 
         public void FenceConnectionEpoch(long epoch)
         {
+            _onFenceObserved?.Invoke(epoch);
             Interlocked.Increment(ref _fenceCount);
             if (_activeEpoch == epoch) _activeEpoch = 0;
             _bound.Clear();
