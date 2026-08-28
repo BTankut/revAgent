@@ -148,7 +148,7 @@
           "minimum": 0,
           "maximum": 9007199254740991
         },
-        "cacheIncarnationDigest": {
+        "cache_incarnation_digest": {
           "$ref": "https://schemas.revagent.local/addin-loopback/v1/common.schema.json#/$defs/sha256"
         },
         "cacheState": {
@@ -202,10 +202,10 @@
         {
           "if": {
             "required": [
-              "cacheIncarnationDigest"
+              "cache_incarnation_digest"
             ],
             "properties": {
-              "cacheIncarnationDigest": {}
+              "cache_incarnation_digest": {}
             }
           },
           "then": {

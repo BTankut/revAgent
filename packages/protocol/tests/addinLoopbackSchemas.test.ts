@@ -479,7 +479,7 @@ describe("add-in loopback v1 schemas", () => {
     const admitted = structuredClone(documentContext);
     const admittedResult = object(admitted.response.result, "get_document_context.result");
     admittedResult.revision = 1;
-    admittedResult.cacheIncarnationDigest = `sha256:${"a".repeat(64)}`;
+    admittedResult.cache_incarnation_digest = `sha256:${"a".repeat(64)}`;
     expect(
       validateInstance("get-document-context", admitted.response),
       schemaErrors(validators["get-document-context"]),
