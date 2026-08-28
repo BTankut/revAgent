@@ -119,14 +119,8 @@ function Invoke-McpPackageNpmCi {
         # selected prebuild, and a local node-gyp fallback creates a build
         # tree that the updater's native/prebuild contract correctly rejects.
         $env:npm_config_ignore_scripts = "true"
-        $nodePath = Join-Path $env:USERPROFILE ".cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe"
-        $npmCliPath = Join-Path $env:ProgramFiles "nodejs\node_modules\npm\bin\npm-cli.js"
-        if (-not (Test-Path -LiteralPath $nodePath -PathType Leaf) -or
-            -not (Test-Path -LiteralPath $npmCliPath -PathType Leaf)) {
-            throw "Pinned Node/npm runtime is unavailable for deterministic no-script hydration. node=$nodePath npm=$npmCliPath"
-        }
         Invoke-McpPackageCommand -PackageName "$PackageName dependencies" -PackageRoot $PackageRoot -Command {
-            & $nodePath $npmCliPath ci --ignore-scripts
+            npm ci --ignore-scripts
         }
     }
     finally {
