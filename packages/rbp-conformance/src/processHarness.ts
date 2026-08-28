@@ -713,6 +713,10 @@ export class StrictJsonlProcess {
         );
         acknowledgedAt = new Date().toISOString();
         acknowledgement = "response_ok";
+        // The child has acknowledged its own shutdown. Release the parent end
+        // of the control pipe so EOF/stdio close can complete before evidence
+        // is snapshotted; this is not a forceful termination path.
+        if (!this.child.stdin.destroyed) this.child.stdin.end();
       } catch {
         acknowledgedAt = new Date().toISOString();
         acknowledgement = "failed_or_timed_out";
@@ -1042,6 +1046,7 @@ export class StrictReadyProcess {
         if (acknowledged !== "closed") throw new Error(`${this.componentId} STOP reported failed shutdown`);
         // Only the parent releases IPC, after it has matched the exact ack.
         if (this.child.connected) this.child.disconnect();
+        if (!this.child.stdin.destroyed) this.child.stdin.end();
       }
       const exit = await awaitExitWithin(this.#exit, boundedTimeout);
       if (exit === null) {
