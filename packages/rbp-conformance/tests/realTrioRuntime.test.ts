@@ -1708,7 +1708,13 @@ async function waitForC39RouteRebindCurrent(
       throw new Error("C39 route-rebind audit failed closed before retained terminal evidence");
     }
     if (Date.now() >= deadline) {
-      throw new Error("C39 route-rebind proof CAS did not become current before retained terminal evidence");
+      throw new Error(
+        "C39 route-rebind proof CAS did not become current before retained terminal evidence " +
+        `[status=${routeRebind.status};candidates=${String(routeRebind.candidateCount)};` +
+        `capability=${String(routeRebind.capabilityGranted)};receipt=${String(routeRebind.receiptCurrent)};` +
+        `resume=${String(routeRebind.resumeCasCurrent)};provenance=${String(routeRebind.routeProvenanceCurrent)};` +
+        `connection=${String(routeRebind.currentConnection)}]`,
+      );
     }
     await new Promise<void>((resolve) => setTimeout(resolve, 100));
   }
