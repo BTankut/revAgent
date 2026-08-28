@@ -198,8 +198,10 @@ public sealed class RbpApplicationErrorSafetyTests
         }
     }
 
-    [Fact]
-    public async Task StrictNativeAtomicRollbackStillMapsThroughTheRealRoutedChannel()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task StrictNativeAtomicRollbackStillMapsThroughTheRealRoutedChannel(bool outerError)
     {
         using var directory = new RbpJournalTestDirectory();
         await using RbpJournalStore store = await Open(directory);
@@ -207,7 +209,9 @@ public sealed class RbpApplicationErrorSafetyTests
         RbpAddinOutcome native = AtomicEnvelope(Batch, payload.GetProperty("batch_digest").GetString()!,
             [new AtomicStepSpec(First, WriteMethod, "failed", "not_committed", ErrorCode: "revit_api", ErrorMessage: "rolled back"),
              new AtomicStepSpec(Second, WriteMethod, "not_started", "not_started")]);
-        var fixture = new RoutedFixture(native.Result.GetRawText(), null);
+        JObject response = JObject.Parse(native.Result.GetRawText());
+        if (outerError) response["error"] = "The native wrapper reports the validated rollback.";
+        var fixture = new RoutedFixture(response.ToString(Newtonsoft.Json.Formatting.None), null);
         var coordinator = new RbpBatchCoordinator(store, fixture.Channel, StubBatchCapabilities.Standard(true));
         RbpInvocationAnswer answer = await coordinator.DispatchAsync(Rsid, payload, CancellationToken.None);
         Assert.Equal("rolled_back", answer.Payload.GetProperty("transaction_state").GetString());
@@ -215,6 +219,177 @@ public sealed class RbpApplicationErrorSafetyTests
         Assert.Null((await store.GetInvocationAsync(Rsid + "/" + First))!.VerificationHoldId);
         Assert.Equal(1, fixture.Transport.Calls);
     }
+
+    [Theory]
+    [InlineData("repeated", false)]
+    [InlineData("distinct", false)]
+    [InlineData("session", false)]
+    [InlineData("read", false)]
+    [InlineData("repeated", true)]
+    [InlineData("distinct", true)]
+    [InlineData("session", true)]
+    [InlineData("read", true)]
+    public async Task CompletedAtomicEnvelopeWithOuterErrorCannotClaimCommit(string scopeKind, bool objectError)
+    {
+        using var directory = new RbpJournalTestDirectory();
+        await using RbpJournalStore store = await Open(directory);
+        bool mutating = scopeKind != "read";
+        BatchStepSpec[] steps = mutating
+            ? [Write(First), Write(Second) with
+            {
+                MutationScopeJson = scopeKind switch
+                {
+                    "distinct" => "{\"kind\":\"document\",\"document_id\":\"doc-2\"}",
+                    "session" => "{\"kind\":\"session\"}",
+                    _ => DocumentScope,
+                },
+            }]
+            : [Read(First), Read(Second)];
+        JsonElement payload = Payload(Batch, true, steps);
+        RbpAddinOutcome native = AtomicEnvelope(Batch, payload.GetProperty("batch_digest").GetString()!,
+            steps.Select(step => new AtomicStepSpec(step.InvocationId, step.Method, "completed",
+                mutating ? "committed" : "read_only", ResultJson: "{\"ok\":true}")).ToArray());
+        JObject response = JObject.Parse(native.Result.GetRawText());
+        response["error"] = objectError ? new JObject { ["message"] = "failure after response construction" } :
+            new JValue("failure after response construction");
+        var fixture = new RoutedFixture(response.ToString(Newtonsoft.Json.Formatting.None), null);
+        var coordinator = new RbpBatchCoordinator(store, fixture.Channel, StubBatchCapabilities.Standard(true));
+        RbpInvocationAnswer answer = await coordinator.DispatchAsync(Rsid, payload, CancellationToken.None);
+        Assert.Equal(mutating ? "indeterminate" : "failed", answer.Payload.GetProperty("status").GetString());
+        Assert.NotEqual("committed", answer.Payload.GetProperty("transaction_state").GetString());
+        for (int index = 0; index < steps.Length; index++)
+        {
+            JsonElement evidence = answer.Payload.GetProperty("steps")[index];
+            Assert.False(evidence.TryGetProperty("result", out _));
+            RbpStoredInvocation row = (await store.GetInvocationAsync(Rsid + "/" + steps[index].InvocationId))!;
+            if (mutating)
+            {
+                Assert.Equal(RbpInvocationState.Indeterminate, row.State);
+                RbpVerificationHold hold = (await store.GetHoldAsync(Rsid, row.VerificationHoldId!))!;
+                string[] origins = scopeKind == "distinct" ? [row.Identity.IdempotencyKey] : [Rsid + "/" + First, Rsid + "/" + Second];
+                string scope = scopeKind == "session" ? "{\"kind\":\"session\"}" : steps[index].MutationScopeJson!;
+                Assert.Equal(origins, hold.OrderedOriginIdempotencyKeys);
+                Assert.Equal(Rfc8785Json.MakeVerificationHoldId(Rsid, Json(scope), origins), hold.VerificationHoldId);
+            }
+            else
+            {
+                Assert.Equal(RbpInvocationState.Failed, row.State);
+                Assert.Null(row.VerificationHoldId);
+                Assert.Equal("revit_api", evidence.GetProperty("error").GetProperty("fault_class").GetString());
+                Assert.False(evidence.GetProperty("error").GetProperty("retryable").GetBoolean());
+            }
+        }
+        Assert.True((await coordinator.DispatchAsync(Rsid, payload, CancellationToken.None)).Payload.GetProperty("replayed").GetBoolean());
+        Assert.Equal(1, fixture.Transport.Calls);
+    }
+
+    [Theory]
+    [InlineData("delete")]
+    [InlineData("ciphertext")]
+    [InlineData("identity")]
+    [InlineData("digest")]
+    [InlineData("scheme")]
+    [InlineData("length")]
+    [InlineData("expiry")]
+    public async Task ChangedCommittedRecoveryRowCannotProveDecisionOrReleaseLease(string alteration)
+    {
+        using var directory = new RbpJournalTestDirectory();
+        var faults = new DecisionFaults();
+        await using RbpJournalStore store = await Open(directory, faults, new TestRecoveryPayloadProtector());
+        var lease = new CountingLease();
+        var attestation = new AddinProcessAttestation(new AddinProcessIdentity(481, 638400000000000000),
+            "2025", "addin-loopback-fixture/test-only");
+        var channel = new StubBatchChannel().Then(_ =>
+        {
+            faults.Arm(RbpJournalFaultPoint.AfterCommitBeforeReturn, 1);
+            return Completed("{\"fixture\":true}") with { Lease = lease, ProcessAttestation = attestation };
+        });
+        faults.BeforeFailure = () =>
+        {
+            using var connection = new SqliteConnection($"Data Source={directory.JournalPath};Pooling=False");
+            connection.Open();
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText = "SELECT protected_envelope FROM rbp_recovery_payloads WHERE idempotency_key=$key;";
+            command.Parameters.AddWithValue("$key", Rsid + "/" + First);
+            byte[] protectedBytes = Assert.IsType<byte[]>(command.ExecuteScalar());
+            Assert.NotEmpty(protectedBytes); // prove optional recovery was actually created
+            command.CommandText = alteration switch
+            {
+                "delete" => "DELETE FROM rbp_recovery_payloads WHERE idempotency_key=$key;",
+                "ciphertext" => "UPDATE rbp_recovery_payloads SET protected_envelope=$replacement WHERE idempotency_key=$key;",
+                "identity" => "UPDATE rbp_recovery_payloads SET invocation_id='different-origin' WHERE idempotency_key=$key;",
+                "digest" => "UPDATE rbp_recovery_payloads SET result_digest='sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' WHERE idempotency_key=$key;",
+                "scheme" => "UPDATE rbp_recovery_payloads SET protection_scheme='different-protector' WHERE idempotency_key=$key;",
+                "length" => "UPDATE rbp_recovery_payloads SET plaintext_length=plaintext_length+1 WHERE idempotency_key=$key;",
+                "expiry" => "UPDATE rbp_recovery_payloads SET retention_expires_at_ms=retention_expires_at_ms+1 WHERE idempotency_key=$key;",
+                _ => throw new InvalidOperationException(),
+            };
+            if (alteration == "ciphertext")
+            {
+                protectedBytes[^1] ^= 0x01;
+                command.Parameters.AddWithValue("$replacement", protectedBytes);
+            }
+            Assert.Equal(1, command.ExecuteNonQuery());
+        };
+        var dispatcher = new RbpInvocationDispatcher(store, channel, new RbpInFlightGate(),
+            omittedOriginObservation: RbpConformanceOmittedOriginObservation.CreateFixtureOneShot(() => attestation));
+        RbpInvokeRequest request = RecoveryOriginRequest();
+        await Assert.ThrowsAsync<RbpJournalException>(() => dispatcher.DispatchAsync(request, CancellationToken.None));
+        Assert.Equal(0, lease.Releases);
+        Assert.True(RbpDispatchDecisionQuarantine.For(channel).IsBlocked(Rsid));
+        Assert.Equal("error", (await dispatcher.DispatchAsync(request, CancellationToken.None)).Type);
+        Assert.Equal("error", (await dispatcher.DispatchAsync(Request(true, Second), CancellationToken.None)).Type);
+        Assert.Single(channel.Calls);
+        Assert.Equal(1, faults.Failures);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ExactRecoveryPresenceOrIntentionalOptionalAbsenceCanProveCommit(bool optionalAbsence)
+    {
+        using var directory = new RbpJournalTestDirectory();
+        var faults = new DecisionFaults();
+        await using RbpJournalStore store = await Open(directory, faults,
+            optionalAbsence ? new RejectingRecoveryPayloadProtector() : new TestRecoveryPayloadProtector());
+        var lease = new CountingLease();
+        var attestation = new AddinProcessAttestation(new AddinProcessIdentity(481, 638400000000000000),
+            "2025", "addin-loopback-fixture/test-only");
+        var channel = new StubBatchChannel().Then(_ =>
+        {
+            faults.Arm(RbpJournalFaultPoint.AfterCommitBeforeReturn, 1);
+            return Completed("{\"fixture\":true}") with { Lease = lease, ProcessAttestation = attestation };
+        });
+        var dispatcher = new RbpInvocationDispatcher(store, channel, new RbpInFlightGate(),
+            omittedOriginObservation: RbpConformanceOmittedOriginObservation.CreateFixtureOneShot(() => attestation));
+        RbpInvokeRequest request = RecoveryOriginRequest();
+        await Assert.ThrowsAsync<RbpConformanceOriginSuppressedException>(() => dispatcher.DispatchAsync(request, CancellationToken.None));
+        Assert.Equal(1, lease.Releases);
+        Assert.False(RbpDispatchDecisionQuarantine.For(channel).IsBlocked(Rsid));
+        long retained = await store.ReadAsync(connection =>
+        {
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText = "SELECT COUNT(*) FROM rbp_recovery_payloads;";
+            return (long)command.ExecuteScalar()!;
+        });
+        Assert.Equal(optionalAbsence ? 0 : 1, retained);
+        Assert.Equal("result", (await dispatcher.DispatchAsync(request, CancellationToken.None)).Type);
+        Assert.Single(channel.Calls);
+        Assert.Equal(1, lease.Releases);
+    }
+
+    private static RbpInvokeRequest RecoveryOriginRequest() => RbpInvokeRequest.Parse(Rsid, JsonSerializer.SerializeToElement(new
+    {
+        invocation_id = First,
+        method = "fixture_multi_file_output",
+        @params = new { scenario = "valid_multifile", fileCount = 1, bytesPerFile = 1024 },
+        timeout_ms = 120000,
+        mutating = false,
+        mutation_scope = (object?)null,
+        policy = new { @class = "auto", decision = "auto", confirmation_id = (string?)null },
+        verification = (object?)null,
+        recovery_clearances = Array.Empty<object>(),
+    }));
 
     [Fact]
     public async Task UnclassifiableRealRoutedReadIsNonretryableProtocolNotSuccess()
@@ -321,9 +496,10 @@ public sealed class RbpApplicationErrorSafetyTests
     private static RbpApplicationResultClassification ClassifyString(string value) =>
         RbpApplicationResultClassifier.Classify(JsonSerializer.SerializeToElement(new { result = value }));
 
-    internal static async Task<RbpJournalStore> Open(RbpJournalTestDirectory directory, IRbpJournalFaultInjector? faults = null)
+    internal static async Task<RbpJournalStore> Open(RbpJournalTestDirectory directory, IRbpJournalFaultInjector? faults = null,
+        IRbpRecoveryPayloadProtector? recoveryProtector = null)
     {
-        RbpJournalStore store = RbpJournalStore.Open(directory.JournalPath, new TestResumeTokenProtector(), RbpJournalTestData.Options(faultInjector: faults));
+        RbpJournalStore store = RbpJournalStore.Open(directory.JournalPath, new TestResumeTokenProtector(), RbpJournalTestData.Options(faultInjector: faults), recoveryProtector);
         await store.PersistRegisteredSessionAsync(RbpJournalTestData.Registration());
         return store;
     }

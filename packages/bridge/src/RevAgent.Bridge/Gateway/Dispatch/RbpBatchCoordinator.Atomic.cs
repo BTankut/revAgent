@@ -74,7 +74,7 @@ internal sealed partial class RbpBatchCoordinator
 
                 // Only the independently validated native atomic envelope can
                 // prove rollback. An application code or nested caller claim cannot.
-                RbpAddinOutcomeKind.ApplicationError when TryReadEnvelope(request, outcome.Result, out _, out _) =>
+                RbpAddinOutcomeKind.ApplicationError when IsValidatedAtomicRollback(request, outcome.Result) =>
                     await MapAtomicEnvelopeAsync(request, outcome).ConfigureAwait(false),
 
                 // Only a proven bridge/transport no-send refusal establishes
@@ -150,6 +150,18 @@ internal sealed partial class RbpBatchCoordinator
             ["steps"] = steps,
         };
     }
+
+    private static bool IsValidatedAtomicRollback(RbpBatchRequest request, JsonElement result) =>
+        // TryReadEnvelope validates correlation, ordered members, failure
+        // index and an attempted/succeeded rollback matching that failure.
+        // A valid completed/committed matrix is NOT an application-error
+        // escape hatch: the outer failure still makes its effect uncertain.
+        TryReadEnvelope(request, result, out AtomicEnvelope? envelope, out _) &&
+        envelope is
+        {
+            TransactionState: RbpBatchTransactionState.RolledBack,
+            Status: RbpBatchStepStatus.Failed or RbpBatchStepStatus.Guarded,
+        };
 
     /// <summary>
     /// Maps a verified add-in batch envelope onto the Section 11.1 carrier.

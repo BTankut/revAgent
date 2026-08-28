@@ -431,7 +431,9 @@ internal sealed partial class RbpJournalStore
     /// bounded snapshot of the exact decision with the pre/post transaction
     /// projections. Retry persistence once only after exact unchanged-state
     /// proof; never re-enter the add-in. The projection includes full identities,
-    /// terminal bytes/digests, carrier plans and complete relevant hold records.
+    /// terminal bytes/digests, carrier plans, protected recovery commitments
+    /// and complete relevant hold records. Optional recovery absence is a fact
+    /// of the attempted transaction, not permission to lose a created row.
     /// </summary>
     private async Task<T> ExecuteProvenDecisionAsync<T>(
         Func<RbpJournalWriteContext, T> operation,
@@ -486,11 +488,13 @@ internal sealed partial class RbpJournalStore
         RbpJournalWriteContext context, IReadOnlyList<string> invocationKeys, string? batchKey)
     {
         var rows = new List<RbpStoredInvocation?>(invocationKeys.Count);
+        var recoveryRows = new List<RecoveryDecisionProjection?>(invocationKeys.Count);
         var holds = new SortedDictionary<string, RbpVerificationHold>(StringComparer.Ordinal);
         foreach (string key in invocationKeys)
         {
             RbpStoredInvocation? row = ReadInvocation(context, key);
             rows.Add(row);
+            recoveryRows.Add(ReadRecoveryDecisionProjection(context, key));
             if (row is null) continue;
             void Include(RbpVerificationHold? hold)
             {
@@ -507,7 +511,40 @@ internal sealed partial class RbpJournalStore
             invocations = rows,
             batch = batchKey is null ? null : ReadBatch(context, batchKey),
             holds = holds.Values,
+            recovery_payloads = recoveryRows,
         });
+    }
+
+    private sealed record RecoveryDecisionProjection(
+        string IdempotencyKey, string Rsid, string InvocationId, string ResultDigest,
+        string ProtectionScheme, long PlaintextLength, long CreatedAtMilliseconds,
+        long RetentionExpiresAtMilliseconds, long CiphertextLength, string CiphertextCommitment);
+
+    private static RecoveryDecisionProjection? ReadRecoveryDecisionProjection(
+        RbpJournalWriteContext context, string idempotencyKey)
+    {
+        using SqliteCommand command = context.CreateCommand(
+            """
+            SELECT idempotency_key,rsid,invocation_id,result_digest,
+                   protection_scheme,plaintext_length,created_at_ms,
+                   retention_expires_at_ms,length(protected_envelope),protected_envelope
+            FROM rbp_recovery_payloads WHERE idempotency_key=$key;
+            """);
+        command.Parameters.AddWithValue("$key", idempotencyKey);
+        using SqliteDataReader reader = command.ExecuteReader();
+        if (!reader.Read()) return null;
+        long ciphertextLength = reader.GetInt64(8);
+        // Bound the proof read, including envelope/protection overhead. A row
+        // outside this bound cannot be silently omitted from exact readback.
+        if (ciphertextLength is <= 0 or > RbpRecoveryPayloadEnvelope.MaxBytes + 64 * 1024)
+            throw new RbpJournalException(RbpJournalErrorCode.IntegrityCheckFailed,
+                "The protected recovery decision exceeds its bounded proof size.");
+        using Stream ciphertext = reader.GetStream(9);
+        string commitment = "sha256:" + Convert.ToHexString(SHA256.HashData(ciphertext)).ToLowerInvariant();
+        return new RecoveryDecisionProjection(
+            reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetString(3),
+            reader.GetString(4), reader.GetInt64(5), reader.GetInt64(6), reader.GetInt64(7),
+            ciphertextLength, commitment);
     }
 
     private void TryInsertRecoveryPayload(
