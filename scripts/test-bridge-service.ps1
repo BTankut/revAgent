@@ -371,7 +371,22 @@ try {
         # Reuse the built Bootstrap no-follow directory pins for fixture setup,
         # publishing and smoke. Loading this type performs no credential IO.
         $bootstrapPath = Join-Path $RepoRoot 'packages/bridge/src/RevAgent.Bridge.Bootstrap/bin/Release/net8.0/RevAgent.Bridge.Bootstrap.dll'
-        $bootstrapAssembly = [System.Reflection.Assembly]::LoadFrom($bootstrapPath)
+        $bootstrapBytes = [System.IO.MemoryStream]::new([System.IO.File]::ReadAllBytes($bootstrapPath))
+        try {
+            $bootstrapAssembly = [System.Runtime.Loader.AssemblyLoadContext]::Default.LoadFromStream($bootstrapBytes)
+        }
+        finally { $bootstrapBytes.Dispose() }
+        $workerAssemblyPath = Join-Path $RepoRoot 'packages/bridge/src/RevAgent.Bridge/bin/Release/net8.0/revagent-bridge.dll'
+        $workerBytes = [System.IO.MemoryStream]::new([System.IO.File]::ReadAllBytes($workerAssemblyPath))
+        try {
+            $workerAssembly = [System.Runtime.Loader.AssemblyLoadContext]::Default.LoadFromStream($workerBytes)
+        }
+        finally { $workerBytes.Dispose() }
+        $doctorStateType = $workerAssembly.GetType('RevAgent.Bridge.Diagnostics.WorkerDoctorState', $true)
+        $validateFixturePath = $doctorStateType.GetMethod('ValidateArgument',
+            [System.Reflection.BindingFlags]'Static, NonPublic')
+        # Apply the same SUBST/device/mapped-drive rejection before fixture IO.
+        $null = $validateFixturePath.Invoke($null, @($systemTempRoot.TrimEnd('\'), $null, $null))
         $fileSystemType = $bootstrapAssembly.GetType('RevAgent.Bridge.Bootstrap.Enrollment.BridgeCredentialFileSystem', $true)
         $fixtureFileSystem = [Activator]::CreateInstance($fileSystemType, $true)
         $pinDirectory = $fileSystemType.GetMethod('PinDirectory')

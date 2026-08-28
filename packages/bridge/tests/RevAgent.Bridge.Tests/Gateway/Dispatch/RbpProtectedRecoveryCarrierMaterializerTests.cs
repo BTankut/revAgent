@@ -286,9 +286,12 @@ public sealed class RbpProtectedRecoveryCarrierMaterializerTests
         await store.MarkInvocationExecutingAsync(recovery.IdempotencyKey);
         var request = new RbpRecoveryCarrierReservationRequest(Rsid, RecoveryId, OriginId, digest,
             chunkSize ?? raw.Length, new RbpRecoveryCarrierHeader("application/json", "base64"),
-            Rfc8785Json.Sha256Digest(JsonSerializer.SerializeToElement(new {
-                invocation_id = RecoveryId, origin_invocation_id = OriginId,
-                expected_result_digest = digest })), DateTimeOffset.UtcNow.AddHours(1));
+            Rfc8785Json.Sha256Digest(JsonSerializer.SerializeToElement(new
+            {
+                invocation_id = RecoveryId,
+                origin_invocation_id = OriginId,
+                expected_result_digest = digest
+            })), DateTimeOffset.UtcNow.AddHours(1));
         _ = await store.PersistProtectedRecoveryTerminalAndReserveAsync(request);
         if (start) _ = await store.MarkRecoveryCarrierSendStartedAsync(RecoveryId);
     }

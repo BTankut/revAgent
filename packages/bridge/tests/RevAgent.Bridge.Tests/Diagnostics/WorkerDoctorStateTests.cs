@@ -106,6 +106,19 @@ public sealed class WorkerDoctorStateTests
     }
 
     [Theory]
+    [InlineData(@"\??\C:\temp\surrogate")]
+    [InlineData(@"\Device\Mup\server\share")]
+    [InlineData(@"\Device\HarddiskVolume3\aliased-directory")]
+    public void SubstitutedOrAmbiguousVolumeMappingsAreNotLocalFixtureRoots(string mapping)
+    {
+        if (!OperatingSystem.IsWindows()) { return; }
+        Assert.Throws<WorkerCommandLineException>(() => WorkerDoctorState.ValidateArgument(
+            @"Z:\fixture\doctor-state", _ => DriveType.Fixed, _ => mapping));
+        Assert.Equal(@"Z:\fixture\doctor-state", WorkerDoctorState.ValidateArgument(
+            @"Z:\fixture\doctor-state", _ => DriveType.Fixed, _ => @"\Device\HarddiskVolume3"));
+    }
+
+    [Theory]
     [InlineData("config")]
     [InlineData("state")]
     [InlineData("credentials")]

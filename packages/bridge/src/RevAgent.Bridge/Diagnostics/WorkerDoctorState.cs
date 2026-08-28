@@ -2,6 +2,7 @@ using System.Runtime.Versioning;
 using System.Runtime.InteropServices;
 using System.Security.AccessControl;
 using System.Security.Principal;
+using System.Text;
 using Microsoft.Win32.SafeHandles;
 using RevAgent.Bridge.Bootstrap;
 using RevAgent.Bridge.Bootstrap.Configuration;
@@ -56,7 +57,8 @@ internal sealed class WorkerDoctorState : IDisposable
 
     internal DiagnosticProtector Protector { get; } = new();
 
-    internal static string ValidateArgument(string path, Func<string, DriveType>? driveTypeResolver = null)
+    internal static string ValidateArgument(string path, Func<string, DriveType>? driveTypeResolver = null,
+        Func<string, string>? volumeMappingResolver = null)
     {
         try
         {
@@ -93,12 +95,36 @@ internal sealed class WorkerDoctorState : IDisposable
                 }
             }
 
-            return BridgeCredentialPathPolicy.NormalizeLocalFileSystemPath(path, driveTypeResolver);
+            string normalized = BridgeCredentialPathPolicy.NormalizeLocalFileSystemPath(path, driveTypeResolver);
+            if (OperatingSystem.IsWindows())
+            {
+                string target = volumeMappingResolver?.Invoke(root[..2]) ?? ReadVolumeMapping(root[..2]);
+                const string localVolume = @"\Device\HarddiskVolume";
+                // SUBST roots look local to DriveInfo but are DOS-device aliases.
+                // Refuse aliases instead of resolving into an alternate state tree.
+                if (!target.StartsWith(localVolume, StringComparison.OrdinalIgnoreCase) ||
+                    target.Length == localVolume.Length ||
+                    target[localVolume.Length..].Any(c => !char.IsAsciiDigit(c)))
+                {
+                    throw new WorkerCommandLineException("diagnostic_state_path_invalid");
+                }
+            }
+            return normalized;
         }
         catch
         {
             throw new WorkerCommandLineException("diagnostic_state_path_invalid");
         }
+    }
+
+    private static string ReadVolumeMapping(string drive)
+    {
+        var target = new StringBuilder(1024);
+        if (QueryDosDevice(drive, target, target.Capacity) == 0)
+        {
+            throw new WorkerCommandLineException("diagnostic_state_path_invalid");
+        }
+        return target.ToString();
     }
 
     internal static void ValidateCommand(WorkerCommand command)
@@ -292,4 +318,7 @@ internal sealed class WorkerDoctorState : IDisposable
     [DllImport("kernel32.dll", EntryPoint = "CreateFileW", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern SafeFileHandle OpenConfigurationPin(string path, uint desiredAccess,
         uint shareMode, IntPtr securityAttributes, uint creationDisposition, uint flags, IntPtr template);
+
+    [DllImport("kernel32.dll", EntryPoint = "QueryDosDeviceW", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern uint QueryDosDevice(string deviceName, StringBuilder targetPath, int maximumCharacters);
 }

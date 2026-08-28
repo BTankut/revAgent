@@ -1248,8 +1248,10 @@ internal sealed class SystemRbpJournalRollbackBackupSeam : IRbpJournalRollbackBa
     {
         using var target = new SqliteConnection(new SqliteConnectionStringBuilder
         {
-            DataSource = temporaryPath, Mode = SqliteOpenMode.ReadWriteCreate,
-            Cache = SqliteCacheMode.Private, Pooling = false,
+            DataSource = temporaryPath,
+            Mode = SqliteOpenMode.ReadWriteCreate,
+            Cache = SqliteCacheMode.Private,
+            Pooling = false,
         }.ToString());
         target.Open();
         source.BackupDatabase(target);
