@@ -33,13 +33,16 @@ import {
   StrictReadyProcess,
   type JsonObject,
   type JsonValue,
+  type ProcessStopResult,
 } from "./processHarness.js";
+import { canonicalManifest } from "./manifest.js";
 import {
   canonicalProductionComponentVersion,
   assertProductionRuntimeLaunchCurrent,
   boundProductionPowerShellExecutable,
 } from "./productionExecutionPlan.js";
 import { sanitizedProductionRuntimeEnvironment } from "./productionRuntimeIdentity.js";
+import { SecureEvidenceStore } from "./secureEvidenceStore.js";
 import type {
   Binding,
   ComponentId,
@@ -153,7 +156,7 @@ export interface StartedStackComponent {
   process: ProcessEvidence;
   readiness: JsonObject;
   jsonl?: StrictJsonlProcess;
-  stop(): Promise<{ killEscalated: boolean }>;
+  stop(): Promise<ProcessStopResult>;
 }
 
 export class GatewayControlRequestError extends Error {
@@ -1056,6 +1059,8 @@ export interface CaseStackSupervisorOptions {
   environment?: Readonly<Record<string, string | undefined>>;
   runtimeLaunchGuard?: (plan: ExecutionPlan, repoRoot: string) => void;
   instanceRootRemover?: (instanceRoot: string) => void;
+  /** Explicit caller-owned, test-only retained-evidence root. */
+  teardownEvidenceRoot?: string;
 }
 
 export interface FixtureBindPolicyProbeInput {
@@ -1124,6 +1129,7 @@ export class CaseStackSupervisor {
   readonly #environment: Readonly<Record<string, string | undefined>>;
   readonly #runtimeLaunchGuard: (plan: ExecutionPlan, repoRoot: string) => void;
   readonly #instanceRootRemover: (instanceRoot: string) => void;
+  readonly #teardownEvidenceStore: SecureEvidenceStore | null;
   #active: ActiveStack | null = null;
   #observationOrdinal = 0;
 
@@ -1136,6 +1142,9 @@ export class CaseStackSupervisor {
     this.#instanceRootRemover =
       options.instanceRootRemover ??
       ((instanceRoot) => rmSync(instanceRoot, { recursive: true, force: true }));
+    this.#teardownEvidenceStore = options.teardownEvidenceRoot === undefined
+      ? null
+      : new SecureEvidenceStore(options.teardownEvidenceRoot);
   }
 
   #assertRuntimeLaunchCurrent(): void {
@@ -2253,6 +2262,7 @@ export class CaseStackSupervisor {
   ): Promise<{ result: JsonObject; observations: ProcessObservationRecord[] }> {
     const stack = this.#stack();
     const killEscalated = new Map<ComponentId, boolean>();
+    const stopResults = new Map<ComponentId, ProcessStopResult>();
     const teardownErrors: Error[] = [];
     const components = [...stack.components.values(), ...stack.extraFixtures];
     for (const component of [...components].reverse()) {
@@ -2260,17 +2270,22 @@ export class CaseStackSupervisor {
       try {
         const stopped = await component.stop();
         killEscalated.set(component.componentId, stopped.killEscalated);
+        stopResults.set(component.componentId, stopped);
       } catch (error) {
         killEscalated.set(component.componentId, true);
         teardownErrors.push(normalizedError(error));
       }
     }
-    await stack.gatewayProxy.stop().catch((error: unknown) => {
-      teardownErrors.push(normalizedError(error));
-    });
-    await stack.fixtureProxy.stop().catch((error: unknown) => {
-      teardownErrors.push(normalizedError(error));
-    });
+    let gatewayProxyStopped = false;
+    let fixtureProxyStopped = false;
+    await stack.gatewayProxy.stop().then(
+      () => { gatewayProxyStopped = true; },
+      (error: unknown) => { teardownErrors.push(normalizedError(error)); },
+    );
+    await stack.fixtureProxy.stop().then(
+      () => { fixtureProxyStopped = true; },
+      (error: unknown) => { teardownErrors.push(normalizedError(error)); },
+    );
     const pids = components.map(({ pid }) => pid);
     const survivors = await waitForNoSurvivors(pids);
     if (survivors.length > 0) {
@@ -2298,6 +2313,20 @@ export class CaseStackSupervisor {
       survivingPids: survivors,
       killEscalated: Object.fromEntries(killEscalated) as unknown as JsonValue,
     };
+    try {
+      this.#retainTeardownEvidence({
+        stack,
+        stepId,
+        action,
+        components,
+        stopResults,
+        survivors,
+        gatewayProxyStopped,
+        fixtureProxyStopped,
+      });
+    } catch (error) {
+      teardownErrors.push(normalizedError(error));
+    }
     this.#active = null;
     if (!stack.preserveState && survivors.length === 0) {
       try {
@@ -2314,6 +2343,60 @@ export class CaseStackSupervisor {
       );
     }
     return { result, observations };
+  }
+
+  #retainTeardownEvidence(input: {
+    readonly stack: ActiveStack;
+    readonly stepId: string;
+    readonly action: string;
+    readonly components: readonly StartedStackComponent[];
+    readonly stopResults: ReadonlyMap<ComponentId, ProcessStopResult>;
+    readonly survivors: readonly number[];
+    readonly gatewayProxyStopped: boolean;
+    readonly fixtureProxyStopped: boolean;
+  }): void {
+    if (this.#teardownEvidenceStore === null) return;
+    const runHash = createHash("sha256").update(this.#plan.runId).digest("hex");
+    const stepHash = createHash("sha256").update(input.stepId).digest("hex").slice(0, 16);
+    const instanceHash = input.stack.instanceRootId.replace(/^sha256:/u, "");
+    const relativePath = `${canonicalManifest.retainedEvidence.root}/runs/${runHash}/c29-teardown/${input.stack.caseId}-${input.stack.binding}-${instanceHash}-${stepHash}.json`;
+    const components = input.components.map((component) => {
+      const stop = input.stopResults.get(component.componentId);
+      return {
+        componentId: component.componentId,
+        process: { ...component.process },
+        stop: stop === undefined
+          ? { observed: false, killEscalated: true }
+          : {
+              observed: true,
+              stoppedAt: stop.stoppedAt,
+              exitCode: stop.exitCode,
+              killEscalated: stop.killEscalated,
+              telemetry: stop.telemetry,
+              output: stop.evidence,
+            },
+      };
+    });
+    this.#teardownEvidenceStore.write(
+      relativePath,
+      `${JSON.stringify({
+        schemaVersion: "rbp-c29-teardown-evidence/v1",
+        runId: this.#plan.runId,
+        caseId: input.stack.caseId,
+        binding: input.stack.binding,
+        stepId: input.stepId,
+        action: input.action,
+        instanceRootId: input.stack.instanceRootId,
+        stopOrder: [...input.stack.stopOrder],
+        survivors: [...input.survivors],
+        orphanProcessCount: input.survivors.length,
+        proxyDrain: {
+          gatewayProxyStopped: input.gatewayProxyStopped,
+          fixtureProxyStopped: input.fixtureProxyStopped,
+        },
+        components,
+      })}\n`,
+    );
   }
 
   async gatewayControl(
@@ -2661,11 +2744,10 @@ export class CaseStackSupervisor {
         process: processHandle.process,
         readiness: processHandle.readiness,
         stop: async () => {
-          const stopped = await processHandle.stop(
+          return await processHandle.stop(
             command.shutdown.signal === "SIGINT" ? "SIGINT" : "SIGTERM",
             command.shutdown.timeoutMs,
           );
-          return { killEscalated: stopped.killEscalated };
         },
       };
     }
@@ -2702,10 +2784,7 @@ export class CaseStackSupervisor {
       process: processHandle.process,
       readiness: processHandle.readiness,
       jsonl: processHandle,
-      stop: async () => {
-        const stopped = await processHandle.stop();
-        return { killEscalated: stopped.killEscalated };
-      },
+      stop: async () => await processHandle.stop(),
     };
   }
 

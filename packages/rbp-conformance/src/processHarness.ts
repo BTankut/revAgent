@@ -73,6 +73,40 @@ export interface ProcessEvidenceDirectoryOptions {
   readonly evidenceDirectory?: string;
 }
 
+export interface ProcessOutputEvidence {
+  readonly sha256: string;
+  readonly safeLines: readonly string[];
+}
+
+/**
+ * Bounded, redacted child-process evidence.  It deliberately excludes the
+ * command, private state paths, and raw output bytes.
+ */
+export interface ProcessRuntimeEvidence {
+  readonly componentId: string;
+  readonly pid: number | null;
+  readonly exitCode: number | null;
+  readonly signal: string | null;
+  readonly stdout: ProcessOutputEvidence;
+  readonly stderr: ProcessOutputEvidence;
+}
+
+export interface ProcessStopTelemetry {
+  readonly requestedAt: string | null;
+  readonly correlationKind: "ipc_stop_nonce" | "jsonl_control_id" | null;
+  readonly correlationId: string | null;
+  readonly acknowledgedAt: string | null;
+  readonly acknowledgement: "closed" | "response_ok" | "failed_or_timed_out" | "not_requested";
+}
+
+export interface ProcessStopResult {
+  readonly stoppedAt: string;
+  readonly exitCode: number;
+  readonly killEscalated: boolean;
+  readonly telemetry: ProcessStopTelemetry;
+  readonly evidence: ProcessRuntimeEvidence;
+}
+
 interface ProcessFailureEvidence {
   readonly schemaVersion: typeof REAL_TRIO_PROCESS_START_FAILURE_SCHEMA;
   readonly component: string;
@@ -167,6 +201,23 @@ class ProcessEvidenceRecorder {
     this.#exitCode = code;
     this.#signal = signal;
     this.#timeline.push("child_exit");
+  }
+
+  snapshot(): ProcessRuntimeEvidence {
+    return Object.freeze({
+      componentId: this.component,
+      pid: this.#pid,
+      exitCode: this.#exitCode,
+      signal: this.#signal,
+      stdout: Object.freeze({
+        sha256: `sha256:${this.#stdout.copy().digest("hex")}`,
+        safeLines: Object.freeze([...this.#safeLines.stdout]),
+      }),
+      stderr: Object.freeze({
+        sha256: `sha256:${this.#stderr.copy().digest("hex")}`,
+        safeLines: Object.freeze([...this.#safeLines.stderr]),
+      }),
+    });
   }
 
   observeChunk(stream: "stdout" | "stderr", chunk: Buffer): void {
@@ -366,6 +417,7 @@ export class StrictJsonlProcess {
     readiness: JsonlReadiness,
     startedAt: string,
     readyAt: string,
+    private readonly evidence: ProcessEvidenceRecorder,
   ) {
     this.readiness = readiness;
     const pid = child.pid;
@@ -502,7 +554,14 @@ export class StrictJsonlProcess {
       });
     });
     const ready = await readiness;
-    active.instance = new StrictJsonlProcess(options.componentId, child, ready.value, startedAt, ready.at);
+    active.instance = new StrictJsonlProcess(
+      options.componentId,
+      child,
+      ready.value,
+      startedAt,
+      ready.at,
+      evidence,
+    );
     for (const record of transcript) appendBoundedTranscript(active.instance.transcript, record);
     return active.instance;
   }
@@ -604,9 +663,18 @@ export class StrictJsonlProcess {
     return this.startConcurrentRequest(action, fields, timeoutMs).response;
   }
 
-  request(action: string, fields: Readonly<Record<string, JsonValue>> = {}, timeoutMs = 30_000): Promise<JsonValue> {
+  #requestSequential(
+    action: string,
+    fields: Readonly<Record<string, JsonValue>>,
+    timeoutMs: number,
+    onStarted?: (id: string) => void,
+  ): Promise<JsonValue> {
     const response = this.#sequentialTail.then(async () =>
-      await this.#beginRequest(action, fields, timeoutMs).response);
+      {
+        const started = this.#beginRequest(action, fields, timeoutMs);
+        onStarted?.(started.id);
+        return await started.response;
+      });
     this.#sequentialTail = response.then(
       () => undefined,
       () => undefined,
@@ -614,11 +682,32 @@ export class StrictJsonlProcess {
     return response;
   }
 
-  async stop(): Promise<{ stoppedAt: string; exitCode: number; killEscalated: boolean }> {
+  request(action: string, fields: Readonly<Record<string, JsonValue>> = {}, timeoutMs = 30_000): Promise<JsonValue> {
+    return this.#requestSequential(action, fields, timeoutMs);
+  }
+
+  async stop(): Promise<ProcessStopResult> {
     let killEscalated = false;
+    let requestedAt: string | null = null;
+    let correlationId: string | null = null;
+    let acknowledgedAt: string | null = null;
+    let acknowledgement: ProcessStopTelemetry["acknowledgement"] = "not_requested";
     if (!this.#closed) {
-      try { await this.request("shutdown", {}, this.process.readyAt === null ? 1_000 : 10_000); }
-      catch { this.child.kill("SIGTERM"); }
+      requestedAt = new Date().toISOString();
+      try {
+        await this.#requestSequential(
+          "shutdown",
+          {},
+          this.process.readyAt === null ? 1_000 : 10_000,
+          (id) => { correlationId = id; },
+        );
+        acknowledgedAt = new Date().toISOString();
+        acknowledgement = "response_ok";
+      } catch {
+        acknowledgedAt = new Date().toISOString();
+        acknowledgement = "failed_or_timed_out";
+        this.child.kill("SIGTERM");
+      }
     }
     const forced = setTimeout(() => {
       killEscalated = true;
@@ -626,7 +715,19 @@ export class StrictJsonlProcess {
     }, 10_000);
     const exit = await this.#exit;
     clearTimeout(forced);
-    return { stoppedAt: exit.at, exitCode: exit.code, killEscalated };
+    return {
+      stoppedAt: exit.at,
+      exitCode: exit.code,
+      killEscalated,
+      telemetry: {
+        requestedAt,
+        correlationKind: correlationId === null ? null : "jsonl_control_id",
+        correlationId,
+        acknowledgedAt,
+        acknowledgement,
+      },
+      evidence: this.evidence.snapshot(),
+    };
   }
 
   /**
@@ -634,7 +735,7 @@ export class StrictJsonlProcess {
    * component-private control action: it terminates the actual child process
    * and waits for its observed exit before a supervisor may relaunch it.
    */
-  async terminateForConformance(): Promise<{ stoppedAt: string; exitCode: number; killEscalated: boolean }> {
+  async terminateForConformance(): Promise<ProcessStopResult> {
     let killEscalated = false;
     if (this.process.exitCode === null) this.child.kill("SIGTERM");
     const forced = setTimeout(() => {
@@ -643,7 +744,19 @@ export class StrictJsonlProcess {
     }, 10_000);
     const exit = await this.#exit;
     clearTimeout(forced);
-    return { stoppedAt: exit.at, exitCode: exit.code, killEscalated };
+    return {
+      stoppedAt: exit.at,
+      exitCode: exit.code,
+      killEscalated,
+      telemetry: {
+        requestedAt: null,
+        correlationKind: null,
+        correlationId: null,
+        acknowledgedAt: null,
+        acknowledgement: "not_requested",
+      },
+      evidence: this.evidence.snapshot(),
+    };
   }
 }
 
@@ -678,7 +791,7 @@ export class StrictReadyProcess {
   readonly process: ProcessEvidence;
   readonly pid: number;
   #exit: Promise<{ code: number; at: string }>;
-  #stopPromise: Promise<{ stoppedAt: string; exitCode: number; killEscalated: boolean }> | null = null;
+  #stopPromise: Promise<ProcessStopResult> | null = null;
   #pendingStop: PendingReadyProcessStop | null = null;
 
   private constructor(
@@ -689,6 +802,7 @@ export class StrictReadyProcess {
     startedAt: string,
     readyAt: string,
     private readonly useTestSignalProxy: boolean,
+    private readonly evidence: ProcessEvidenceRecorder,
   ) {
     this.readiness = readiness;
     this.transcript = transcript;
@@ -829,22 +943,40 @@ export class StrictReadyProcess {
       startedAt,
       ready.at,
       options.useTestSignalProxy === true,
+      evidence,
     );
   }
 
   stop(
     _signal: NodeJS.Signals = "SIGTERM",
     timeoutMs = 10_000,
-  ): Promise<{ stoppedAt: string; exitCode: number; killEscalated: boolean }> {
+  ): Promise<ProcessStopResult> {
     void _signal;
     if (this.#stopPromise !== null) return this.#stopPromise;
     this.#stopPromise = this.#stopWithHandshake(timeoutMs);
     return this.#stopPromise;
   }
 
-  async #stopWithHandshake(timeoutMs: number): Promise<{ stoppedAt: string; exitCode: number; killEscalated: boolean }> {
+  async #stopWithHandshake(timeoutMs: number): Promise<ProcessStopResult> {
+    let requestedAt: string | null = null;
+    let correlationId: string | null = null;
+    let acknowledgedAt: string | null = null;
+    let acknowledgement: ProcessStopTelemetry["acknowledgement"] = "not_requested";
+    const result = (stoppedAt: string, exitCode: number, killEscalated: boolean): ProcessStopResult => ({
+      stoppedAt,
+      exitCode,
+      killEscalated,
+      telemetry: {
+        requestedAt,
+        correlationKind: correlationId === null ? null : "ipc_stop_nonce",
+        correlationId,
+        acknowledgedAt,
+        acknowledgement,
+      },
+      evidence: this.evidence.snapshot(),
+    });
     if (this.process.exitCode !== null) {
-      return { stoppedAt: this.process.stoppedAt ?? new Date().toISOString(), exitCode: this.process.exitCode, killEscalated: false };
+      return result(this.process.stoppedAt ?? new Date().toISOString(), this.process.exitCode, false);
     }
     const boundedTimeout = Math.max(1, timeoutMs);
     let killEscalated = false;
@@ -857,6 +989,8 @@ export class StrictReadyProcess {
         await killTree();
       } else {
         const nonce = randomUUID();
+        requestedAt = new Date().toISOString();
+        correlationId = nonce;
         const acknowledged = await new Promise<"closed" | "failed">((resolve, reject) => {
           const fail = (error: Error): void => {
             if (this.#pendingStop?.nonce !== nonce) return;
@@ -871,6 +1005,8 @@ export class StrictReadyProcess {
               if (this.#pendingStop !== pending) return;
               clearTimeout(timer);
               this.#pendingStop = null;
+              acknowledgedAt = new Date().toISOString();
+              acknowledgement = status === "closed" ? "closed" : "failed_or_timed_out";
               resolve(status);
             },
             fail,
@@ -893,14 +1029,18 @@ export class StrictReadyProcess {
       if (exit === null) {
         await killTree();
         const forcedExit = await this.#exit;
-        return { stoppedAt: forcedExit.at, exitCode: forcedExit.code, killEscalated };
+        return result(forcedExit.at, forcedExit.code, killEscalated);
       }
-      return { stoppedAt: exit.at, exitCode: exit.code, killEscalated };
+      return result(exit.at, exit.code, killEscalated);
     } catch {
+      if (acknowledgement === "not_requested" && requestedAt !== null) {
+        acknowledgedAt = new Date().toISOString();
+        acknowledgement = "failed_or_timed_out";
+      }
       this.#pendingStop = null;
       if (this.process.exitCode === null) await killTree();
       const exit = await this.#exit;
-      return { stoppedAt: exit.at, exitCode: exit.code, killEscalated };
+      return result(exit.at, exit.code, killEscalated);
     }
   }
 }

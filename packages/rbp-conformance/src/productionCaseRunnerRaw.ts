@@ -198,6 +198,8 @@ export async function executeRawProductionCaseBinding(input: {
   caseId: string;
   binding: Binding;
   clockIso?: string;
+  /** Explicit caller-owned test evidence root; omitted for ordinary production runs. */
+  teardownEvidenceRoot?: string;
 }): Promise<RawProductionBindingExecution> {
   if (!(RAW_PRODUCTION_CASES as readonly string[]).includes(input.caseId)) {
     throw new Error(`raw production runner does not support ${input.caseId}`);
@@ -209,6 +211,9 @@ export async function executeRawProductionCaseBinding(input: {
   const supervisor = new CaseStackSupervisor({
     plan: input.plan,
     repoRoot: input.repoRoot,
+    ...(input.teardownEvidenceRoot === undefined
+      ? {}
+      : { teardownEvidenceRoot: input.teardownEvidenceRoot }),
   });
   const base = createExternalEvidenceProductionDrivers(
     supervisor,
@@ -271,6 +276,7 @@ export async function executeRawProductionCaseBothBindings(input: {
   repoRoot: string;
   caseId: string;
   clockIso?: string;
+  teardownEvidenceRoot?: string;
 }): Promise<RawProductionBindingExecution[]> {
   const executions: RawProductionBindingExecution[] = [];
   for (const binding of ["wss", "streamable_http_sse"] as const) {

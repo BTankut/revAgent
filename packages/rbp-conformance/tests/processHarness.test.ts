@@ -59,7 +59,22 @@ describe("strict JSONL process control", () => {
     const first = child.stop("SIGTERM", 2_000);
     const second = child.stop("SIGTERM", 2_000);
     expect(second).toBe(first);
-    await expect(first).resolves.toMatchObject({ exitCode: 0, killEscalated: false });
+    const stopped = await first;
+    expect(stopped).toMatchObject({ exitCode: 0, killEscalated: false });
+    expect(stopped.telemetry).toMatchObject({
+      correlationKind: "ipc_stop_nonce",
+      correlationId: expect.any(String),
+      acknowledgement: "closed",
+      requestedAt: expect.any(String),
+      acknowledgedAt: expect.any(String),
+    });
+    expect(stopped.evidence).toMatchObject({
+      componentId: "addin_loopback_fixture",
+      pid: expect.any(Number),
+      exitCode: 0,
+      stdout: { sha256: expect.stringMatching(/^sha256:/u) },
+      stderr: { sha256: expect.stringMatching(/^sha256:/u) },
+    });
     expect(JSON.parse(readFileSync(marker, "utf8"))).toEqual({ stopCount: 1 });
   });
 
@@ -96,9 +111,16 @@ describe("strict JSONL process control", () => {
       original(message, callback);
       return false;
     }) as TestIpcSend;
-    await expect(child.stop("SIGTERM", 50)).resolves.toMatchObject({
+    const stopped = await child.stop("SIGTERM", 50);
+    expect(stopped).toMatchObject({
       killEscalated: true,
       exitCode: expect.any(Number),
+    });
+    expect(stopped.telemetry).toMatchObject({
+      correlationKind: "ipc_stop_nonce",
+      acknowledgement: "failed_or_timed_out",
+      requestedAt: expect.any(String),
+      acknowledgedAt: expect.any(String),
     });
     expect(child.process.exitCode).not.toBeNull();
   });
