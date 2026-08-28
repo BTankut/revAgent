@@ -2510,6 +2510,7 @@ export class CaseStackSupervisor {
     jsonPointer: string;
     operator: string;
     expected?: JsonValue;
+    grantedSessionCapabilities?: readonly string[];
     timeoutMs: number;
     intervalMs?: number;
   }): Promise<JsonObject> {
@@ -2520,6 +2521,13 @@ export class CaseStackSupervisor {
     if (!Number.isSafeInteger(intervalMs) || intervalMs < 1 || intervalMs > 1_000) {
       throw new Error("await_condition intervalMs is outside the parent bound");
     }
+    if (input.grantedSessionCapabilities !== undefined &&
+      (input.grantedSessionCapabilities.length > 128 ||
+        input.grantedSessionCapabilities.some((capability) =>
+          typeof capability !== "string" || capability.length < 1 || capability.length > 128) ||
+        new Set(input.grantedSessionCapabilities).size !== input.grantedSessionCapabilities.length)) {
+      throw new Error("await_condition grantedSessionCapabilities is invalid");
+    }
     const deadline = Date.now() + input.timeoutMs;
     let attempts = 0;
     let lastSnapshot: JsonObject | undefined;
@@ -2528,7 +2536,15 @@ export class CaseStackSupervisor {
       const snapshot = await this.#conditionSource(input.source);
       lastSnapshot = snapshot;
       const value = jsonPointer(snapshot, input.jsonPointer);
-      if (conditionMatches(input.operator, value, input.expected)) {
+      const dynamic = dynamicValues(snapshot);
+      const observedCapabilities = Array.isArray(dynamic.grantedSessionCapabilities)
+        ? dynamic.grantedSessionCapabilities
+        : [];
+      const capabilitiesMatch = input.grantedSessionCapabilities === undefined ||
+        (observedCapabilities.length === input.grantedSessionCapabilities.length &&
+          observedCapabilities.every((capability, index) =>
+            capability === input.grantedSessionCapabilities![index]));
+      if (conditionMatches(input.operator, value, input.expected) && capabilitiesMatch) {
         return {
           matched: true,
           attempts,
@@ -2538,7 +2554,7 @@ export class CaseStackSupervisor {
           expected: input.expected ?? null,
           observed: value ?? null,
           snapshot,
-          dynamic: dynamicValues(snapshot),
+          dynamic,
         };
       }
       await new Promise<void>((resolve) => setTimeout(resolve, intervalMs));

@@ -119,6 +119,31 @@ describe("exact forty-case control and observation catalog", () => {
     }
   });
 
+  it("pins C29 to an exact atomic-session capability grant before dispatch", () => {
+    const program = CASE_CONTROL_OBSERVATION_MAP.get("O1-C29");
+    expect(program).toBeDefined();
+    expect(program!.steps[0]).toMatchObject({
+      channel: "parent_harness",
+      action: "restart_case_stack",
+      arguments: {
+        common: {
+          startupOverrides: {
+            sessionCapabilities: ["batch_atomic"],
+          },
+        },
+      },
+    });
+    expect(program!.steps.find(({ stepId }) => stepId === "o1-c29.await-register"))
+      .toMatchObject({
+        action: "await_condition",
+        arguments: {
+          common: {
+            grantedSessionCapabilities: ["batch_atomic"],
+          },
+        },
+      });
+  });
+
   it("maps all cases and all 167 assertions in canonical order", () => {
     expect([...CASE_CONTROL_OBSERVATION_MAP.keys()]).toEqual(canonicalManifest.cases.map(({ id }) => id));
     const probes = [...CASE_CONTROL_OBSERVATION_MAP.values()].flatMap(({ assertionProbes }) => assertionProbes);

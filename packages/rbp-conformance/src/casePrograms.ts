@@ -2149,7 +2149,9 @@ const CASE_DEFINITIONS: ProgramDefinition[] = [
       "gateway_hold_ledger",
       "journal_snapshot",
       "reconnect_resume",
+      "session_capability_override",
     ],
+    startupOverrides: { sessionCapabilities: ["batch_atomic"] },
   },
   {
     caseId: "O1-C30",
