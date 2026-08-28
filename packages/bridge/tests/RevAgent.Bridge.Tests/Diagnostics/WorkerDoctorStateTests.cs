@@ -230,6 +230,8 @@ internal sealed class DoctorFixture : IDisposable
 {
     internal DoctorFixture()
     {
+        using IDisposable? tempSetupPin = OperatingSystem.IsWindows()
+            ? new BridgeCredentialFileSystem().PinDirectory(Path.GetTempPath()) : null;
         Root = Path.Combine(Path.GetTempPath(), "revagent-bridge-service-" + Guid.NewGuid().ToString("N"));
         Config = Path.Combine(Root, "bridge-config.json");
         State = Path.Combine(Root, "doctor-state");
@@ -251,6 +253,8 @@ internal sealed class DoctorFixture : IDisposable
             security.CreateDirectory(Root);
         }
         else { Directory.CreateDirectory(Root); }
+        using IDisposable? fixtureSetupPin = OperatingSystem.IsWindows()
+            ? new BridgeCredentialFileSystem().PinDirectory(Root) : null;
         Directory.CreateDirectory(Credentials);
         File.WriteAllText(Config, """
             {"schemaVersion":1,"gateway":{"uri":"wss://localhost:1/bridge/v1"},

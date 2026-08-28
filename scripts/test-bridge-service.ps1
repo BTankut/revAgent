@@ -322,43 +322,17 @@ if (-not $workDirectory.StartsWith(
     throw "Refusing to create a Bridge service work directory outside the bounded temp root."
 }
 
-if (Test-Path -LiteralPath $workDirectory) {
-    throw "Refusing to reuse an existing Bridge service fixture."
-}
-# Set security at creation for this test fixture, never repair machine state.
-# Children inherit user/SYSTEM/Administrators access, not unrelated TEMP grants.
-$fixtureIdentity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
-try {
-    $fixtureAcl = [System.Security.AccessControl.DirectorySecurity]::new()
-    $fixtureAcl.SetOwner($fixtureIdentity.User)
-    $fixtureAcl.SetAccessRuleProtection($true, $false)
-    foreach ($fixtureSid in @(
-        $fixtureIdentity.User,
-        [System.Security.Principal.SecurityIdentifier]::new('S-1-5-18'),
-        [System.Security.Principal.SecurityIdentifier]::new('S-1-5-32-544')
-    )) {
-        $fixtureAcl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new(
-            $fixtureSid,
-            [System.Security.AccessControl.FileSystemRights]::FullControl,
-            [System.Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit',
-            [System.Security.AccessControl.PropagationFlags]::None,
-            [System.Security.AccessControl.AccessControlType]::Allow))
-    }
-    [System.IO.FileSystemAclExtensions]::CreateDirectory($fixtureAcl, $workDirectory) | Out-Null
-}
-finally {
-    $fixtureIdentity.Dispose()
-}
 $hostPublishDirectory = Join-Path $workDirectory (
     "host-" + [Guid]::NewGuid().ToString("N"))
 $workerPublishDirectory = Join-Path $workDirectory (
     "worker-" + [Guid]::NewGuid().ToString("N"))
-[System.IO.Directory]::CreateDirectory($hostPublishDirectory) | Out-Null
-[System.IO.Directory]::CreateDirectory($workerPublishDirectory) | Out-Null
 
 $gatewayListener = $null
 $addinListener = $null
 $script:BridgeSmokeCleanupBlocked = $false
+$tempPin = $null
+$fixturePin = $null
+$fixtureCreated = $false
 
 try {
     Push-Location $RepoRoot
@@ -394,6 +368,44 @@ try {
                 --no-restore `
                 --verbosity minimal
         }
+        # Reuse the built Bootstrap no-follow directory pins for fixture setup,
+        # publishing and smoke. Loading this type performs no credential IO.
+        $bootstrapPath = Join-Path $RepoRoot 'packages/bridge/src/RevAgent.Bridge.Bootstrap/bin/Release/net8.0/RevAgent.Bridge.Bootstrap.dll'
+        $bootstrapAssembly = [System.Reflection.Assembly]::LoadFrom($bootstrapPath)
+        $fileSystemType = $bootstrapAssembly.GetType('RevAgent.Bridge.Bootstrap.Enrollment.BridgeCredentialFileSystem', $true)
+        $fixtureFileSystem = [Activator]::CreateInstance($fileSystemType, $true)
+        $pinDirectory = $fileSystemType.GetMethod('PinDirectory')
+        $tempPin = $pinDirectory.Invoke($fixtureFileSystem, @($systemTempRoot))
+        if (Test-Path -LiteralPath $workDirectory) {
+            throw "Refusing to reuse an existing Bridge service fixture."
+        }
+        # Supply security at creation, never repair existing machine state.
+        $fixtureIdentity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+        try {
+            $fixtureAcl = [System.Security.AccessControl.DirectorySecurity]::new()
+            $fixtureAcl.SetOwner($fixtureIdentity.User)
+            $fixtureAcl.SetAccessRuleProtection($true, $false)
+            foreach ($fixtureSid in @(
+                $fixtureIdentity.User,
+                [System.Security.Principal.SecurityIdentifier]::new('S-1-5-18'),
+                [System.Security.Principal.SecurityIdentifier]::new('S-1-5-32-544')
+            )) {
+                $fixtureAcl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new(
+                    $fixtureSid,
+                    [System.Security.AccessControl.FileSystemRights]::FullControl,
+                    [System.Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit',
+                    [System.Security.AccessControl.PropagationFlags]::None,
+                    [System.Security.AccessControl.AccessControlType]::Allow))
+            }
+            [System.IO.FileSystemAclExtensions]::CreateDirectory($fixtureAcl, $workDirectory) | Out-Null
+            $fixtureCreated = $true
+            $fixturePin = $pinDirectory.Invoke($fixtureFileSystem, @($workDirectory))
+        }
+        finally {
+            $fixtureIdentity.Dispose()
+        }
+        [System.IO.Directory]::CreateDirectory($hostPublishDirectory) | Out-Null
+        [System.IO.Directory]::CreateDirectory($workerPublishDirectory) | Out-Null
         Invoke-CheckedCommand "Bridge Host win-x64 single-file publish" {
             dotnet publish $hostProjectPath `
                 -c Release `
@@ -648,27 +660,36 @@ finally {
     if ($null -ne $gatewayListener) {
         $gatewayListener.Stop()
     }
-    if ($script:BridgeSmokeCleanupBlocked) {
-        throw "Owned child exit is unconfirmed; fixture preserved without recursive cleanup."
-    }
-
-    $resolvedWorkDirectory = [System.IO.Path]::GetFullPath($workDirectory)
-    if (-not $resolvedWorkDirectory.StartsWith(
-            $tempPrefix,
-            [StringComparison]::OrdinalIgnoreCase) -or
-        -not [string]::Equals(
-            [System.IO.Path]::GetFileName($resolvedWorkDirectory),
-            $workLeaf,
-            [StringComparison]::Ordinal)) {
-        throw "Refusing to remove a Bridge service work directory outside the bounded temp root."
-    }
-    if (Test-Path -LiteralPath $resolvedWorkDirectory) {
-        $workItem = Get-Item -LiteralPath $resolvedWorkDirectory -Force
-        if (($workItem.Attributes -band
-                [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
-            throw "Refusing to recursively remove a reparse-point Bridge service work directory."
+    try {
+        if ($script:BridgeSmokeCleanupBlocked) {
+            throw "Owned child exit is unconfirmed; fixture preserved without recursive cleanup."
         }
-        Remove-Item -LiteralPath $resolvedWorkDirectory -Recurse -Force
+        if ($null -ne $fixturePin) {
+            $fixturePin.Dispose()
+            $fixturePin = $null
+        }
+        $resolvedWorkDirectory = [System.IO.Path]::GetFullPath($workDirectory)
+        if (-not $resolvedWorkDirectory.StartsWith(
+                $tempPrefix,
+                [StringComparison]::OrdinalIgnoreCase) -or
+            -not [string]::Equals(
+                [System.IO.Path]::GetFileName($resolvedWorkDirectory),
+                $workLeaf,
+                [StringComparison]::Ordinal)) {
+            throw "Refusing to remove a Bridge service work directory outside the bounded temp root."
+        }
+        if ($fixtureCreated -and (Test-Path -LiteralPath $resolvedWorkDirectory)) {
+            $workItem = Get-Item -LiteralPath $resolvedWorkDirectory -Force
+            if (($workItem.Attributes -band
+                    [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw "Refusing to recursively remove a reparse-point Bridge service work directory."
+            }
+            Remove-Item -LiteralPath $resolvedWorkDirectory -Recurse -Force
+        }
+    }
+    finally {
+        if ($null -ne $fixturePin) { $fixturePin.Dispose() }
+        if ($null -ne $tempPin) { $tempPin.Dispose() }
     }
 }
 
