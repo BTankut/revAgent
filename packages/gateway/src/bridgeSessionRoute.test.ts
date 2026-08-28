@@ -1951,7 +1951,71 @@ describe("GatewayBridgeSessionAuthority live document routing", () => {
     expectUnavailable(created);
   });
 
-  it("compares route-proof freshness in the resume CAS and permits a new incarnation only on a new connection", async () => {
+  it.each(["wss", "http_sse"] as const)(
+    "accepts unchanged equal route-proof freshness from a fresh %s connection-bound proof",
+    async (binding) => {
+      const capabilities = binding === "http_sse"
+        ? ["route_rebind_proof_v1", "transport_streamable_http"]
+        : ["route_rebind_proof_v1"];
+      const created = new GatewayBridgeSessionAuthority(
+        createRestartableTestStore().store,
+        identity({ connectionCapabilities: capabilities }),
+      );
+      authorities.push(created);
+      await created.open();
+      const original = await register(
+        created,
+        `route-rebind-stable-${binding}`,
+        binding,
+        capabilities,
+      );
+      await created.detach(original.connectionId);
+      const incarnation = `sha256:${"a".repeat(64)}`;
+      const first = await openConnection(created, binding, capabilities);
+      const firstProof = resumeWithRouteProof({
+        rsid: original.rsid,
+        resumeToken: original.resumeToken,
+        connectionId: first.connectionId,
+        sourceRevision: 2,
+        cacheIncarnationDigest: incarnation,
+      });
+      await created.receive(first.connectionId, firstProof);
+      expect(first.channel.frames.filter((frame) => frame.type === "resume_ack"))
+        .toHaveLength(1);
+      expect(resolve(created).documentIdentity).toEqual({
+        kind: "live",
+        session_document_id: "document-rebound",
+      });
+      await created.detach(first.connectionId);
+
+      const replacement = await openConnection(created, binding, capabilities);
+      const replacementProof = resumeWithRouteProof({
+        rsid: original.rsid,
+        resumeToken: original.resumeToken,
+        connectionId: replacement.connectionId,
+        sourceRevision: 2,
+        cacheIncarnationDigest: incarnation,
+      });
+      const firstRouteProof = firstProof.payload.route_rebind_proof;
+      const replacementRouteProof = replacementProof.payload.route_rebind_proof;
+      if (firstRouteProof === undefined || replacementRouteProof === undefined) {
+        throw new Error("route-rebind test fixture omitted its required proof");
+      }
+      expect(replacementRouteProof.proof_id).not.toBe(firstRouteProof.proof_id);
+      expect(replacementRouteProof.connection_id).toBe(replacement.connectionId);
+
+      await created.receive(replacement.connectionId, replacementProof);
+
+      expect(replacement.channel.frames.filter((frame) => frame.type === "resume_ack"))
+        .toHaveLength(1);
+      expect(resolve(created).documentIdentity).toEqual({
+        kind: "live",
+        session_document_id: "document-rebound",
+      });
+    },
+  );
+
+  it("rejects same-incarnation route-proof regression or context change and permits a new incarnation on a new connection", async () => {
     const fixture = createRestartableTestStore();
     const created = new GatewayBridgeSessionAuthority(
       fixture.store,

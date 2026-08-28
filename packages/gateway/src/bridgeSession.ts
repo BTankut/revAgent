@@ -2958,7 +2958,12 @@ function compareRouteRebindFreshness(
     if (proof.context_digest !== prior.contextDigest) {
       return { kind: "rejected", reason: "context changed at an equal source revision" };
     }
-    return { kind: "rejected", reason: "equal freshness requires exact proof receipt replay" };
+    // A stable document context does not manufacture a new source revision
+    // merely because the transport connection changed. O1 requires a new
+    // connection-bound proof from a fresh local read, not artificial context
+    // churn. Same-connection retries remain constrained by the immutable
+    // durable receipt branch above; a different connection may bind the same
+    // verified freshness pair with its new proof id and connection id.
   }
   if (record.connectionId === connection.connectionId) {
     return { kind: "rejected", reason: "new proof cannot replace an active same-connection proof" };
