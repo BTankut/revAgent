@@ -1111,6 +1111,44 @@ describe("GatewayBridgeSessionAuthority live document routing", () => {
       ]);
   });
 
+  it("retains one current proof CAS after the watcher advances the live document route", async () => {
+    const created = new GatewayBridgeSessionAuthority(
+      createRestartableTestStore().store,
+      identity({ connectionCapabilities: ["route_rebind_proof_v1"] }),
+    );
+    authorities.push(created);
+    await created.open();
+    const original = await register(
+      created,
+      "route-rebind-audit-watcher-advance",
+      "wss",
+      ["route_rebind_proof_v1"],
+    );
+    await created.detach(original.connectionId);
+    const rebound = await openConnection(created, "wss", ["route_rebind_proof_v1"]);
+    await created.receive(rebound.connectionId, resumeWithRouteProof({
+      rsid: original.rsid,
+      resumeToken: original.resumeToken,
+      connectionId: rebound.connectionId,
+    }));
+    const proofAudit = await created.readRouteRebindAuditSnapshot({ tenantId: TENANT_ID });
+    expect(proofAudit.status).toBe("current");
+
+    await created.receive(rebound.connectionId, contextUpdate({
+      rsid: original.rsid,
+      seq: 1,
+      activeDocument: "document-after-proof",
+      documents: [document("document-after-proof", true)],
+    }));
+
+    expect(resolve(created).documentIdentity).toEqual({
+      kind: "live",
+      session_document_id: "document-after-proof",
+    });
+    await expect(created.readRouteRebindAuditSnapshot({ tenantId: TENANT_ID }))
+      .resolves.toEqual(proofAudit);
+  });
+
   it.each(["wss", "http_sse"] as const)(
     "admits a %s route proof from the connection capability domain without a session capability grant",
     async (binding) => {
@@ -1230,11 +1268,18 @@ describe("GatewayBridgeSessionAuthority live document routing", () => {
         proofId: id(),
       };
     }, "receiptCurrent"],
-    ["binding", (route: Record<string, unknown>) => {
-      route.resultantSessionVersion = Number(route.resultantSessionVersion) + 1;
+    ["binding", (_route, root) => {
+      root.lifecycle.routeRebindReceipt = {
+        ...(root.lifecycle.routeRebindReceipt ?? {}),
+        resultantSessionVersion:
+          Number(root.lifecycle.routeRebindReceipt?.resultantSessionVersion) + 1,
+      };
     }, "resumeCasCurrent"],
-    ["generation", (route: Record<string, unknown>) => {
-      route.authorityGenerationDigest = `sha256:${"d".repeat(64)}`;
+    ["generation", (_route, root) => {
+      root.lifecycle.routeRebindReceipt = {
+        ...(root.lifecycle.routeRebindReceipt ?? {}),
+        authorityGenerationDigest: `sha256:${"d".repeat(64)}`,
+      };
     }, "resumeCasCurrent"],
   ];
   it.each(routeRebindDrifts)("fails closed in the audit projection when the durable route-rebind %s drifts", async (_name, mutate, falseField) => {

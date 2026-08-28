@@ -7654,7 +7654,8 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
   }): Promise<GatewayRouteRebindAuditSnapshot> {
     const candidates = [...this.#active.values()].filter((active) =>
       active.record.tenantId === input.tenantId &&
-      active.record.liveDocumentRoute?.source === "session_resume_route_rebind_v1",
+      active.record.routeRebindReceipt !== null &&
+      active.record.routeRebindReceipt !== undefined,
     );
     const candidateCount: 0 | 1 | 2 = candidates.length === 0 ? 0 : candidates.length === 1 ? 1 : 2;
     const empty = (status: Exclude<GatewayRouteRebindAuditSnapshot["status"], "current">): GatewayRouteRebindAuditSnapshot =>
@@ -7682,11 +7683,18 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       return empty("invalid");
     }
     const route = record.liveDocumentRoute;
-    if (route === null || route.source !== "session_resume_route_rebind_v1") {
-      return empty("invalid");
-    }
     const connection = this.#connections.get(record.connectionId);
     const receipt = record.routeRebindReceipt ?? null;
+    const freshness = routeRebindFreshnessFor(record);
+    if (route === null || receipt === null || freshness === null ||
+        receipt.routeAuthorityCheckpoint === undefined ||
+        receipt.connectionDigest === undefined ||
+        receipt.resultantSessionBindingId === undefined ||
+        receipt.resultantSessionVersion === undefined ||
+        receipt.authorityGenerationDigest === undefined ||
+        receipt.proofCasRecordVersion === undefined) {
+      return empty("invalid");
+    }
     // Keep this audit bit aligned with the authoritative route predicate:
     // it is true only when both independent connection-scoped grants remain
     // current.  record.grantedCapabilities is session-scoped and is never an
@@ -7694,22 +7702,29 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     const capabilityGranted = connection !== undefined &&
       connection.grantedCapabilities.includes("route_rebind_proof_v1") &&
       record.connectionLifecycle.grantedCapabilities.includes("route_rebind_proof_v1");
-    const receiptCurrent = receipt !== null &&
+    const expectedCheckpoint = routeAuthorityCheckpoint(record.rsid, {
+      connection_id: receipt.connectionId,
+      proof_id: receipt.proofId,
+      context_digest: freshness.contextDigest,
+      freshness: {
+        source_revision: freshness.sourceRevision,
+        cache_incarnation_digest: freshness.cacheIncarnationDigest,
+      },
+    });
+    const receiptCurrent =
       receipt.connectionId === record.connectionId &&
-      receipt.connectionId === route.observedConnectionId &&
-      receipt.proofId === route.proofId &&
-      receipt.serverProofDigest === route.serverProofDigest &&
-      receipt.routeAuthorityCheckpoint === route.routeAuthorityCheckpoint &&
-      receipt.connectionDigest === route.connectionDigest &&
-      receipt.resultantSessionBindingId === route.resultantSessionBindingId &&
-      receipt.resultantSessionVersion === route.resultantSessionVersion &&
-      receipt.authorityGenerationDigest === route.authorityGenerationDigest &&
-      receipt.proofCasRecordVersion === route.proofCasRecordVersion;
-    const resumeCasCurrent = route.resultantSessionBindingId === record.sessionBindingId &&
-      route.resultantSessionVersion === record.sessionVersion &&
+      receipt.routeAuthorityCheckpoint === expectedCheckpoint &&
+      receipt.connectionDigest ===
+        routeAuthorityConnectionDigest(record.rsid, record.connectionId);
+    const resumeCasCurrent =
+      receipt.resultantSessionBindingId === record.sessionBindingId &&
+      receipt.resultantSessionVersion === record.sessionVersion &&
       connection !== undefined &&
-      route.authorityGenerationDigest === routeRebindAuthorityGenerationDigest(record, connection);
-    const routeProvenanceCurrent = route.source === "session_resume_route_rebind_v1";
+      receipt.authorityGenerationDigest ===
+        routeRebindAuthorityGenerationDigest(record, connection);
+    const routeProvenanceCurrent = receipt.version === 1 &&
+      DIGEST_PATTERN.test(receipt.serverProofDigest) &&
+      isSafePositiveInteger(receipt.proofCasRecordVersion);
     const currentConnection = connection !== undefined &&
       record.connectionId === active.record.connectionId &&
       route.observedConnectionId === record.connectionId &&
@@ -7718,7 +7733,8 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       active.record.sessionVersion === record.sessionVersion &&
       active.record.connectionId === record.connectionId &&
       sameJson(active.record.liveDocumentRoute, record.liveDocumentRoute) &&
-      sameJson(active.record.routeRebindReceipt ?? null, record.routeRebindReceipt ?? null);
+      sameJson(active.record.routeRebindReceipt ?? null, record.routeRebindReceipt ?? null) &&
+      sameJson(active.record.routeRebindFreshness ?? null, record.routeRebindFreshness ?? null);
     const current = capabilityGranted && receiptCurrent && resumeCasCurrent &&
       routeProvenanceCurrent && currentConnection && activeMatchesDurable &&
       this.#hasCurrentLiveDocumentRoute(record, connection);
@@ -7730,11 +7746,11 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       resumeCasCurrent,
       routeProvenanceCurrent,
       currentConnection,
-      routeAuthorityCheckpoint: route.routeAuthorityCheckpoint ?? null,
-      connectionDigest: route.connectionDigest ?? null,
-      serverProofDigest: route.serverProofDigest,
-      authorityGenerationDigest: route.authorityGenerationDigest,
-      proofCasRecordVersion: route.proofCasRecordVersion ?? null,
+      routeAuthorityCheckpoint: receipt.routeAuthorityCheckpoint,
+      connectionDigest: receipt.connectionDigest,
+      serverProofDigest: receipt.serverProofDigest,
+      authorityGenerationDigest: receipt.authorityGenerationDigest,
+      proofCasRecordVersion: receipt.proofCasRecordVersion,
     });
   }
 
