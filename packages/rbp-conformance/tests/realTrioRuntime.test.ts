@@ -1120,12 +1120,28 @@ function assertC39CausalRouteAuthority(
       mismatchedReconnect.length > 0) {
     const mismatchCount = (phase: C39RecoveryCarrierObservations[number]["phase"]): number =>
       mismatchedWorker.filter((entry) => entry.phase === phase).length;
+    const workerCheckpointMismatch = mismatchedWorker.filter((entry) =>
+      entry.routeAuthorityCheckpoint !== routeAuthority.routeAuthorityCheckpoint).length;
+    const workerConnectionMismatch = mismatchedWorker.filter((entry) =>
+      entry.connectionDigest !== routeAuthority.connectionDigest).length;
+    const workerProofless = mismatchedWorker.filter((entry) =>
+      !entry.routeRebindProofGranted).length;
+    const reconnectCheckpointMismatch = mismatchedReconnect.filter((entry) =>
+      entry.routeAuthorityCheckpoint !== routeAuthority.routeAuthorityCheckpoint).length;
+    const reconnectConnectionMismatch = mismatchedReconnect.filter((entry) =>
+      entry.connectionDigest !== routeAuthority.connectionDigest).length;
+    const reconnectProofless = mismatchedReconnect.filter((entry) =>
+      !entry.routeRebindProofGranted).length;
     throw new Error(
       "C39 recovery trace contains a proofless, stale, or substituted route authority tuple " +
       `[worker=${String(mismatchedWorker.length)};materialized=${String(mismatchCount("materialized"))};` +
       `write=${String(mismatchCount("write"))};restart_resend=${String(mismatchCount("restart_resend"))};` +
-      `ack=${String(mismatchCount("ack"))};invalid_causal=${String(invalidCausalWorker.length)};` +
-      `reconnect=${String(mismatchedReconnect.length)}]`,
+      `ack=${String(mismatchCount("ack"))};worker_checkpoint=${String(workerCheckpointMismatch)};` +
+      `worker_connection=${String(workerConnectionMismatch)};worker_proofless=${String(workerProofless)};` +
+      `invalid_causal=${String(invalidCausalWorker.length)};reconnect=${String(mismatchedReconnect.length)};` +
+      `reconnect_checkpoint=${String(reconnectCheckpointMismatch)};` +
+      `reconnect_connection=${String(reconnectConnectionMismatch)};` +
+      `reconnect_proofless=${String(reconnectProofless)}]`,
     );
   }
   if (resumeAcknowledgements.length !== 1 || restarts.length < 1 || terminalAcknowledgements.length !== 1 ||
