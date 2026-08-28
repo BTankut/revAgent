@@ -235,52 +235,74 @@ async function main(): Promise<void> {
     clock,
   });
 
-  let closePromise: Promise<void> | undefined;
-  let shutdownPromise: Promise<void> | undefined;
-  const close = (): Promise<void> => {
-    closePromise ??= handle.close();
-    return closePromise;
-  };
-  const detachSignalHandlers = (): void => {
-    process.off("SIGINT", signalHandler);
-    process.off("SIGTERM", signalHandler);
+  let shutdownPromise: Promise<"closed" | "failed"> | undefined;
+  let stopNonce: string | undefined;
+  const releaseIpcReference = (): void => {
     process.off("message", testSignalHandler);
+    process.off("disconnect", disconnectHandler);
+    // The parent owns IPC disconnect. Signal-only shutdown must not keep an
+    // otherwise drained child alive, nor race pending output with process.exit.
+    process.channel?.unref();
   };
-  const shutdown = (): Promise<void> => {
-    shutdownPromise ??= close().then(
+  const shutdown = (): Promise<"closed" | "failed"> => {
+    shutdownPromise ??= handle.close().then(
       () => {
-        detachSignalHandlers();
-        process.exit(0);
+        process.exitCode = 0;
+        return "closed" as const;
       },
       (error: unknown) => {
-        detachSignalHandlers();
         process.exitCode = 1;
-        process.stderr.write(fatalRecord(error), () => process.exit(1));
+        process.stderr.write(fatalRecord(error));
+        return "failed" as const;
       },
     );
     return shutdownPromise;
   };
   const signalHandler = (): void => {
-    void shutdown();
+    void shutdown().then(() => {
+      if (stopNonce === undefined) releaseIpcReference();
+    });
+  };
+  const disconnectHandler = (): void => {
+    void shutdown().then(releaseIpcReference);
   };
   const testSignalHandler = (message: unknown): void => {
     if (
       process.env.NODE_ENV !== "test" ||
       typeof message !== "object" ||
       message === null ||
-      (message as { action?: unknown }).action !== "emit_test_signal" ||
-      (
-        (message as { signal?: unknown }).signal !== "SIGINT" &&
-        (message as { signal?: unknown }).signal !== "SIGTERM"
-      )
+      Array.isArray(message)
     ) {
       return;
     }
-    process.emit((message as { signal: "SIGINT" | "SIGTERM" }).signal);
+    const candidate = message as { action?: unknown; nonce?: unknown; signal?: unknown };
+    if (candidate.action === "STOP") {
+      // Match the supervisor's opaque UUID shape. First valid STOP owns the
+      // acknowledgement; duplicates cannot add ACKs or substitute its nonce.
+      if (stopNonce !== undefined || typeof candidate.nonce !== "string" ||
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(candidate.nonce)) return;
+      const nonce = candidate.nonce;
+      stopNonce = nonce;
+      void shutdown().then((status) => {
+        // handle.close owns listener, transport, control-work and core drains.
+        // Keep IPC referenced until the parent matches this ACK and releases it.
+        if (!process.connected || process.send === undefined) return;
+        process.send({ action: "shutdown_complete", nonce, status }, (error) => {
+          if (error === null || !process.connected) return;
+          process.exitCode = 1;
+          process.stderr.write(fatalRecord(error));
+          releaseIpcReference();
+        });
+      });
+    } else if (candidate.action === "emit_test_signal" &&
+      (candidate.signal === "SIGINT" || candidate.signal === "SIGTERM")) {
+      process.emit(candidate.signal);
+    }
   };
   process.on("SIGINT", signalHandler);
   process.on("SIGTERM", signalHandler);
   if (process.send !== undefined) {
+    process.on("disconnect", disconnectHandler);
     process.on("message", testSignalHandler);
   }
   process.stdout.write(`${JSON.stringify({

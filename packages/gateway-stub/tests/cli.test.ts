@@ -1,6 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { once } from "node:events";
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, rename } from "node:fs/promises";
+import { request } from "node:http";
 import { createServer } from "node:net";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -51,7 +52,7 @@ function cliHello(id: number): ReturnType<typeof hello> {
   return envelope;
 }
 
-async function startCli(name: string, arguments_: string[] = []): Promise<{
+async function startCli(name: string, arguments_: string[] = [], nodeEnv = "test"): Promise<{
   child: ChildProcessWithoutNullStreams;
   ready: ReadyRecord;
 }> {
@@ -61,9 +62,9 @@ async function startCli(name: string, arguments_: string[] = []): Promise<{
     {
       stdio: ["pipe", "pipe", "pipe", "ipc"],
       windowsHide: true,
-      env: { ...process.env, NODE_ENV: "test" },
+      env: { ...process.env, NODE_ENV: nodeEnv },
     },
-  );
+  ) as ChildProcessWithoutNullStreams;
   let stdout = "";
   let stderr = "";
   const ready = await new Promise<ReadyRecord>((resolveReady, reject) => {
@@ -190,6 +191,45 @@ async function persistedState(ready: ReadyRecord): Promise<{
   };
 }
 
+async function sendIpc(child: ChildProcessWithoutNullStreams, message: object | string): Promise<void> {
+  await new Promise<void>((resolveSend, reject) => {
+    child.send(message, (error) => error === null ? resolveSend() : reject(error));
+  });
+}
+
+function assertProcessExited(pid: number): void {
+  expect(() => process.kill(pid, 0)).toThrow(expect.objectContaining({ code: "ESRCH" }));
+}
+
+async function registeredSse(ready: ReadyRecord): Promise<{ sse: SseReader; rsid: string }> {
+  const created = await fetch(ready.http_connection_url, {
+    method: "POST",
+    headers: {
+      accept: "application/json",
+      authorization: `Bearer ${cliToken}`,
+      "content-type": "application/json",
+      "x-rbp-versions": "1",
+    },
+    body: JSON.stringify(cliHello(600)),
+  });
+  expect(created.status).toBe(201);
+  await created.arrayBuffer();
+  const connectionId = created.headers.get("rbp-connection-id")!;
+  const sse = await openSse(ready, connectionId);
+  const registration = sessionRegister();
+  registration.machine.fingerprint = cliFingerprint;
+  const accepted = await fetch(`${ready.http_connection_url}/${encodeURIComponent(connectionId)}/messages`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${cliToken}`, "content-type": "application/json" },
+    body: JSON.stringify(controlEnvelope("session_register", registration, 601)),
+  });
+  expect(accepted.status).toBe(202);
+  await accepted.arrayBuffer();
+  const registered = await sse.next() as Extract<RbpEnvelope, { type: "session_registered" }>;
+  expect(registered.type).toBe("session_registered");
+  return { sse, rsid: registered.payload.rsid };
+}
+
 describe("Gateway stub CLI", () => {
   const children: ChildProcessWithoutNullStreams[] = [];
 
@@ -199,6 +239,154 @@ describe("Gateway stub CLI", () => {
         child.kill("SIGKILL");
         await once(child, "exit");
       }
+    }
+  });
+
+  it.each(["STOP", "disconnect"] as const)(
+    "drains active transports, pending control and core state before %s completes, then exits naturally",
+    async (method) => {
+      const { child, ready } = await startCli(`owned-shutdown-${method}`);
+      children.push(child);
+      const messages: unknown[] = [];
+      child.on("message", (message) => messages.push(message));
+      const socket = new WebSocket(ready.ws_url, {
+        headers: { authorization: `Bearer ${cliToken}`, "x-rbp-versions": "1" },
+      });
+      await once(socket, "open");
+      const helloAck = once(socket, "message");
+      socket.send(JSON.stringify(cliHello(602)));
+      await helloAck;
+      const socketClosed = once(socket, "close");
+      const { sse, rsid } = await registeredSse(ready);
+      // 100 Continue proves the server accepted this control request. Its body
+      // deliberately remains incomplete until shutdown closes the owned socket.
+      const pending = request(ready.control_url, {
+        method: "POST",
+        headers: {
+          "x-rbp-test-control": controlToken,
+          "content-type": "application/json",
+          "content-length": "64",
+          expect: "100-continue",
+        },
+      });
+      pending.on("error", () => undefined);
+      const controlClosed = new Promise<void>((resolveClosed) => pending.once("close", resolveClosed));
+      const continued = once(pending, "continue");
+      pending.flushHeaders();
+      await continued;
+      try {
+        const exited = once(child, "exit");
+        if (method === "STOP") {
+          const acknowledged = once(child, "message");
+          const nonce = "01234567-89ab-4cde-8fab-0123456789ab";
+          await sendIpc(child, { action: "STOP", nonce });
+          await sendIpc(child, { action: "STOP", nonce });
+          await sendIpc(child, { action: "emit_test_signal", signal: "SIGTERM" });
+          expect(await acknowledged).toEqual([{ action: "shutdown_complete", nonce, status: "closed" }, undefined]);
+          // Resource assertions happen while IPC still keeps the child alive:
+          // a process exit cannot mask an early or fabricated close ACK.
+          expect(child.connected).toBe(true);
+          expect(child.exitCode).toBeNull();
+          expect(() => process.kill(ready.pid, 0)).not.toThrow();
+        } else {
+          child.disconnect();
+          expect(await exited).toEqual([0, null]);
+        }
+        await assertListenerPortReleased(ready);
+        expect(await persistedState(ready)).toMatchObject({
+          sessions: { [rsid]: { liveness: "disconnected" } },
+        });
+        await socketClosed;
+        await controlClosed;
+        await expect(sse.next()).rejects.toThrow("CLI SSE stream ended");
+        const reopened = await GatewayStubCore.create({ statePath: ready.state_path, tokenTable });
+        try {
+          expect(reopened.snapshot().runtime).toMatchObject({ openConnections: 0, activeTimers: 0, activeDeliveries: 0 });
+        } finally {
+          await reopened.close();
+        }
+        if (method === "STOP") {
+          child.disconnect();
+          expect(await exited).toEqual([0, null]);
+        }
+        expect(messages).toHaveLength(method === "STOP" ? 1 : 0);
+        assertProcessExited(ready.pid);
+      } finally {
+        pending.destroy();
+        if (socket.readyState !== WebSocket.CLOSED) socket.terminate();
+        await sse.close();
+      }
+    },
+    15_000,
+  );
+
+  it("ignores malformed STOP controls and acknowledges only the first valid nonce across duplicates and signals", async () => {
+    const { child, ready } = await startCli("nonce-ownership");
+    children.push(child);
+    const messages: unknown[] = [];
+    child.on("message", (message) => messages.push(message));
+    const nonce = "01234567-89ab-4cde-8fab-0123456789ab";
+    for (const message of [
+      "STOP", [], {}, { action: "STOP" }, { action: "STOP", nonce: 42 },
+      { action: "STOP", nonce: "" }, { action: "STOP", nonce: "not-a-uuid" },
+      { action: "STOP", nonce: ` ${nonce}` }, { action: "STOP", nonce: `${nonce}\n` },
+      { action: "STOP", nonce: "01234567-89ab-0cde-8fab-0123456789ab" },
+      { action: "stop", nonce }, { action: "emit_test_signal", signal: "SIGKILL" },
+    ]) await sendIpc(child, message);
+    const acknowledged = once(child, "message");
+    const exited = once(child, "exit");
+    await sendIpc(child, { action: "STOP", nonce });
+    await acknowledged;
+    for (const message of [
+      { action: "STOP", nonce },
+      { action: "STOP", nonce: "fedcba98-7654-4321-8abc-fedcba987654" },
+      { action: "emit_test_signal", signal: "SIGINT" },
+      { action: "emit_test_signal", signal: "SIGTERM" },
+    ]) await sendIpc(child, message);
+    child.disconnect();
+    expect(await exited).toEqual([0, null]);
+    expect(messages).toEqual([{ action: "shutdown_complete", nonce, status: "closed" }]);
+    await assertListenerPortReleased(ready);
+    assertProcessExited(ready.pid);
+  });
+
+  it("keeps STOP and signal injection inert outside NODE_ENV=test", async () => {
+    const { child, ready } = await startCli("non-test-control", [], "production");
+    children.push(child);
+    const messages: unknown[] = [];
+    child.on("message", (message) => messages.push(message));
+    await sendIpc(child, { action: "STOP", nonce: "01234567-89ab-4cde-8fab-0123456789ab" });
+    await sendIpc(child, { action: "emit_test_signal", signal: "SIGTERM" });
+    expect(await snapshot(ready)).toMatchObject({ sessions: {} });
+    const exited = once(child, "exit");
+    child.disconnect();
+    expect(await exited).toEqual([0, null]);
+    expect(messages).toEqual([]);
+    await assertListenerPortReleased(ready);
+    assertProcessExited(ready.pid);
+  });
+
+  it("reports failed cleanup without a closed ACK and exits nonzero after parent IPC release", async () => {
+    const { child, ready } = await startCli("failed-cleanup");
+    children.push(child);
+    const { sse } = await registeredSse(ready);
+    // Preserve the fixture's state but replace its exact file path with a
+    // directory: disconnect persistence must fail, independent of OS ACLs.
+    await rename(ready.state_path, `${ready.state_path}.saved`);
+    await mkdir(ready.state_path);
+    try {
+      const acknowledged = once(child, "message");
+      const exited = once(child, "exit");
+      const nonce = "01234567-89ab-4cde-8fab-0123456789ab";
+      await sendIpc(child, { action: "STOP", nonce });
+      expect(await acknowledged).toEqual([{ action: "shutdown_complete", nonce, status: "failed" }, undefined]);
+      expect(child.exitCode).toBeNull();
+      await assertListenerPortReleased(ready);
+      child.disconnect();
+      expect(await exited).toEqual([1, null]);
+      assertProcessExited(ready.pid);
+    } finally {
+      await sse.close();
     }
   });
 
