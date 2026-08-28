@@ -153,7 +153,7 @@ const MAX_DIAGNOSTIC_LINE_BYTES = 512;
 function redactDiagnosticText(input: string): string {
   return input
     .replace(/Authorization:\s*(?:Bearer|Basic)\s+[^\s,;]+/giu, "Authorization=[redacted]")
-    .replace(/"(authorization|api[_-]?key|credential|subject|identity|rsid)"\s*:\s*"[^"]*"/giu, '"$1":"[redacted]"')
+    .replace(/"(authorization|api[_-]?key|credential|subject|identity|rsid|request[_-]?id)"\s*:\s*"[^"]*"/giu, '"$1":"[redacted]"')
     .replace(/(authorization|bearer|basic|token|secret|proof|password|api[_-]?key|credential)\s*[:=]\s*[^\s,;]+/giu, "$1=[redacted]")
     .replace(/\\\\[^\s,;]+/gu, "[path-redacted]")
     .replace(/[A-Za-z]:\\[^\s,;]+/gu, "[path-redacted]")
@@ -165,7 +165,7 @@ function redactDiagnosticLine(input: string): string {
   try {
     const parsed = JSON.parse(input) as unknown;
     const redactValue = (value: unknown, key = ""): unknown => {
-      if (/(?:authorization|token|secret|proof|password|bearer|basic|api[_-]?key|credential|payload|document(?:id)?|model|invocation|rsid|idempotency|subject|identity|path|command|args)/iu.test(key)) {
+      if (/(?:authorization|token|secret|proof|password|bearer|basic|api[_-]?key|credential|payload|document(?:id)?|model|invocation|rsid|idempotency|subject|identity|request[_-]?id|path|command|args)/iu.test(key)) {
         return "[redacted]";
       }
       if (typeof value === "string") return redactDiagnosticText(value);

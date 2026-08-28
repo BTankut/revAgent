@@ -62,6 +62,7 @@ describe("strict JSONL process control", () => {
     const diagnostic = {
       message: "Authorization: Basic BASIC_CANARY",
       durabilityEvents: [{ subject: "SUBJECT_CANARY", rsid: "rs_RSID_CANARY", event: "terminal_persisted" }],
+      observations: [{ requestId: "SUBJECT_CANARY", request_id: "rs_RSID_CANARY" }],
     };
     const stderr = `Authorization: Bearer BEARER_CANARY\n${JSON.stringify(diagnostic)}\ndiagnostic ${JSON.stringify(diagnostic)}`;
     writeFileSync(script, [
