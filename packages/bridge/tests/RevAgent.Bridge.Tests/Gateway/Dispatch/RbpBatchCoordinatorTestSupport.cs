@@ -149,14 +149,15 @@ internal static class RbpBatchCoordinatorTestData
         string faultClass = "revit_api",
         string message = "the add-in refused the command") =>
         new(
-            RbpAddinOutcomeKind.KnownNotDispatched,
+            RbpAddinOutcomeKind.ApplicationError,
             default,
             [],
             RequestBytes: 128,
             ResponseBytes: 0,
             FaultClass: faultClass,
             Message: message,
-            AddinError: new AddinErrorDetail(-32000, message));
+            AddinError: new AddinErrorDetail(-32000, message),
+            Retryable: false);
 
     internal static RbpAddinOutcome PossiblyDispatched(
         string message = "the loopback socket closed after the first byte") =>

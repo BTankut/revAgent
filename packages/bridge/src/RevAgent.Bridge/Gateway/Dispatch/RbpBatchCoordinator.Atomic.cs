@@ -29,6 +29,9 @@ internal sealed partial class RbpBatchCoordinator
         RbpBatchCapability capability,
         CancellationToken cancellationToken)
     {
+        if (!_decisionQuarantine.TryReserve(request.Rsid))
+            throw new RbpDispatchException(RbpDispatchErrorCode.Environment,
+                "The bounded dispatch-decision owner is unavailable.");
         await EnsureBatchDispatchedAsync(request, cancellationToken)
             .ConfigureAwait(false);
 
@@ -49,17 +52,17 @@ internal sealed partial class RbpBatchCoordinator
                 .ConfigureAwait(false);
         }
         catch (Exception exception)
-            when (exception is not OperationCanceledException)
         {
-            return await IndeterminateDispatchedBatchAsync(
-                    request,
-                    exception.Message)
-                .ConfigureAwait(false);
+            outcome = new RbpAddinOutcome(RbpAddinOutcomeKind.PossiblyDispatched,
+                default, [], 0, 0, Message: exception.Message);
         }
 
+        outcome = outcome.ConservativeClassification();
+        _decisionQuarantine.Own(request.Rsid, outcome.Lease);
+        bool durableDecisionProven = false;
         try
         {
-            return outcome.Kind switch
+            RbpInvocationAnswer answer = outcome.Kind switch
             {
                 // The add-in batch envelope carries its own `status`, so a
                 // clean guarded rollback reaches the channel as a guarded
@@ -69,10 +72,13 @@ internal sealed partial class RbpBatchCoordinator
                     await MapAtomicEnvelopeAsync(request, outcome)
                         .ConfigureAwait(false),
 
-                // Spec ~1825-1827: parse, shape, unsupported-method,
-                // descriptor-mismatch, and parameter-profile failures
-                // detected before the group opens use a JSON-RPC error
-                // response and execute zero steps.
+                // Only the independently validated native atomic envelope can
+                // prove rollback. An application code or nested caller claim cannot.
+                RbpAddinOutcomeKind.ApplicationError when IsValidatedAtomicRollback(request, outcome.Result) =>
+                    await MapAtomicEnvelopeAsync(request, outcome).ConfigureAwait(false),
+
+                // Only a proven bridge/transport no-send refusal establishes
+                // zero executed steps. A JSON-RPC error is not that proof.
                 RbpAddinOutcomeKind.KnownNotDispatched =>
                     await CleanAtomicRejectionAsync(request, outcome)
                         .ConfigureAwait(false),
@@ -84,13 +90,18 @@ internal sealed partial class RbpBatchCoordinator
                             request,
                             outcome.Message ??
                                 "The atomic batch dispatch outcome is " +
-                                "unknown.")
+                                "unknown.",
+                            outcome.Kind == RbpAddinOutcomeKind.ApplicationError || outcome.Retryable == false
+                                ? outcome.FaultClass ?? "revit_api" : null)
                         .ConfigureAwait(false),
             };
+            durableDecisionProven = true;
+            return answer;
         }
         finally
         {
-            outcome.Lease?.ReleaseAfterDurableDecision();
+            if (durableDecisionProven)
+                _decisionQuarantine.ReleaseProven(request.Rsid, outcome.Lease);
         }
     }
 
@@ -139,6 +150,18 @@ internal sealed partial class RbpBatchCoordinator
             ["steps"] = steps,
         };
     }
+
+    private static bool IsValidatedAtomicRollback(RbpBatchRequest request, JsonElement result) =>
+        // TryReadEnvelope validates correlation, ordered members, failure
+        // index and an attempted/succeeded rollback matching that failure.
+        // A valid completed/committed matrix is NOT an application-error
+        // escape hatch: the outer failure still makes its effect uncertain.
+        TryReadEnvelope(request, result, out AtomicEnvelope? envelope, out _) &&
+        envelope is
+        {
+            TransactionState: RbpBatchTransactionState.RolledBack,
+            Status: RbpBatchStepStatus.Failed or RbpBatchStepStatus.Guarded,
+        };
 
     /// <summary>
     /// Maps a verified add-in batch envelope onto the Section 11.1 carrier.
@@ -193,8 +216,8 @@ internal sealed partial class RbpBatchCoordinator
                     StringComparison.Ordinal))
             {
                 await _journal
-                    .PersistInvocationTerminalAsync(
-                        request.StepKey(step.Index),
+                    .PersistBatchStepDecisionAsync(
+                        request.ToIdentity(), step.Index,
                         new RbpInvocationTerminal(
                             ToInvocationState(step.ExecutionState),
                             evidence,
@@ -222,8 +245,7 @@ internal sealed partial class RbpBatchCoordinator
     }
 
     /// <summary>
-    /// A pre-group JSON-RPC rejection or an unreachable add-in: zero steps
-    /// executed, nothing committed.
+    /// A proven pre-dispatch refusal: zero steps executed, nothing committed.
     /// </summary>
     private async Task<RbpInvocationAnswer> CleanAtomicRejectionAsync(
         RbpBatchRequest request,
@@ -255,8 +277,8 @@ internal sealed partial class RbpBatchCoordinator
                     replayed: false),
                 step.Mutating ? "not_committed" : "read_only");
             await _journal
-                .PersistInvocationTerminalAsync(
-                    request.StepKey(index),
+                .PersistBatchStepDecisionAsync(
+                    request.ToIdentity(), index,
                     new RbpInvocationTerminal(
                         RbpInvocationState.Failed,
                         evidence,
@@ -297,103 +319,23 @@ internal sealed partial class RbpBatchCoordinator
     /// </remarks>
     private async Task<RbpInvocationAnswer> IndeterminateDispatchedBatchAsync(
         RbpBatchRequest request,
-        string reason)
+        string reason,
+        string? applicationFaultClass = null)
     {
-        var steps = new List<RbpBatchStepOutcome>(request.Steps.Count);
-        bool anyIndeterminateMutation = false;
-        for (int index = 0; index < request.Steps.Count; index++)
-        {
-            RbpBatchStepRequest step = request.Steps[index];
-            RbpStoredInvocation? row = await _journal
-                .GetInvocationAsync(request.StepKey(index))
-                .ConfigureAwait(false);
-            if (row is { IsTerminal: true })
-            {
-                anyIndeterminateMutation |=
-                    row.State == RbpInvocationState.Indeterminate;
-                steps.Add(
-                    FromStoredRow(index, step.InvocationId, row, replayed: false));
-                continue;
-            }
-
-            if (step.Mutating)
-            {
-                string? holdId = await _journal
-                    .PersistInvocationTerminalAsync(
-                        request.StepKey(index),
-                        new RbpInvocationTerminal(
-                            RbpInvocationState.Indeterminate,
-                            Outcome: default,
-                            ResultDigest: null),
-                        DurableDecisionToken)
-                    .ConfigureAwait(false);
-                if (holdId is not { Length: > 0 })
-                {
-                    throw new RbpDispatchException(
-                        RbpDispatchErrorCode.Environment,
-                        "A possibly executed atomic batch mutation must " +
-                        "install a Section 6.2.1 scope hold.");
-                }
-
-                anyIndeterminateMutation = true;
-                steps.Add(
-                    new RbpBatchStepOutcome(
-                        index,
-                        step.InvocationId,
-                        RbpBatchPayloads.ErrorEvidence(
-                            RbpBatchStepStatus.Indeterminate,
-                            RbpBatchPayloads.NestedError(
-                                RbpInvocationPayloads
-                                    .JournalIndeterminateError(
-                                        step.InvocationId,
-                                        holdId,
-                                        step.MutationScope,
-                                        reason,
-                                        replayed: false),
-                                replayed: false)),
-                        Replayed: false));
-                continue;
-            }
-
-            JsonElement readEvidence = RbpBatchPayloads.ErrorEvidence(
-                RbpBatchStepStatus.Failed,
-                RbpBatchPayloads.NestedError(
-                    RbpInvocationPayloads.KnownError(
-                        step.InvocationId,
-                        faultClass: "environment",
-                        retryable: true,
-                        reason),
-                    replayed: false),
-                effectState: "read_only");
-            await _journal
-                .PersistInvocationTerminalAsync(
-                    request.StepKey(index),
-                    new RbpInvocationTerminal(
-                        RbpInvocationState.Failed,
-                        readEvidence,
-                        Rfc8785Json.Sha256Digest(readEvidence)),
-                    DurableDecisionToken)
-                .ConfigureAwait(false);
-            steps.Add(
-                new RbpBatchStepOutcome(
-                    index,
-                    step.InvocationId,
-                    readEvidence,
-                    Replayed: false));
-        }
-
-        return await TerminalizeAtomicAsync(
-                request,
-                anyIndeterminateMutation
-                    ? RbpBatchStepStatus.Indeterminate
-                    : RbpBatchStepStatus.Failed,
-                anyIndeterminateMutation
-                    ? RbpBatchTransactionState.Indeterminate
-                    : RbpBatchTransactionState.RolledBack,
-                RbpBatchPayloads.FirstNonSuccessIndex(steps),
-                steps,
-                replayed: false)
-            .ConfigureAwait(false);
+        RbpBatchAdmissionResult decision = await _journal.PersistAtomicDispatchFailureAsync(
+            request.ToIdentity(), applicationFaultClass, DurableDecisionToken).ConfigureAwait(false);
+        JsonElement aggregate = RequireBatchOutcome(decision.Stored);
+        RbpBatchStepOutcome[] steps = decision.Steps.Select(step => FromStoredRow(
+            step.BatchIndex, step.InvocationId,
+            step.Stored ?? throw new RbpDispatchException(RbpDispatchErrorCode.Environment,
+                "The grouped durable decision is missing a member."),
+            replayed: false)).ToArray();
+        return RbpInvocationAnswer.Result(RbpBatchPayloads.Carrier(
+            request.BatchId, atomic: true,
+            ReadRequiredString(aggregate, "status"),
+            ReadRequiredString(aggregate, "transaction_state"),
+            ReadNullableInt32(aggregate, "failed_step_index"),
+            steps, replayed: false));
     }
 
     private async Task<RbpInvocationAnswer> TerminalizeAtomicAsync(
@@ -412,20 +354,10 @@ internal sealed partial class RbpBatchCoordinator
             failedStepIndex,
             steps,
             replayed);
-        RbpStoredBatch? stored = await _journal
-            .GetBatchAsync(request.BatchKey, DurableDecisionToken)
-            .ConfigureAwait(false);
-        if (stored is not null && stored.State != RbpBatchState.Terminal)
-        {
-            await _journal
-                .PersistBatchTerminalAsync(
-                    request.BatchKey,
-                    new RbpBatchTerminal(
-                        carrier,
-                        Rfc8785Json.Sha256Digest(carrier)),
-                    DurableDecisionToken)
-                .ConfigureAwait(false);
-        }
+        await _journal.PersistBatchTerminalAsync(
+            request.BatchKey,
+            new RbpBatchTerminal(carrier, Rfc8785Json.Sha256Digest(carrier)),
+            DurableDecisionToken, expectedIdentity: request.ToIdentity()).ConfigureAwait(false);
 
         return RbpInvocationAnswer.Result(carrier);
     }

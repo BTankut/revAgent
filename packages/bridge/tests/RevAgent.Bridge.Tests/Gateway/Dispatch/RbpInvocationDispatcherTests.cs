@@ -175,7 +175,7 @@ public sealed class RbpInvocationDispatcherTests
     }
 
     [Fact]
-    public async Task CarrierPlanAndTerminalRollbackTogetherOnPreCommitCrash()
+    public async Task CarrierPlanAndTerminalRetryTogetherAfterExactRollbackReadback()
     {
         using var directory = new RbpJournalTestDirectory();
         var faults = new ArmedJournalFaultInjector();
@@ -198,16 +198,17 @@ public sealed class RbpInvocationDispatcherTests
         using IRbpInvocationClaim claim = Assert.IsAssignableFrom<IRbpInvocationClaim>(
             dispatcher.TryClaim(Rsid));
 
-        await Assert.ThrowsAsync<IOException>(() => dispatcher.DispatchClaimedAsync(
+        _ = await dispatcher.DispatchClaimedAsync(
             claim,
             ReadPayload(),
             new[] { "journal_v1", "chunked_results", "artifact_result_v1" },
-            CancellationToken.None));
+            CancellationToken.None);
 
         RbpStoredInvocation stored = Assert.IsType<RbpStoredInvocation>(
             await store.GetInvocationAsync(Rsid + "/" + ReadRequest().InvocationId));
-        Assert.Equal(RbpInvocationState.Executing, stored.State);
-        Assert.Null(stored.CarrierPlan);
+        Assert.Equal(RbpInvocationState.Completed, stored.State);
+        Assert.NotNull(stored.CarrierPlan);
+        Assert.Equal(1, channel.Calls);
         int plans = await store.ReadAsync(connection =>
         {
             using var command = connection.CreateCommand();
@@ -215,7 +216,7 @@ public sealed class RbpInvocationDispatcherTests
             return Convert.ToInt32(command.ExecuteScalar(),
                 System.Globalization.CultureInfo.InvariantCulture);
         });
-        Assert.Equal(0, plans);
+        Assert.Equal(1, plans);
     }
 
     [Fact]

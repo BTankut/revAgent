@@ -54,6 +54,7 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
 
     private readonly RbpJournalStore _journal;
     private readonly IRbpInvocationChannel _channel;
+    private readonly RbpDispatchDecisionQuarantine _decisionQuarantine;
     private readonly IRbpInFlightGate _inFlightGate;
     private readonly IRbpRevitBusyProbe? _busyProbe;
     private readonly TimeProvider _timeProvider;
@@ -72,6 +73,7 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
     {
         _journal = journal ?? throw new ArgumentNullException(nameof(journal));
         _channel = channel ?? throw new ArgumentNullException(nameof(channel));
+        _decisionQuarantine = RbpDispatchDecisionQuarantine.For(channel);
         _inFlightGate = inFlightGate ??
             throw new ArgumentNullException(nameof(inFlightGate));
         _busyProbe = busyProbe;
@@ -122,6 +124,10 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
         RbpInvokeRequest request,
         CancellationToken cancellationToken)
     {
+        if (_decisionQuarantine.IsBlocked(request.Rsid))
+            return RbpInvocationAnswer.Error(RbpInvocationPayloads.KnownError(
+                request.InvocationId, "environment", false,
+                "An earlier dispatch decision is not durably proven; this request was not dispatched."));
         RbpPayloadRecoveryRequest? recovery = null;
         if (string.Equals(request.Method, DispatchPayloadRecoveryMethod, StringComparison.Ordinal))
         {
@@ -538,6 +544,9 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
         CancellationToken cancellationToken,
         RbpPayloadRecoveryRequest? recovery)
     {
+        if (recovery is null && !_decisionQuarantine.TryReserve(request.Rsid))
+            throw new RbpDispatchException(RbpDispatchErrorCode.Environment,
+                "The bounded dispatch-decision owner is unavailable.");
         // Durability step 2, before dispatch ownership.
         if (claimDispatchOwnership)
         {
@@ -569,20 +578,18 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
                     cancellationToken)
                 .ConfigureAwait(false);
         }
-        catch (Exception exception) when (exception is not OperationCanceledException)
+        catch (Exception exception)
         {
             // The channel threw rather than reporting dispatch evidence, so we
             // cannot prove the add-in was untouched. Treat it as possibly
             // dispatched: Section 15 forbids labelling an unknown write as a
             // retryable environment fault.
-            return await TerminalizeUnknownAsync(
-                    request,
-                    identity,
-                    exception.Message,
-                    faultClassHint: null,
-                    cancellationToken)
-                .ConfigureAwait(false);
+            outcome = new RbpAddinOutcome(RbpAddinOutcomeKind.PossiblyDispatched,
+                default, [], 0, 0, Message: exception.Message);
         }
+
+        outcome = outcome.ConservativeClassification();
+        _decisionQuarantine.Own(request.Rsid, outcome.Lease);
 
         var metrics = new RbpInvocationMetrics(
             (long)Stopwatch
@@ -591,9 +598,10 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
             outcome.RequestBytes,
             outcome.ResponseBytes);
 
+        bool durableDecisionProven = false;
         try
         {
-            return outcome.Kind switch
+            RbpInvocationAnswer answer = outcome.Kind switch
             {
                 RbpAddinOutcomeKind.Completed or RbpAddinOutcomeKind.Guarded =>
                     await TerminalizeSuccessAsync(
@@ -601,7 +609,8 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
                             identity,
                             outcome,
                             metrics,
-                            cancellationToken)
+                            cancellationToken,
+                            () => durableDecisionProven = true)
                         .ConfigureAwait(false),
 
                 RbpAddinOutcomeKind.KnownNotDispatched =>
@@ -612,6 +621,14 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
                             cancellationToken)
                         .ConfigureAwait(false),
 
+                RbpAddinOutcomeKind.ApplicationError when !request.Mutating =>
+                    await TerminalizeKnownFailureAsync(request, identity,
+                        outcome with { Retryable = false }, DurableDecisionToken).ConfigureAwait(false),
+
+                RbpAddinOutcomeKind.PossiblyDispatched when !request.Mutating && outcome.Retryable == false =>
+                    await TerminalizeKnownFailureAsync(request, identity,
+                        outcome, DurableDecisionToken).ConfigureAwait(false),
+
                 _ => await TerminalizeUnknownAsync(
                             request,
                             identity,
@@ -621,6 +638,8 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
                             cancellationToken)
                         .ConfigureAwait(false),
             };
+            durableDecisionProven = true;
+            return answer;
         }
         finally
         {
@@ -628,7 +647,8 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
             // the add-in session while this invocation's fate lives solely in
             // memory; a crash in that window lets a redelivery dispatch again
             // against a row the journal still reports as `executing`.
-            outcome.Lease?.ReleaseAfterDurableDecision();
+            if (durableDecisionProven)
+                _decisionQuarantine.ReleaseProven(request.Rsid, outcome.Lease);
         }
     }
 
@@ -648,16 +668,16 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
                 return await TerminalizeRecoveryUnavailableAsync(request, identity).ConfigureAwait(false);
             try
             {
-            RbpRecoveryCarrierReservation reservation = await _journal
-                .PersistProtectedRecoveryTerminalAndReserveAsync(
-                    new RbpRecoveryCarrierReservationRequest(request.Rsid, request.InvocationId,
-                        recovery.OriginInvocationId, recovery.ExpectedResultDigest,
-                        RbpArtifactCarrierProducer.MaximumChunkBytes,
-                        new RbpRecoveryCarrierHeader("application/json", "base64"),
-                        recovery.EnvelopeDigest(request.InvocationId),
-                        DateTimeOffset.UtcNow.Add(RbpJournalStore.DefaultRetentionPeriod)),
-                    DurableDecisionToken).ConfigureAwait(false);
-            return RbpInvocationAnswer.Recovery(reservation);
+                RbpRecoveryCarrierReservation reservation = await _journal
+                    .PersistProtectedRecoveryTerminalAndReserveAsync(
+                        new RbpRecoveryCarrierReservationRequest(request.Rsid, request.InvocationId,
+                            recovery.OriginInvocationId, recovery.ExpectedResultDigest,
+                            RbpArtifactCarrierProducer.MaximumChunkBytes,
+                            new RbpRecoveryCarrierHeader("application/json", "base64"),
+                            recovery.EnvelopeDigest(request.InvocationId),
+                            DateTimeOffset.UtcNow.Add(RbpJournalStore.DefaultRetentionPeriod)),
+                        DurableDecisionToken).ConfigureAwait(false);
+                return RbpInvocationAnswer.Recovery(reservation);
             }
             catch (Exception)
             {
@@ -710,7 +730,8 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
         RbpInvocationIdentity identity,
         RbpAddinOutcome outcome,
         RbpInvocationMetrics metrics,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Action durableDecisionProven)
     {
         bool guarded = outcome.Kind == RbpAddinOutcomeKind.Guarded;
 
@@ -803,8 +824,10 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
                     (IsOmittedPayload(body) || armSuppressedOrigin)
                         ? new RbpRecoveryPayload(digest, outcome.RawResponsePayload)
                         : null),
-                DurableDecisionToken)
+                DurableDecisionToken, expectedIdentity: identity)
             .ConfigureAwait(false);
+
+        durableDecisionProven();
 
         if (armSuppressedOrigin)
         {
@@ -822,9 +845,9 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
         RbpAddinOutcome outcome,
         CancellationToken cancellationToken)
     {
-        // Reached only when the channel can prove no add-in byte was written,
-        // so the outcome really is known and a read may be retried by the
-        // orchestrator.
+        // Known no-send failures, or known non-mutating application failures.
+        // A mutation with any application/dispatch uncertainty never enters
+        // this path. Application failures explicitly remain nonretryable.
         (string faultClass, bool retryable, string message) =
             await EnrichFailureWithLocalStatusAsync(
                     request.Rsid,
@@ -847,7 +870,7 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
                     RbpInvocationState.Failed,
                     body,
                     JournalEvidenceDigest(body)),
-                DurableDecisionToken)
+                DurableDecisionToken, expectedIdentity: identity)
             .ConfigureAwait(false);
 
         return RbpInvocationAnswer.Error(body);
@@ -887,7 +910,7 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
                         RbpInvocationState.Failed,
                         readBody,
                         JournalEvidenceDigest(readBody)),
-                    DurableDecisionToken)
+                    DurableDecisionToken, expectedIdentity: identity)
                 .ConfigureAwait(false);
             return RbpInvocationAnswer.Error(readBody);
         }
@@ -903,7 +926,7 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
                     RbpInvocationState.Indeterminate,
                     Outcome: default,
                     ResultDigest: null),
-                DurableDecisionToken)
+                DurableDecisionToken, expectedIdentity: identity)
             .ConfigureAwait(false);
 
         if (holdId is not { Length: > 0 })
