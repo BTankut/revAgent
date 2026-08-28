@@ -125,6 +125,13 @@ function appendBoundedTranscript(target: ProcessTranscriptRecord[], record: Proc
   if (target.length > MAX_PROCESS_TRANSCRIPT_RECORDS) target.splice(0, target.length - MAX_PROCESS_TRANSCRIPT_RECORDS);
 }
 
+function stdioClosed(child: ChildProcessWithoutNullStreams): Promise<void> {
+  return Promise.all([
+    new Promise<void>((resolve) => child.stdout.once("close", resolve)),
+    new Promise<void>((resolve) => child.stderr.once("close", resolve)),
+  ]).then(() => undefined);
+}
+
 /** Safe, bounded process evidence for real-trio failure diagnostics. */
 export interface ProcessDiagnosticSnapshot {
   readonly componentId: string;
@@ -433,7 +440,7 @@ export class StrictJsonlProcess {
     this.pid = pid;
     this.process = { pid, startedAt, readyAt, stoppedAt: null, exitCode: null };
     this.#exit = new Promise((resolve) => { this.#exitResolve = resolve; });
-    this.#stdioClosed = new Promise((resolve) => child.once("close", () => resolve()));
+    this.#stdioClosed = stdioClosed(child);
     child.once("exit", (code, signal) => {
       const at = new Date().toISOString();
       const normalized = code ?? (signal === null ? 1 : 128);
@@ -460,7 +467,7 @@ export class StrictJsonlProcess {
       windowsHide: true,
     });
     evidence.spawned(child.pid);
-    child.once("close", () => evidence.complete());
+    void stdioClosed(child).then(() => evidence.complete());
     if (child.pid === undefined) {
       evidence.failure("spawn");
       throw new Error(`${options.componentId} did not receive a process id`);
@@ -724,6 +731,10 @@ export class StrictJsonlProcess {
       this.child.kill("SIGKILL");
     }, 10_000);
     const exit = await this.#exit;
+    // Do not send EOF to a live Bridge: its stdin end is itself a shutdown
+    // trigger. After the child has exited, release only the parent handle so
+    // ChildProcess close accounting can finish and flush the final stdio tail.
+    if (!this.child.stdin.destroyed) this.child.stdin.destroy();
     await this.#stdioClosed;
     clearTimeout(forced);
     return {
@@ -754,6 +765,7 @@ export class StrictJsonlProcess {
       this.child.kill("SIGKILL");
     }, 10_000);
     const exit = await this.#exit;
+    if (!this.child.stdin.destroyed) this.child.stdin.destroy();
     await this.#stdioClosed;
     clearTimeout(forced);
     return {
@@ -833,7 +845,7 @@ export class StrictReadyProcess {
         resolve({ code: normalized, at });
       });
     });
-    this.#stdioClosed = new Promise((resolve) => child.once("close", () => resolve()));
+    this.#stdioClosed = stdioClosed(child);
     child.on("message", (message: unknown) => {
       const pending = this.#pendingStop;
       if (pending === null || message === null || typeof message !== "object" || Array.isArray(message)) return;
@@ -871,7 +883,7 @@ export class StrictReadyProcess {
       windowsHide: true,
     }) as ChildProcessWithoutNullStreams;
     evidence.spawned(child.pid);
-    child.once("close", () => evidence.complete());
+    void stdioClosed(child).then(() => evidence.complete());
     if (child.pid === undefined) {
       evidence.failure("spawn");
       throw new Error(`${options.componentId} did not receive a process id`);
@@ -1042,13 +1054,19 @@ export class StrictReadyProcess {
         if (acknowledged !== "closed") throw new Error(`${this.componentId} STOP reported failed shutdown`);
         // Only the parent releases IPC, after it has matched the exact ack.
         if (this.child.connected) this.child.disconnect();
+        // The IPC fixture has no stdin EOF shutdown hook. Releasing this
+        // parent-owned pipe after the exact ACK lets its IPC-disconnect exit
+        // complete; JSONL children deliberately do not take this path.
+        if (!this.child.stdin.destroyed) this.child.stdin.destroy();
       }
       const exit = await awaitExitWithin(this.#exit, boundedTimeout);
       if (exit === null) {
         await killTree();
         const forcedExit = await this.#exit;
+        if (!this.child.stdin.destroyed) this.child.stdin.destroy();
         return await result(forcedExit.at, forcedExit.code, killEscalated);
       }
+      if (!this.child.stdin.destroyed) this.child.stdin.destroy();
       return await result(exit.at, exit.code, killEscalated);
     } catch {
       if (acknowledgement === "not_requested" && requestedAt !== null) {
@@ -1058,6 +1076,7 @@ export class StrictReadyProcess {
       this.#pendingStop = null;
       if (this.process.exitCode === null) await killTree();
       const exit = await this.#exit;
+      if (!this.child.stdin.destroyed) this.child.stdin.destroy();
       return await result(exit.at, exit.code, killEscalated);
     }
   }
