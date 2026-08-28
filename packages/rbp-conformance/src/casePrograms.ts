@@ -1962,7 +1962,7 @@ const CASE_DEFINITIONS: ProgramDefinition[] = [
   {
     caseId: "O1-C29",
     controls: [
-      ...sessionSetup("O1-C29", ["batch_atomic"]),
+      ...sessionSetup("O1-C29", ["batch_atomic", "doc_context_cached_v1"]),
       fixture("o1-c29.mixed-fault", "plan_fault", args({
         requestId: "{{vectors.c29.mixed_write_invocation_id}}",
         fault: {
@@ -2151,7 +2151,9 @@ const CASE_DEFINITIONS: ProgramDefinition[] = [
       "reconnect_resume",
       "session_capability_override",
     ],
-    startupOverrides: { sessionCapabilities: ["batch_atomic"] },
+    startupOverrides: {
+      sessionCapabilities: ["batch_atomic", "doc_context_cached_v1"],
+    },
   },
   {
     caseId: "O1-C30",

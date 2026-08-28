@@ -128,7 +128,7 @@ describe("exact forty-case control and observation catalog", () => {
       arguments: {
         common: {
           startupOverrides: {
-            sessionCapabilities: ["batch_atomic"],
+            sessionCapabilities: ["batch_atomic", "doc_context_cached_v1"],
           },
         },
       },
@@ -138,7 +138,7 @@ describe("exact forty-case control and observation catalog", () => {
         action: "await_condition",
         arguments: {
           common: {
-            grantedSessionCapabilities: ["batch_atomic"],
+            grantedSessionCapabilities: ["batch_atomic", "doc_context_cached_v1"],
           },
         },
       });

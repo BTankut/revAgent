@@ -118,6 +118,7 @@ const tokenTable: StaticTokenTable = {
     machineFingerprint: `sha256:${"0".repeat(64)}`,
     provisionedCapabilities: [
       "journal_v1",
+      "batch_atomic",
       "chunked_results",
       "artifact_result_v1",
       "transport_streamable_http",
