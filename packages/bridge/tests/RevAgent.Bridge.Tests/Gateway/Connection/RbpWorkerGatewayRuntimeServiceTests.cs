@@ -509,18 +509,26 @@ public sealed partial class RbpConnectionCoordinatorTests
     public async Task LostResumeAckTimeoutFencesRouteBeforeTeardown()
     {
         using var fixture = await ResumeRouteFixture.CreateAsync(false);
+        int fenceBaseline = fixture.Routes.FenceCount;
+        Assert.Null(fixture.Routes.Resolve("rs-8080"));
+        Assert.Equal(0, fixture.Routes.ActiveRouteCount);
         _ = await EventuallySentAsync(fixture.Cycle,
             envelope => envelope.Type == "session_resume");
         await EventuallyAsync(() => fixture.Clock.HasDelayDueIn(TimeSpan.FromSeconds(10)));
-        Assert.Null(fixture.Routes.Resolve("rs-8080"));
         fixture.Clock.Advance(TimeSpan.FromSeconds(10));
         await EventuallyAsync(() => fixture.Timeouts.Any(
             item => item.LifecycleControl == "session_resume"));
+        await EventuallyAsync(() => fixture.Routes.FenceCount > fenceBaseline);
+        await EventuallyAsync(() => fixture.Routes.ActiveRouteCount == 0);
+        await EventuallyAsync(() => fixture.Routes.Resolve("rs-8080") is null);
         await EventuallyAsync(() => fixture.Cycle.CloseCount > 0);
         Assert.Empty(fixture.Routes.Bound);
         Assert.Null(fixture.Routes.Resolve("rs-8080"));
         fixture.Stop();
         await fixture.Run.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.True(fixture.Routes.FenceCount > fenceBaseline);
+        Assert.Equal(0, fixture.Routes.ActiveRouteCount);
+        Assert.Null(fixture.Routes.Resolve("rs-8080"));
     }
 
     [Fact]
@@ -603,29 +611,63 @@ public sealed partial class RbpConnectionCoordinatorTests
         using var directory = new RbpJournalTestDirectory();
         var clock = new ManualCoordinatorClock();
         await using RbpJournalStore store = OpenStore(directory, clock);
-        RbpLocalSessionSnapshot local = WatchedLocalSession(8080, 1000);
-        _ = await store.PersistRegisteredSessionAsync(Registration(local, "rs-8080"));
         var responder = new ScriptedGatewayResponder(clock);
         var first = new FakeConnectionCycle(responder.Respond);
         var second = new FakeConnectionCycle(envelope =>
             envelope.Type == "session_resume" ? null : responder.Respond(envelope));
         var factory = new FakeConnectionCycleFactory(first, second);
-        var routes = new RecordingRouteAuthority();
+        var transport = new ScriptedStatusTransport(result =>
+        {
+            result["sessionCapabilities"] = new JArray("batch_atomic");
+            ((JObject)result["capabilityContracts"]!).Remove(
+                "doc_context_cached_v1");
+        });
+        var router = new AddinSessionRouter(transport);
+        string? localSessionKey = null;
+        var catalog = new WorkerAddinSessionCatalog(
+            new AddinDiscovery(transport, new NoOpProcessAttestor()), router,
+            ScanConfiguration(), () => new FixedCredentialProvider(),
+            (rsid, _) => Task.FromResult<string?>(
+                rsid == "rs-8080" ? localSessionKey : null),
+            "0.1.0-test", "WS01");
+        RbpLocalSessionSnapshot local = Assert.Single(await catalog.ReadAsync());
+        localSessionKey = local.LocalSessionKey;
+        _ = await store.PersistRegisteredSessionAsync(Registration(local, "rs-8080"));
+        var channel = new RbpRoutedInvocationChannel(router, catalog);
         RbpConnectionCoordinator coordinator = WorkerGatewayComposition.CreateCoordinator(
             new WorkerGatewayServices(
-                factory, store, new MutableSessionCatalog(local),
-                CompositionOptions() with { SessionRouteBindingAuthority = routes },
-                new WorkerAddinDispatchSurface(
-                    new AddinSessionRouter(new NeverInvokedAddinTransport()), routes),
+                factory, store, catalog,
+                CompositionOptions() with { SessionRouteBindingAuthority = catalog },
+                new WorkerAddinDispatchSurface(router, catalog, catalog),
                 clock, new FixedRandomSource(0)));
         using var stop = new CancellationTokenSource();
         Task run = coordinator.RunAsync(stop.Token);
         try
         {
-            await EventuallyAsync(() => routes.IsBound("rs-8080"));
-            Assert.Equal(1, routes.BindAttempts);
-            Assert.Equal(1, routes.SuccessfulPublications);
-            Assert.Equal(1, routes.ActiveRouteCount);
+            await EventuallyAsync(() => catalog.Resolve("rs-8080") is not null);
+            Assert.NotNull(catalog.Resolve("rs-8080"));
+            RbpAddinOutcome firstOutcome = await channel.InvokeAsync(
+                "rs-8080",
+                new AddinCall(
+                    "cycle-one-current-view",
+                    "get_current_view_info",
+                    new JObject(),
+                    TimeSpan.FromSeconds(1)),
+                CancellationToken.None);
+            try
+            {
+                Assert.Equal(RbpAddinOutcomeKind.Completed, firstOutcome.Kind);
+                Assert.False(firstOutcome.RouteFailure);
+                Assert.True(firstOutcome.RequestBytes > 0);
+                Assert.True(firstOutcome.ResponseBytes > 0);
+            }
+            finally
+            {
+                firstOutcome.Lease?.ReleaseAfterDurableDecision();
+            }
+            Assert.Equal(
+                1,
+                transport.Methods.Count(method => method == "get_current_view_info"));
 
             first.Fail(new IOException("force cycle-one teardown"));
             await EventuallyAsync(() => first.CloseCount > 0);
@@ -633,25 +675,54 @@ public sealed partial class RbpConnectionCoordinatorTests
             _ = await EventuallySentAsync(second,
                 envelope => envelope.Type == "session_resume");
 
-            Assert.False(routes.IsBound("rs-8080"));
-            Assert.Null(routes.Resolve("rs-8080"));
-            Assert.Equal(1, routes.BindAttempts);
-            Assert.Equal(1, routes.SuccessfulPublications);
-            Assert.Equal(0, routes.ActiveRouteCount);
-            Assert.True(routes.FenceCount >= 1);
+            Assert.Null(catalog.Resolve("rs-8080"));
+            RbpAddinOutcome withheldOutcome = await channel.InvokeAsync(
+                "rs-8080",
+                new AddinCall(
+                    "cycle-two-withheld-current-view",
+                    "get_current_view_info",
+                    new JObject(),
+                    TimeSpan.FromSeconds(1)),
+                CancellationToken.None);
+            Assert.Equal(RbpAddinOutcomeKind.KnownNotDispatched, withheldOutcome.Kind);
+            Assert.True(withheldOutcome.RouteFailure);
+            Assert.Equal(0, withheldOutcome.RequestBytes);
+            Assert.Equal(
+                1,
+                transport.Methods.Count(method => method == "get_current_view_info"));
 
             second.Deliver(ResumeAck(clock, "rs-8080"));
-            await EventuallyAsync(() => routes.IsBound("rs-8080"));
-            Assert.Equal(2, routes.BindAttempts);
-            Assert.Equal(2, routes.SuccessfulPublications);
-            Assert.Equal(1, routes.ActiveRouteCount);
+            await EventuallyAsync(() => catalog.Resolve("rs-8080") is not null);
+            Assert.NotNull(catalog.Resolve("rs-8080"));
+            RbpAddinOutcome secondOutcome = await channel.InvokeAsync(
+                "rs-8080",
+                new AddinCall(
+                    "cycle-two-current-view",
+                    "get_current_view_info",
+                    new JObject(),
+                    TimeSpan.FromSeconds(1)),
+                CancellationToken.None);
+            try
+            {
+                Assert.Equal(RbpAddinOutcomeKind.Completed, secondOutcome.Kind);
+                Assert.False(secondOutcome.RouteFailure);
+                Assert.True(secondOutcome.RequestBytes > 0);
+                Assert.True(secondOutcome.ResponseBytes > 0);
+            }
+            finally
+            {
+                secondOutcome.Lease?.ReleaseAfterDurableDecision();
+            }
+            Assert.Equal(
+                2,
+                transport.Methods.Count(method => method == "get_current_view_info"));
         }
         finally
         {
             stop.Cancel();
             await run.WaitAsync(TimeSpan.FromSeconds(5));
         }
-        Assert.False(routes.IsBound("rs-8080"));
+        Assert.Null(catalog.Resolve("rs-8080"));
     }
 
     [Fact]
