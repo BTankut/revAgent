@@ -1,7 +1,7 @@
 # Immutable GitHub Action pin evidence
 
 WP-05 implements RA-GW-013 / DC-11. Every external `uses:` reference in the
-seven workflow files is pinned to one reviewed lowercase 40-hex commit.
+nine workflow files are pinned to one reviewed lowercase 40-hex commit.
 
 `scripts/test-workflow-action-pins.ps1` scans recursive workflow YAML and any
 repository `action.yml`/`action.yaml` manifest (excluding `.git` and
