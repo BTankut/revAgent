@@ -1112,9 +1112,21 @@ function assertC39CausalRouteAuthority(
   const restarts = worker.filter((entry) => entry.phase === "restart_resend" && sameTuple(entry));
   const terminalAcknowledgements = worker.filter((entry) =>
     entry.phase === "ack" && entry.sequence === terminal.seq && sameTuple(entry));
-  if (worker.some((entry) => !sameTuple(entry) || entry.causalOrdinal < 1) ||
-      reconnect.some((entry) => entry.phase === "resume_ack_applied" && !sameTuple(entry))) {
-    throw new Error("C39 recovery trace contains a proofless, stale, or substituted route authority tuple");
+  const mismatchedWorker = worker.filter((entry) => !sameTuple(entry));
+  const invalidCausalWorker = worker.filter((entry) => entry.causalOrdinal < 1);
+  const mismatchedReconnect = reconnect.filter((entry) =>
+    entry.phase === "resume_ack_applied" && !sameTuple(entry));
+  if (mismatchedWorker.length > 0 || invalidCausalWorker.length > 0 ||
+      mismatchedReconnect.length > 0) {
+    const mismatchCount = (phase: C39RecoveryCarrierObservations[number]["phase"]): number =>
+      mismatchedWorker.filter((entry) => entry.phase === phase).length;
+    throw new Error(
+      "C39 recovery trace contains a proofless, stale, or substituted route authority tuple " +
+      `[worker=${String(mismatchedWorker.length)};materialized=${String(mismatchCount("materialized"))};` +
+      `write=${String(mismatchCount("write"))};restart_resend=${String(mismatchCount("restart_resend"))};` +
+      `ack=${String(mismatchCount("ack"))};invalid_causal=${String(invalidCausalWorker.length)};` +
+      `reconnect=${String(mismatchedReconnect.length)}]`,
+    );
   }
   if (resumeAcknowledgements.length !== 1 || restarts.length < 1 || terminalAcknowledgements.length !== 1 ||
       !restarts.some((restart) =>
