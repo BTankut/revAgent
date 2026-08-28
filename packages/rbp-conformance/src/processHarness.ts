@@ -126,9 +126,15 @@ function appendBoundedTranscript(target: ProcessTranscriptRecord[], record: Proc
 }
 
 function stdioClosed(child: ChildProcessWithoutNullStreams): Promise<void> {
+  const closed = (stream: NodeJS.ReadableStream): Promise<void> => {
+    const state = stream as NodeJS.ReadableStream & { readonly destroyed?: boolean; readonly readableEnded?: boolean };
+    return state.destroyed === true || state.readableEnded === true
+      ? Promise.resolve()
+      : new Promise<void>((resolve) => stream.once("close", resolve));
+  };
   return Promise.all([
-    new Promise<void>((resolve) => child.stdout.once("close", resolve)),
-    new Promise<void>((resolve) => child.stderr.once("close", resolve)),
+    closed(child.stdout),
+    closed(child.stderr),
   ]).then(() => undefined);
 }
 
@@ -146,8 +152,8 @@ const MAX_DIAGNOSTIC_LINE_BYTES = 512;
 
 function redactDiagnosticText(input: string): string {
   return input
+    .replace(/Authorization:\s*(?:Bearer|Basic)\s+[^\s,;]+/giu, "Authorization=[redacted]")
     .replace(/(authorization|bearer|basic|token|secret|proof|password|api[_-]?key|credential)\s*[:=]\s*[^\s,;]+/giu, "$1=[redacted]")
-    .replace(/(?:Authorization:\s*)(?:Bearer|Basic)\s+[^\s,;]+/giu, "Authorization=[redacted]")
     .replace(/\\\\[^\s,;]+/gu, "[path-redacted]")
     .replace(/[A-Za-z]:\\[^\s,;]+/gu, "[path-redacted]")
     .replace(/\/[^\s,;]+/gu, (value) => value.startsWith("//") ? value : "[path-redacted]");
@@ -158,7 +164,7 @@ function redactDiagnosticLine(input: string): string {
   try {
     const parsed = JSON.parse(input) as unknown;
     const redactValue = (value: unknown, key = ""): unknown => {
-      if (/(?:authorization|token|secret|proof|password|bearer|basic|api[_-]?key|credential|payload|document(?:id)?|model|invocation|rsid|idempotency|path|command|args)/iu.test(key)) {
+      if (/(?:authorization|token|secret|proof|password|bearer|basic|api[_-]?key|credential|payload|document(?:id)?|model|invocation|rsid|idempotency|subject|identity|path|command|args)/iu.test(key)) {
         return "[redacted]";
       }
       if (typeof value === "string") return redactDiagnosticText(value);
@@ -433,6 +439,7 @@ export class StrictJsonlProcess {
     startedAt: string,
     readyAt: string,
     private readonly evidence: ProcessEvidenceRecorder,
+    stdioCompletion: Promise<void>,
   ) {
     this.readiness = readiness;
     const pid = child.pid;
@@ -440,7 +447,7 @@ export class StrictJsonlProcess {
     this.pid = pid;
     this.process = { pid, startedAt, readyAt, stoppedAt: null, exitCode: null };
     this.#exit = new Promise((resolve) => { this.#exitResolve = resolve; });
-    this.#stdioClosed = stdioClosed(child);
+    this.#stdioClosed = stdioCompletion;
     child.once("exit", (code, signal) => {
       const at = new Date().toISOString();
       const normalized = code ?? (signal === null ? 1 : 128);
@@ -467,7 +474,8 @@ export class StrictJsonlProcess {
       windowsHide: true,
     });
     evidence.spawned(child.pid);
-    void stdioClosed(child).then(() => evidence.complete());
+    const stdioCompletion = stdioClosed(child);
+    void stdioCompletion.then(() => evidence.complete());
     if (child.pid === undefined) {
       evidence.failure("spawn");
       throw new Error(`${options.componentId} did not receive a process id`);
@@ -578,6 +586,7 @@ export class StrictJsonlProcess {
       startedAt,
       ready.at,
       evidence,
+      stdioCompletion,
     );
     for (const record of transcript) appendBoundedTranscript(active.instance.transcript, record);
     return active.instance;
@@ -828,6 +837,7 @@ export class StrictReadyProcess {
     readyAt: string,
     private readonly useTestSignalProxy: boolean,
     private readonly evidence: ProcessEvidenceRecorder,
+    stdioCompletion: Promise<void>,
   ) {
     this.readiness = readiness;
     this.transcript = transcript;
@@ -845,7 +855,7 @@ export class StrictReadyProcess {
         resolve({ code: normalized, at });
       });
     });
-    this.#stdioClosed = stdioClosed(child);
+    this.#stdioClosed = stdioCompletion;
     child.on("message", (message: unknown) => {
       const pending = this.#pendingStop;
       if (pending === null || message === null || typeof message !== "object" || Array.isArray(message)) return;
@@ -883,7 +893,8 @@ export class StrictReadyProcess {
       windowsHide: true,
     }) as ChildProcessWithoutNullStreams;
     evidence.spawned(child.pid);
-    void stdioClosed(child).then(() => evidence.complete());
+    const stdioCompletion = stdioClosed(child);
+    void stdioCompletion.then(() => evidence.complete());
     if (child.pid === undefined) {
       evidence.failure("spawn");
       throw new Error(`${options.componentId} did not receive a process id`);
@@ -971,6 +982,7 @@ export class StrictReadyProcess {
       ready.at,
       options.useTestSignalProxy === true,
       evidence,
+      stdioCompletion,
     );
   }
 
