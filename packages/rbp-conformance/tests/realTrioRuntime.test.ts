@@ -153,7 +153,8 @@ describe("C39 route-rebind audit projection", () => {
     expect(readC39RouteRebindAudit(current)).toMatchObject({ status: "current", candidateCount: 1 });
     expect(readC39RouteRebindAudit(nonCurrent)).toMatchObject({ status: "not_current", candidateCount: 0 });
 
-    const { receiptCurrent: _receiptCurrent, ...missingKey } = current;
+    const missingKey: Record<string, unknown> = { ...current };
+    delete missingKey.receiptCurrent;
     expect(() => readC39RouteRebindAudit(missingKey)).toThrow(/malformed or unredacted/u);
     expect(() => readC39RouteRebindAudit({ ...current, rawRsid: "must-not-escape" }))
       .toThrow(/malformed or unredacted/u);
@@ -686,6 +687,19 @@ describe("C39 worker ACK-order diagnostics", () => {
       materialized(), observation("write", 5, 2, "a"), observation("ack", 5, 3, "a"),
       observation("materialized", 6, 4, "b"), observation("write", 6, 5, "b"),
     ], expectedSequences)).toEqual({ state: "pending", reason: "terminal_ack_missing" });
+    const terminalRestartAwaitingAck = [
+      materialized(), observation("write", 5, 2, "a"), observation("ack", 5, 3, "a"),
+      observation("materialized", 6, 4, "b"), observation("write", 6, 5, "b"),
+      observation("materialized", 6, 6, "b"), observation("restart_resend", 6, 7, "b"),
+    ];
+    expect(c39WorkerRecoveryTraceState(
+      terminalRestartAwaitingAck,
+      expectedSequences,
+    )).toEqual({ state: "pending", reason: "terminal_ack_missing" });
+    expect(c39WorkerRecoveryTraceState([
+      ...terminalRestartAwaitingAck,
+      observation("ack", 6, 8, "b"),
+    ], expectedSequences)).toEqual({ state: "exact" });
     expect(c39WorkerRecoveryTraceState([
       materialized(), observation("write", 5, 2, "a"), observation("ack", 5, 3, "a"),
       observation("materialized", 6, 4, "b"), observation("write", 6, 5, "b"),
@@ -1298,9 +1312,10 @@ function c39WorkerRecoveryTraceState(
     }
     if (acked.length === 0) {
       if (laterSequenceObserved) return invalid(diagnostic.ack);
-      if (index === expectedSequences.length - 1 && (sent.length !== 1 || restartForSequence)) {
-        return invalid("terminal_ack_missing");
-      }
+      // A restart resend and its cumulative peer acknowledgement are observed
+      // on different asynchronous edges. Until that ACK arrives, the exact
+      // terminal resend is a legal prefix and must remain pollable rather than
+      // being misclassified as a permanently invalid trace.
       return Object.freeze({ state: "pending", reason: diagnostic.ack });
     }
     if (acked.length !== 1) return invalid("duplicate_ack");
