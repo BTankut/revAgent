@@ -77,10 +77,8 @@ internal sealed partial class RbpBatchCoordinator
                 RbpAddinOutcomeKind.ApplicationError when TryReadEnvelope(request, outcome.Result, out _, out _) =>
                     await MapAtomicEnvelopeAsync(request, outcome).ConfigureAwait(false),
 
-                // Spec ~1825-1827: parse, shape, unsupported-method,
-                // descriptor-mismatch, and parameter-profile failures
-                // detected before the group opens use a JSON-RPC error
-                // response and execute zero steps.
+                // Only a proven bridge/transport no-send refusal establishes
+                // zero executed steps. A JSON-RPC error is not that proof.
                 RbpAddinOutcomeKind.KnownNotDispatched =>
                     await CleanAtomicRejectionAsync(request, outcome)
                         .ConfigureAwait(false),
@@ -235,8 +233,7 @@ internal sealed partial class RbpBatchCoordinator
     }
 
     /// <summary>
-    /// A pre-group JSON-RPC rejection or an unreachable add-in: zero steps
-    /// executed, nothing committed.
+    /// A proven pre-dispatch refusal: zero steps executed, nothing committed.
     /// </summary>
     private async Task<RbpInvocationAnswer> CleanAtomicRejectionAsync(
         RbpBatchRequest request,

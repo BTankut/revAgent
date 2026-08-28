@@ -12,10 +12,9 @@ namespace RevAgent.Bridge.Gateway.Dispatch;
 /// transport result to the evidence the Section 12 journal needs.
 /// </summary>
 /// <remarks>
-/// The only judgement this type makes is whether the add-in may have been
-/// reached. Everything downstream — whether that becomes a terminal failure or
-/// a Section 6.2.1 hold — is the dispatcher's, because only it knows whether
-/// the invocation was mutating.
+/// Application status and transport reachability are independent evidence.
+/// Effect classification remains the dispatcher's responsibility, because only
+/// it knows whether the invocation was mutating.
 /// </remarks>
 internal sealed class RbpRoutedInvocationChannel(
     AddinSessionRouter router,
@@ -195,9 +194,9 @@ internal sealed class RbpRoutedInvocationChannel(
     /// and <c>-32602</c> are the invalid-request/parse/params family that
     /// Section 15 folds into <c>parameter</c>. Every other reported code —
     /// including <c>-32603</c> add-in exceptions and the app-level codes a
-    /// failure-shaped add-in result is surfaced under — means the command
-    /// executed and answered with a Revit/API failure, which is
-    /// <c>revit_api</c>.
+    /// failure-shaped add-in result is surfaced under — reports a Revit/API
+    /// failure, which is <c>revit_api</c>. This does not prove execution,
+    /// non-execution, commit, or rollback.
     /// </remarks>
     internal static string MapAddinErrorFaultClass(int code) =>
         code switch
@@ -380,7 +379,9 @@ internal static class RbpApplicationResultClassifier
             string input = node.GetString()!;
             string value = input.Trim();
             if (value.StartsWith("ERROR", StringComparison.OrdinalIgnoreCase) &&
-                (value.Length == 5 || value[5] == ':' || (!char.IsLetterOrDigit(value[5]) && value[5] != '_')))
+                (value.Length == 5 || value[5] == ':' || (!char.IsLetterOrDigit(value[5]) &&
+                    char.GetUnicodeCategory(value[5]) is not (System.Globalization.UnicodeCategory.NonSpacingMark or
+                        System.Globalization.UnicodeCategory.ConnectorPunctuation))))
                 return RbpApplicationResultClassification.ApplicationError;
             if (value.Length == 0 || value[0] is not ('{' or '[' or '"'))
                 return RbpApplicationResultClassification.Completed;

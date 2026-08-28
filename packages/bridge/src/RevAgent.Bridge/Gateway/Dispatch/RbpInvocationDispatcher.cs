@@ -845,9 +845,9 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
         RbpAddinOutcome outcome,
         CancellationToken cancellationToken)
     {
-        // Reached only when the channel can prove no add-in byte was written,
-        // so the outcome really is known and a read may be retried by the
-        // orchestrator.
+        // Known no-send failures, or known non-mutating application failures.
+        // A mutation with any application/dispatch uncertainty never enters
+        // this path. Application failures explicitly remain nonretryable.
         (string faultClass, bool retryable, string message) =
             await EnrichFailureWithLocalStatusAsync(
                     request.Rsid,

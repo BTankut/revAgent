@@ -39,6 +39,8 @@ public sealed class RbpApplicationErrorSafetyTests
     [InlineData("{\"result\":[{\"success\":false}]}", "Completed")]
     [InlineData("{\"data\":{\"success\":false}}", "Completed")]
     [InlineData("{\"result\":\"ERROR_RATE\"}", "Completed")]
+    [InlineData("{\"result\":\"ERROR\u0301\"}", "Completed")]
+    [InlineData("{\"result\":\"ERROR\u203fRATE\"}", "Completed")]
     [InlineData("{\"result\":\"text ERROR later\"}", "Completed")]
     [InlineData("{\"result\":\"  error: failure\"}", "ApplicationError")]
     [InlineData("{\"result\":\"ERROR\"}", "ApplicationError")]
