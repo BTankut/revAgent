@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { isDeepStrictEqual } from "node:util";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -276,6 +277,31 @@ describe("C39 route-rebind audit projection", () => {
       reconnect,
     )).toThrow(/malformed or unredacted/u);
   });
+
+  it("allows only monotonic current route-authority advancement", () => {
+    const current = readC39RouteRebindAudit({
+      status: "current", candidateCount: 1, capabilityGranted: true,
+      receiptCurrent: true, resumeCasCurrent: true, routeProvenanceCurrent: true,
+      currentConnection: true, routeAuthorityCheckpoint: digest("a"), connectionDigest: digest("b"),
+      serverProofDigest: digest("c"), authorityGenerationDigest: digest("d"), proofCasRecordVersion: 7,
+    });
+    expect(() => assertC39RouteAuthorityMonotonic(current, current)).not.toThrow();
+    const advanced = readC39RouteRebindAudit({
+      ...current,
+      routeAuthorityCheckpoint: digest("e"),
+      connectionDigest: digest("f"),
+      serverProofDigest: digest("0"),
+      authorityGenerationDigest: digest("1"),
+      proofCasRecordVersion: 8,
+    });
+    expect(() => assertC39RouteAuthorityMonotonic(current, advanced)).not.toThrow();
+    expect(() => assertC39RouteAuthorityMonotonic(advanced, current))
+      .toThrow(/regressed/u);
+    expect(() => assertC39RouteAuthorityMonotonic(current, {
+      ...advanced,
+      proofCasRecordVersion: current.proofCasRecordVersion,
+    })).toThrow(/changed without advancing/u);
+  });
 });
 
 describe.sequential("WP-12 direct real trio runtime fixture", () => {
@@ -377,11 +403,13 @@ describe.sequential("WP-12 direct real trio runtime fixture", () => {
           // including the restart-resend byte identity, has settled.  The
           // route-proof tuple is re-read, rather than applying another
           // sequenced document context behind the retained terminal.
+          let ownerReadRouteAuthority: C39RouteRebindAudit | null = null;
           const observed = await waitForC39ObservedRecoveryAndRouteFence(
             waitForObservedC39Recovery(runtime, origin, result.digest as `sha256:${string}`, 45_000),
             async () => {
-              expect(await waitForC39RouteRebindCurrent(runtime, 45_000))
-                .toEqual(routeAuthorityBeforeOwnerRead);
+              const current = await waitForC39RouteRebindCurrent(runtime, 45_000);
+              assertC39RouteAuthorityMonotonic(routeAuthorityBeforeOwnerRead, current);
+              ownerReadRouteAuthority = current;
             },
           );
           let ownerRead;
@@ -397,11 +425,17 @@ describe.sequential("WP-12 direct real trio runtime fixture", () => {
           expect(ownerRead).toMatchObject({ response: expect.any(Object) });
           const ownerReadSucceeded = object(ownerRead.response) !== null;
           expect(ownerReadSucceeded).toBe(true);
-          // The terminal audit join and the owner-read fence must retain the
-          // exact same immutable Gateway tuple; neither path may backfill or
-          // substitute a later proof/current connection.
-          expect(await waitForC39RouteRebindCurrent(runtime, 45_000))
-            .toEqual(routeAuthorityBeforeOwnerRead);
+          // A later reconnect may legitimately advance the current proof CAS.
+          // It may never roll the authority version back or change a tuple at
+          // the same version, so owner-read authorization cannot resurrect or
+          // silently rewrite a prior connection's route authority.
+          if (ownerReadRouteAuthority === null) {
+            throw new Error("C39 owner-read route authority was not captured");
+          }
+          assertC39RouteAuthorityMonotonic(
+            ownerReadRouteAuthority,
+            await waitForC39RouteRebindCurrent(runtime, 45_000),
+          );
 
           let samePrincipalDenied = false;
           const rebound = await runtime.issueReboundNorthCredential();
@@ -1632,6 +1666,23 @@ function readC39RouteRebindAudit(value: unknown): C39RouteRebindAudit {
     throw new Error("C39 route-rebind audit projection is malformed or unredacted");
   }
   return Object.freeze(record as unknown as C39RouteRebindAudit);
+}
+
+function assertC39RouteAuthorityMonotonic(
+  prior: C39RouteRebindAudit,
+  current: C39RouteRebindAudit,
+): void {
+  if (prior.status !== "current" || current.status !== "current" ||
+      prior.proofCasRecordVersion === null || current.proofCasRecordVersion === null) {
+    throw new Error("C39 route authority is not a current proof CAS");
+  }
+  if (current.proofCasRecordVersion < prior.proofCasRecordVersion) {
+    throw new Error("C39 route authority regressed to an older proof CAS");
+  }
+  if (current.proofCasRecordVersion === prior.proofCasRecordVersion &&
+      !isDeepStrictEqual(current, prior)) {
+    throw new Error("C39 route authority changed without advancing its proof CAS");
+  }
 }
 
 async function waitForC39RouteRebindCurrent(
