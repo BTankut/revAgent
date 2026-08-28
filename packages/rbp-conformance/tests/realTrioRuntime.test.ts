@@ -212,6 +212,47 @@ describe("C39 route-rebind audit projection", () => {
     }] as const;
     const exact = [observation("restart_resend", 2), observation("ack", 3)];
     expect(() => assertC39CausalRouteAuthority(row, audit, exact, reconnect)).not.toThrow();
+
+    const historicalCheckpoint = digest("4");
+    const historicalConnection = digest("5");
+    const historicalObservation = (
+      phase: C39RecoveryCarrierObservations[number]["phase"],
+      causalOrdinal: number,
+    ) => ({
+      ...observation(phase, causalOrdinal),
+      routeAuthorityCheckpoint: historicalCheckpoint,
+      connectionDigest: historicalConnection,
+    });
+    const reconnectWithHistoricalPrefix = [{
+      ...reconnect[0], generation: 1, ordinal: 1,
+      routeAuthorityCheckpoint: historicalCheckpoint,
+      connectionDigest: historicalConnection, causalOrdinal: 1,
+    }, {
+      ...reconnect[0], generation: 2, ordinal: 2, causalOrdinal: 4,
+    }] as const;
+    const exactWithHistoricalPrefix = [
+      historicalObservation("materialized", 2),
+      historicalObservation("write", 3),
+      observation("restart_resend", 5),
+      observation("ack", 6),
+    ];
+    expect(() => assertC39CausalRouteAuthority(
+      row,
+      audit,
+      exactWithHistoricalPrefix,
+      reconnectWithHistoricalPrefix,
+    )).not.toThrow();
+    expect(() => assertC39CausalRouteAuthority(row, audit, [
+      ...exactWithHistoricalPrefix,
+      historicalObservation("ack", 7),
+    ], reconnectWithHistoricalPrefix)).toThrow(/proofless, stale, or substituted/u);
+    expect(() => assertC39CausalRouteAuthority(row, audit, [
+      { ...historicalObservation("write", 3), routeRebindProofGranted: false },
+      observation("restart_resend", 5), observation("ack", 6),
+    ], reconnectWithHistoricalPrefix)).toThrow(/proofless, stale, or substituted/u);
+    expect(() => assertC39CausalRouteAuthority(row, audit, [
+      observation("materialized", 3), observation("restart_resend", 5), observation("ack", 6),
+    ], reconnectWithHistoricalPrefix)).toThrow(/proofless, stale, or substituted/u);
     expect(() => assertC39CausalRouteAuthority(row, audit, [
       { ...observation("restart_resend", 2), routeAuthorityCheckpoint: null }, observation("ack", 3),
     ], reconnect)).toThrow(/proofless, stale, or substituted/u);
@@ -1112,42 +1153,37 @@ function assertC39CausalRouteAuthority(
   const restarts = worker.filter((entry) => entry.phase === "restart_resend" && sameTuple(entry));
   const terminalAcknowledgements = worker.filter((entry) =>
     entry.phase === "ack" && entry.sequence === terminal.seq && sameTuple(entry));
-  const mismatchedWorker = worker.filter((entry) => !sameTuple(entry));
-  const invalidCausalWorker = worker.filter((entry) => entry.causalOrdinal < 1);
-  const mismatchedReconnect = reconnect.filter((entry) =>
-    entry.phase === "resume_ack_applied" && !sameTuple(entry));
-  if (mismatchedWorker.length > 0 || invalidCausalWorker.length > 0 ||
-      mismatchedReconnect.length > 0) {
-    const mismatchCount = (phase: C39RecoveryCarrierObservations[number]["phase"]): number =>
-      mismatchedWorker.filter((entry) => entry.phase === phase).length;
-    const workerCheckpointMismatch = mismatchedWorker.filter((entry) =>
-      entry.routeAuthorityCheckpoint !== routeAuthority.routeAuthorityCheckpoint).length;
-    const workerConnectionMismatch = mismatchedWorker.filter((entry) =>
-      entry.connectionDigest !== routeAuthority.connectionDigest).length;
-    const workerProofless = mismatchedWorker.filter((entry) =>
-      !entry.routeRebindProofGranted).length;
-    const reconnectCheckpointMismatch = mismatchedReconnect.filter((entry) =>
-      entry.routeAuthorityCheckpoint !== routeAuthority.routeAuthorityCheckpoint).length;
-    const reconnectConnectionMismatch = mismatchedReconnect.filter((entry) =>
-      entry.connectionDigest !== routeAuthority.connectionDigest).length;
-    const reconnectProofless = mismatchedReconnect.filter((entry) =>
-      !entry.routeRebindProofGranted).length;
-    throw new Error(
-      "C39 recovery trace contains a proofless, stale, or substituted route authority tuple " +
-      `[worker=${String(mismatchedWorker.length)};materialized=${String(mismatchCount("materialized"))};` +
-      `write=${String(mismatchCount("write"))};restart_resend=${String(mismatchCount("restart_resend"))};` +
-      `ack=${String(mismatchCount("ack"))};worker_checkpoint=${String(workerCheckpointMismatch)};` +
-      `worker_connection=${String(workerConnectionMismatch)};worker_proofless=${String(workerProofless)};` +
-      `invalid_causal=${String(invalidCausalWorker.length)};reconnect=${String(mismatchedReconnect.length)};` +
-      `reconnect_checkpoint=${String(reconnectCheckpointMismatch)};` +
-      `reconnect_connection=${String(reconnectConnectionMismatch)};` +
-      `reconnect_proofless=${String(reconnectProofless)}]`,
-    );
+  const invalidWorkerAuthority = worker.filter((entry) =>
+    !entry.routeRebindProofGranted || entry.routeAuthorityCheckpoint === null ||
+    entry.connectionDigest === null || entry.causalOrdinal < 1);
+  const resumeRows = reconnect.filter((entry) => entry.phase === "resume_ack_applied");
+  const invalidResumeAuthority = resumeRows.filter((entry) =>
+    !entry.routeRebindProofGranted || entry.routeAuthorityCheckpoint === null ||
+    entry.causalOrdinal < 1);
+  if (invalidWorkerAuthority.length > 0 || invalidResumeAuthority.length > 0) {
+    throw new Error("C39 recovery trace contains a proofless, stale, or substituted route authority tuple");
   }
-  if (resumeAcknowledgements.length !== 1 || restarts.length < 1 || terminalAcknowledgements.length !== 1 ||
-      !restarts.some((restart) =>
-        resumeAcknowledgements[0]!.causalOrdinal < restart.causalOrdinal &&
-        restart.causalOrdinal < terminalAcknowledgements[0]!.causalOrdinal)) {
+  if (resumeAcknowledgements.length !== 1 || restarts.length < 1 || terminalAcknowledgements.length !== 1) {
+    throw new Error("C39 causal route authority lacks resume_ack_applied < restart_resend < terminal ack");
+  }
+  const currentResume = resumeAcknowledgements[0]!;
+  // Carrier writes and partial acknowledgements from the interrupted connection
+  // are immutable historical prefix evidence. They need not equal the newly
+  // accepted route tuple, but no historical tuple may appear at or after the
+  // current resume acknowledgement, and no current-tuple carrier event may
+  // precede that acknowledgement.
+  const staleWorkerAfterResume = worker.some((entry) =>
+    !sameTuple(entry) && entry.causalOrdinal >= currentResume.causalOrdinal);
+  const currentWorkerBeforeResume = worker.some((entry) =>
+    sameTuple(entry) && entry.causalOrdinal <= currentResume.causalOrdinal);
+  const staleResumeAfterCurrent = resumeRows.some((entry) =>
+    !sameTuple(entry) && entry.causalOrdinal >= currentResume.causalOrdinal);
+  if (staleWorkerAfterResume || currentWorkerBeforeResume || staleResumeAfterCurrent) {
+    throw new Error("C39 recovery trace contains a proofless, stale, or substituted route authority tuple");
+  }
+  if (!restarts.some((restart) =>
+    currentResume.causalOrdinal < restart.causalOrdinal &&
+    restart.causalOrdinal < terminalAcknowledgements[0]!.causalOrdinal)) {
     throw new Error("C39 causal route authority lacks resume_ack_applied < restart_resend < terminal ack");
   }
 }
