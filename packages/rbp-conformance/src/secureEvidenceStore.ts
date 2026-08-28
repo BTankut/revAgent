@@ -5,11 +5,12 @@ import {
   constants,
   existsSync,
   fsyncSync,
+  linkSync,
   lstatSync,
   mkdirSync,
   openSync,
   readFileSync,
-  renameSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -69,6 +70,7 @@ export interface StoredEvidenceFile {
 export class SecureEvidenceStore {
   readonly artifactRoot: string;
   readonly retainedRoot: string;
+  readonly #artifactRootReal: string;
 
   constructor(artifactRoot: string) {
     this.artifactRoot = path.resolve(artifactRoot);
@@ -76,6 +78,7 @@ export class SecureEvidenceStore {
       mkdirSync(this.artifactRoot, { recursive: true, mode: DIRECTORY_MODE });
     }
     assertPlainDirectory(this.artifactRoot);
+    this.#artifactRootReal = realpathSync.native(this.artifactRoot);
     this.retainedRoot = path.resolve(this.artifactRoot, canonicalManifest.retainedEvidence.root);
     if (!isInside(this.artifactRoot, this.retainedRoot)) {
       throw new Error("canonical retained evidence root escapes artifactRoot");
@@ -84,6 +87,9 @@ export class SecureEvidenceStore {
   }
 
   #ensureDirectoryChain(directory: string): void {
+    if (realpathSync.native(this.artifactRoot) !== this.#artifactRootReal) {
+      throw new Error("evidence root identity changed during operation");
+    }
     if (!isInside(this.artifactRoot, directory)) {
       throw new Error(`evidence directory escapes artifactRoot: ${directory}`);
     }
@@ -92,6 +98,9 @@ export class SecureEvidenceStore {
     for (const segment of relative.split(path.sep).filter((entry) => entry.length > 0)) {
       cursor = path.join(cursor, segment);
       ensurePrivateDirectory(cursor);
+      if (realpathSync.native(cursor) !== path.resolve(this.#artifactRootReal, path.relative(this.artifactRoot, cursor))) {
+        throw new Error(`evidence directory identity changed: ${cursor}`);
+      }
     }
   }
 
@@ -112,8 +121,6 @@ export class SecureEvidenceStore {
     const target = this.resolve(relativePath);
     const directory = path.dirname(target);
     this.#ensureDirectoryChain(directory);
-    if (existsSync(target)) throw new Error(`retained evidence already exists: ${relativePath}`);
-
     const temporary = path.join(directory, `.${path.basename(target)}.${randomUUID()}.tmp`);
     let descriptor: number | undefined;
     try {
@@ -127,7 +134,10 @@ export class SecureEvidenceStore {
       closeSync(descriptor);
       descriptor = undefined;
       chmodSync(temporary, FILE_MODE);
-      renameSync(temporary, target);
+      // link is an atomic no-clobber publication primitive on the same volume:
+      // unlike rename on Windows, it cannot replace a competing final target.
+      linkSync(temporary, target);
+      rmSync(temporary, { force: true });
       chmodSync(target, FILE_MODE);
       fsyncDirectory(directory);
     } catch (error) {

@@ -2262,7 +2262,7 @@ export class CaseStackSupervisor {
   ): Promise<{ result: JsonObject; observations: ProcessObservationRecord[] }> {
     const stack = this.#stack();
     const killEscalated = new Map<ComponentId, boolean>();
-    const stopResults = new Map<ComponentId, ProcessStopResult>();
+    const stopResults = new Map<StartedStackComponent, ProcessStopResult>();
     const teardownErrors: Error[] = [];
     const components = [...stack.components.values(), ...stack.extraFixtures];
     for (const component of [...components].reverse()) {
@@ -2270,7 +2270,7 @@ export class CaseStackSupervisor {
       try {
         const stopped = await component.stop();
         killEscalated.set(component.componentId, stopped.killEscalated);
-        stopResults.set(component.componentId, stopped);
+        stopResults.set(component, stopped);
       } catch (error) {
         killEscalated.set(component.componentId, true);
         teardownErrors.push(normalizedError(error));
@@ -2350,7 +2350,7 @@ export class CaseStackSupervisor {
     readonly stepId: string;
     readonly action: string;
     readonly components: readonly StartedStackComponent[];
-    readonly stopResults: ReadonlyMap<ComponentId, ProcessStopResult>;
+    readonly stopResults: ReadonlyMap<StartedStackComponent, ProcessStopResult>;
     readonly survivors: readonly number[];
     readonly gatewayProxyStopped: boolean;
     readonly fixtureProxyStopped: boolean;
@@ -2361,12 +2361,12 @@ export class CaseStackSupervisor {
     const instanceHash = input.stack.instanceRootId.replace(/^sha256:/u, "");
     const relativePath = `${canonicalManifest.retainedEvidence.root}/runs/${runHash}/c29-teardown/${input.stack.caseId}-${input.stack.binding}-${instanceHash}-${stepHash}.json`;
     const components = input.components.map((component) => {
-      const stop = input.stopResults.get(component.componentId);
+      const stop = input.stopResults.get(component);
       return {
         componentId: component.componentId,
         process: { ...component.process },
         stop: stop === undefined
-          ? { observed: false, killEscalated: true }
+          ? { observed: false, killEscalated: null, reason: "stop_result_unavailable" }
           : {
               observed: true,
               stoppedAt: stop.stoppedAt,

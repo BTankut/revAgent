@@ -139,7 +139,9 @@ const MAX_DIAGNOSTIC_LINE_BYTES = 512;
 
 function redactDiagnosticText(input: string): string {
   return input
-    .replace(/(bearer|token|secret|proof|password)\s*[:=]\s*[^\s,;]+/giu, "$1=[redacted]")
+    .replace(/(authorization|bearer|basic|token|secret|proof|password|api[_-]?key|credential)\s*[:=]\s*[^\s,;]+/giu, "$1=[redacted]")
+    .replace(/(?:Authorization:\s*)(?:Bearer|Basic)\s+[^\s,;]+/giu, "Authorization=[redacted]")
+    .replace(/\\\\[^\s,;]+/gu, "[path-redacted]")
     .replace(/[A-Za-z]:\\[^\s,;]+/gu, "[path-redacted]")
     .replace(/\/[^\s,;]+/gu, (value) => value.startsWith("//") ? value : "[path-redacted]");
 }
@@ -149,7 +151,7 @@ function redactDiagnosticLine(input: string): string {
   try {
     const parsed = JSON.parse(input) as unknown;
     const redactValue = (value: unknown, key = ""): unknown => {
-      if (/(?:token|secret|proof|password|bearer|payload|document(?:id)?|path|command|args)/iu.test(key)) {
+      if (/(?:authorization|token|secret|proof|password|bearer|basic|api[_-]?key|credential|payload|document(?:id)?|model|invocation|rsid|idempotency|path|command|args)/iu.test(key)) {
         return "[redacted]";
       }
       if (typeof value === "string") return redactDiagnosticText(value);
@@ -267,6 +269,11 @@ class ProcessEvidenceRecorder {
       this.#partial[stream] = Buffer.alloc(0);
       this.#record(stream, partial.toString("utf8"));
     }
+  }
+
+  complete(): void {
+    this.#flushPartials();
+    this.#timeline.push("stdio_closed");
   }
 }
 
@@ -408,6 +415,7 @@ export class StrictJsonlProcess {
   readonly #responseOrder: string[] = [];
   #closed = false;
   #exit: Promise<{ code: number; at: string }>;
+  #stdioClosed: Promise<void>;
   #exitResolve!: (value: { code: number; at: string }) => void;
   #controlCounter = 0;
 
@@ -425,6 +433,7 @@ export class StrictJsonlProcess {
     this.pid = pid;
     this.process = { pid, startedAt, readyAt, stoppedAt: null, exitCode: null };
     this.#exit = new Promise((resolve) => { this.#exitResolve = resolve; });
+    this.#stdioClosed = new Promise((resolve) => child.once("close", () => resolve()));
     child.once("exit", (code, signal) => {
       const at = new Date().toISOString();
       const normalized = code ?? (signal === null ? 1 : 128);
@@ -451,6 +460,7 @@ export class StrictJsonlProcess {
       windowsHide: true,
     });
     evidence.spawned(child.pid);
+    child.once("close", () => evidence.complete());
     if (child.pid === undefined) {
       evidence.failure("spawn");
       throw new Error(`${options.componentId} did not receive a process id`);
@@ -714,6 +724,7 @@ export class StrictJsonlProcess {
       this.child.kill("SIGKILL");
     }, 10_000);
     const exit = await this.#exit;
+    await this.#stdioClosed;
     clearTimeout(forced);
     return {
       stoppedAt: exit.at,
@@ -743,6 +754,7 @@ export class StrictJsonlProcess {
       this.child.kill("SIGKILL");
     }, 10_000);
     const exit = await this.#exit;
+    await this.#stdioClosed;
     clearTimeout(forced);
     return {
       stoppedAt: exit.at,
@@ -791,6 +803,7 @@ export class StrictReadyProcess {
   readonly process: ProcessEvidence;
   readonly pid: number;
   #exit: Promise<{ code: number; at: string }>;
+  #stdioClosed: Promise<void>;
   #stopPromise: Promise<ProcessStopResult> | null = null;
   #pendingStop: PendingReadyProcessStop | null = null;
 
@@ -820,6 +833,7 @@ export class StrictReadyProcess {
         resolve({ code: normalized, at });
       });
     });
+    this.#stdioClosed = new Promise((resolve) => child.once("close", () => resolve()));
     child.on("message", (message: unknown) => {
       const pending = this.#pendingStop;
       if (pending === null || message === null || typeof message !== "object" || Array.isArray(message)) return;
@@ -857,6 +871,7 @@ export class StrictReadyProcess {
       windowsHide: true,
     }) as ChildProcessWithoutNullStreams;
     evidence.spawned(child.pid);
+    child.once("close", () => evidence.complete());
     if (child.pid === undefined) {
       evidence.failure("spawn");
       throw new Error(`${options.componentId} did not receive a process id`);
@@ -962,7 +977,9 @@ export class StrictReadyProcess {
     let correlationId: string | null = null;
     let acknowledgedAt: string | null = null;
     let acknowledgement: ProcessStopTelemetry["acknowledgement"] = "not_requested";
-    const result = (stoppedAt: string, exitCode: number, killEscalated: boolean): ProcessStopResult => ({
+    const result = async (stoppedAt: string, exitCode: number, killEscalated: boolean): Promise<ProcessStopResult> => {
+      await this.#stdioClosed;
+      return {
       stoppedAt,
       exitCode,
       killEscalated,
@@ -974,9 +991,10 @@ export class StrictReadyProcess {
         acknowledgement,
       },
       evidence: this.evidence.snapshot(),
-    });
+      };
+    };
     if (this.process.exitCode !== null) {
-      return result(this.process.stoppedAt ?? new Date().toISOString(), this.process.exitCode, false);
+      return await result(this.process.stoppedAt ?? new Date().toISOString(), this.process.exitCode, false);
     }
     const boundedTimeout = Math.max(1, timeoutMs);
     let killEscalated = false;
@@ -1029,9 +1047,9 @@ export class StrictReadyProcess {
       if (exit === null) {
         await killTree();
         const forcedExit = await this.#exit;
-        return result(forcedExit.at, forcedExit.code, killEscalated);
+        return await result(forcedExit.at, forcedExit.code, killEscalated);
       }
-      return result(exit.at, exit.code, killEscalated);
+      return await result(exit.at, exit.code, killEscalated);
     } catch {
       if (acknowledgement === "not_requested" && requestedAt !== null) {
         acknowledgedAt = new Date().toISOString();
@@ -1040,7 +1058,7 @@ export class StrictReadyProcess {
       this.#pendingStop = null;
       if (this.process.exitCode === null) await killTree();
       const exit = await this.#exit;
-      return result(exit.at, exit.code, killEscalated);
+      return await result(exit.at, exit.code, killEscalated);
     }
   }
 }

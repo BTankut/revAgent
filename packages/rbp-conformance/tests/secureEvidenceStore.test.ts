@@ -1,4 +1,4 @@
-import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -24,6 +24,35 @@ describe("secure retained-evidence store", () => {
       if (process.platform !== "win32") {
         expect(statSync(store.retainedRoot).mode & 0o777).toBe(0o700);
         expect(statSync(stored.absolutePath).mode & 0o777).toBe(0o600);
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("publishes one concurrent writer without replacement and rejects a reparse root", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "rbp-secure-store-race-"));
+    try {
+      const relative = `${canonicalManifest.retainedEvidence.root}/runs/run-2/cases/O1-C29/evidence.json`;
+      const first = new SecureEvidenceStore(root);
+      const second = new SecureEvidenceStore(root);
+      const outcomes = await Promise.allSettled([
+        Promise.resolve().then(() => first.write(relative, "first")),
+        Promise.resolve().then(() => second.write(relative, "second")),
+      ]);
+      expect(outcomes.filter(({ status }) => status === "fulfilled")).toHaveLength(1);
+      expect(outcomes.filter(({ status }) => status === "rejected")).toHaveLength(1);
+      expect(readFileSync(path.join(root, relative), "utf8")).toMatch(/^(?:first|second)$/u);
+
+      if (process.platform !== "win32") {
+        const target = mkdtempSync(path.join(tmpdir(), "rbp-secure-store-target-"));
+        const linkRoot = path.join(root, "reparse-root");
+        try {
+          symlinkSync(target, linkRoot, "dir");
+          expect(() => new SecureEvidenceStore(linkRoot)).toThrow(/plain directory/u);
+        } finally {
+          rmSync(target, { recursive: true, force: true });
+        }
       }
     } finally {
       rmSync(root, { recursive: true, force: true });
