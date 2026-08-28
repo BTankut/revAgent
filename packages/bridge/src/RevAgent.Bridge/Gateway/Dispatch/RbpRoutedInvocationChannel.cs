@@ -317,6 +317,12 @@ internal static class RbpApplicationResultClassifier
         ["success", "result", "error", "errorMessage", "message", "status", "guarded",
          "guardedReason", "guarded_reason", "guardReason", "reason"];
     private static readonly UTF8Encoding StrictUtf8 = new(false, true);
+    private static readonly System.Text.RegularExpressions.Regex ErrorPrefix = new(
+        @"^ERROR(?:\b|:)",
+        System.Text.RegularExpressions.RegexOptions.IgnoreCase |
+        System.Text.RegularExpressions.RegexOptions.CultureInvariant |
+        System.Text.RegularExpressions.RegexOptions.NonBacktracking,
+        TimeSpan.FromMilliseconds(100));
 
     internal static string Diagnostic(string? message)
     {
@@ -336,7 +342,8 @@ internal static class RbpApplicationResultClassifier
     {
         try { return Read(result); }
         catch (Exception exception) when (exception is System.Text.Json.JsonException or
-            InvalidOperationException or ArgumentException or OverflowException)
+            InvalidOperationException or ArgumentException or OverflowException or
+            System.Text.RegularExpressions.RegexMatchTimeoutException)
         { return RbpApplicationResultClassification.Unclassifiable; }
     }
 
@@ -378,10 +385,7 @@ internal static class RbpApplicationResultClassifier
                     : RbpApplicationResultClassification.Completed;
             string input = node.GetString()!;
             string value = input.Trim();
-            if (value.StartsWith("ERROR", StringComparison.OrdinalIgnoreCase) &&
-                (value.Length == 5 || value[5] == ':' || (!char.IsLetterOrDigit(value[5]) &&
-                    char.GetUnicodeCategory(value[5]) is not (System.Globalization.UnicodeCategory.NonSpacingMark or
-                        System.Globalization.UnicodeCategory.ConnectorPunctuation))))
+            if (ErrorPrefix.IsMatch(value))
                 return RbpApplicationResultClassification.ApplicationError;
             if (value.Length == 0 || value[0] is not ('{' or '[' or '"'))
                 return RbpApplicationResultClassification.Completed;
