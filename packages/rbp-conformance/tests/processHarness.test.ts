@@ -57,7 +57,7 @@ describe("strict JSONL process control", () => {
     const script = path.join(root, "tail-child.mjs");
     writeFileSync(script, [
       "process.stdout.write(JSON.stringify({ready:true,component:'fixture-test',controlVersion:1,maxControlLineBytes:65536,actions:['shutdown']})+'\\n');",
-      "process.stdin.setEncoding('utf8');process.stdin.on('data',chunk=>{const value=JSON.parse(chunk.trim());process.stdout.write(JSON.stringify({controlVersion:1,id:value.id,ok:true,result:{stopped:true}})+'\\n',()=>{process.stderr.write('tail-sentinel-no-newline',()=>process.exit(0));});});",
+      "process.stdin.setEncoding('utf8');process.stdin.on('data',chunk=>{const value=JSON.parse(chunk.trim());process.stdout.write(JSON.stringify({controlVersion:1,id:value.id,ok:true,result:{stopped:true}})+'\\n',()=>{process.stderr.write('Authorization: Bearer CANARY {\\\"message\\\":\\\"Authorization: Basic CANARY\\\",\\\"subject\\\":\\\"rs_CANARY\\\"}',()=>process.exit(0));});});",
     ].join("\n"));
     try {
       const child = await StrictJsonlProcess.start({
@@ -69,7 +69,10 @@ describe("strict JSONL process control", () => {
       });
       const stopped = await child.stop();
       expect(stopped.exitCode).toBe(0);
-      expect(stopped.evidence.stderr.safeLines).toContain("tail-sentinel-no-newline");
+      const retained = stopped.evidence.stderr.safeLines.join("\n");
+      expect(retained).toContain("Authorization=[redacted]");
+      expect(retained).not.toContain("CANARY");
+      expect(retained).not.toContain("rs_CANARY");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

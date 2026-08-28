@@ -153,6 +153,7 @@ const MAX_DIAGNOSTIC_LINE_BYTES = 512;
 function redactDiagnosticText(input: string): string {
   return input
     .replace(/Authorization:\s*(?:Bearer|Basic)\s+[^\s,;]+/giu, "Authorization=[redacted]")
+    .replace(/"(authorization|api[_-]?key|credential|subject|identity|rsid)"\s*:\s*"[^"]*"/giu, '"$1":"[redacted]"')
     .replace(/(authorization|bearer|basic|token|secret|proof|password|api[_-]?key|credential)\s*[:=]\s*[^\s,;]+/giu, "$1=[redacted]")
     .replace(/\\\\[^\s,;]+/gu, "[path-redacted]")
     .replace(/[A-Za-z]:\\[^\s,;]+/gu, "[path-redacted]")
