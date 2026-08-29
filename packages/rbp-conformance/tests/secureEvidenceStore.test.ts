@@ -387,6 +387,32 @@ describe("secure retained-evidence store", () => {
     }
   });
 
+  it.runIf(process.platform !== "win32")("rejects identical-byte inode substitution while the staged descriptor spans link and unlink", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "rbp-secure-posix-link-gap-"));
+    const reached = path.join(root, "linked");
+    const continued = path.join(root, "continue");
+    const relative = `${canonicalManifest.retainedEvidence.root}/runs/posix-link/evidence.json`;
+    const target = new SecureEvidenceStore(root).resolve(relative);
+    let callbackCount = 0;
+    const store = new SecureEvidenceStore(root, { test: { boundary: "posix_linked_before_unlink", reachedMarker: reached, continueMarker: continued, timeoutMs: 5_000 } });
+    const writing = store.writeAccepted(relative, "identical-bytes", (candidate) => {
+      callbackCount += 1;
+      return candidate.acceptExact({ logicalPath: relative, absolutePath: target, bytes: Buffer.from("identical-bytes"), sha256: candidate.sha256 }, undefined);
+    });
+    try {
+      const deadline = Date.now() + 5_000;
+      while (!existsSync(reached) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(existsSync(reached)).toBe(true);
+      rmSync(target);
+      writeFileSync(target, "identical-bytes");
+      writeFileSync(continued, "continue");
+      await expect(writing).rejects.toMatchObject({ code: "EVIDENCE_IDENTITY_CHANGED" });
+      expect(callbackCount).toBe(0);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("rejects a fresh directory recreated at the same lexical root pathname", async () => {
     const owner = mkdtempSync(path.join(tmpdir(), "rbp-secure-root-id-"));
     const root = path.join(owner, "artifact");
