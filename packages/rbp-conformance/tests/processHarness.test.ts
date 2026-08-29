@@ -3,12 +3,17 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { once } from "node:events";
 import { execFileSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { tmpdir } from "node:os";
 
-import { ControlResponseError, StrictJsonlProcess, StrictReadyProcess } from "../src/processHarness.js";
+import {
+  ControlResponseError,
+  ProcessStdioDrainTimeoutError,
+  StrictJsonlProcess,
+  StrictReadyProcess,
+} from "../src/processHarness.js";
 import type { ProcessCommandDescriptor } from "../src/types.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -54,17 +59,98 @@ function testIpcSend(child: StrictReadyProcess): { send: TestIpcSend } {
 }
 
 describe("strict JSONL process control", () => {
+  it.each(["stop", "terminate"] as const)(
+    "bounds inherited-pipe drain after a real clean child exit during %s without false kill escalation",
+    async (mode) => {
+      const root = mkdtempSync(path.join(tmpdir(), "wp12-inherited-pipe-"));
+      const windowsSleeper = path.join(root, "inherited-pipe-child.exe");
+      if (process.platform === "win32") {
+        const csharp = `
+          using System; using System.Diagnostics; using System.Text.RegularExpressions;
+          public static class PipeHolder {
+            public static int Main(string[] args) {
+              if (args.Length > 0 && args[0] == "hold") { Console.Error.Write("holder"); Console.Error.Flush(); System.Threading.Thread.Sleep(30000); return 0; }
+              var executable=Process.GetCurrentProcess().MainModule.FileName;
+              var holder=Process.Start(new ProcessStartInfo(executable,"hold") { UseShellExecute=false });
+              Console.WriteLine("{\\"ready\\":true,\\"component\\":\\"fixture-test\\",\\"controlVersion\\":1,\\"maxControlLineBytes\\":65536,\\"actions\\":[\\"shutdown\\"],\\"grandchildPid\\":"+holder.Id+"}"); Console.Out.Flush();
+              var line=Console.ReadLine(); var id=Regex.Match(line,"\\\"id\\\"\\\\s*:\\\"([^\\\"]+)\\\"").Groups[1].Value; System.Threading.Thread.Sleep(250);
+              Console.WriteLine("{\\"controlVersion\\":1,\\"id\\":\\""+id+"\\",\\"ok\\":true,\\"result\\":{\\"stopped\\":true}}"); Console.Out.Flush(); return 0;
+            }
+          }`;
+        const compile = `$ErrorActionPreference='Stop'; Add-Type -TypeDefinition '${csharp}' -OutputAssembly '${windowsSleeper.replaceAll("'", "''")}' -OutputType ConsoleApplication`;
+        execFileSync(path.join(process.env.SystemRoot!, "System32/WindowsPowerShell/v1.0/powershell.exe"),
+          ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(compile, "utf16le").toString("base64")],
+          { windowsHide: true, stdio: "pipe", timeout: 5_000 });
+      }
+      const source = [
+        "const {spawn}=require('node:child_process');",
+        "const grandchild=spawn(process.execPath,['--eval','setInterval(()=>{},1000)'],{stdio:['ignore',1,2],windowsHide:true});",
+        "process.stdout.write(JSON.stringify({ready:true,component:'fixture-test',controlVersion:1,maxControlLineBytes:65536,actions:['shutdown'],grandchildPid:grandchild.pid})+'\\n');",
+        "process.stdin.setEncoding('utf8');process.stdin.on('data',chunk=>{const value=JSON.parse(chunk.trim());process.stdout.write(JSON.stringify({controlVersion:1,id:value.id,ok:true,result:{stopped:true}})+'\\n',()=>process.exit(0));});",
+      ].join("\n");
+      const child = await StrictJsonlProcess.start({
+        componentId: "addin_loopback_fixture",
+        command: process.platform === "win32"
+          ? { ...command(), executable: windowsSleeper, args: [] }
+          : { ...command(), args: ["--eval", source] },
+        absoluteWorkingDirectory: root,
+        expectedReadinessFields: { component: "fixture-test" },
+        requiredActions: ["shutdown"],
+      });
+      const grandchildPid = Number(child.readiness.grandchildPid);
+      expect(Number.isSafeInteger(grandchildPid)).toBe(true);
+      const started = Date.now();
+      try {
+        const operation = mode === "stop" ? child.stop(1_000) : child.terminateForConformance(1_000);
+        await expect(operation).rejects.toMatchObject({
+          name: "ProcessStdioDrainTimeoutError",
+          componentId: "addin_loopback_fixture",
+          exitCode: mode === "stop" ? 0 : expect.any(Number),
+          killEscalated: false,
+          evidence: { exitCode: mode === "stop" ? 0 : null },
+        } satisfies Partial<ProcessStdioDrainTimeoutError>);
+        expect(Date.now() - started).toBeLessThan(1_100);
+        expect(child.process.exitCode).not.toBeNull();
+      } finally {
+        if (process.platform === "win32") {
+          try { execFileSync(path.join(process.env.SystemRoot!, "System32", "taskkill.exe"), ["/pid", String(grandchildPid), "/T", "/F"], { stdio: "ignore", windowsHide: true }); } catch { /* already exited */ }
+        } else {
+          try { process.kill(grandchildPid, "SIGKILL"); } catch { /* already exited */ }
+        }
+        const deadline = Date.now() + 2_000;
+        while (Date.now() < deadline) {
+          try { process.kill(grandchildPid, 0); } catch { break; }
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
+      }
+    },
+  );
+
   it("waits for child stdio close and retains an unterminated stderr tail after control shutdown", async () => {
     const root = mkdtempSync(path.join(tmpdir(), "wp12-stdio-tail-"));
     const script = path.join(root, "tail-child.mjs");
     const evidenceDirectory = path.join(root, "retained");
-    const sentinels = ["BEARER_CANARY", "BASIC_CANARY", "SUBJECT_CANARY", "rs_RSID_CANARY"];
+    mkdirSync(evidenceDirectory);
+    const sentinels = ["BEARER_CANARY", "BASIC_CANARY", "SUBJECT_CANARY", "rs_RSID_CANARY", "ALLOWED_CANARY", "path-canary", "query-canary"];
     const diagnostic = {
       message: "Authorization: Basic BASIC_CANARY",
       durabilityEvents: [{ subject: "SUBJECT_CANARY", rsid: "rs_RSID_CANARY", event: "terminal_persisted" }],
       observations: [{ requestId: "SUBJECT_CANARY", request_id: "rs_RSID_CANARY" }],
+      principal_id: "SUBJECT_CANARY",
+      tenant_id: "SUBJECT_CANARY",
+      user_id: "SUBJECT_CANARY",
+      seat_id: "SUBJECT_CANARY",
+      session_binding: "SUBJECT_CANARY",
+      correlation_id: "SUBJECT_CANARY",
     };
-    const stderr = `Authorization: Bearer BEARER_CANARY\n${JSON.stringify(diagnostic)}\ndiagnostic ${JSON.stringify(diagnostic)}`;
+    const allowedCanaries = {
+      actions: ["ALLOWED_CANARY"], event: "ALLOWED_CANARY", code: "ALLOWED_CANARY",
+      component: "ALLOWED_CANARY", phase: "ALLOWED_CANARY", state: "ALLOWED_CANARY",
+      status: "ALLOWED_CANARY", transport: "ALLOWED_CANARY",
+      ws_url: "ws://127.0.0.1:54321/path-canary?secret=query-canary#ALLOWED_CANARY",
+    };
+    const stderr = `Authorization: Bearer BEARER_CANARY\n${JSON.stringify(diagnostic)}\ndiagnostic ALLOWED_CANARY ${JSON.stringify(diagnostic)}\n${JSON.stringify(allowedCanaries)}`;
     writeFileSync(script, [
       "process.stdout.write(JSON.stringify({ready:true,component:'fixture-test',controlVersion:1,maxControlLineBytes:65536,actions:['shutdown']})+'\\n');",
       `const diagnostic=${JSON.stringify(diagnostic)}; const stderr=${JSON.stringify(stderr)};`,
@@ -227,7 +313,7 @@ describe("strict JSONL process control", () => {
     expect(child.process.exitCode).not.toBeNull();
   });
 
-  it("escalates once when false-backpressure receives no STOP acknowledgement", async () => {
+  it("returns a bounded truthful direct-child survivor when STOP acknowledgement and tree exit miss one deadline", async () => {
     const child = await startReadyIpc("missing-ack");
     const handle = testIpcSend(child);
     const original = handle.send.bind(handle) as TestIpcSend;
@@ -235,18 +321,23 @@ describe("strict JSONL process control", () => {
       original(message, callback);
       return false;
     }) as TestIpcSend;
-    const stopped = await child.stop("SIGTERM", 50);
-    expect(stopped).toMatchObject({
-      killEscalated: true,
-      exitCode: expect.any(Number),
-    });
-    expect(stopped.telemetry).toMatchObject({
-      correlationKind: "ipc_stop_nonce",
-      acknowledgement: "failed_or_timed_out",
-      requestedAt: expect.any(String),
-      acknowledgedAt: expect.any(String),
-    });
-    expect(child.process.exitCode).not.toBeNull();
+    const started = Date.now();
+    try {
+      await expect(child.stop("SIGTERM", 50)).rejects.toMatchObject({
+        name: "ProcessExitTimeoutError",
+        componentId: "addin_loopback_fixture",
+        killEscalationAttempted: true,
+        killEscalationEffective: false,
+        directChildSurvivor: true,
+      });
+      expect(Date.now() - started).toBeLessThan(150);
+    } finally {
+      if (child.process.exitCode === null && process.platform === "win32") {
+        try { execFileSync(path.join(process.env.SystemRoot!, "System32", "taskkill.exe"), ["/pid", String(child.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true }); } catch { /* already exited */ }
+      } else if (child.process.exitCode === null) {
+        try { process.kill(child.pid, "SIGKILL"); } catch { /* already exited */ }
+      }
+    }
   });
 
   it("leaves no IPC-held child after parent disconnect", async () => {
@@ -419,7 +510,7 @@ describe("strict JSONL process control", () => {
       expectedReadinessFields: { component: "fixture-test" },
       requiredActions: ["shutdown"],
     })).rejects.toThrow(
-      /exited before readiness \(1\).*EADDRINUSE.*address already in use/u,
+      /exited before readiness \(1\).*EADDRINUSE/u,
     );
   });
 
@@ -449,16 +540,57 @@ describe("strict JSONL process control", () => {
     });
     expect(readFileSync(path.join(evidenceDirectory, "addin_loopback_fixture.stderr.log"), "utf8")).toContain("EADDRINUSE");
 
+    const readyEvidenceDirectory = mkdtempSync(path.join(tmpdir(), "wp12-ready-start-evidence-"));
     await expect(StrictReadyProcess.start({
       componentId: "addin_loopback_fixture",
       command: command("stderr-exit"),
       absoluteWorkingDirectory: here,
-      evidenceDirectory,
+      evidenceDirectory: readyEvidenceDirectory,
       validateReadiness: () => undefined,
     })).rejects.toMatchObject({ name: "ReadyProcessStartError" });
-    expect(JSON.parse(readFileSync(path.join(evidenceDirectory, "addin_loopback_fixture.start-failure.json"), "utf8"))).toMatchObject({
+    expect(JSON.parse(readFileSync(path.join(readyEvidenceDirectory, "addin_loopback_fixture.start-failure.json"), "utf8"))).toMatchObject({
       component: "addin_loopback_fixture",
       stderr: { safeLines: expect.arrayContaining([expect.stringContaining("EADDRINUSE")]) },
     });
+  });
+
+  it("fails closed without replacing a pre-created process evidence artifact", async () => {
+    const evidenceDirectory = mkdtempSync(path.join(tmpdir(), "wp12-process-no-clobber-"));
+    const target = path.join(evidenceDirectory, "addin_loopback_fixture.start-failure.json");
+    writeFileSync(target, "owner bytes");
+    await expect(StrictJsonlProcess.start({
+      componentId: "addin_loopback_fixture",
+      command: command("stderr-exit"),
+      absoluteWorkingDirectory: here,
+      evidenceDirectory,
+      expectedReadinessFields: { component: "fixture-test" },
+      requiredActions: ["shutdown"],
+    })).rejects.toMatchObject({ code: "EEXIST" });
+    expect(readFileSync(target, "utf8")).toBe("owner bytes");
+  });
+
+  it("fails closed when the caller-owned process evidence directory is replaced after validation", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "wp12-process-dir-swap-"));
+    const evidenceDirectory = path.join(root, "evidence");
+    const moved = path.join(root, "evidence-moved");
+    const replacement = path.join(root, "replacement");
+    mkdirSync(evidenceDirectory);
+    mkdirSync(replacement);
+    const child = await StrictJsonlProcess.start({
+      componentId: "addin_loopback_fixture",
+      command: command(),
+      absoluteWorkingDirectory: here,
+      evidenceDirectory,
+      expectedReadinessFields: { component: "fixture-test" },
+      requiredActions: ["shutdown"],
+    });
+    renameSync(evidenceDirectory, moved);
+    symlinkSync(replacement, evidenceDirectory, process.platform === "win32" ? "junction" : "dir");
+    try {
+      await expect(child.stop()).rejects.toThrow(/identity changed|IDENTITY_CHANGED/u);
+      expect(existsSync(path.join(replacement, "addin_loopback_fixture.stdout.log"))).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

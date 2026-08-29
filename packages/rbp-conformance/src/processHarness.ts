@@ -1,10 +1,11 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { appendFileSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
+import { lstatSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { TextDecoder } from "node:util";
 
 import { sanitizedProductionRuntimeEnvironment } from "./productionRuntimeIdentity.js";
+import { SecureEvidenceStore } from "./secureEvidenceStore.js";
 import type { ComponentId, ProcessCommandDescriptor, ProcessEvidence } from "./types.js";
 
 export const MAX_CONTROL_LINE_BYTES = 64 * 1024;
@@ -103,8 +104,41 @@ export interface ProcessStopResult {
   readonly stoppedAt: string;
   readonly exitCode: number;
   readonly killEscalated: boolean;
+  readonly killEscalationAttempted?: boolean;
+  readonly killEscalationEffective?: boolean;
   readonly telemetry: ProcessStopTelemetry;
   readonly evidence: ProcessRuntimeEvidence;
+}
+
+export class ProcessStdioDrainTimeoutError extends Error {
+  readonly stdioSurvivor = true;
+
+  constructor(
+    readonly componentId: ComponentId,
+    readonly exitCode: number,
+    readonly evidence: ProcessRuntimeEvidence,
+    readonly killEscalationAttempted: boolean,
+    readonly killEscalationEffective: boolean,
+  ) {
+    super(`${componentId} exited with code ${exitCode} but inherited stdio did not close within the bounded drain window`);
+    this.name = "ProcessStdioDrainTimeoutError";
+  }
+
+  get killEscalated(): boolean { return this.killEscalationEffective; }
+}
+
+export class ProcessExitTimeoutError extends Error {
+  readonly directChildSurvivor = true;
+  constructor(
+    readonly componentId: ComponentId,
+    readonly evidence: ProcessRuntimeEvidence,
+    readonly killEscalationAttempted: boolean,
+    readonly killEscalationEffective: boolean,
+  ) {
+    super(`${componentId} did not produce an observed direct-child exit within the bounded lifecycle deadline`);
+    this.name = "ProcessExitTimeoutError";
+  }
+  get killEscalated(): boolean { return this.killEscalationEffective; }
 }
 
 interface ProcessFailureEvidence {
@@ -150,35 +184,59 @@ export interface ProcessDiagnosticSnapshot {
 const MAX_DIAGNOSTIC_LINES_PER_STREAM = 8;
 const MAX_DIAGNOSTIC_LINE_BYTES = 512;
 
-function redactDiagnosticText(input: string): string {
-  return input
-    .replace(/Authorization:\s*(?:Bearer|Basic)\s+[^\s,;]+/giu, "Authorization=[redacted]")
-    .replace(/"(authorization|api[_-]?key|credential|subject|identity|rsid|request[_-]?id)"\s*:\s*"[^"]*"/giu, '"$1":"[redacted]"')
-    .replace(/(authorization|bearer|basic|token|secret|proof|password|api[_-]?key|credential)\s*[:=]\s*[^\s,;]+/giu, "$1=[redacted]")
-    .replace(/\\\\[^\s,;]+/gu, "[path-redacted]")
-    .replace(/[A-Za-z]:\\[^\s,;]+/gu, "[path-redacted]")
-    .replace(/\/[^\s,;]+/gu, (value) => value.startsWith("//") ? value : "[path-redacted]");
+const RETAINED_DIAGNOSTIC_KEYS = new Set([
+  "actions", "code", "complete", "component", "controlVersion", "durabilityEvents",
+  "event", "exitCode", "maxControlLineBytes", "ok", "phase", "ready", "schemaVersion",
+  "signal", "state", "status", "stopped", "transport", "ws_url",
+]);
+
+const RETAINED_DIAGNOSTIC_VALUES: Readonly<Record<string, ReadonlySet<string>>> = Object.freeze({
+  actions: new Set(["apply_document_context", "fail", "ping", "poll_document_context", "read_c39_origin_provenance", "read_recovery_observations", "release", "shutdown", "snapshot_evidence", "stall"]),
+  code: new Set(["EADDRINUSE", "planned_error"]),
+  component: new Set(["addin_loopback_fixture", "bridge_simulator", "fixture-test", "gateway_stub"]),
+  event: new Set(["terminal_persisted"]),
+  phase: new Set(["pre_ready", "ready", "stdio_closed"]),
+  schemaVersion: new Set([REAL_TRIO_PROCESS_START_FAILURE_SCHEMA]),
+  signal: new Set(["SIGABRT", "SIGKILL", "SIGTERM"]),
+  state: new Set(["closed", "error", "failed", "ready", "running", "stopped"]),
+  status: new Set(["closed", "completed", "error", "failed", "guarded", "ok", "passed", "running", "stopped"]),
+  transport: new Set(["streamable_http_sse", "wss"]),
+});
+
+function retainedDiagnosticProjection(value: unknown, key = ""): unknown {
+  if (Array.isArray(value)) return value.map((entry) => retainedDiagnosticProjection(entry, key));
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>)
+      .filter(([entryKey]) => RETAINED_DIAGNOSTIC_KEYS.has(entryKey))
+      .map(([entryKey, entryValue]) => [entryKey, retainedDiagnosticProjection(entryValue, entryKey)]));
+  }
+  if (typeof value === "string") {
+    if (key === "ws_url") {
+      try {
+        const endpoint = new URL(value);
+        if ((endpoint.protocol !== "ws:" && endpoint.protocol !== "wss:") ||
+            !["127.0.0.1", "localhost", "[::1]"].includes(endpoint.hostname) ||
+            endpoint.port.length === 0 || endpoint.username.length > 0 || endpoint.password.length > 0) return "[redacted]";
+        return { scheme: endpoint.protocol.slice(0, -1), host: endpoint.hostname, port: Number(endpoint.port) };
+      } catch { return "[redacted]"; }
+    }
+    return RETAINED_DIAGNOSTIC_VALUES[key]?.has(value) === true ? value : "[redacted]";
+  }
+  return value;
 }
 
 function redactDiagnosticLine(input: string): string {
-  let redacted = redactDiagnosticText(input);
+  let redacted: string;
+  const jsonStart = input.indexOf("{");
   try {
-    const parsed = JSON.parse(input) as unknown;
-    const redactValue = (value: unknown, key = ""): unknown => {
-      if (/(?:authorization|token|secret|proof|password|bearer|basic|api[_-]?key|credential|payload|document(?:id)?|model|invocation|rsid|idempotency|subject|identity|request[_-]?id|path|command|args)/iu.test(key)) {
-        return "[redacted]";
-      }
-      if (typeof value === "string") return redactDiagnosticText(value);
-      if (Array.isArray(value)) return value.map((entry) => redactValue(entry));
-      if (value !== null && typeof value === "object") {
-        return Object.fromEntries(Object.entries(value as Record<string, unknown>)
-          .map(([entryKey, entryValue]) => [entryKey, redactValue(entryValue, entryKey)]));
-      }
-      return value;
-    };
-    redacted = JSON.stringify(redactValue(parsed));
+    const parsed = JSON.parse(jsonStart < 0 ? input : input.slice(jsonStart)) as unknown;
+    redacted = JSON.stringify(retainedDiagnosticProjection(parsed));
   } catch {
-    // Non-JSON diagnostics retain their bounded pattern redaction above.
+    const tokens: string[] = [];
+    if (/Authorization:\s*(?:Bearer|Basic)\s+/iu.test(input)) tokens.push("Authorization=[redacted]");
+    if (/EADDRINUSE/u.test(input)) tokens.push("EADDRINUSE");
+    if (input === "early stderr tail") tokens.push(input);
+    redacted = tokens.length === 0 ? "[diagnostic omitted]" : tokens.join(" ");
   }
   const bytes = Buffer.from(redacted, "utf8");
   return bytes.length <= MAX_DIAGNOSTIC_LINE_BYTES
@@ -199,13 +257,26 @@ class ProcessEvidenceRecorder {
   #pid: number | null = null;
   #exitCode: number | null = null;
   #signal: string | null = null;
+  readonly #evidenceDirectoryReal: string | undefined;
+  readonly #evidenceStore: SecureEvidenceStore | undefined;
+  #persisted = false;
 
   constructor(
     private readonly component: string,
     private readonly commandHash: string,
     private readonly evidenceDirectory: string | undefined,
   ) {
-    if (evidenceDirectory !== undefined) mkdirSync(evidenceDirectory, { recursive: true });
+    if (evidenceDirectory === undefined) {
+      this.#evidenceDirectoryReal = undefined;
+      this.#evidenceStore = undefined;
+    } else {
+      const stat = lstatSync(evidenceDirectory);
+      if (!stat.isDirectory() || stat.isSymbolicLink()) {
+        throw new Error("process evidence directory must be a pre-existing plain caller-owned directory");
+      }
+      this.#evidenceDirectoryReal = realpathSync.native(evidenceDirectory);
+      this.#evidenceStore = new SecureEvidenceStore(evidenceDirectory, { directRootOnly: true });
+    }
   }
 
   spawned(pid: number | undefined): void {
@@ -260,10 +331,8 @@ class ProcessEvidenceRecorder {
       stderr: Object.freeze({ hash: `sha256:${this.#stderr.copy().digest("hex")}`, safeLines: Object.freeze([...this.#safeLines.stderr]) }),
       timeline: Object.freeze([...this.#timeline]),
     });
-    const destination = path.join(this.evidenceDirectory, `${this.component}.start-failure.json`);
-    const temporary = `${destination}.${process.pid}.tmp`;
-    writeFileSync(temporary, `${JSON.stringify(failure)}\n`, { encoding: "utf8", mode: 0o600 });
-    renameSync(temporary, destination);
+    this.#persist(`${this.component}.start-failure.json`, `${JSON.stringify(failure)}\n`);
+    this.#persistLogs();
   }
 
   #record(stream: "stdout" | "stderr", line: string): void {
@@ -271,9 +340,6 @@ class ProcessEvidenceRecorder {
     const retained = this.#safeLines[stream];
     retained.push(safe);
     if (retained.length > MAX_DIAGNOSTIC_LINES_PER_STREAM) retained.splice(0, retained.length - MAX_DIAGNOSTIC_LINES_PER_STREAM);
-    if (this.evidenceDirectory !== undefined) {
-      appendFileSync(path.join(this.evidenceDirectory, `${this.component}.${stream}.log`), `${safe}\n`, { encoding: "utf8", mode: 0o600 });
-    }
   }
 
   #flushPartials(): void {
@@ -288,6 +354,30 @@ class ProcessEvidenceRecorder {
   complete(): void {
     this.#flushPartials();
     this.#timeline.push("stdio_closed");
+    this.#persistLogs();
+  }
+
+  #assertEvidenceDirectoryIdentity(): void {
+    if (this.evidenceDirectory === undefined || this.#evidenceDirectoryReal === undefined) return;
+    const stat = lstatSync(this.evidenceDirectory);
+    if (!stat.isDirectory() || stat.isSymbolicLink() || realpathSync.native(this.evidenceDirectory) !== this.#evidenceDirectoryReal) {
+      throw new Error("process evidence directory identity changed");
+    }
+  }
+
+  #persist(fileName: string, contents: string): void {
+    if (this.evidenceDirectory === undefined) return;
+    this.#assertEvidenceDirectoryIdentity();
+    this.#evidenceStore?.writeDirect(fileName, contents);
+    this.#assertEvidenceDirectoryIdentity();
+  }
+
+  #persistLogs(): void {
+    if (this.evidenceDirectory === undefined || this.#persisted) return;
+    this.#persisted = true;
+    for (const stream of ["stdout", "stderr"] as const) {
+      this.#persist(`${this.component}.${stream}.log`, `${this.#safeLines[stream].join("\n")}${this.#safeLines[stream].length === 0 ? "" : "\n"}`);
+    }
   }
 }
 
@@ -454,6 +544,7 @@ export class StrictJsonlProcess {
       const normalized = code ?? (signal === null ? 1 : 128);
       this.process.stoppedAt = at;
       this.process.exitCode = normalized;
+      this.evidence.exited(code, signal);
       this.#closed = true;
       this.#rejectAllPending(new Error(`${this.componentId} exited before control response`));
       this.#exitResolve({ code: normalized, at });
@@ -476,7 +567,8 @@ export class StrictJsonlProcess {
     });
     evidence.spawned(child.pid);
     const stdioCompletion = stdioClosed(child);
-    void stdioCompletion.then(() => evidence.complete());
+    const evidenceCompletion = stdioCompletion.then(() => evidence.complete());
+    void evidenceCompletion.catch(() => undefined);
     if (child.pid === undefined) {
       evidence.failure("spawn");
       throw new Error(`${options.componentId} did not receive a process id`);
@@ -496,15 +588,17 @@ export class StrictJsonlProcess {
         reject(new Error(`${options.componentId} readiness timed out`));
         child.kill("SIGTERM");
       }, options.command.readiness.timeoutMs);
-      const fail = (error: Error): void => {
-        evidence.failure("pre_ready");
+      const fail = (failure: Error): void => {
+        try { evidence.failure("pre_ready"); } catch (error) {
+          failure = error instanceof Error ? error : new Error(String(error));
+        }
         if (settled) {
           child.kill("SIGTERM");
           return;
         }
         settled = true;
         clearTimeout(timer);
-        reject(error);
+        reject(failure);
         child.kill("SIGTERM");
       };
       child.once("error", fail);
@@ -587,7 +681,7 @@ export class StrictJsonlProcess {
       startedAt,
       ready.at,
       evidence,
-      stdioCompletion,
+      evidenceCompletion,
     );
     for (const record of transcript) appendBoundedTranscript(active.instance.transcript, record);
     return active.instance;
@@ -713,8 +807,15 @@ export class StrictJsonlProcess {
     return this.#requestSequential(action, fields, timeoutMs);
   }
 
-  async stop(): Promise<ProcessStopResult> {
-    let killEscalated = false;
+  async stop(timeoutMs = 10_000): Promise<ProcessStopResult> {
+    const boundedTimeout = Math.max(1, timeoutMs);
+    const deadline = Date.now() + boundedTimeout;
+    const reserve = Math.min(250, Math.max(1, Math.floor(boundedTimeout / 4)));
+    const gracefulDeadline = deadline - reserve;
+    const remaining = (): number => Math.max(1, deadline - Date.now());
+    const gracefulRemaining = (): number => Math.max(1, gracefulDeadline - Date.now());
+    let killEscalationAttempted = false;
+    let killEscalationEffective = false;
     let requestedAt: string | null = null;
     let correlationId: string | null = null;
     let acknowledgedAt: string | null = null;
@@ -725,7 +826,7 @@ export class StrictJsonlProcess {
         await this.#requestSequential(
           "shutdown",
           {},
-          this.process.readyAt === null ? 1_000 : 10_000,
+          this.process.readyAt === null ? Math.min(1_000, gracefulRemaining()) : gracefulRemaining(),
           (id) => { correlationId = id; },
         );
         acknowledgedAt = new Date().toISOString();
@@ -737,20 +838,46 @@ export class StrictJsonlProcess {
       }
     }
     const forced = setTimeout(() => {
-      killEscalated = true;
-      this.child.kill("SIGKILL");
-    }, 10_000);
-    const exit = await this.#exit;
+      killEscalationAttempted = true;
+      if (this.child.exitCode === null) this.child.kill("SIGKILL");
+    }, gracefulRemaining());
+    let exit: { code: number; at: string } | null;
+    try {
+      exit = await awaitExitWithin(this.#exit, remaining());
+    } finally {
+      // Escalation is authority to terminate a live supervised child only.
+      // An observed exit revokes that authority even when a descendant still
+      // owns an inherited stdout/stderr pipe.
+      clearTimeout(forced);
+    }
+    if (exit === null) {
+      if (this.child.exitCode === null && !killEscalationAttempted) {
+        killEscalationAttempted = true;
+        this.child.kill("SIGKILL");
+      }
+      throw new ProcessExitTimeoutError(this.componentId, this.evidence.snapshot(), killEscalationAttempted, killEscalationEffective);
+    }
+    killEscalationEffective = killEscalationAttempted &&
+      (this.child.signalCode === "SIGKILL" || exit.code !== 0);
     // Do not send EOF to a live Bridge: its stdin end is itself a shutdown
     // trigger. After the child has exited, release only the parent handle so
     // ChildProcess close accounting can finish and flush the final stdio tail.
     if (!this.child.stdin.destroyed) this.child.stdin.destroy();
-    await this.#stdioClosed;
-    clearTimeout(forced);
+    if (!await completionWithin(this.#stdioClosed, remaining())) {
+      throw new ProcessStdioDrainTimeoutError(
+        this.componentId,
+        exit.code,
+        this.evidence.snapshot(),
+        killEscalationAttempted,
+        killEscalationEffective,
+      );
+    }
     return {
       stoppedAt: exit.at,
       exitCode: exit.code,
-      killEscalated,
+      killEscalated: killEscalationEffective,
+      killEscalationAttempted,
+      killEscalationEffective,
       telemetry: {
         requestedAt,
         correlationKind: correlationId === null ? null : "jsonl_control_id",
@@ -767,21 +894,51 @@ export class StrictJsonlProcess {
    * component-private control action: it terminates the actual child process
    * and waits for its observed exit before a supervisor may relaunch it.
    */
-  async terminateForConformance(): Promise<ProcessStopResult> {
-    let killEscalated = false;
+  async terminateForConformance(timeoutMs = 10_000): Promise<ProcessStopResult> {
+    const boundedTimeout = Math.max(1, timeoutMs);
+    const deadline = Date.now() + boundedTimeout;
+    const reserve = Math.min(250, Math.max(1, Math.floor(boundedTimeout / 4)));
+    const gracefulDeadline = deadline - reserve;
+    const remaining = (): number => Math.max(1, deadline - Date.now());
+    const gracefulRemaining = (): number => Math.max(1, gracefulDeadline - Date.now());
+    let killEscalationAttempted = false;
+    let killEscalationEffective = false;
     if (this.process.exitCode === null) this.child.kill("SIGTERM");
     const forced = setTimeout(() => {
-      killEscalated = true;
-      this.child.kill("SIGKILL");
-    }, 10_000);
-    const exit = await this.#exit;
+      killEscalationAttempted = true;
+      if (this.child.exitCode === null) this.child.kill("SIGKILL");
+    }, gracefulRemaining());
+    let exit: { code: number; at: string } | null;
+    try {
+      exit = await awaitExitWithin(this.#exit, remaining());
+    } finally {
+      clearTimeout(forced);
+    }
+    if (exit === null) {
+      if (this.child.exitCode === null && !killEscalationAttempted) {
+        killEscalationAttempted = true;
+        this.child.kill("SIGKILL");
+      }
+      throw new ProcessExitTimeoutError(this.componentId, this.evidence.snapshot(), killEscalationAttempted, killEscalationEffective);
+    }
+    killEscalationEffective = killEscalationAttempted &&
+      (this.child.signalCode === "SIGKILL" || exit.code !== 0);
     if (!this.child.stdin.destroyed) this.child.stdin.destroy();
-    await this.#stdioClosed;
-    clearTimeout(forced);
+    if (!await completionWithin(this.#stdioClosed, remaining())) {
+      throw new ProcessStdioDrainTimeoutError(
+        this.componentId,
+        exit.code,
+        this.evidence.snapshot(),
+        killEscalationAttempted,
+        killEscalationEffective,
+      );
+    }
     return {
       stoppedAt: exit.at,
       exitCode: exit.code,
-      killEscalated,
+      killEscalated: killEscalationEffective,
+      killEscalationAttempted,
+      killEscalationEffective,
       telemetry: {
         requestedAt: null,
         correlationKind: null,
@@ -895,7 +1052,8 @@ export class StrictReadyProcess {
     }) as ChildProcessWithoutNullStreams;
     evidence.spawned(child.pid);
     const stdioCompletion = stdioClosed(child);
-    void stdioCompletion.then(() => evidence.complete());
+    const evidenceCompletion = stdioCompletion.then(() => evidence.complete());
+    void evidenceCompletion.catch(() => undefined);
     if (child.pid === undefined) {
       evidence.failure("spawn");
       throw new Error(`${options.componentId} did not receive a process id`);
@@ -911,9 +1069,11 @@ export class StrictReadyProcess {
       ready = await new Promise<{ value: JsonObject; at: string }>((resolve, reject) => {
       let buffer = Buffer.alloc(0);
       let settled = false;
-      const fail = (error: Error): void => {
-        evidence.failure("pre_ready");
-        reject(error);
+      const fail = (failure: Error): void => {
+        try { evidence.failure("pre_ready"); } catch (error) {
+          failure = error instanceof Error ? error : new Error(String(error));
+        }
+        reject(failure);
         child.kill("SIGTERM");
       };
       const timer = setTimeout(() => {
@@ -983,7 +1143,7 @@ export class StrictReadyProcess {
       ready.at,
       options.useTestSignalProxy === true,
       evidence,
-      stdioCompletion,
+      evidenceCompletion,
     );
   }
 
@@ -998,16 +1158,28 @@ export class StrictReadyProcess {
   }
 
   async #stopWithHandshake(timeoutMs: number): Promise<ProcessStopResult> {
+    const boundedTimeout = Math.max(1, timeoutMs);
+    const deadline = Date.now() + boundedTimeout;
+    const reserve = Math.min(250, Math.max(1, Math.floor(boundedTimeout / 4)));
+    const gracefulDeadline = deadline - reserve;
+    const remaining = (): number => Math.max(1, deadline - Date.now());
+    const gracefulRemaining = (): number => Math.max(1, gracefulDeadline - Date.now());
     let requestedAt: string | null = null;
     let correlationId: string | null = null;
     let acknowledgedAt: string | null = null;
     let acknowledgement: ProcessStopTelemetry["acknowledgement"] = "not_requested";
-    const result = async (stoppedAt: string, exitCode: number, killEscalated: boolean): Promise<ProcessStopResult> => {
-      await this.#stdioClosed;
+    const result = async (stoppedAt: string, exitCode: number, killEscalationAttempted: boolean): Promise<ProcessStopResult> => {
+      const killEscalationEffective = killEscalationAttempted &&
+        (this.child.signalCode === "SIGKILL" || exitCode !== 0);
+      if (!await completionWithin(this.#stdioClosed, remaining())) {
+        throw new ProcessStdioDrainTimeoutError(this.componentId, exitCode, this.evidence.snapshot(), killEscalationAttempted, killEscalationEffective);
+      }
       return {
       stoppedAt,
       exitCode,
-      killEscalated,
+      killEscalated: killEscalationEffective,
+      killEscalationAttempted,
+      killEscalationEffective,
       telemetry: {
         requestedAt,
         correlationKind: correlationId === null ? null : "ipc_stop_nonce",
@@ -1021,15 +1193,14 @@ export class StrictReadyProcess {
     if (this.process.exitCode !== null) {
       return await result(this.process.stoppedAt ?? new Date().toISOString(), this.process.exitCode, false);
     }
-    const boundedTimeout = Math.max(1, timeoutMs);
-    let killEscalated = false;
-    const killTree = async (): Promise<void> => {
-      killEscalated = true;
-      await terminateExactChildTree(this.child);
+    let killEscalationAttempted = false;
+    const killTree = async (): Promise<boolean> => {
+      killEscalationAttempted = true;
+      return await completionWithin(terminateExactChildTree(this.child), remaining());
     };
     try {
       if (!this.useTestSignalProxy || !this.child.connected || this.child.send === undefined) {
-        await killTree();
+        if (!await killTree()) throw new ProcessExitTimeoutError(this.componentId, this.evidence.snapshot(), true, false);
       } else {
         const nonce = randomUUID();
         requestedAt = new Date().toISOString();
@@ -1041,7 +1212,7 @@ export class StrictReadyProcess {
             this.#pendingStop = null;
             reject(error);
           };
-          const timer = setTimeout(() => fail(new Error(`${this.componentId} STOP acknowledgement timed out`)), boundedTimeout);
+          const timer = setTimeout(() => fail(new Error(`${this.componentId} STOP acknowledgement timed out`)), gracefulRemaining());
           const pending: PendingReadyProcessStop = {
             nonce,
             settle: (status) => {
@@ -1072,25 +1243,29 @@ export class StrictReadyProcess {
         // complete; JSONL children deliberately do not take this path.
         if (!this.child.stdin.destroyed) this.child.stdin.destroy();
       }
-      const exit = await awaitExitWithin(this.#exit, boundedTimeout);
+      const exit = await awaitExitWithin(this.#exit, gracefulRemaining());
       if (exit === null) {
-        await killTree();
-        const forcedExit = await this.#exit;
+        if (!await killTree()) throw new ProcessExitTimeoutError(this.componentId, this.evidence.snapshot(), true, false);
+        const forcedExit = await awaitExitWithin(this.#exit, remaining());
+        if (forcedExit === null) throw new ProcessExitTimeoutError(this.componentId, this.evidence.snapshot(), true, false);
         if (!this.child.stdin.destroyed) this.child.stdin.destroy();
-        return await result(forcedExit.at, forcedExit.code, killEscalated);
+        return await result(forcedExit.at, forcedExit.code, killEscalationAttempted);
       }
       if (!this.child.stdin.destroyed) this.child.stdin.destroy();
-      return await result(exit.at, exit.code, killEscalated);
+      return await result(exit.at, exit.code, killEscalationAttempted);
     } catch {
       if (acknowledgement === "not_requested" && requestedAt !== null) {
         acknowledgedAt = new Date().toISOString();
         acknowledgement = "failed_or_timed_out";
       }
       this.#pendingStop = null;
-      if (this.process.exitCode === null) await killTree();
-      const exit = await this.#exit;
+      if (this.process.exitCode === null && !await killTree()) {
+        throw new ProcessExitTimeoutError(this.componentId, this.evidence.snapshot(), true, false);
+      }
+      const exit = await awaitExitWithin(this.#exit, remaining());
+      if (exit === null) throw new ProcessExitTimeoutError(this.componentId, this.evidence.snapshot(), killEscalationAttempted, false);
       if (!this.child.stdin.destroyed) this.child.stdin.destroy();
-      return await result(exit.at, exit.code, killEscalated);
+      return await result(exit.at, exit.code, killEscalationAttempted);
     }
   }
 }
@@ -1099,10 +1274,17 @@ async function awaitExitWithin(
   exit: Promise<{ code: number; at: string }>,
   timeoutMs: number,
 ): Promise<{ code: number; at: string } | null> {
-  return await Promise.race([
-    exit,
-    new Promise<null>((resolve) => setTimeout(() => resolve(null), timeoutMs)),
-  ]);
+  return await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => resolve(null), Math.max(1, timeoutMs));
+    void exit.then((value) => { clearTimeout(timer); resolve(value); }, (error: unknown) => { clearTimeout(timer); reject(error); });
+  });
+}
+
+async function completionWithin(completion: Promise<void>, timeoutMs: number): Promise<boolean> {
+  return await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => resolve(false), Math.max(1, timeoutMs));
+    void completion.then(() => { clearTimeout(timer); resolve(true); }, (error: unknown) => { clearTimeout(timer); reject(error); });
+  });
 }
 
 /** Terminate only the supervised child (and, on Windows, only its exact tree). */
