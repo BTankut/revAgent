@@ -341,12 +341,15 @@ describe("secure retained-evidence store", () => {
         writeFileSync(target, "leased-attacker");
         replaced = true;
       } catch (error) {
-        if (process.platform !== "win32" || (error as NodeJS.ErrnoException).code !== "EPERM") throw error;
+        if (process.platform !== "win32" || !["EPERM", "EBUSY"].includes(String((error as NodeJS.ErrnoException).code))) throw error;
       }
       writeFileSync(continued, "continue");
       const outcome = await outcomePromise;
       if (replaced) expect(outcome).toMatchObject({ ok: false, message: expect.stringMatching(/consumer and lease both failed/u) });
-      else expect(outcome).toEqual({ ok: true });
+      else {
+        expect(outcome).toEqual({ ok: true });
+        expect(readFileSync(target, "utf8")).toBe("leased-original");
+      }
     } finally {
       await worker.terminate();
       rmSync(root, { recursive: true, force: true });

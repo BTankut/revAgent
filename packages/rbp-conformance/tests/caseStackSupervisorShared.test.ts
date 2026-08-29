@@ -35,6 +35,9 @@ describe("shared production case-stack controls", () => {
       teardownEvidenceRoot: evidenceRoot,
       runtimeLaunchGuard() {},
     });
+    const unhandled: unknown[] = [];
+    const onUnhandled = (error: unknown): void => { unhandled.push(error); };
+    process.on("unhandledRejection", onUnhandled);
     try {
       await supervisor.restartCaseStack({
         caseId: "O1-C29",
@@ -73,7 +76,10 @@ describe("shared production case-stack controls", () => {
       }
       expect(JSON.stringify(document)).not.toContain(evidenceRoot);
       expect(JSON.stringify(document)).not.toMatch(/(?:[A-Za-z]:\\|"token"\s*:|"proof"\s*:)/u);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(unhandled).toEqual([]);
     } finally {
+      process.off("unhandledRejection", onUnhandled);
       if (supervisor.active) {
         await supervisor.stopCaseStack("o1-c29.test-cleanup", "stop_case_stack");
       }

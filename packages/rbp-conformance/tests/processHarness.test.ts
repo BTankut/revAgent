@@ -692,8 +692,9 @@ describe("strict JSONL process control", () => {
         await expect(stopped).rejects.toMatchObject({ code: "EVIDENCE_CONSUMER_AND_LEASE_FAILED" });
         expect(readFileSync(target, "utf8")).toBe("attacker-bytes");
       } else {
-        expect(attack.code).toBe("EPERM");
+        expect(["EPERM", "EBUSY"]).toContain(attack.code);
         await expect(stopped).resolves.toMatchObject({ exitCode: 0 });
+        expect(readFileSync(target, "utf8")).not.toBe("attacker-bytes");
       }
     } finally {
       await attacker.terminate();
