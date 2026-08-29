@@ -11,6 +11,7 @@ import { Worker } from "node:worker_threads";
 
 import {
   ControlResponseError,
+  ProcessExitTimeoutError,
   ProcessStdioDrainTimeoutError,
   StrictJsonlProcess,
   StrictReadyProcess,
@@ -347,7 +348,13 @@ describe("strict JSONL process control", () => {
     });
     const started = Date.now();
     try {
-      await expect(child.stop("SIGTERM", 50)).rejects.toThrow(/taskkill lifecycle deadline/u);
+      await expect(child.stop("SIGTERM", 50)).rejects.toMatchObject({
+        name: "ProcessExitTimeoutError",
+        componentId: "addin_loopback_fixture",
+        directChildSurvivor: true,
+        killEscalationAttempted: false,
+        killEscalationEffective: false,
+      });
       expect(Date.now() - started).toBeLessThan(150);
       expect(spawnCount).toBe(0);
     } finally {
@@ -355,8 +362,90 @@ describe("strict JSONL process control", () => {
     }
   });
 
+  it.runIf(process.platform === "win32")("does not spawn taskkill when delayed spawn crosses the original deadline", async () => {
+    let spawnCount = 0;
+    const child = await StrictReadyProcess.start({
+      componentId: "addin_loopback_fixture",
+      command: { ...command(), args: ["--eval", "process.stdout.write(JSON.stringify({ready:true,component:'fixture-test'})+'\\n');setInterval(()=>{},1000);"] },
+      absoluteWorkingDirectory: here,
+      taskkillSpawnDelayMsForTest: 200,
+      taskkillSpawnObserverForTest: () => { spawnCount += 1; },
+      validateReadiness(value) { expect(value).toMatchObject({ ready: true, component: "fixture-test" }); },
+    });
+    try {
+      await expect(child.stop("SIGTERM", 50)).rejects.toMatchObject({
+        name: "ProcessExitTimeoutError",
+        killEscalationAttempted: false,
+        directChildSurvivor: true,
+      });
+      expect(spawnCount).toBe(0);
+    } finally {
+      if (child.process.exitCode === null) try { process.kill(child.pid, "SIGKILL"); } catch { /* already exited */ }
+    }
+  });
+
+  it.runIf(process.platform === "win32")("reaps a taskkill whose native spawn returns after its authorization deadline", async () => {
+    let spawnCount = 0;
+    let closeCount = 0;
+    const child = await StrictReadyProcess.start({
+      componentId: "addin_loopback_fixture",
+      command: { ...command(), args: ["--eval", "process.stdout.write(JSON.stringify({ready:true,component:'fixture-test'})+'\\n');setInterval(()=>{},1000);"] },
+      absoluteWorkingDirectory: here,
+      taskkillForcePostSpawnDeadlineForTest: true,
+      taskkillSpawnObserverForTest: () => { spawnCount += 1; },
+      taskkillCloseObserverForTest: () => { closeCount += 1; },
+      validateReadiness(value) { expect(value).toMatchObject({ ready: true, component: "fixture-test" }); },
+    });
+    const started = Date.now();
+    try {
+      let observed: ProcessExitTimeoutError | undefined;
+      try { await child.stop("SIGTERM", 500); } catch (error) { observed = error as ProcessExitTimeoutError; }
+      expect(observed).toMatchObject({ name: "ProcessExitTimeoutError", killEscalationAttempted: true, helperReapUncertain: false });
+      expect(observed!.directChildSurvivor).toBe(observed!.evidence.exitCode === null);
+      expect(observed!.killEscalationEffective).toBe(false);
+      expect(spawnCount).toBe(1);
+      expect(closeCount).toBe(1);
+      expect(Date.now() - started).toBeLessThan(500);
+    } finally {
+      if (child.process.exitCode === null) try { process.kill(child.pid, "SIGKILL"); } catch { /* already exited */ }
+    }
+  });
+
+  it.runIf(process.platform === "win32")("reports zero-remaining taskkill reap uncertainty without blocking the caller", async () => {
+    let closeCount = 0;
+    const child = await StrictReadyProcess.start({
+      componentId: "addin_loopback_fixture",
+      command: { ...command(), args: ["--eval", "process.stdout.write(JSON.stringify({ready:true,component:'fixture-test'})+'\\n');setInterval(()=>{},1000);"] },
+      absoluteWorkingDirectory: here,
+      taskkillForcePostSpawnDeadlineForTest: true,
+      taskkillForceZeroRemainingAfterSpawnForTest: true,
+      taskkillCloseObserverForTest: () => { closeCount += 1; },
+      validateReadiness(value) { expect(value).toMatchObject({ ready: true, component: "fixture-test" }); },
+    });
+    const started = Date.now();
+    try {
+      let observed: ProcessExitTimeoutError | undefined;
+      try { await child.stop("SIGTERM", 500); } catch (error) { observed = error as ProcessExitTimeoutError; }
+      expect(observed).toMatchObject({ name: "ProcessExitTimeoutError", killEscalationAttempted: true, helperReapUncertain: true });
+      expect(observed!.directChildSurvivor).toBe(observed!.evidence.exitCode === null);
+      expect(Date.now() - started).toBeLessThan(500);
+      const deadline = Date.now() + 2_000;
+      while (closeCount === 0 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(closeCount).toBe(1);
+    } finally {
+      if (child.process.exitCode === null) try { process.kill(child.pid, "SIGKILL"); } catch { /* already exited */ }
+    }
+  });
+
   it("returns a bounded truthful direct-child survivor when STOP acknowledgement and tree exit miss one deadline", async () => {
-    const child = await startReadyIpc("missing-ack");
+    const child = await StrictReadyProcess.start({
+      componentId: "addin_loopback_fixture",
+      command: readyIpcCommand("missing-ack"),
+      absoluteWorkingDirectory: here,
+      useTestSignalProxy: true,
+      ...(process.platform === "win32" ? { taskkillVerificationDelayMsForTest: 200 } : {}),
+      validateReadiness(value) { expect(value).toMatchObject({ ready: true, component: "fixture-test" }); },
+    });
     const handle = testIpcSend(child);
     const original = handle.send.bind(handle) as TestIpcSend;
     handle.send = ((message, callback) => {
@@ -368,7 +457,7 @@ describe("strict JSONL process control", () => {
       await expect(child.stop("SIGTERM", 50)).rejects.toMatchObject({
         name: "ProcessExitTimeoutError",
         componentId: "addin_loopback_fixture",
-        killEscalationAttempted: true,
+        killEscalationAttempted: process.platform !== "win32",
         killEscalationEffective: false,
         directChildSurvivor: true,
       });

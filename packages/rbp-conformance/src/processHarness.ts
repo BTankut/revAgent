@@ -131,12 +131,13 @@ export class ProcessStdioDrainTimeoutError extends Error {
 }
 
 export class ProcessExitTimeoutError extends Error {
-  readonly directChildSurvivor = true;
   constructor(
     readonly componentId: ComponentId,
     readonly evidence: ProcessRuntimeEvidence,
     readonly killEscalationAttempted: boolean,
     readonly killEscalationEffective: boolean,
+    readonly directChildSurvivor: boolean,
+    readonly helperReapUncertain: boolean = false,
   ) {
     super(`${componentId} did not produce an observed direct-child exit within the bounded lifecycle deadline`);
     this.name = "ProcessExitTimeoutError";
@@ -880,7 +881,7 @@ export class StrictJsonlProcess {
         killEscalationAttempted = true;
         this.child.kill("SIGKILL");
       }
-      throw new ProcessExitTimeoutError(this.componentId, this.evidence.snapshot(), killEscalationAttempted, killEscalationEffective);
+      throw new ProcessExitTimeoutError(this.componentId, this.evidence.snapshot(), killEscalationAttempted, killEscalationEffective, this.process.exitCode === null);
     }
     killEscalationEffective = killEscalationAttempted &&
       this.child.signalCode === "SIGKILL";
@@ -946,7 +947,7 @@ export class StrictJsonlProcess {
         killEscalationAttempted = true;
         this.child.kill("SIGKILL");
       }
-      throw new ProcessExitTimeoutError(this.componentId, this.evidence.snapshot(), killEscalationAttempted, killEscalationEffective);
+      throw new ProcessExitTimeoutError(this.componentId, this.evidence.snapshot(), killEscalationAttempted, killEscalationEffective, this.process.exitCode === null);
     }
     killEscalationEffective = killEscalationAttempted &&
       this.child.signalCode === "SIGKILL";
@@ -995,7 +996,11 @@ export interface ReadyProcessOptions extends ProcessEvidenceDirectoryOptions {
    */
   useTestSignalProxy?: boolean;
   taskkillVerificationDelayMsForTest?: number;
+  taskkillSpawnDelayMsForTest?: number;
+  taskkillForcePostSpawnDeadlineForTest?: boolean;
+  taskkillForceZeroRemainingAfterSpawnForTest?: boolean;
   taskkillSpawnObserverForTest?: () => void;
+  taskkillCloseObserverForTest?: () => void;
   validateReadiness(value: JsonObject): void;
 }
 
@@ -1091,7 +1096,11 @@ export class StrictReadyProcess {
     private readonly useTestSignalProxy: boolean,
     private readonly taskkillIdentity: WindowsTaskkillIdentity | null,
     private readonly taskkillVerificationDelayMsForTest: number,
+    private readonly taskkillSpawnDelayMsForTest: number,
+    private readonly taskkillForcePostSpawnDeadlineForTest: boolean,
+    private readonly taskkillForceZeroRemainingAfterSpawnForTest: boolean,
     private readonly taskkillSpawnObserverForTest: (() => void) | undefined,
+    private readonly taskkillCloseObserverForTest: (() => void) | undefined,
     private readonly evidence: ProcessEvidenceRecorder,
     stdioCompletion: Promise<void>,
   ) {
@@ -1247,7 +1256,11 @@ export class StrictReadyProcess {
       options.useTestSignalProxy === true,
       taskkillIdentity,
       Math.max(0, options.taskkillVerificationDelayMsForTest ?? 0),
+      Math.max(0, options.taskkillSpawnDelayMsForTest ?? 0),
+      options.taskkillForcePostSpawnDeadlineForTest === true,
+      options.taskkillForceZeroRemainingAfterSpawnForTest === true,
       options.taskkillSpawnObserverForTest,
+      options.taskkillCloseObserverForTest,
       evidence,
       evidenceCompletion,
     );
@@ -1309,10 +1322,24 @@ export class StrictReadyProcess {
           this.taskkillIdentity,
           deadline,
           this.taskkillVerificationDelayMsForTest,
+          this.taskkillSpawnDelayMsForTest,
+          this.taskkillForcePostSpawnDeadlineForTest,
+          this.taskkillForceZeroRemainingAfterSpawnForTest,
           this.taskkillSpawnObserverForTest,
+          this.taskkillCloseObserverForTest,
         );
       } catch (error) {
         if ((error as { readonly killAttempted?: unknown }).killAttempted === true) killEscalationAttempted = true;
+        if (error instanceof Error && /taskkill.*(?:lifecycle deadline|did not exit)/u.test(error.message)) {
+          throw new ProcessExitTimeoutError(
+            this.componentId,
+            this.evidence.snapshot(),
+            killEscalationAttempted,
+            false,
+            this.process.exitCode === null,
+            (error as { readonly helperReapUncertain?: unknown }).helperReapUncertain === true,
+          );
+        }
         throw error;
       }
       killEscalationAttempted ||= termination.attempted;
@@ -1321,7 +1348,7 @@ export class StrictReadyProcess {
     };
     try {
       if (!this.useTestSignalProxy || !this.child.connected || this.child.send === undefined) {
-        if (!await killTree()) throw new ProcessExitTimeoutError(this.componentId, this.evidence.snapshot(), true, false);
+        if (!await killTree()) throw new ProcessExitTimeoutError(this.componentId, this.evidence.snapshot(), true, false, this.process.exitCode === null);
       } else {
         const nonce = randomUUID();
         requestedAt = new Date().toISOString();
@@ -1366,25 +1393,26 @@ export class StrictReadyProcess {
       }
       const exit = await awaitExitWithin(this.#exit, gracefulRemaining());
       if (exit === null) {
-        if (!await killTree()) throw new ProcessExitTimeoutError(this.componentId, this.evidence.snapshot(), true, false);
+        if (!await killTree()) throw new ProcessExitTimeoutError(this.componentId, this.evidence.snapshot(), true, false, this.process.exitCode === null);
         const forcedExit = await awaitExitWithin(this.#exit, remaining());
-        if (forcedExit === null) throw new ProcessExitTimeoutError(this.componentId, this.evidence.snapshot(), true, false);
+        if (forcedExit === null) throw new ProcessExitTimeoutError(this.componentId, this.evidence.snapshot(), true, false, this.process.exitCode === null);
         if (!this.child.stdin.destroyed) this.child.stdin.destroy();
         return await result(forcedExit.at, forcedExit.code, killEscalationAttempted);
       }
       if (!this.child.stdin.destroyed) this.child.stdin.destroy();
       return await result(exit.at, exit.code, killEscalationAttempted);
-    } catch {
+    } catch (error) {
+      if (error instanceof ProcessExitTimeoutError) throw error;
       if (acknowledgement === "not_requested" && requestedAt !== null) {
         acknowledgedAt = new Date().toISOString();
         acknowledgement = "failed_or_timed_out";
       }
       this.#pendingStop = null;
       if (this.process.exitCode === null && !killEscalationAttempted && !await killTree()) {
-        throw new ProcessExitTimeoutError(this.componentId, this.evidence.snapshot(), true, false);
+        throw new ProcessExitTimeoutError(this.componentId, this.evidence.snapshot(), true, false, this.process.exitCode === null);
       }
       const exit = await awaitExitWithin(this.#exit, remaining());
-      if (exit === null) throw new ProcessExitTimeoutError(this.componentId, this.evidence.snapshot(), killEscalationAttempted, false);
+      if (exit === null) throw new ProcessExitTimeoutError(this.componentId, this.evidence.snapshot(), killEscalationAttempted, false, this.process.exitCode === null);
       if (!this.child.stdin.destroyed) this.child.stdin.destroy();
       return await result(exit.at, exit.code, killEscalationAttempted);
     }
@@ -1419,7 +1447,11 @@ async function terminateExactChildTree(
   taskkillIdentity: WindowsTaskkillIdentity | null,
   deadlineMs: number,
   verificationDelayMsForTest: number,
+  spawnDelayMsForTest: number,
+  forcePostSpawnDeadlineForTest: boolean,
+  forceZeroRemainingAfterSpawnForTest: boolean,
   spawnObserverForTest: (() => void) | undefined,
+  closeObserverForTest: (() => void) | undefined,
 ): Promise<ExactTreeTerminationResult> {
   const pid = child.pid;
   if (pid === undefined || child.exitCode !== null) return { attempted: false, confirmed: false };
@@ -1436,10 +1468,19 @@ async function terminateExactChildTree(
     );
     if (!completed) throw new Error("taskkill lifecycle deadline expired during identity verification");
   }
-  verifyWindowsTaskkillIdentity(taskkillIdentity, deadlineMs);
-  assertTaskkillDeadline(deadlineMs);
+  const joinReserve = Math.min(100, Math.max(1, Math.floor(Math.max(1, deadlineMs - Date.now()) / 4)));
+  const spawnDeadlineMs = deadlineMs - joinReserve;
+  verifyWindowsTaskkillIdentity(taskkillIdentity, spawnDeadlineMs);
+  assertTaskkillDeadline(spawnDeadlineMs);
+  if (spawnDelayMsForTest > 0) {
+    const completed = await completionWithin(
+      new Promise<void>((resolve) => setTimeout(resolve, spawnDelayMsForTest)),
+      Math.max(1, spawnDeadlineMs - Date.now()),
+    );
+    if (!completed) throw new Error("taskkill lifecycle deadline expired before spawn");
+  }
   spawnObserverForTest?.();
-  assertTaskkillDeadline(deadlineMs);
+  assertTaskkillDeadline(spawnDeadlineMs);
   const taskkill = spawn(taskkillIdentity.realPath, ["/pid", String(pid), "/T", "/F"], {
     shell: false,
     stdio: "ignore",
@@ -1449,29 +1490,55 @@ async function terminateExactChildTree(
       WINDIR: taskkillIdentity.controllerRoot,
     }),
   });
-  const boundedTimeout = Math.max(1, deadlineMs - Date.now());
-  const joinReserve = Math.min(100, Math.max(1, Math.floor(boundedTimeout / 4)));
+  const boundedTimeout = forceZeroRemainingAfterSpawnForTest ? 0 : deadlineMs - Date.now();
+  const crossedDeadlineDuringSpawn = forcePostSpawnDeadlineForTest || Date.now() >= spawnDeadlineMs;
   return await new Promise<ExactTreeTerminationResult>((resolve, reject) => {
     let joinTimer: NodeJS.Timeout | null = null;
     let timedOut = false;
-    const actionTimer = setTimeout(() => {
+    let closeObserved = false;
+    const observeClose = (): void => {
+      if (closeObserved) return;
+      closeObserved = true;
+      closeObserverForTest?.();
+    };
+    let actionTimer: NodeJS.Timeout | null = null;
+    const rejectCrossedSpawn = (): void => reject(Object.assign(
+      new Error("taskkill lifecycle deadline expired during spawn"),
+      { killAttempted: true, helperReapUncertain: !closeObserved },
+    ));
+    taskkill.once("error", () => {
+      observeClose();
+      if (actionTimer !== null) clearTimeout(actionTimer);
+      if (joinTimer !== null) clearTimeout(joinTimer);
+      if (crossedDeadlineDuringSpawn) rejectCrossedSpawn();
+      else resolve({ attempted: true, confirmed: false });
+    });
+    taskkill.once("close", (code) => {
+      observeClose();
+      if (actionTimer !== null) clearTimeout(actionTimer);
+      if (joinTimer !== null) clearTimeout(joinTimer);
+      if (crossedDeadlineDuringSpawn) rejectCrossedSpawn();
+      else resolve({ attempted: true, confirmed: !timedOut && code === 0 });
+    });
+    if (crossedDeadlineDuringSpawn) {
+      if (taskkill.exitCode === null && taskkill.signalCode === null) taskkill.kill("SIGKILL");
+      if (boundedTimeout > 0) {
+        joinTimer = setTimeout(() => reject(Object.assign(
+          new Error("bound taskkill did not exit within the original lifecycle deadline"),
+          { killAttempted: true, helperReapUncertain: true },
+        )), boundedTimeout);
+      } else rejectCrossedSpawn();
+      return;
+    }
+    const postSpawnJoinReserve = Math.min(100, Math.max(1, Math.floor(boundedTimeout / 4)));
+    actionTimer = setTimeout(() => {
       timedOut = true;
       if (taskkill.exitCode === null && taskkill.signalCode === null) taskkill.kill("SIGKILL");
       joinTimer = setTimeout(() => reject(Object.assign(
         new Error("bound taskkill did not exit within the lifecycle deadline"),
-        { killAttempted: true },
-      )), joinReserve);
-    }, Math.max(1, boundedTimeout - joinReserve));
-    taskkill.once("error", () => {
-      clearTimeout(actionTimer);
-      if (joinTimer !== null) clearTimeout(joinTimer);
-      resolve({ attempted: true, confirmed: false });
-    });
-    taskkill.once("close", (code) => {
-      clearTimeout(actionTimer);
-      if (joinTimer !== null) clearTimeout(joinTimer);
-      resolve({ attempted: true, confirmed: !timedOut && code === 0 });
-    });
+        { killAttempted: true, helperReapUncertain: true },
+      )), postSpawnJoinReserve);
+    }, boundedTimeout - postSpawnJoinReserve);
   });
 }
 

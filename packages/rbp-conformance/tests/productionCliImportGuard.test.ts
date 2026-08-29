@@ -191,8 +191,10 @@ describe("production CLI import guard", () => {
       repoRoot,
     ];
     const programFiles = process.env.ProgramFiles;
-    if (programFiles === undefined) throw new Error("production CLI import guard requires ProgramFiles");
-    const runtimeNode = path.join(programFiles, "nodejs", "node.exe");
+    if (process.platform === "win32" && programFiles === undefined) throw new Error("production CLI import guard requires ProgramFiles on Windows");
+    const runtimeNode = process.platform === "win32"
+      ? path.join(programFiles!, "nodejs", "node.exe")
+      : process.execPath;
     const direct = spawnSync(runtimeNode, [compiledCli, ...args], {
       cwd: repoRoot,
       encoding: "utf8",
@@ -203,6 +205,7 @@ describe("production CLI import guard", () => {
     expect(String(direct.stderr)).toMatch(launcherError);
     expect(String(direct.stdout)).not.toContain("PASS");
 
+    if (process.platform !== "win32") return;
     const npmEntrypoint = path.join(
       path.dirname(runtimeNode),
       "node_modules",

@@ -49,7 +49,8 @@ describe("secure retained-evidence store", () => {
       });
       await expect(store.writeAccepted(`${base}/foreign.json`, "foreign", (() => foreignToken) as never))
         .rejects.toMatchObject({ code: "EVIDENCE_ACCEPTANCE_REQUIRED" });
-      expect(lifecycle).toEqual({ leasesOpened: 4, leasesDisposed: 4, helpersSpawned: 4, helpersClosed: 4 });
+      const helperCount = process.platform === "win32" ? 4 : 0;
+      expect(lifecycle).toEqual({ leasesOpened: 4, leasesDisposed: 4, helpersSpawned: helperCount, helpersClosed: helperCount });
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -122,6 +123,50 @@ describe("secure retained-evidence store", () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it.runIf(process.platform === "win32")("reaps async direct-root helpers on malformed, crash, and timeout failures", async () => {
+    for (const helperFault of ["malformed_output", "invalid_ready", "crash", "timeout"] as const) {
+      const root = mkdtempSync(path.join(tmpdir(), `rbp-secure-direct-fault-${helperFault}-`));
+      try {
+        const lifecycle = { leasesOpened: 0, leasesDisposed: 0, helpersSpawned: 0, helpersClosed: 0 };
+        const store = new SecureEvidenceStore(root, { directRootOnly: true, test: { helperFault, timeoutMs: 500, lifecycle } });
+        const bytes = Buffer.from("fault-bytes");
+        const sha256 = createHash("sha256").update(bytes).digest("hex");
+        await expect(store.writeDirectAccepted("fault.json", bytes, (candidate) => candidate.acceptExact({
+          logicalPath: "fault.json",
+          absolutePath: path.join(root, "fault.json"),
+          bytes,
+          sha256,
+        }, undefined))).rejects.toBeInstanceOf(Error);
+        expect(lifecycle.helpersSpawned).toBe(1);
+        expect(lifecycle.helpersClosed).toBe(1);
+        expect(lifecycle.leasesDisposed).toBe(lifecycle.leasesOpened);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    }
+  }, 15_000);
+
+  it.runIf(process.platform === "win32")("observes initial, COMMIT, and ABORT stdin failures and reaps the helper", async () => {
+    for (const helperFault of ["initial_write_failure", "commit_write_failure", "abort_write_failure"] as const) {
+      const root = mkdtempSync(path.join(tmpdir(), `rbp-secure-stdin-${helperFault}-`));
+      try {
+        const lifecycle = { leasesOpened: 0, leasesDisposed: 0, helpersSpawned: 0, helpersClosed: 0 };
+        const store = new SecureEvidenceStore(root, { directRootOnly: true, test: { helperFault, timeoutMs: 1_000, lifecycle } });
+        const bytes = Buffer.from("stdin-failure");
+        const sha256 = createHash("sha256").update(bytes).digest("hex");
+        await expect(store.writeDirectAccepted("stdin.json", bytes, (candidate) => {
+          if (helperFault === "abort_write_failure") throw new Error("planned abort");
+          return candidate.acceptExact({ logicalPath: "stdin.json", absolutePath: path.join(root, "stdin.json"), bytes, sha256 }, undefined);
+        })).rejects.toBeInstanceOf(Error);
+        expect(lifecycle.helpersSpawned).toBe(1);
+        expect(lifecycle.helpersClosed).toBe(1);
+        expect(lifecycle.leasesDisposed).toBe(lifecycle.leasesOpened);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    }
+  }, 15_000);
 
   it("rejects content at the fixed size bound plus one before publication allocation", async () => {
     const root = mkdtempSync(path.join(tmpdir(), "rbp-secure-size-bound-"));

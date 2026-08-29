@@ -54,7 +54,7 @@ export interface SecureEvidenceStoreTestOptions {
   readonly reachedMarker?: string;
   readonly continueMarker?: string;
   readonly timeoutMs?: number;
-  readonly helperFault?: "malformed_output" | "unknown_error_code" | "timeout" | "crash" | "cleanup_uncertain";
+  readonly helperFault?: "malformed_output" | "invalid_ready" | "unknown_error_code" | "timeout" | "crash" | "cleanup_uncertain" | "initial_write_failure" | "commit_write_failure" | "abort_write_failure";
   readonly lifecycle?: { leasesOpened: number; leasesDisposed: number; helpersSpawned: number; helpersClosed: number };
 }
 
@@ -225,6 +225,7 @@ try {
   if([Text.Encoding]::UTF8.GetByteCount($raw)-gt ${MAX_NATIVE_HELPER_INPUT_BYTES}){throw 'INPUT_TOO_LARGE'}
   $q=$raw|ConvertFrom-Json
   if($q.fault-eq'malformed_output'){[Console]::Out.Write('{');exit 0}
+  if($q.fault-eq'invalid_ready'){[Console]::Out.WriteLine('{"schema":"revagent-pinned-evidence-helper/v2","status":"READY","nonce":"invalid"}');exit 0}
   if($q.fault-eq'unknown_error_code'){[Console]::Out.Write('{"schema":"revagent-pinned-evidence-helper/v1","status":"error","code":"opaque_error"}');exit 71}
   $phase='compile'
   Add-Type -TypeDefinition $source | Out-Null
@@ -530,7 +531,9 @@ export class SecureEvidenceStore {
     }) as ChildProcessWithoutNullStreams;
     if (this.#test?.lifecycle !== undefined) this.#test.lifecycle.helpersSpawned += 1;
     let stderrObserved = false;
+    let stdinError: Error | undefined;
     child.stderr.on("data", () => { stderrObserved = true; });
+    child.stdin.on("error", (error) => { stdinError = error; });
     let helperClosed = false;
     const exit = new Promise<number>((resolve, reject) => {
       child.once("error", reject);
@@ -552,8 +555,17 @@ export class SecureEvidenceStore {
       if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) throw evidenceError("EVIDENCE_DISPOSAL_FAILED", "evidence helper protocol is malformed");
       return parsed as Record<string, unknown>;
     };
+    const writeInput = async (value: string | Buffer): Promise<void> => {
+      if (Date.now() >= deadlineMs) throw evidenceError("EVIDENCE_DISPOSAL_FAILED", "evidence helper input deadline expired");
+      if (stdinError !== undefined) throw stdinError;
+      await beforeDeadline(new Promise<void>((resolve, reject) => {
+        child.stdin.write(value, (error) => error == null ? resolve() : reject(error));
+      }), deadlineMs, stopHelper);
+      if (stdinError !== undefined) throw stdinError;
+    };
     try {
-      child.stdin.write(request);
+      if (this.#test?.helperFault === "initial_write_failure") child.stdin.destroy();
+      await writeInput(request);
       const ready = await nextRecord();
     if (ready.schema === "revagent-pinned-evidence-helper/v1" && ready.status === "error") {
       const exitCode = await beforeDeadline(exit, lifecycleDeadlineMs, stopHelper);
@@ -584,7 +596,9 @@ export class SecureEvidenceStore {
     });
       const finalize = async (accepted: boolean): Promise<void> => {
       if (child.stdin.destroyed) throw evidenceError("EVIDENCE_DISPOSAL_FAILED", "evidence helper control channel is closed");
-      child.stdin.write(`${accepted ? "COMMIT" : "ABORT"} ${nonce}\n`);
+      if ((accepted && this.#test?.helperFault === "commit_write_failure") ||
+          (!accepted && this.#test?.helperFault === "abort_write_failure")) child.stdin.destroy();
+      await writeInput(`${accepted ? "COMMIT" : "ABORT"} ${nonce}\n`);
       const final = await nextRecord();
       const expectedStatus = accepted ? "COMMITTED" : "ABORTED";
       if (final.schema !== "revagent-pinned-evidence-helper/v2" || final.status !== expectedStatus || final.nonce !== nonce ||

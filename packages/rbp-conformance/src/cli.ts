@@ -418,24 +418,26 @@ export async function runFinalEvidenceAsyncCli(
 
   const aggregateBytes = Buffer.from(stableJson(aggregate), "utf8");
   const aggregateSha256 = createHash("sha256").update(aggregateBytes).digest("hex");
-  const storedAggregateBytes = await store.writeAccepted(aggregate.reportPath, aggregateBytes, (candidate) => candidate.acceptExact({
+  const acceptedAggregate = await store.writeAccepted(aggregate.reportPath, aggregateBytes, (candidate) => candidate.acceptExact({
     logicalPath: aggregate.reportPath,
     absolutePath: store.resolve(aggregate.reportPath),
     bytes: aggregateBytes,
     sha256: aggregateSha256,
-  }, candidate.bytes));
-  if (!storedAggregateBytes.equals(aggregateBytes)) {
+  }, {
+    absolutePath: candidate.absolutePath,
+    bytes: candidate.bytes,
+    sha256: candidate.sha256,
+    parsed: JSON.parse(candidate.bytes.toString("utf8")) as typeof aggregate,
+  }));
+  if (!acceptedAggregate.bytes.equals(aggregateBytes) || acceptedAggregate.sha256 !== aggregateSha256) {
     throw new Error("retained aggregate JSON bytes differ from the in-memory result");
   }
-  const retainedAggregate = readExactRetainedJson(
-    context.artifactRoot,
-    aggregate.reportPath,
-    aggregate,
-    "aggregate report",
-  );
-  context.options.aggregateReportFile = retainedAggregate.absolutePath;
-  assertPassingAggregateReport(aggregate, context.options);
-  assertAggregateMatchesPlans(aggregate, context.runPlans);
+  if (stableJson(acceptedAggregate.parsed) !== stableJson(aggregate)) {
+    throw new Error("accepted aggregate JSON differs from the in-memory result");
+  }
+  context.options.aggregateReportFile = acceptedAggregate.absolutePath;
+  assertPassingAggregateReport(acceptedAggregate.parsed, context.options);
+  assertAggregateMatchesPlans(acceptedAggregate.parsed, context.runPlans);
 
   assertFinalPlanSnapshotsCurrent(context);
   const soakResult = await runReconnectSoak({
