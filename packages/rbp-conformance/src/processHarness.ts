@@ -222,7 +222,16 @@ function retainedDiagnosticProjection(value: unknown, key = ""): unknown {
     }
     return RETAINED_DIAGNOSTIC_VALUES[key]?.has(value) === true ? value : "[redacted]";
   }
-  return value;
+  if (typeof value === "boolean") {
+    return ["complete", "ok", "ready", "stopped"].includes(key) ? value : "[redacted]";
+  }
+  if (typeof value === "number") {
+    if (key === "controlVersion" && value === 1) return value;
+    if (key === "maxControlLineBytes" && value === MAX_CONTROL_LINE_BYTES) return value;
+    if (key === "exitCode" && [0, 1, 128].includes(value)) return value;
+    return "[redacted]";
+  }
+  return value === null ? null : "[redacted]";
 }
 
 function redactDiagnosticLine(input: string): string {
@@ -1168,9 +1177,11 @@ export class StrictReadyProcess {
     let correlationId: string | null = null;
     let acknowledgedAt: string | null = null;
     let acknowledgement: ProcessStopTelemetry["acknowledgement"] = "not_requested";
+    let killEscalationAttempted = false;
+    let ownedTreeTerminationConfirmed = false;
     const result = async (stoppedAt: string, exitCode: number, killEscalationAttempted: boolean): Promise<ProcessStopResult> => {
       const killEscalationEffective = killEscalationAttempted &&
-        (this.child.signalCode === "SIGKILL" || exitCode !== 0);
+        (this.child.signalCode === "SIGKILL" || ownedTreeTerminationConfirmed);
       if (!await completionWithin(this.#stdioClosed, remaining())) {
         throw new ProcessStdioDrainTimeoutError(this.componentId, exitCode, this.evidence.snapshot(), killEscalationAttempted, killEscalationEffective);
       }
@@ -1193,10 +1204,13 @@ export class StrictReadyProcess {
     if (this.process.exitCode !== null) {
       return await result(this.process.stoppedAt ?? new Date().toISOString(), this.process.exitCode, false);
     }
-    let killEscalationAttempted = false;
     const killTree = async (): Promise<boolean> => {
       killEscalationAttempted = true;
-      return await completionWithin(terminateExactChildTree(this.child), remaining());
+      let confirmed = false;
+      const termination = terminateExactChildTree(this.child).then((value) => { confirmed = value; });
+      const completed = await completionWithin(termination, remaining());
+      if (completed) ownedTreeTerminationConfirmed ||= confirmed;
+      return completed;
     };
     try {
       if (!this.useTestSignalProxy || !this.child.connected || this.child.send === undefined) {
@@ -1288,29 +1302,29 @@ async function completionWithin(completion: Promise<void>, timeoutMs: number): P
 }
 
 /** Terminate only the supervised child (and, on Windows, only its exact tree). */
-async function terminateExactChildTree(child: ChildProcessWithoutNullStreams): Promise<void> {
+async function terminateExactChildTree(child: ChildProcessWithoutNullStreams): Promise<boolean> {
   const pid = child.pid;
-  if (pid === undefined || child.exitCode !== null) return;
+  if (pid === undefined || child.exitCode !== null) return false;
   if (process.platform !== "win32") {
     try { child.kill("SIGKILL"); } catch { /* already exited */ }
-    return;
+    return false;
   }
   const systemRoot = process.env.SystemRoot ?? process.env.WINDIR;
   if (systemRoot === undefined) {
     try { child.kill("SIGKILL"); } catch { /* already exited */ }
-    return;
+    return false;
   }
   const taskkill = spawn(path.join(systemRoot, "System32", "taskkill.exe"), ["/pid", String(pid), "/T", "/F"], {
     shell: false,
     stdio: "ignore",
     windowsHide: true,
   });
-  await new Promise<void>((resolve) => {
+  return await new Promise<boolean>((resolve) => {
     taskkill.once("error", () => {
       try { child.kill("SIGKILL"); } catch { /* already exited */ }
-      resolve();
+      resolve(false);
     });
-    taskkill.once("close", () => resolve());
+    taskkill.once("close", (code) => resolve(code === 0));
   });
 }
 

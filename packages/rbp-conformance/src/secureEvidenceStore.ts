@@ -14,7 +14,6 @@ import {
   readSync,
   realpathSync,
   rmSync,
-  statSync,
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
@@ -35,12 +34,14 @@ const MAX_NATIVE_HELPER_OUTPUT_BYTES = 4 * 1024;
 export const MAX_SECURE_EVIDENCE_CONTENT_BYTES = 32 * 1024 * 1024;
 
 export type SecureEvidenceTestBoundary =
+  | "constructor_baseline_pinned"
   | "directories_pinned"
   | "stage_complete"
   | "publish_complete"
   | "readback_complete"
   | "before_cleanup"
-  | "after_verification_before_return";
+  | "after_verification_before_return"
+  | "after_cleanup_before_return";
 
 export interface SecureEvidenceStoreTestOptions {
   readonly boundary?: SecureEvidenceTestBoundary;
@@ -62,13 +63,6 @@ function isInside(root: string, candidate: string): boolean {
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
-function assertPlainDirectory(directory: string): void {
-  const stat = lstatSync(directory);
-  if (!stat.isDirectory() || stat.isSymbolicLink()) {
-    throw new Error(`evidence path component is not a plain directory: ${directory}`);
-  }
-}
-
 function normalizeWindowsIdentity(value: string): string {
   return value.replace(/^\\\\\?\\/u, "").replace(/[\\/]+$/u, "").toLowerCase();
 }
@@ -87,6 +81,40 @@ function waitForTestBoundary(test: SecureEvidenceStoreTestOptions | undefined, b
   while (!existsSync(test.continueMarker)) {
     if (Date.now() >= deadline) throw new Error("secure evidence test synchronization timed out");
     Atomics.wait(wait, 0, 0, 10);
+  }
+}
+
+function pinnedDirectoryBaseline(directory: string, test: SecureEvidenceStoreTestOptions | undefined): {
+  readonly realPath: string;
+  readonly device: bigint;
+  readonly inode: bigint;
+} {
+  const descriptor = openSync(directory, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const pinned = fstatSync(descriptor, { bigint: true });
+    if (!pinned.isDirectory()) throw new Error("evidence root is not a directory");
+    waitForTestBoundary(test, "constructor_baseline_pinned");
+    const lexicalBefore = lstatSync(directory, { bigint: true });
+    if (!lexicalBefore.isDirectory() || lexicalBefore.isSymbolicLink() ||
+        lexicalBefore.dev !== pinned.dev || lexicalBefore.ino !== pinned.ino) {
+      throw new Error("evidence root identity changed during constructor baseline");
+    }
+    const realPath = realpathSync.native(directory);
+    const lexicalAfter = lstatSync(directory, { bigint: true });
+    if (!lexicalAfter.isDirectory() || lexicalAfter.isSymbolicLink() ||
+        lexicalAfter.dev !== pinned.dev || lexicalAfter.ino !== pinned.ino) {
+      throw new Error("evidence root identity changed during constructor baseline");
+    }
+    const lexicalIdentity = process.platform === "win32"
+      ? normalizeWindowsIdentity(directory)
+      : path.resolve(directory);
+    const realIdentity = process.platform === "win32"
+      ? normalizeWindowsIdentity(realPath)
+      : realPath;
+    if (lexicalIdentity !== realIdentity) throw new Error("evidence root resolves through a substituted directory identity");
+    return { realPath, device: pinned.dev, inode: pinned.ino };
+  } finally {
+    closeSync(descriptor);
   }
 }
 
@@ -137,6 +165,7 @@ public static class RevAgentPinnedEvidencePublisher {
       string verifiedId; using(var read=new FileStream(target,FileMode.Open,FileAccess.Read,FileShare.Read)){verifiedId=Verify(read,target,bytes);}
       Sync(boundary,reachedMarker,continueMarker,syncTimeoutMs,"readback_complete");Sync(boundary,reachedMarker,continueMarker,syncTimeoutMs,"before_cleanup");if(fault=="cleanup_uncertain")throw new IOException("CLEANUP_UNCERTAIN");
       File.Delete(temp); temp=null;
+      Sync(boundary,reachedMarker,continueMarker,syncTimeoutMs,"after_cleanup_before_return");
       Sync(boundary,reachedMarker,continueMarker,syncTimeoutMs,"after_verification_before_return");
       using(var finalRead=new FileStream(target,FileMode.Open,FileAccess.Read,FileShare.Read)){if(Verify(finalRead,target,bytes)!=verifiedId)throw new IOException("IDENTITY_CHANGED");}
     } finally { foreach(var h in held)h.Dispose(); if(temp!=null && !published){try{File.Delete(temp);}catch{}} }
@@ -183,11 +212,10 @@ export class SecureEvidenceStore {
   constructor(artifactRoot: string, options: SecureEvidenceStoreOptions = {}) {
     this.artifactRoot = path.resolve(artifactRoot);
     if (!existsSync(this.artifactRoot)) mkdirSync(this.artifactRoot, { recursive: true, mode: DIRECTORY_MODE });
-    assertPlainDirectory(this.artifactRoot);
-    this.#artifactRootReal = realpathSync.native(this.artifactRoot);
-    const rootIdentity = statSync(this.artifactRoot, { bigint: true });
-    this.#artifactRootDevice = rootIdentity.dev;
-    this.#artifactRootInode = rootIdentity.ino;
+    const rootIdentity = pinnedDirectoryBaseline(this.artifactRoot, options.test);
+    this.#artifactRootReal = rootIdentity.realPath;
+    this.#artifactRootDevice = rootIdentity.device;
+    this.#artifactRootInode = rootIdentity.inode;
     this.retainedRoot = path.resolve(this.artifactRoot, canonicalManifest.retainedEvidence.root);
     if (!isInside(this.artifactRoot, this.retainedRoot)) throw new Error("canonical retained evidence root escapes artifactRoot");
     this.#test = options.test;
@@ -359,6 +387,9 @@ export class SecureEvidenceStore {
         throw new Error("evidence directory identity changed after validation");
       }
       if (this.#test?.helperFault === "cleanup_uncertain") throw new Error("secure evidence publication cleanup is uncertain");
+      rmSync(temporary);
+      temporary = undefined;
+      waitForTestBoundary(this.#test, "after_cleanup_before_return");
       waitForTestBoundary(this.#test, "after_verification_before_return");
       const finalRead = openSync(target, constants.O_RDONLY | constants.O_NOFOLLOW);
       try {
@@ -374,8 +405,6 @@ export class SecureEvidenceStore {
         }
         if (!finalBytes.equals(bytes)) throw new Error("secure evidence final readback mismatch");
       } finally { closeSync(finalRead); }
-      rmSync(temporary);
-      temporary = undefined;
       fsyncSync(descriptor);
     } finally {
       if (temporary !== undefined) {

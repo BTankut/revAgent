@@ -134,7 +134,7 @@ describe("secure retained-evidence store", () => {
     const worker = new Worker(`
       const {parentPort,workerData}=require('node:worker_threads');
       import(workerData.moduleUrl).then(({SecureEvidenceStore})=>{
-        try { new SecureEvidenceStore(workerData.root,{test:{boundary:'after_verification_before_return',reachedMarker:workerData.reached,continueMarker:workerData.continued,timeoutMs:5000}}).write(workerData.relative,'original-bytes'); parentPort.postMessage({ok:true}); }
+        try { new SecureEvidenceStore(workerData.root,{test:{boundary:'after_cleanup_before_return',reachedMarker:workerData.reached,continueMarker:workerData.continued,timeoutMs:5000}}).write(workerData.relative,'original-bytes'); parentPort.postMessage({ok:true}); }
         catch(error){ parentPort.postMessage({ok:false,message:error.message}); }
       });
     `, { eval: true, workerData: {
@@ -172,6 +172,41 @@ describe("secure retained-evidence store", () => {
         .toThrow(/identity changed|IDENTITY_CHANGED/u);
       expect(readdirSync(root)).toEqual([]);
     } finally {
+      rmSync(owner, { recursive: true, force: true });
+    }
+  });
+
+  it("fails a synchronized constructor swap after the root handle is pinned", async () => {
+    const owner = mkdtempSync(path.join(tmpdir(), "rbp-secure-constructor-swap-"));
+    const root = path.join(owner, "artifact");
+    const moved = path.join(owner, "artifact-moved");
+    const reached = path.join(owner, "baseline-reached");
+    const continued = path.join(owner, "continue");
+    mkdirSync(root);
+    const worker = new Worker(`
+      const {parentPort,workerData}=require('node:worker_threads');
+      import(workerData.moduleUrl).then(({SecureEvidenceStore})=>{
+        try { new SecureEvidenceStore(workerData.root,{test:{boundary:'constructor_baseline_pinned',reachedMarker:workerData.reached,continueMarker:workerData.continued,timeoutMs:5000}}); parentPort.postMessage({ok:true}); }
+        catch(error){ parentPort.postMessage({ok:false,message:error.message}); }
+      });
+    `, { eval: true, workerData: {
+      moduleUrl: new URL("../dist/src/secureEvidenceStore.js", import.meta.url).href,
+      root, reached, continued,
+    } });
+    try {
+      const deadline = Date.now() + 5_000;
+      while (!existsSync(reached) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(existsSync(reached)).toBe(true);
+      renameSync(root, moved);
+      mkdirSync(root);
+      writeFileSync(continued, "continue");
+      const outcome = await new Promise<{ ok: boolean; message?: string }>((resolve, reject) => {
+        worker.once("message", resolve); worker.once("error", reject);
+      });
+      expect(outcome).toMatchObject({ ok: false, message: expect.stringMatching(/identity changed/u) });
+      expect(readdirSync(root)).toEqual([]);
+    } finally {
+      await worker.terminate();
       rmSync(owner, { recursive: true, force: true });
     }
   });
@@ -272,13 +307,13 @@ describe("secure retained-evidence store", () => {
       const linkRoot = path.join(root, "reparse-root");
       symlinkSync(target, linkRoot, kind);
       expect(lstatSync(linkRoot).isSymbolicLink()).toBe(true);
-      expect(() => new SecureEvidenceStore(linkRoot)).toThrow(/plain directory/u);
+      expect(() => new SecureEvidenceStore(linkRoot)).toThrow(/plain directory|identity changed|substituted directory identity/u);
       const store = new SecureEvidenceStore(root);
       const linkDirectory = path.join(store.retainedRoot, "junction");
       symlinkSync(target, linkDirectory, kind);
       expect(lstatSync(linkDirectory).isSymbolicLink()).toBe(true);
       expect(() => store.write(`${canonicalManifest.retainedEvidence.root}/junction/escape.json`, "escape"))
-        .toThrow(/plain directory|IDENTITY_CHANGED/u);
+        .toThrow(/plain directory|IDENTITY_CHANGED|identity changed/u);
       expect(readdirSync(target)).toEqual([]);
     } finally {
       rmSync(root, { recursive: true, force: true });

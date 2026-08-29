@@ -132,7 +132,7 @@ describe("strict JSONL process control", () => {
     const script = path.join(root, "tail-child.mjs");
     const evidenceDirectory = path.join(root, "retained");
     mkdirSync(evidenceDirectory);
-    const sentinels = ["BEARER_CANARY", "BASIC_CANARY", "SUBJECT_CANARY", "rs_RSID_CANARY", "ALLOWED_CANARY", "path-canary", "query-canary"];
+    const sentinels = ["BEARER_CANARY", "BASIC_CANARY", "SUBJECT_CANARY", "rs_RSID_CANARY", "ALLOWED_CANARY", "path-canary", "query-canary", "424242"];
     const diagnostic = {
       message: "Authorization: Basic BASIC_CANARY",
       durabilityEvents: [{ subject: "SUBJECT_CANARY", rsid: "rs_RSID_CANARY", event: "terminal_persisted" }],
@@ -150,7 +150,8 @@ describe("strict JSONL process control", () => {
       status: "ALLOWED_CANARY", transport: "ALLOWED_CANARY",
       ws_url: "ws://127.0.0.1:54321/path-canary?secret=query-canary#ALLOWED_CANARY",
     };
-    const stderr = `Authorization: Bearer BEARER_CANARY\n${JSON.stringify(diagnostic)}\ndiagnostic ALLOWED_CANARY ${JSON.stringify(diagnostic)}\n${JSON.stringify(allowedCanaries)}`;
+    const numericCanaries = Object.fromEntries(["actions", "event", "code", "component", "phase", "state", "status", "transport", "ws_url", "ready", "ok", "complete", "stopped", "controlVersion", "maxControlLineBytes", "exitCode"].map((key) => [key, 424242]));
+    const stderr = `Authorization: Bearer BEARER_CANARY\n${JSON.stringify(diagnostic)}\ndiagnostic ALLOWED_CANARY ${JSON.stringify(diagnostic)}\n${JSON.stringify(allowedCanaries)}\n${JSON.stringify(numericCanaries)}`;
     writeFileSync(script, [
       "process.stdout.write(JSON.stringify({ready:true,component:'fixture-test',controlVersion:1,maxControlLineBytes:65536,actions:['shutdown']})+'\\n');",
       `const diagnostic=${JSON.stringify(diagnostic)}; const stderr=${JSON.stringify(stderr)};`,
@@ -311,6 +312,35 @@ describe("strict JSONL process control", () => {
     }) as TestIpcSend;
     await expect(child.stop("SIGTERM", 2_000)).resolves.toMatchObject({ killEscalated: true });
     expect(child.process.exitCode).not.toBeNull();
+  });
+
+  it.runIf(process.platform === "win32")("does not infer effective escalation from an unconfirmed nonzero exit", async () => {
+    const child = await StrictReadyProcess.start({
+      componentId: "addin_loopback_fixture",
+      command: { ...command(), args: ["--eval", "process.stdout.write(JSON.stringify({ready:true,component:'fixture-test'})+'\\n');setTimeout(()=>process.exit(7),100);"] },
+      absoluteWorkingDirectory: here,
+      validateReadiness(value) { expect(value).toMatchObject({ ready: true, component: "fixture-test" }); },
+    });
+    const originalSystemRoot = process.env.SystemRoot;
+    const originalWindir = process.env.WINDIR;
+    const handle = (child as unknown as { readonly child: { kill(signal?: NodeJS.Signals | number): boolean } }).child;
+    const originalKill = handle.kill.bind(handle);
+    try {
+      delete process.env.SystemRoot;
+      delete process.env.WINDIR;
+      handle.kill = () => false;
+      await expect(child.stop("SIGTERM", 1_000)).resolves.toMatchObject({
+        exitCode: expect.any(Number),
+        killEscalationAttempted: true,
+        killEscalationEffective: false,
+        killEscalated: false,
+      });
+    } finally {
+      handle.kill = originalKill;
+      if (originalSystemRoot === undefined) delete process.env.SystemRoot; else process.env.SystemRoot = originalSystemRoot;
+      if (originalWindir === undefined) delete process.env.WINDIR; else process.env.WINDIR = originalWindir;
+      if (child.process.exitCode === null) try { process.kill(child.pid, "SIGKILL"); } catch { /* already exited */ }
+    }
   });
 
   it("returns a bounded truthful direct-child survivor when STOP acknowledgement and tree exit miss one deadline", async () => {
