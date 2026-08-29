@@ -255,6 +255,11 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
             return (null, ProtocolFault(request, exception.Message));
         }
 
+        if (request.Verification.ValueKind is not (JsonValueKind.Null or JsonValueKind.Undefined) &&
+            (request.Mutating || request.MutationScope.ValueKind is not (JsonValueKind.Null or JsonValueKind.Undefined) ||
+             clearances.Count != 0 || request.Method == DispatchPayloadRecoveryMethod))
+            return (null, ProtocolFault(request, "Verification requires an ordinary non-mutating add-in read without clearances."));
+
         if (clearances.Count == 0)
         {
             // Durability step 1. Section 12.2 rule 5 (a changed digest,
@@ -265,7 +270,7 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
             {
                 return (
                     await _journal
-                        .AdmitInvocationAsync(identity, cancellationToken)
+                        .AdmitInvocationAsync(identity, cancellationToken, request.Verification)
                         .ConfigureAwait(false),
                     null);
             }
@@ -635,7 +640,8 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
                             outcome.Message ??
                                 "The add-in dispatch outcome is unknown.",
                             outcome.FaultClass,
-                            cancellationToken)
+                            cancellationToken,
+                            outcome)
                         .ConfigureAwait(false),
             };
             durableDecisionProven = true;
@@ -824,7 +830,7 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
                     (IsOmittedPayload(body) || armSuppressedOrigin)
                         ? new RbpRecoveryPayload(digest, outcome.RawResponsePayload)
                         : null),
-                DurableDecisionToken, expectedIdentity: identity)
+                DurableDecisionToken, expectedIdentity: identity, responseEvidence: outcome)
             .ConfigureAwait(false);
 
         durableDecisionProven();
@@ -870,7 +876,7 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
                     RbpInvocationState.Failed,
                     body,
                     JournalEvidenceDigest(body)),
-                DurableDecisionToken, expectedIdentity: identity)
+                DurableDecisionToken, expectedIdentity: identity, responseEvidence: outcome)
             .ConfigureAwait(false);
 
         return RbpInvocationAnswer.Error(body);
@@ -881,7 +887,8 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
         RbpInvocationIdentity identity,
         string message,
         string? faultClassHint,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        RbpAddinOutcome? responseEvidence = null)
     {
         if (!request.Mutating)
         {
@@ -910,7 +917,7 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
                         RbpInvocationState.Failed,
                         readBody,
                         JournalEvidenceDigest(readBody)),
-                    DurableDecisionToken, expectedIdentity: identity)
+                    DurableDecisionToken, expectedIdentity: identity, responseEvidence: responseEvidence)
                 .ConfigureAwait(false);
             return RbpInvocationAnswer.Error(readBody);
         }

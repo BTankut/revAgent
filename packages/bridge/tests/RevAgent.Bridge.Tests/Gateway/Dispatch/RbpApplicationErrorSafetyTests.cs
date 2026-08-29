@@ -577,6 +577,11 @@ public sealed class RbpApplicationErrorSafetyTests
 
     internal sealed class ResponseTransport(string result, int? errorCode) : IAddinTransport
     {
+        internal void SetResponse(string resultJson, int? code = null)
+        {
+            result = resultJson;
+            errorCode = code;
+        }
         internal int Calls;
         internal byte[] LastBytes = [];
         internal Action? BeforeReturn;

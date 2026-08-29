@@ -1,4 +1,5 @@
 using System.Text.Json;
+using RevAgent.Bridge.Tests.Gateway.Dispatch;
 using RevAgent.Bridge.Gateway.Protocol;
 using RevAgent.Bridge.Gateway.Storage;
 
@@ -46,20 +47,20 @@ public sealed class RbpJournalStoreHoldClearanceTests
     public async Task ConclusiveEvidenceIsRecordedButIsNotClearance()
     {
         using var directory = new RbpJournalTestDirectory();
+        var fixture = new RbpApplicationErrorSafetyTests.RoutedFixture("{}", null);
         await using RbpJournalStore store = OpenStore(directory);
-        _ = await store.PersistRegisteredSessionAsync(
-            RbpJournalTestData.Registration());
+        await RbpJournalStoreProductionEvidence.RegisterRoutedSessionAsync(
+            store, fixture);
         string holdId = await InstallIndeterminateHoldAsync(
             store,
             OriginIdentity());
 
-        RbpVerificationHold evidenced =
-            await store.RecordHoldVerificationEvidenceAsync(
-                "rs-test",
-                Evidence(holdId));
+        _ = await ProduceEvidenceAsync(store, fixture, holdId);
+        RbpVerificationHold evidenced = Assert.IsType<RbpVerificationHold>(
+            await store.GetHoldAsync("rs-test", holdId));
 
         Assert.Equal(RbpHoldState.EvidenceRecorded, evidenced.State);
-        Assert.Equal(EvidenceDigest, evidenced.EvidenceDigest);
+        Assert.NotNull(evidenced.EvidenceDigest);
         Assert.Equal(VerificationId, evidenced.VerificationInvocationId);
 
         // A successful read is evidence, not clearance: dispatch stays
@@ -76,25 +77,29 @@ public sealed class RbpJournalStoreHoldClearanceTests
     }
 
     [Fact]
-    public async Task InconclusiveEvidenceIsRetainedWhileTheHoldStaysActive()
+    public async Task CallerSeededInconclusiveEvidenceIsDeniedAndTheHoldStaysActive()
     {
         using var directory = new RbpJournalTestDirectory();
+        var fixture = new RbpApplicationErrorSafetyTests.RoutedFixture("{}", null);
         await using RbpJournalStore store = OpenStore(directory);
-        _ = await store.PersistRegisteredSessionAsync(
-            RbpJournalTestData.Registration());
+        await RbpJournalStoreProductionEvidence.RegisterRoutedSessionAsync(store, fixture);
         string holdId = await InstallIndeterminateHoldAsync(
             store,
             OriginIdentity());
 
-        RbpVerificationHold retained =
-            await store.RecordHoldVerificationEvidenceAsync(
-                "rs-test",
-                Evidence(holdId, conclusive: false));
+        RbpJournalException fault =
+            await Assert.ThrowsAsync<RbpJournalException>(
+                () => store.RecordHoldVerificationEvidenceAsync(
+                    "rs-test",
+                    Evidence(holdId, conclusive: false)));
+        Assert.Equal(RbpJournalErrorCode.ProtocolConflict, fault.ErrorCode);
 
-        // The inconclusive attempt is retained as evidence while the hold
-        // stays `active` and blocking; operator intervention is required.
+        // The compatibility lookup cannot turn a caller-supplied flag into
+        // evidence; the hold remains active and still blocks dispatch.
+        RbpVerificationHold retained =
+            Assert.IsType<RbpVerificationHold>(await store.GetHoldAsync("rs-test", holdId));
         Assert.Equal(RbpHoldState.Active, retained.State);
-        Assert.Equal(EvidenceDigest, retained.EvidenceDigest);
+        Assert.Null(retained.EvidenceDigest);
 
         RbpClearanceGatedAdmission blocked =
             await store.AdmitInvocationWithClearancesAsync(
@@ -108,23 +113,23 @@ public sealed class RbpJournalStoreHoldClearanceTests
     public async Task AcceptedClearanceClearsAtomicallyWithAdmission()
     {
         using var directory = new RbpJournalTestDirectory();
+        var fixture = new RbpApplicationErrorSafetyTests.RoutedFixture("{}", null);
         RbpInvocationIdentity fresh = FreshMutationIdentity();
         string holdId;
         await using (RbpJournalStore store = OpenStore(directory))
         {
-            _ = await store.PersistRegisteredSessionAsync(
-                RbpJournalTestData.Registration());
+            await RbpJournalStoreProductionEvidence.RegisterRoutedSessionAsync(
+                store, fixture);
             holdId = await InstallIndeterminateHoldAsync(
                 store,
                 OriginIdentity());
-            _ = await store.RecordHoldVerificationEvidenceAsync(
-                "rs-test",
-                Evidence(holdId));
+            RbpHoldVerificationEvidence evidence =
+                await ProduceEvidenceAsync(store, fixture, holdId);
 
             RbpClearanceGatedAdmission admitted =
                 await store.AdmitInvocationWithClearancesAsync(
-                    fresh,
-                    new[] { Clearance(holdId) });
+                    BindClearances(fresh, Clearance(holdId, evidence)),
+                    new[] { Clearance(holdId, evidence) });
 
             Assert.Null(admitted.BlockingHold);
             Assert.Equal(
@@ -152,54 +157,64 @@ public sealed class RbpJournalStoreHoldClearanceTests
         Assert.Equal(RbpInvocationState.Received, admittedRow?.State);
     }
 
-    [Fact]
-    public async Task ClearanceAndAdmissionRollBackTogether()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ClearanceAndAdmissionHaveExactBeforeAndAfterCommitState(
+        bool afterCommit)
     {
         using var directory = new RbpJournalTestDirectory();
         var faults = new ArmedJournalFaultInjector();
+        var fixture = new RbpApplicationErrorSafetyTests.RoutedFixture("{}", null);
         await using RbpJournalStore store = OpenStore(directory, faults);
-        _ = await store.PersistRegisteredSessionAsync(
-            RbpJournalTestData.Registration());
+        await RbpJournalStoreProductionEvidence.RegisterRoutedSessionAsync(
+            store, fixture);
         string holdId = await InstallIndeterminateHoldAsync(
             store,
             OriginIdentity());
-        _ = await store.RecordHoldVerificationEvidenceAsync(
-            "rs-test",
-            Evidence(holdId));
+        RbpHoldVerificationEvidence evidence =
+            await ProduceEvidenceAsync(store, fixture, holdId);
 
-        faults.Arm(RbpJournalFaultPoint.BeforeCommit);
-        await Assert.ThrowsAsync<IOException>(
-            () => store.AdmitInvocationWithClearancesAsync(
-                FreshMutationIdentity(),
-                new[] { Clearance(holdId) }));
+        RbpInvocationIdentity consumer = FreshMutationIdentity();
+        faults.Arm(afterCommit
+            ? RbpJournalFaultPoint.AfterCommitBeforeReturn
+            : RbpJournalFaultPoint.BeforeCommit);
+        RbpClearanceGatedAdmission admitted =
+            await store.AdmitInvocationWithClearancesAsync(
+                BindClearances(consumer, Clearance(holdId, evidence)),
+                new[] { Clearance(holdId, evidence) });
 
-        // Neither half of the atomic accept survived: the hold is still
-        // uncleared and no invocation row was admitted.
+        // The final reconciliation rule re-reads exact durable state. An
+        // after-commit loss returns the proved complete decision; a
+        // before-commit loss may make one persistence-only retry, never a
+        // second model execution.
+        Assert.Null(admitted.BlockingHold);
+        Assert.Equal(RbpInvocationAdmission.Accepted, admitted.Admission?.Admission);
         RbpVerificationHold? hold =
             await store.GetHoldAsync("rs-test", holdId);
-        Assert.Equal(RbpHoldState.EvidenceRecorded, hold?.State);
-        Assert.Null(
-            await store.GetInvocationAsync(
-                FreshMutationIdentity().IdempotencyKey));
+        RbpStoredInvocation? stored =
+            await store.GetInvocationAsync(consumer.IdempotencyKey);
+        Assert.Equal(RbpHoldState.Cleared, hold?.State);
+        Assert.Equal(RbpInvocationState.Received, stored?.State);
     }
 
     [Fact]
     public async Task DuplicateDeliveryOfTheIdenticalClearanceIsIdempotent()
     {
         using var directory = new RbpJournalTestDirectory();
+        var fixture = new RbpApplicationErrorSafetyTests.RoutedFixture("{}", null);
         await using RbpJournalStore store = OpenStore(directory);
-        _ = await store.PersistRegisteredSessionAsync(
-            RbpJournalTestData.Registration());
+        await RbpJournalStoreProductionEvidence.RegisterRoutedSessionAsync(
+            store, fixture);
         string holdId = await InstallIndeterminateHoldAsync(
             store,
             OriginIdentity());
-        _ = await store.RecordHoldVerificationEvidenceAsync(
-            "rs-test",
-            Evidence(holdId));
+        RbpHoldVerificationEvidence evidence =
+            await ProduceEvidenceAsync(store, fixture, holdId);
         RbpInvocationIdentity fresh = FreshMutationIdentity();
         _ = await store.AdmitInvocationWithClearancesAsync(
-            fresh,
-            new[] { Clearance(holdId) });
+            BindClearances(fresh, Clearance(holdId, evidence)),
+            new[] { Clearance(holdId, evidence) });
         await store.MarkInvocationExecutingAsync(fresh.IdempotencyKey);
         _ = await store.PersistInvocationTerminalAsync(
             fresh.IdempotencyKey,
@@ -207,8 +222,8 @@ public sealed class RbpJournalStoreHoldClearanceTests
 
         RbpClearanceGatedAdmission redelivered =
             await store.AdmitInvocationWithClearancesAsync(
-                fresh,
-                new[] { Clearance(holdId) });
+                BindClearances(fresh, Clearance(holdId, evidence)),
+                new[] { Clearance(holdId, evidence) });
 
         Assert.Null(redelivered.BlockingHold);
         Assert.Equal(
@@ -220,6 +235,139 @@ public sealed class RbpJournalStoreHoldClearanceTests
         Assert.Equal(ResolutionId, hold?.ResolutionId);
     }
 
+    [Fact]
+    public async Task ExactTerminalClearanceRedeliveryIgnoresLaterSharedKeyUncertainty()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        var fixture = new RbpApplicationErrorSafetyTests.RoutedFixture("{}", null);
+        await using RbpJournalStore store = OpenStore(directory);
+        await RbpJournalStoreProductionEvidence.RegisterRoutedSessionAsync(store, fixture);
+        string clearedHold = await InstallIndeterminateHoldAsync(store, OriginIdentity());
+        RbpHoldVerificationEvidence evidence =
+            await ProduceEvidenceAsync(store, fixture, clearedHold);
+        RbpRecoveryClearance clearance = Clearance(clearedHold, evidence);
+        RbpInvocationIdentity consumer = BindClearances(
+            FreshMutationIdentity(), clearance);
+        _ = await store.AdmitInvocationWithClearancesAsync(consumer, [clearance]);
+        await store.MarkInvocationExecutingAsync(consumer.IdempotencyKey);
+        _ = await store.PersistInvocationTerminalAsync(
+            consumer.IdempotencyKey,
+            Terminal(RbpInvocationState.Completed, """{"ok":true}"""));
+
+        const string externalRsid = "rs-shared-key-predecessor";
+        await store.PersistRegisteredSessionAsync(RbpJournalTestData.Registration(
+            rsid: externalRsid,
+            localSessionKey: fixture.Route.Handle!.LocalSessionKey,
+            resumeToken: "shared-key-predecessor-resume"));
+        RbpInvocationIdentity externalOrigin = OriginIdentity(
+            invocationId: "0197a3c2-0000-7000-8000-0000000000c9") with
+        {
+            Rsid = externalRsid,
+        };
+        string externalHold = await InstallIndeterminateHoldAsync(
+            store, externalOrigin);
+        Assert.NotNull(await store.GetHoldAsync(externalRsid, externalHold));
+        long holdsBeforeRedelivery = await HoldCountAsync(store);
+
+        RbpClearanceGatedAdmission replay =
+            await store.AdmitInvocationWithClearancesAsync(consumer, [clearance]);
+
+        Assert.Null(replay.BlockingHold);
+        Assert.Equal(RbpInvocationAdmission.ReplayTerminal, replay.Admission?.Admission);
+        Assert.Equal(RbpInvocationState.Completed, replay.Admission?.Stored.State);
+        Assert.Equal(holdsBeforeRedelivery, await HoldCountAsync(store));
+        Assert.Equal(
+            RbpInvocationState.Completed,
+            (await store.GetInvocationAsync(consumer.IdempotencyKey))?.State);
+
+        RbpInvocationIdentity fresh = BindClearances(
+            FreshMutationIdentity(
+                invocationId: "0197a3c2-0000-7000-8000-0000000000ca"),
+            clearance);
+        RbpJournalException denied = await Assert.ThrowsAsync<RbpJournalException>(
+            () => store.AdmitInvocationWithClearancesAsync(fresh, [clearance]));
+        Assert.Equal(RbpJournalErrorCode.ProtocolConflict, denied.ErrorCode);
+        Assert.Null(await store.GetInvocationAsync(fresh.IdempotencyKey));
+    }
+
+    [Fact]
+    public async Task IdenticalAuditedClearanceCannotAuthorizeAFreshConsumer()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        var fixture = new RbpApplicationErrorSafetyTests.RoutedFixture("{}", null);
+        await using RbpJournalStore store = OpenStore(directory);
+        await RbpJournalStoreProductionEvidence.RegisterRoutedSessionAsync(store, fixture);
+        string holdId = await InstallIndeterminateHoldAsync(store, OriginIdentity());
+        RbpHoldVerificationEvidence evidence =
+            await ProduceEvidenceAsync(store, fixture, holdId);
+        RbpRecoveryClearance clearance = Clearance(holdId, evidence);
+        RbpInvocationIdentity first = FreshMutationIdentity();
+        _ = await store.AdmitInvocationWithClearancesAsync(
+            BindClearances(first, clearance), [clearance]);
+
+        // Idempotency is bound to redelivery of this envelope, not to the
+        // clearance object. A distinct invocation id must never consume an
+        // already-audited clearance as a fresh mutation admission.
+        RbpInvocationIdentity second = FreshMutationIdentity(
+            invocationId: "0197a3c2-0000-7000-8000-0000000000f5");
+        RbpJournalException fault = await Assert.ThrowsAsync<RbpJournalException>(
+            () => store.AdmitInvocationWithClearancesAsync(
+                BindClearances(second, clearance), [clearance]));
+        Assert.Equal(RbpJournalErrorCode.ProtocolConflict, fault.ErrorCode);
+        Assert.Null(await store.GetInvocationAsync(second.IdempotencyKey));
+    }
+
+    [Fact]
+    public async Task OneInvalidClearanceLeavesEveryCandidateHoldAndAdmissionUnchanged()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        var fixture = new RbpApplicationErrorSafetyTests.RoutedFixture("{}", null);
+        await using RbpJournalStore store = OpenStore(directory);
+        await RbpJournalStoreProductionEvidence.RegisterRoutedSessionAsync(store, fixture);
+        string firstHold = await InstallIndeterminateHoldAsync(store, OriginIdentity());
+        string secondHold = await InstallIndeterminateHoldAsync(
+            store,
+            OriginIdentity(
+                scopeJcs: SecondDocumentScope,
+                invocationId: "0197a3c2-0000-7000-8000-0000000000b3"));
+        RbpHoldVerificationEvidence firstEvidence =
+            await ProduceEvidenceAsync(store, fixture, firstHold);
+        RbpHoldVerificationEvidence secondEvidence =
+            await RbpJournalStoreProductionEvidence
+                .ProduceEligibleCorrelatedReadAsync(
+                    store,
+                    fixture,
+                    secondHold,
+                    SecondDocumentScope,
+                    OtherVerificationId);
+        RbpInvocationIdentity consumer = FreshMutationIdentity(
+            scopeJcs: SessionScope,
+            invocationId: "0197a3c2-0000-7000-8000-0000000000f6");
+
+        RbpRecoveryClearance[] mixed =
+        [
+            Clearance(firstHold, firstEvidence),
+            Clearance(
+                secondHold,
+                secondEvidence,
+                scopeJcs: SecondDocumentScope,
+                evidenceDigest: WrongDigest),
+        ];
+        Array.Sort(mixed, static (left, right) =>
+            string.CompareOrdinal(left.HoldId, right.HoldId));
+        RbpJournalException fault = await Assert.ThrowsAsync<RbpJournalException>(
+            () => store.AdmitInvocationWithClearancesAsync(
+                BindClearances(consumer, mixed), mixed));
+        Assert.Equal(RbpJournalErrorCode.ProtocolConflict, fault.ErrorCode);
+        Assert.Equal(
+            RbpHoldState.EvidenceRecorded,
+            (await store.GetHoldAsync("rs-test", firstHold))?.State);
+        Assert.Equal(
+            RbpHoldState.EvidenceRecorded,
+            (await store.GetHoldAsync("rs-test", secondHold))?.State);
+        Assert.Null(await store.GetInvocationAsync(consumer.IdempotencyKey));
+    }
+
     [Theory]
     [InlineData("resolution")]
     [InlineData("decision")]
@@ -229,38 +377,39 @@ public sealed class RbpJournalStoreHoldClearanceTests
     public async Task AChangedClearanceIsNeverIdempotent(string drift)
     {
         using var directory = new RbpJournalTestDirectory();
+        var fixture = new RbpApplicationErrorSafetyTests.RoutedFixture("{}", null);
         await using RbpJournalStore store = OpenStore(directory);
-        _ = await store.PersistRegisteredSessionAsync(
-            RbpJournalTestData.Registration());
+        await RbpJournalStoreProductionEvidence.RegisterRoutedSessionAsync(store, fixture);
         string holdId = await InstallIndeterminateHoldAsync(
             store,
             OriginIdentity());
-        _ = await store.RecordHoldVerificationEvidenceAsync(
-            "rs-test",
-            Evidence(holdId));
+        RbpHoldVerificationEvidence evidence =
+            await ProduceEvidenceAsync(store, fixture, holdId);
         RbpInvocationIdentity fresh = FreshMutationIdentity();
         _ = await store.AdmitInvocationWithClearancesAsync(
-            fresh,
-            new[] { Clearance(holdId) });
+            BindClearances(fresh, Clearance(holdId, evidence)),
+            new[] { Clearance(holdId, evidence) });
 
         RbpRecoveryClearance changed = drift switch
         {
             "resolution" =>
-                Clearance(holdId, resolutionId: OtherResolutionId),
+                Clearance(holdId, evidence, resolutionId: OtherResolutionId),
             "decision" => Clearance(
                 holdId,
+                evidence,
                 decision: RbpClearanceDecision.NonExecutionProven),
-            "audit" => Clearance(holdId, auditId: OtherAuditId),
-            "evidence" => Clearance(holdId, evidenceDigest: WrongDigest),
+            "audit" => Clearance(holdId, evidence, auditId: OtherAuditId),
+            "evidence" => Clearance(holdId, evidence, evidenceDigest: WrongDigest),
             _ => Clearance(
                 holdId,
+                evidence,
                 verificationInvocationId: OtherVerificationId),
         };
 
         RbpJournalException fault =
             await Assert.ThrowsAsync<RbpJournalException>(
                 () => store.AdmitInvocationWithClearancesAsync(
-                    fresh,
+                    BindClearances(fresh, changed),
                     new[] { changed }));
         Assert.Equal(RbpJournalErrorCode.ProtocolConflict, fault.ErrorCode);
 
@@ -283,34 +432,36 @@ public sealed class RbpJournalStoreHoldClearanceTests
         string kind)
     {
         using var directory = new RbpJournalTestDirectory();
+        var fixture = new RbpApplicationErrorSafetyTests.RoutedFixture("{}", null);
         await using RbpJournalStore store = OpenStore(directory);
-        _ = await store.PersistRegisteredSessionAsync(
-            RbpJournalTestData.Registration());
+        await RbpJournalStoreProductionEvidence.RegisterRoutedSessionAsync(
+            store, fixture);
         string holdId = await InstallIndeterminateHoldAsync(
             store,
             OriginIdentity());
+        RbpHoldVerificationEvidence? evidence = null;
         switch (kind)
         {
             case "no_evidence":
                 break;
             case "inconclusive_evidence":
-                _ = await store.RecordHoldVerificationEvidenceAsync(
-                    "rs-test",
-                    Evidence(holdId, conclusive: false));
+                RbpJournalException seeded = await Assert.ThrowsAsync<RbpJournalException>(
+                    () => store.RecordHoldVerificationEvidenceAsync(
+                        "rs-test", Evidence(holdId, conclusive: false)));
+                Assert.Equal(RbpJournalErrorCode.ProtocolConflict, seeded.ErrorCode);
                 break;
             default:
-                _ = await store.RecordHoldVerificationEvidenceAsync(
-                    "rs-test",
-                    Evidence(holdId));
+                evidence = await ProduceEvidenceAsync(store, fixture, holdId);
                 break;
         }
 
         RbpRecoveryClearance invalid = kind switch
         {
             "wrong_evidence" =>
-                Clearance(holdId, evidenceDigest: WrongDigest),
+                Clearance(holdId, evidence!, evidenceDigest: WrongDigest),
             "wrong_verification_id" => Clearance(
                 holdId,
+                evidence!,
                 verificationInvocationId: OtherVerificationId),
             "unknown_hold" =>
                 Clearance("vh:" + new string('f', 64)),
@@ -322,7 +473,7 @@ public sealed class RbpJournalStoreHoldClearanceTests
         RbpJournalException fault =
             await Assert.ThrowsAsync<RbpJournalException>(
                 () => store.AdmitInvocationWithClearancesAsync(
-                    fresh,
+                    BindClearances(fresh, invalid),
                     new[] { invalid }));
         Assert.Equal(RbpJournalErrorCode.ProtocolConflict, fault.ErrorCode);
 
@@ -354,7 +505,13 @@ public sealed class RbpJournalStoreHoldClearanceTests
         RbpJournalException fault =
             await Assert.ThrowsAsync<RbpJournalException>(
                 () => store.AdmitInvocationWithClearancesAsync(
-                    FreshMutationIdentity(),
+                    BindClearances(
+                        FreshMutationIdentity(),
+                        Clearance(
+                            holdId,
+                            basis: RbpClearanceBasis.LateTerminal,
+                            verificationInvocationId: null,
+                            evidenceDigest: LateDigest)),
                     new[]
                     {
                         Clearance(
@@ -393,7 +550,13 @@ public sealed class RbpJournalStoreHoldClearanceTests
 
         RbpClearanceGatedAdmission admitted =
             await store.AdmitInvocationWithClearancesAsync(
-                FreshMutationIdentity(),
+                BindClearances(
+                    FreshMutationIdentity(),
+                    Clearance(
+                        holdId,
+                        basis: RbpClearanceBasis.LateTerminal,
+                        verificationInvocationId: null,
+                        evidenceDigest: LateDigest)),
                 new[]
                 {
                     Clearance(
@@ -414,13 +577,138 @@ public sealed class RbpJournalStoreHoldClearanceTests
         Assert.Equal(LateDigest, hold?.EvidenceDigest);
     }
 
-    [Fact]
-    public async Task TheClearanceEnvelopeMustCoverEveryConflictingHold()
+    [Theory]
+    [InlineData("missing_origin")]
+    [InlineData("wrong_digest")]
+    [InlineData("reordered_origins")]
+    public async Task APartialOrReorderedLateTerminalGroupNeverClearsOrAdmits(
+        string evidenceCase)
     {
         using var directory = new RbpJournalTestDirectory();
         await using RbpJournalStore store = OpenStore(directory);
         _ = await store.PersistRegisteredSessionAsync(
             RbpJournalTestData.Registration());
+        (string holdId, string[] origins) = await InstallGroupedIndeterminateHoldAsync(
+            store);
+
+        // A late terminal is historical evidence, not caller-supplied
+        // conclusive evidence.  The group can be cleared only when every
+        // exact, ordered origin supplies the exact durable digest (or a
+        // future explicit group-bound aggregate does so).
+        _ = await store.PersistInvocationTerminalAsync(
+            origins[0],
+            Terminal(RbpInvocationState.Completed, """{"late":"first"}""", LateDigest));
+
+        string clearanceHoldId = holdId;
+        switch (evidenceCase)
+        {
+            case "wrong_digest":
+                _ = await store.PersistInvocationTerminalAsync(
+                    origins[1],
+                    Terminal(
+                        RbpInvocationState.Completed,
+                        """{"late":"second"}""",
+                        WrongDigest));
+                break;
+            case "reordered_origins":
+                _ = await store.PersistInvocationTerminalAsync(
+                    origins[1],
+                    Terminal(
+                        RbpInvocationState.Completed,
+                        """{"late":"second"}""",
+                        LateDigest));
+                using (JsonDocument scope = JsonDocument.Parse(DocumentScope))
+                {
+                    clearanceHoldId = Rfc8785Json.MakeVerificationHoldId(
+                        "rs-test",
+                        scope.RootElement,
+                        new[] { origins[1], origins[0] });
+                }
+                Assert.NotEqual(holdId, clearanceHoldId);
+                break;
+        }
+
+        RbpInvocationIdentity consumer = FreshMutationIdentity();
+        RbpRecoveryClearance clearance = Clearance(
+            clearanceHoldId,
+            basis: RbpClearanceBasis.LateTerminal,
+            verificationInvocationId: null,
+            evidenceDigest: LateDigest);
+        RbpJournalException fault = await Assert.ThrowsAsync<RbpJournalException>(
+            () => store.AdmitInvocationWithClearancesAsync(
+                BindClearances(consumer, clearance),
+                new[] { clearance }));
+
+        Assert.Equal(RbpJournalErrorCode.ProtocolConflict, fault.ErrorCode);
+        Assert.Equal(RbpHoldState.Active,
+            (await store.GetHoldAsync("rs-test", holdId))?.State);
+        foreach (string origin in origins)
+        {
+            Assert.Equal(
+                RbpInvocationState.Indeterminate,
+                (await store.GetInvocationAsync(origin))?.State);
+        }
+        Assert.Null(await store.GetInvocationAsync(consumer.IdempotencyKey));
+
+        RbpClearanceGatedAdmission blocked =
+            await store.AdmitInvocationWithClearancesAsync(
+                consumer,
+                Array.Empty<RbpRecoveryClearance>());
+        Assert.Null(blocked.Admission);
+        Assert.Equal(holdId, blocked.BlockingHold?.VerificationHoldId);
+    }
+
+    [Fact]
+    public async Task CompleteExactLateTerminalGroupClearsAndAdmitsAtomically()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        await using RbpJournalStore store = OpenStore(directory);
+        _ = await store.PersistRegisteredSessionAsync(
+            RbpJournalTestData.Registration());
+        (string holdId, string[] origins) = await InstallGroupedIndeterminateHoldAsync(
+            store);
+
+        foreach (string origin in origins)
+        {
+            _ = await store.PersistInvocationTerminalAsync(
+                origin,
+                Terminal(RbpInvocationState.Completed, """{"late":true}""", LateDigest));
+        }
+
+        RbpInvocationIdentity consumer = FreshMutationIdentity();
+        RbpRecoveryClearance clearance = Clearance(
+            holdId,
+            basis: RbpClearanceBasis.LateTerminal,
+            verificationInvocationId: null,
+            evidenceDigest: LateDigest);
+        RbpClearanceGatedAdmission admitted =
+            await store.AdmitInvocationWithClearancesAsync(
+                BindClearances(consumer, clearance),
+                new[] { clearance });
+
+        Assert.Equal(RbpInvocationAdmission.Accepted, admitted.Admission?.Admission);
+        RbpVerificationHold? hold = await store.GetHoldAsync("rs-test", holdId);
+        Assert.Equal(RbpHoldState.Cleared, hold?.State);
+        Assert.Equal("late_terminal", hold?.ResolutionBasis);
+        Assert.Equal(LateDigest, hold?.EvidenceDigest);
+        foreach (string origin in origins)
+        {
+            Assert.Equal(
+                LateDigest,
+                (await store.GetInvocationAsync(origin))?.LateResultDigest);
+        }
+        Assert.Equal(
+            RbpInvocationState.Received,
+            (await store.GetInvocationAsync(consumer.IdempotencyKey))?.State);
+    }
+
+    [Fact]
+    public async Task TheClearanceEnvelopeMustCoverEveryConflictingHold()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        var fixture = new RbpApplicationErrorSafetyTests.RoutedFixture("{}", null);
+        await using RbpJournalStore store = OpenStore(directory);
+        await RbpJournalStoreProductionEvidence.RegisterRoutedSessionAsync(store, fixture);
         string firstHold = await InstallIndeterminateHoldAsync(
             store,
             OriginIdentity());
@@ -429,9 +717,8 @@ public sealed class RbpJournalStoreHoldClearanceTests
             OriginIdentity(
                 scopeJcs: SecondDocumentScope,
                 invocationId: "0197a3c2-0000-7000-8000-0000000000b3"));
-        _ = await store.RecordHoldVerificationEvidenceAsync(
-            "rs-test",
-            Evidence(firstHold));
+        RbpHoldVerificationEvidence evidence =
+            await ProduceEvidenceAsync(store, fixture, firstHold);
 
         // A session-scope mutation conflicts with both document holds, so
         // an envelope clearing only one of them is not the one permitted
@@ -439,8 +726,10 @@ public sealed class RbpJournalStoreHoldClearanceTests
         RbpJournalException fault =
             await Assert.ThrowsAsync<RbpJournalException>(
                 () => store.AdmitInvocationWithClearancesAsync(
-                    FreshMutationIdentity(scopeJcs: SessionScope),
-                    new[] { Clearance(firstHold) }));
+                    BindClearances(
+                        FreshMutationIdentity(scopeJcs: SessionScope),
+                        Clearance(firstHold, evidence)),
+                    new[] { Clearance(firstHold, evidence) }));
         Assert.Equal(RbpJournalErrorCode.ProtocolConflict, fault.ErrorCode);
 
         RbpVerificationHold? first =
@@ -455,23 +744,24 @@ public sealed class RbpJournalStoreHoldClearanceTests
     public async Task AClearanceForANonConflictingHoldIsAProtocolFault()
     {
         using var directory = new RbpJournalTestDirectory();
+        var fixture = new RbpApplicationErrorSafetyTests.RoutedFixture("{}", null);
         await using RbpJournalStore store = OpenStore(directory);
-        _ = await store.PersistRegisteredSessionAsync(
-            RbpJournalTestData.Registration());
+        await RbpJournalStoreProductionEvidence.RegisterRoutedSessionAsync(store, fixture);
         string holdId = await InstallIndeterminateHoldAsync(
             store,
             OriginIdentity());
-        _ = await store.RecordHoldVerificationEvidenceAsync(
-            "rs-test",
-            Evidence(holdId));
+        RbpHoldVerificationEvidence evidence =
+            await ProduceEvidenceAsync(store, fixture, holdId);
 
         // The frozen array contains every and only conflicting holds; a
         // doc-2 mutation may not carry the doc-1 clearance.
         RbpJournalException fault =
             await Assert.ThrowsAsync<RbpJournalException>(
                 () => store.AdmitInvocationWithClearancesAsync(
-                    FreshMutationIdentity(scopeJcs: SecondDocumentScope),
-                    new[] { Clearance(holdId) }));
+                    BindClearances(
+                        FreshMutationIdentity(scopeJcs: SecondDocumentScope),
+                        Clearance(holdId, evidence)),
+                    new[] { Clearance(holdId, evidence) }));
         Assert.Equal(RbpJournalErrorCode.ProtocolConflict, fault.ErrorCode);
         RbpVerificationHold? hold =
             await store.GetHoldAsync("rs-test", holdId);
@@ -492,7 +782,7 @@ public sealed class RbpJournalStoreHoldClearanceTests
         RbpJournalException fault =
             await Assert.ThrowsAsync<RbpJournalException>(
                 () => store.AdmitInvocationWithClearancesAsync(
-                    FreshReadIdentity(),
+                    BindClearances(FreshReadIdentity(), Clearance(holdId)),
                     new[] { Clearance(holdId) }));
         Assert.Equal(RbpJournalErrorCode.ProtocolConflict, fault.ErrorCode);
     }
@@ -534,18 +824,19 @@ public sealed class RbpJournalStoreHoldClearanceTests
     public async Task AClearedHoldAcceptsNoFurtherVerificationEvidence()
     {
         using var directory = new RbpJournalTestDirectory();
+        var fixture = new RbpApplicationErrorSafetyTests.RoutedFixture("{}", null);
         await using RbpJournalStore store = OpenStore(directory);
-        _ = await store.PersistRegisteredSessionAsync(
-            RbpJournalTestData.Registration());
+        await RbpJournalStoreProductionEvidence.RegisterRoutedSessionAsync(store, fixture);
         string holdId = await InstallIndeterminateHoldAsync(
             store,
             OriginIdentity());
-        _ = await store.RecordHoldVerificationEvidenceAsync(
-            "rs-test",
-            Evidence(holdId));
+        RbpHoldVerificationEvidence evidence =
+            await ProduceEvidenceAsync(store, fixture, holdId);
         _ = await store.AdmitInvocationWithClearancesAsync(
-            FreshMutationIdentity(),
-            new[] { Clearance(holdId) });
+            BindClearances(
+                FreshMutationIdentity(),
+                Clearance(holdId, evidence)),
+            new[] { Clearance(holdId, evidence) });
 
         RbpJournalException fault =
             await Assert.ThrowsAsync<RbpJournalException>(
@@ -559,9 +850,9 @@ public sealed class RbpJournalStoreHoldClearanceTests
     public async Task AClearanceFromAnotherSessionNeverMatchesTheHold()
     {
         using var directory = new RbpJournalTestDirectory();
+        var fixture = new RbpApplicationErrorSafetyTests.RoutedFixture("{}", null);
         await using RbpJournalStore store = OpenStore(directory);
-        _ = await store.PersistRegisteredSessionAsync(
-            RbpJournalTestData.Registration());
+        await RbpJournalStoreProductionEvidence.RegisterRoutedSessionAsync(store, fixture);
         _ = await store.PersistRegisteredSessionAsync(
             RbpJournalTestData.Registration(
                 rsid: "rs-other",
@@ -570,15 +861,16 @@ public sealed class RbpJournalStoreHoldClearanceTests
         string holdId = await InstallIndeterminateHoldAsync(
             store,
             OriginIdentity());
-        _ = await store.RecordHoldVerificationEvidenceAsync(
-            "rs-test",
-            Evidence(holdId));
+        RbpHoldVerificationEvidence evidence =
+            await ProduceEvidenceAsync(store, fixture, holdId);
 
         RbpJournalException fault =
             await Assert.ThrowsAsync<RbpJournalException>(
                 () => store.AdmitInvocationWithClearancesAsync(
-                    FreshMutationIdentity() with { Rsid = "rs-other" },
-                    new[] { Clearance(holdId) }));
+                    BindClearances(
+                        FreshMutationIdentity() with { Rsid = "rs-other" },
+                        Clearance(holdId, evidence)),
+                    new[] { Clearance(holdId, evidence) }));
         Assert.Equal(RbpJournalErrorCode.ProtocolConflict, fault.ErrorCode);
         RbpVerificationHold? hold =
             await store.GetHoldAsync("rs-test", holdId);
@@ -592,6 +884,14 @@ public sealed class RbpJournalStoreHoldClearanceTests
             directory.JournalPath,
             new TestResumeTokenProtector(),
             RbpJournalTestData.Options(faults));
+
+    private static Task<long> HoldCountAsync(RbpJournalStore store) =>
+        store.ReadAsync(connection =>
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = "SELECT COUNT(*) FROM rbp_verification_holds;";
+            return Convert.ToInt64(command.ExecuteScalar());
+        });
 
     private static async Task<string> InstallIndeterminateHoldAsync(
         RbpJournalStore store,
@@ -607,6 +907,46 @@ public sealed class RbpJournalStoreHoldClearanceTests
         return refused.VerificationHoldId!;
     }
 
+    private static async Task<(string HoldId, string[] Origins)>
+        InstallGroupedIndeterminateHoldAsync(RbpJournalStore store)
+    {
+        const string firstInvocationId =
+            "0197a3c2-0000-7000-8000-0000000000c5";
+        const string secondInvocationId =
+            "0197a3c2-0000-7000-8000-0000000000c6";
+        RbpBatchIdentity batch = RbpBatchTestData.Batch(
+            atomic: true,
+            "0197a3c2-0000-7000-8000-0000000000c7",
+            new[]
+            {
+                RbpBatchTestData.WriteStep(firstInvocationId),
+                RbpBatchTestData.WriteStep(
+                    secondInvocationId,
+                    DocumentScope,
+                    method: "set_element_parameter"),
+            });
+        _ = await store.AdmitBatchAsync(
+            batch,
+            Array.Empty<RbpRecoveryClearance>());
+        await store.MarkBatchDispatchedAsync(batch.BatchKey);
+        RbpBatchAdmissionResult arbitrated =
+            (await store.AdmitBatchAsync(
+                batch,
+                Array.Empty<RbpRecoveryClearance>())).Admission!;
+
+        string holdId = arbitrated.Steps[0].VerificationHoldId!;
+        Assert.Equal(holdId, arbitrated.Steps[1].VerificationHoldId);
+        string[] origins =
+        [
+            RbpBatchTestData.StepKey(firstInvocationId),
+            RbpBatchTestData.StepKey(secondInvocationId),
+        ];
+        RbpVerificationHold hold = Assert.IsType<RbpVerificationHold>(
+            await store.GetHoldAsync("rs-test", holdId));
+        Assert.Equal(origins, hold.OrderedOriginIdempotencyKeys);
+        return (holdId, origins);
+    }
+
     private static RbpHoldVerificationEvidence Evidence(
         string holdId,
         bool conclusive = true,
@@ -616,6 +956,82 @@ public sealed class RbpJournalStoreHoldClearanceTests
             VerificationId,
             evidenceDigest ?? EvidenceDigest,
             conclusive);
+
+    private static async Task<RbpHoldVerificationEvidence> ProduceEvidenceAsync(
+        RbpJournalStore store,
+        RbpApplicationErrorSafetyTests.RoutedFixture fixture,
+        string holdId) =>
+        await RbpJournalStoreProductionEvidence
+            .ProduceEligibleCorrelatedReadAsync(
+                store,
+                fixture,
+                holdId,
+                DocumentScope,
+                VerificationId);
+
+    private static RbpRecoveryClearance Clearance(
+        string holdId,
+        RbpHoldVerificationEvidence evidence,
+        string scopeJcs = DocumentScope,
+        RbpClearanceBasis basis = RbpClearanceBasis.VerificationRead,
+        string? verificationInvocationId = null,
+        string? evidenceDigest = null,
+        string resolutionId = ResolutionId,
+        RbpClearanceDecision decision =
+            RbpClearanceDecision.PostconditionVerified,
+        string auditId = AuditId) =>
+        Clearance(
+            holdId,
+            scopeJcs,
+            basis,
+            verificationInvocationId ?? evidence.VerificationInvocationId,
+            evidenceDigest ?? evidence.EvidenceDigest,
+            resolutionId,
+            decision,
+            auditId);
+
+    private static RbpInvocationIdentity BindClearances(
+        RbpInvocationIdentity identity,
+        params RbpRecoveryClearance[] clearances)
+    {
+        ArgumentNullException.ThrowIfNull(identity);
+        ArgumentNullException.ThrowIfNull(clearances);
+        if (clearances.Length == 0)
+        {
+            return identity with { RecoveryClearancesJcs = "[]" };
+        }
+
+        using var buffer = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(buffer))
+        {
+            writer.WriteStartArray();
+            foreach (RbpRecoveryClearance clearance in clearances)
+            {
+                writer.WriteStartObject();
+                writer.WriteString("hold_id", clearance.HoldId);
+                writer.WritePropertyName("mutation_scope");
+                using (JsonDocument scope = JsonDocument.Parse(clearance.MutationScopeJcs))
+                {
+                    scope.RootElement.WriteTo(writer);
+                }
+                writer.WriteString("resolution_id", clearance.ResolutionId);
+                writer.WriteString("basis", clearance.Basis == RbpClearanceBasis.VerificationRead
+                    ? "verification_read" : "late_terminal");
+                writer.WriteString("verification_invocation_id", clearance.VerificationInvocationId);
+                writer.WriteString("evidence_digest", clearance.EvidenceDigest);
+                writer.WriteString("decision", clearance.Decision == RbpClearanceDecision.NonExecutionProven
+                    ? "non_execution_proven" : "postcondition_verified");
+                writer.WriteString("audit_id", clearance.AuditId);
+                writer.WriteEndObject();
+            }
+            writer.WriteEndArray();
+        }
+        using JsonDocument bound = JsonDocument.Parse(buffer.ToArray());
+        return identity with
+        {
+            RecoveryClearancesJcs = Rfc8785Json.Canonicalize(bound.RootElement),
+        };
+    }
 
     private static RbpRecoveryClearance Clearance(
         string holdId,

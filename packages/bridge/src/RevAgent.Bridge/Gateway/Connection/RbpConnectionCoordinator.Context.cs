@@ -5,6 +5,7 @@ using System.Text.RegularExpressions;
 using RevAgent.Bridge.Gateway.Dispatch;
 using RevAgent.Bridge.Gateway.Protocol;
 using RevAgent.Bridge.Gateway.Storage;
+using RevAgent.Contracts.AddinLoopback;
 
 namespace RevAgent.Bridge.Gateway.Connection;
 
@@ -25,6 +26,30 @@ internal sealed partial class RbpConnectionCoordinator
         RbpLocalSessionSnapshot Local,
         RbpStoredSession Stored,
         RbpSessionLifecycleState Lifecycle);
+
+    private enum CleanupReceiveDisposition
+    {
+        NotPermitted,
+        Discarded,
+        Conflict,
+    }
+
+    private sealed record CleanupReceivePermit(
+        string Rsid,
+        string LocalSessionKey,
+        string RegistrationDigest,
+        string SafetyDecisionDigest,
+        string GrantedCapabilitiesDigest,
+        IReadOnlySet<string> OfferedCapabilities,
+        IReadOnlySet<string> GrantedCapabilities,
+        string ConnectionId,
+        long ConnectionGeneration,
+        long ExpiresAtMonotonicMilliseconds,
+        int ObservationCount,
+        string? WorkType,
+        string? WorkCorrelationId,
+        string? WorkImmutableDigest,
+        string? CancelImmutableDigest);
 
     private sealed record HeartbeatFlight(
         RbpHeartbeatFence Fence,
@@ -110,6 +135,9 @@ internal sealed partial class RbpConnectionCoordinator
             new(StringComparer.Ordinal);
         private readonly HashSet<string> _sentUnregister =
             new(StringComparer.Ordinal);
+        private readonly Dictionary<string, CleanupReceivePermit>
+            _cleanupReceivePermits = new(StringComparer.Ordinal);
+        private readonly Queue<long> _cleanupDiscardObservations = new();
         private readonly List<RbpDataEnvelopeSnapshot> _pendingRetransmit =
             new();
         private readonly Dictionary<string, PendingControl>
@@ -329,6 +357,21 @@ internal sealed partial class RbpConnectionCoordinator
             }
         }
 
+        internal void AcknowledgeRegistrationDeferred(
+            string localSessionKey)
+        {
+            lock (_sync)
+            {
+                if (string.Equals(
+                        _pendingRegistrationLocalKey,
+                        localSessionKey,
+                        StringComparison.Ordinal))
+                {
+                    _pendingRegistration?.Applied.TrySetResult();
+                }
+            }
+        }
+
         internal void RejectRegistrationApplication(
             string localSessionKey,
             Exception exception)
@@ -523,6 +566,271 @@ internal sealed partial class RbpConnectionCoordinator
             }
         }
 
+        internal void InstallCleanupReceivePermit(
+            RbpCleanupRegistrationReceipt receipt,
+            long acknowledgedAtMonotonicMilliseconds)
+        {
+            ArgumentNullException.ThrowIfNull(receipt);
+            if (!string.Equals(
+                    receipt.Session.Rsid,
+                    receipt.Tombstone.Rsid,
+                    StringComparison.Ordinal) ||
+                receipt.Tombstone.Reason !=
+                    RbpSessionUnregisterReason.OperatorRequested ||
+                receipt.Tombstone.Phase != RbpUnregisterPhase.Pending ||
+                !RbpJournalSerialization.IsSha256Digest(
+                    receipt.SafetyDecisionDigest))
+            {
+                throw new RbpCoordinatorException(
+                    RbpCoordinatorErrorCode.SessionAuthorityConflict,
+                    "The durable cleanup-only registration receipt is not " +
+                    "exact or pending.");
+            }
+
+            string capabilitiesDigest = Rfc8785Json.Sha256Digest(
+                JsonSerializer.SerializeToElement(
+                    receipt.Session.GrantedCapabilities));
+            ValidateGrantedSessionCapabilities(
+                receipt.Session.RegistrationPayload,
+                receipt.Session.GrantedCapabilities);
+            IReadOnlySet<string> offeredCapabilities =
+                ReadCleanupPermitCapabilities(
+                    receipt.Session.RegistrationPayload);
+            IReadOnlySet<string> grantedCapabilities =
+                new HashSet<string>(
+                    receipt.Session.GrantedCapabilities,
+                    StringComparer.Ordinal);
+            long expiresAt = checked(
+                acknowledgedAtMonotonicMilliseconds + 60_000);
+            lock (_sync)
+            {
+                RemoveExpiredCleanupReceivePermits(
+                    acknowledgedAtMonotonicMilliseconds);
+                if (_sessions.ContainsKey(receipt.Session.Rsid))
+                {
+                    throw new RbpCoordinatorException(
+                        RbpCoordinatorErrorCode.SessionAuthorityConflict,
+                        "A cleanup-only RBP session cannot overlap a bound route.");
+                }
+
+                if (!string.Equals(
+                        _pendingRegistrationLocalKey,
+                        receipt.Session.LocalSessionKey,
+                        StringComparison.Ordinal) ||
+                    _pendingRegistration is null ||
+                    !_pendingRegistration.Response.Task.IsCompletedSuccessfully)
+                {
+                    throw new RbpCoordinatorException(
+                        RbpCoordinatorErrorCode.SessionAuthorityConflict,
+                        "A cleanup receive permit requires the exact current " +
+                        "registration acknowledgement.");
+                }
+
+                if (_cleanupReceivePermits.TryGetValue(
+                        receipt.Session.Rsid,
+                        out CleanupReceivePermit? existing))
+                {
+                    bool exact =
+                        string.Equals(
+                            existing.LocalSessionKey,
+                            receipt.Session.LocalSessionKey,
+                            StringComparison.Ordinal) &&
+                        string.Equals(
+                            existing.RegistrationDigest,
+                            receipt.Session.RegistrationDigest,
+                            StringComparison.Ordinal) &&
+                        string.Equals(
+                            existing.SafetyDecisionDigest,
+                            receipt.SafetyDecisionDigest,
+                            StringComparison.Ordinal) &&
+                        string.Equals(
+                            existing.GrantedCapabilitiesDigest,
+                            capabilitiesDigest,
+                            StringComparison.Ordinal) &&
+                        existing.OfferedCapabilities.SetEquals(
+                            offeredCapabilities) &&
+                        existing.GrantedCapabilities.SetEquals(
+                            grantedCapabilities) &&
+                        string.Equals(
+                            existing.ConnectionId,
+                            Cycle.Acknowledgement.ConnectionId,
+                            StringComparison.Ordinal) &&
+                        existing.ConnectionGeneration == Generation;
+                    if (!exact)
+                    {
+                        throw new RbpCoordinatorException(
+                            RbpCoordinatorErrorCode.SessionAuthorityConflict,
+                            "A conflicting cleanup receive permit already exists.");
+                    }
+
+                    return;
+                }
+
+                if (_cleanupReceivePermits.Count >= 128)
+                {
+                    throw new RbpCoordinatorException(
+                        RbpCoordinatorErrorCode.SessionAuthorityConflict,
+                        "The bounded cleanup receive permit inventory is full.");
+                }
+
+                _cleanupReceivePermits.Add(
+                    receipt.Session.Rsid,
+                    new CleanupReceivePermit(
+                        receipt.Session.Rsid,
+                        receipt.Session.LocalSessionKey,
+                        receipt.Session.RegistrationDigest,
+                        receipt.SafetyDecisionDigest,
+                        capabilitiesDigest,
+                        offeredCapabilities,
+                        grantedCapabilities,
+                        Cycle.Acknowledgement.ConnectionId,
+                        Generation,
+                        expiresAt,
+                        ObservationCount: 0,
+                        WorkType: null,
+                        WorkCorrelationId: null,
+                        WorkImmutableDigest: null,
+                        CancelImmutableDigest: null));
+            }
+        }
+
+        internal bool HasCleanupReceivePermit(
+            string rsid,
+            long observedAtMonotonicMilliseconds)
+        {
+            lock (_sync)
+            {
+                RemoveExpiredCleanupReceivePermits(
+                    observedAtMonotonicMilliseconds);
+                return _cleanupReceivePermits.ContainsKey(rsid);
+            }
+        }
+
+        internal CleanupReceiveDisposition TryDiscardCleanupData(
+            RbpDataEnvelopeSnapshot envelope,
+            string immutableDigest,
+            string correlationId,
+            long observedAtMonotonicMilliseconds)
+        {
+            lock (_sync)
+            {
+                RemoveExpiredCleanupReceivePermits(
+                    observedAtMonotonicMilliseconds);
+                if (!_cleanupReceivePermits.TryGetValue(
+                        envelope.Rsid,
+                        out CleanupReceivePermit? permit))
+                {
+                    return CleanupReceiveDisposition.NotPermitted;
+                }
+
+                bool exactCycle =
+                    string.Equals(
+                        permit.ConnectionId,
+                        Cycle.Acknowledgement.ConnectionId,
+                        StringComparison.Ordinal) &&
+                    permit.ConnectionGeneration == Generation;
+                if (!exactCycle ||
+                    observedAtMonotonicMilliseconds >=
+                        permit.ExpiresAtMonotonicMilliseconds ||
+                    (envelope.Acknowledgement is { } acknowledgement &&
+                     acknowledgement != 0) ||
+                    !CleanupEnvelopeMatchesPermit(envelope, permit))
+                {
+                    return CleanupReceiveDisposition.Conflict;
+                }
+
+                if (permit.ObservationCount >= 8 ||
+                    !TryClaimCleanupDiscardObservation(
+                        observedAtMonotonicMilliseconds))
+                {
+                    return CleanupReceiveDisposition.Conflict;
+                }
+
+                CleanupReceivePermit updated;
+                if (envelope.Sequence == 1 &&
+                    envelope.Type is "invoke" or "invoke_batch")
+                {
+                    if (permit.WorkImmutableDigest is null)
+                    {
+                        updated = permit with
+                        {
+                            ObservationCount = permit.ObservationCount + 1,
+                            WorkType = envelope.Type,
+                            WorkCorrelationId = correlationId,
+                            WorkImmutableDigest = immutableDigest,
+                        };
+                    }
+                    else if (
+                        string.Equals(
+                            permit.WorkType,
+                            envelope.Type,
+                            StringComparison.Ordinal) &&
+                        string.Equals(
+                            permit.WorkCorrelationId,
+                            correlationId,
+                            StringComparison.Ordinal) &&
+                        string.Equals(
+                            permit.WorkImmutableDigest,
+                            immutableDigest,
+                            StringComparison.Ordinal))
+                    {
+                        updated = permit with
+                        {
+                            ObservationCount = permit.ObservationCount + 1,
+                        };
+                    }
+                    else
+                    {
+                        RollbackCleanupDiscardObservation();
+                        return CleanupReceiveDisposition.Conflict;
+                    }
+                }
+                else if (envelope.Sequence == 2 &&
+                    string.Equals(
+                        envelope.Type,
+                        "cancel",
+                        StringComparison.Ordinal) &&
+                    permit.WorkImmutableDigest is not null &&
+                    string.Equals(
+                        permit.WorkCorrelationId,
+                        correlationId,
+                        StringComparison.Ordinal))
+                {
+                    if (permit.CancelImmutableDigest is null)
+                    {
+                        updated = permit with
+                        {
+                            ObservationCount = permit.ObservationCount + 1,
+                            CancelImmutableDigest = immutableDigest,
+                        };
+                    }
+                    else if (string.Equals(
+                                 permit.CancelImmutableDigest,
+                                 immutableDigest,
+                                 StringComparison.Ordinal))
+                    {
+                        updated = permit with
+                        {
+                            ObservationCount = permit.ObservationCount + 1,
+                        };
+                    }
+                    else
+                    {
+                        RollbackCleanupDiscardObservation();
+                        return CleanupReceiveDisposition.Conflict;
+                    }
+                }
+                else
+                {
+                    RollbackCleanupDiscardObservation();
+                    return CleanupReceiveDisposition.Conflict;
+                }
+
+                _cleanupReceivePermits[envelope.Rsid] = updated;
+                return CleanupReceiveDisposition.Discarded;
+            }
+        }
+
         internal void RefreshBoundSession(
             string rsid,
             RbpLocalSessionSnapshot local)
@@ -581,6 +889,90 @@ internal sealed partial class RbpConnectionCoordinator
             lock (_sync)
             {
                 _ = _sentUnregister.Remove(rsid);
+                _ = _cleanupReceivePermits.Remove(rsid);
+            }
+        }
+
+        private void RemoveExpiredCleanupReceivePermits(long now)
+        {
+            string[] expired = _cleanupReceivePermits
+                .Where(item =>
+                    now >= item.Value.ExpiresAtMonotonicMilliseconds)
+                .Select(item => item.Key)
+                .ToArray();
+            foreach (string rsid in expired)
+            {
+                _ = _cleanupReceivePermits.Remove(rsid);
+            }
+        }
+
+        private static IReadOnlySet<string> ReadCleanupPermitCapabilities(
+            JsonElement registrationPayload)
+        {
+            JsonElement values = registrationPayload.GetProperty(
+                "session_capabilities");
+            return new HashSet<string>(
+                values.EnumerateArray().Select(value => value.GetString()!),
+                StringComparer.Ordinal);
+        }
+
+        private static bool CleanupEnvelopeMatchesPermit(
+            RbpDataEnvelopeSnapshot envelope,
+            CleanupReceivePermit permit)
+        {
+            if (!string.Equals(
+                    envelope.Type,
+                    "invoke_batch",
+                    StringComparison.Ordinal))
+            {
+                return true;
+            }
+
+            RbpBatchRequest request =
+                RbpBatchRequest.Parse(envelope.Rsid, envelope.Payload);
+            if (!permit.OfferedCapabilities.Contains(
+                    RbpBatchCapability.BatchAtomicCapability) ||
+                (request.Atomic &&
+                 !permit.GrantedCapabilities.Contains(
+                     RbpBatchCapability.BatchAtomicCapability)))
+            {
+                return false;
+            }
+
+            return request.Steps.All(step =>
+                AddinBatchContract.TryGetDescriptor(step.Method, out _));
+        }
+
+        private bool TryClaimCleanupDiscardObservation(long now)
+        {
+            long windowStart = now - 60_000;
+            while (_cleanupDiscardObservations.TryPeek(out long observed) &&
+                   observed <= windowStart)
+            {
+                _ = _cleanupDiscardObservations.Dequeue();
+            }
+
+            if (_cleanupDiscardObservations.Count >= 32)
+            {
+                return false;
+            }
+
+            _cleanupDiscardObservations.Enqueue(now);
+            return true;
+        }
+
+        private void RollbackCleanupDiscardObservation()
+        {
+            if (_cleanupDiscardObservations.Count == 0)
+            {
+                return;
+            }
+
+            long[] retained = _cleanupDiscardObservations.ToArray();
+            _cleanupDiscardObservations.Clear();
+            for (int index = 0; index < retained.Length - 1; index++)
+            {
+                _cleanupDiscardObservations.Enqueue(retained[index]);
             }
         }
 

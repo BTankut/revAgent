@@ -89,7 +89,7 @@ internal sealed class RbpRoutedInvocationChannel(
             return FromFailure(exception, lease, leaseHandle);
         }
 
-        return FromResponse(result, leaseHandle);
+        return FromResponse(result, leaseHandle) with { RouteLocalSessionKey = handle.LocalSessionKey };
     }
 
     private static RbpAddinOutcome FromResponse(

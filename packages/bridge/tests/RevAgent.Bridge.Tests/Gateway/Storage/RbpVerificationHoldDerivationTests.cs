@@ -1,7 +1,10 @@
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
+using RevAgent.Bridge.Gateway.Dispatch;
 using RevAgent.Bridge.Gateway.Protocol;
 using RevAgent.Bridge.Gateway.Storage;
+using RevAgent.Bridge.Tests.Gateway.Dispatch;
 
 namespace RevAgent.Bridge.Tests.Gateway.Storage;
 
@@ -70,9 +73,6 @@ public sealed class RbpVerificationHoldDerivationTests
     private const string AuditId =
         "0197a3c2-0000-7000-8000-000000000102";
 
-    private static readonly string EvidenceDigest =
-        "sha256:" + new string('d', 64);
-
     [Fact]
     public void MaterialIsTheFrozenHoldMaterialShape()
     {
@@ -122,16 +122,15 @@ public sealed class RbpVerificationHoldDerivationTests
             scopeJcs: SessionScope,
             invocationId: SecondInvocationId);
 
-        // Both mutations become possibly dispatched before either is
-        // arbitrated: an uncleared hold blocks a *new* mutating invocation
-        // (spec ~480-485), so two conflicting scopes can only end up held
-        // through the redelivery exemption of two already durable origins.
+        // A document hold subsumes a later session mutation. The separate
+        // scope material remains independently derivable, but the safety
+        // barrier correctly denies that later session origin before it can
+        // acquire dispatch ownership.
         await StartPossiblyDispatchedMutationAsync(store, documentOrigin);
-        await StartPossiblyDispatchedMutationAsync(store, sessionOrigin);
         string documentHold =
             await RefuseRedeliveryAsync(store, documentOrigin);
-        string sessionHold =
-            await RefuseRedeliveryAsync(store, sessionOrigin);
+        RbpInvocationAdmissionResult denied =
+            await store.AdmitInvocationAsync(sessionOrigin);
 
         Assert.Equal(
             Derive(Material(DocumentOneScope, Key(OriginInvocationId))),
@@ -139,11 +138,21 @@ public sealed class RbpVerificationHoldDerivationTests
         Assert.Equal(SingleDocumentGoldenVector, documentHold);
         Assert.Equal(
             Derive(Material(SessionScope, Key(SecondInvocationId))),
-            sessionHold);
+            "vh:" + Sha256Hex(
+                """
+                {"mutation_scope":{"kind":"session"},"origin_idempotency_keys":["rs-test/0197a3c2-0000-7000-8000-0000000000f4"],"rsid":"rs-test"}
+                """));
+        Assert.Equal(
+            RbpInvocationAdmission.BlockedByConflictingHold,
+            denied.Admission);
+        Assert.Equal(documentHold, denied.VerificationHoldId);
+        Assert.Null(await store.GetInvocationAsync(sessionOrigin.IdempotencyKey));
 
         // The scope is part of the material, so the same rsid under two
         // scopes never collides.
-        Assert.NotEqual(documentHold, sessionHold);
+        Assert.NotEqual(
+            documentHold,
+            Derive(Material(SessionScope, Key(SecondInvocationId))));
     }
 
     [Fact]
@@ -294,17 +303,15 @@ public sealed class RbpVerificationHoldDerivationTests
         RbpInvocationIdentity second =
             WriteIdentity(invocationId: SecondInvocationId);
 
-        // Both mutations are left `executing`, which is exactly the state a
-        // crash between Section 12.1 steps 2 and 3 produces.
+        // The first mutation is left `executing`, which is exactly the state
+        // a crash between Section 12.1 steps 2 and 3 produces.
         _ = await store.AdmitInvocationAsync(first);
         await store.MarkInvocationExecutingAsync(first.IdempotencyKey);
-        _ = await store.AdmitInvocationAsync(second);
-        await store.MarkInvocationExecutingAsync(second.IdempotencyKey);
 
         string installed =
             (await store.AdmitInvocationAsync(first)).VerificationHoldId!;
-        string later =
-            (await store.AdmitInvocationAsync(second)).VerificationHoldId!;
+        RbpInvocationAdmissionResult later =
+            await store.AdmitInvocationAsync(second);
 
         // Spec ~470 makes the id a *stable* correlation value while the hold
         // is indexed by (rsid, mutation_scope), spec ~477-480 defines the
@@ -312,7 +319,10 @@ public sealed class RbpVerificationHoldDerivationTests
         // and spec ~482-485 answers a later conflicting mutation with "the
         // original hold's journal_indeterminate error". The origin list is
         // therefore fixed at install and the id never moves.
-        Assert.Equal(installed, later);
+        Assert.Equal(
+            RbpInvocationAdmission.BlockedByConflictingHold,
+            later.Admission);
+        Assert.Equal(installed, later.VerificationHoldId);
         Assert.Equal(
             Derive(Material(DocumentOneScope, first.IdempotencyKey)),
             installed);
@@ -321,6 +331,7 @@ public sealed class RbpVerificationHoldDerivationTests
         Assert.Equal(
             new[] { first.IdempotencyKey },
             hold!.OrderedOriginIdempotencyKeys);
+        Assert.Null(await store.GetInvocationAsync(second.IdempotencyKey));
 
         // The extended material is never the answer, in either direction.
         Assert.NotEqual(
@@ -344,24 +355,28 @@ public sealed class RbpVerificationHoldDerivationTests
     public async Task AClearanceOnTheDerivedHoldIsAccepted()
     {
         using var directory = new RbpJournalTestDirectory();
-        await using RbpJournalStore store = await OpenAsync(directory);
+        var fixture = new RbpApplicationErrorSafetyTests.RoutedFixture("{}", -32603);
+        await using RbpJournalStore store = await OpenAsync(directory, fixture);
         string holdId =
             await InstallIndeterminateHoldAsync(store, WriteIdentity());
         Assert.Equal(
             Derive(Material(DocumentOneScope, Key(OriginInvocationId))),
             holdId);
-        _ = await store.RecordHoldVerificationEvidenceAsync(
-            Rsid,
-            new RbpHoldVerificationEvidence(
-                holdId,
-                VerificationId,
-                EvidenceDigest,
-                Conclusive: true));
+        string evidenceDigest = await ProduceCorrelatedVerificationEvidenceAsync(
+            store,
+            fixture,
+            holdId);
 
+        RbpRecoveryClearance clearance = Clearance(holdId, evidenceDigest);
+        RbpInvocationIdentity recovery = WriteIdentity(
+            invocationId: SecondInvocationId) with
+        {
+            RecoveryClearancesJcs = RbpBatchTestData.ClearanceArrayJcs(clearance),
+        };
         RbpClearanceGatedAdmission admitted =
             await store.AdmitInvocationWithClearancesAsync(
-                WriteIdentity(invocationId: SecondInvocationId),
-                new[] { Clearance(holdId) });
+                recovery,
+                new[] { clearance });
 
         Assert.Null(admitted.BlockingHold);
         Assert.Equal(
@@ -376,27 +391,31 @@ public sealed class RbpVerificationHoldDerivationTests
     public async Task ANonDerivableClearanceHoldIdFailsClosed()
     {
         using var directory = new RbpJournalTestDirectory();
-        await using RbpJournalStore store = await OpenAsync(directory);
+        var fixture = new RbpApplicationErrorSafetyTests.RoutedFixture("{}", -32603);
+        await using RbpJournalStore store = await OpenAsync(directory, fixture);
         string holdId =
             await InstallIndeterminateHoldAsync(store, WriteIdentity());
-        _ = await store.RecordHoldVerificationEvidenceAsync(
-            Rsid,
-            new RbpHoldVerificationEvidence(
-                holdId,
-                VerificationId,
-                EvidenceDigest,
-                Conclusive: true));
+        string evidenceDigest = await ProduceCorrelatedVerificationEvidenceAsync(
+            store,
+            fixture,
+            holdId);
 
         // Correctly shaped ("vh:" plus 64 lowercase hex) but not derivable
         // from any durable hold material: it clears nothing and admits
         // nothing.
         string undecidable = "vh:" + new string('a', 64);
         Assert.NotEqual(holdId, undecidable);
+        RbpRecoveryClearance clearance = Clearance(undecidable, evidenceDigest);
+        RbpInvocationIdentity recovery = WriteIdentity(
+            invocationId: SecondInvocationId) with
+        {
+            RecoveryClearancesJcs = RbpBatchTestData.ClearanceArrayJcs(clearance),
+        };
         RbpJournalException fault =
             await Assert.ThrowsAsync<RbpJournalException>(
                 () => store.AdmitInvocationWithClearancesAsync(
-                    WriteIdentity(invocationId: SecondInvocationId),
-                    new[] { Clearance(undecidable) }));
+                    recovery,
+                    new[] { clearance }));
 
         Assert.Equal(RbpJournalErrorCode.ProtocolConflict, fault.ErrorCode);
         Assert.Equal(
@@ -483,14 +502,16 @@ public sealed class RbpVerificationHoldDerivationTests
         return refused.VerificationHoldId!;
     }
 
-    private static RbpRecoveryClearance Clearance(string holdId) =>
+    private static RbpRecoveryClearance Clearance(
+        string holdId,
+        string evidenceDigest) =>
         new(
             holdId,
             DocumentOneScope,
             ResolutionId,
             RbpClearanceBasis.VerificationRead,
             VerificationId,
-            EvidenceDigest,
+            evidenceDigest,
             RbpClearanceDecision.PostconditionVerified,
             AuditId);
 
@@ -508,14 +529,64 @@ public sealed class RbpVerificationHoldDerivationTests
             RecoveryClearancesJcs: "[]");
 
     private static async Task<RbpJournalStore> OpenAsync(
-        RbpJournalTestDirectory directory)
+        RbpJournalTestDirectory directory,
+        RbpApplicationErrorSafetyTests.RoutedFixture? fixture = null)
     {
         RbpJournalStore store = RbpJournalStore.Open(
             directory.JournalPath,
             new TestResumeTokenProtector(),
             RbpJournalTestData.Options());
         _ = await store.PersistRegisteredSessionAsync(
-            RbpJournalTestData.Registration());
+            RbpJournalTestData.Registration(
+                localSessionKey: fixture is null
+                    ? "port:8080:pid:1234"
+                    : fixture.Route.Handle!.LocalSessionKey));
         return store;
+    }
+
+    private static async Task<string> ProduceCorrelatedVerificationEvidenceAsync(
+        RbpJournalStore store,
+        RbpApplicationErrorSafetyTests.RoutedFixture fixture,
+        string holdId)
+    {
+        fixture.Transport.SetResponse("""{"success":true}""", null);
+        var dispatcher = new RbpInvocationDispatcher(
+            store,
+            fixture.Channel,
+            new RbpInFlightGate());
+        RbpInvocationAnswer verification = await dispatcher.DispatchAsync(
+            VerificationReadRequest(holdId),
+            CancellationToken.None);
+
+        Assert.Equal("result", verification.Type);
+        RbpVerificationHold hold =
+            (await store.GetHoldAsync(Rsid, holdId))!;
+        Assert.Equal(RbpHoldState.EvidenceRecorded, hold.State);
+        Assert.Equal(VerificationId, hold.VerificationInvocationId);
+        return hold.EvidenceDigest!;
+    }
+
+    private static RbpInvokeRequest VerificationReadRequest(string holdId)
+    {
+        string payload =
+            $$"""
+            {
+              "invocation_id": "{{VerificationId}}",
+              "method": "get_element_parameter",
+              "params": {"element_id": 42},
+              "timeout_ms": 30000,
+              "mutating": false,
+              "mutation_scope": null,
+              "policy": {"class":"read","decision":"allow"},
+              "verification": {
+                "hold_id": "{{holdId}}",
+                "mutation_scope": {"document_id":"doc-1","kind":"document"},
+                "purpose": "resolve_indeterminate"
+              },
+              "recovery_clearances": []
+            }
+            """;
+        using JsonDocument document = JsonDocument.Parse(payload);
+        return RbpInvokeRequest.Parse(Rsid, document.RootElement.Clone());
     }
 }

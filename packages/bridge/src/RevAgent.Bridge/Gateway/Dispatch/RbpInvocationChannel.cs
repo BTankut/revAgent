@@ -58,7 +58,8 @@ internal sealed record RbpAddinOutcome(
     bool RouteFailure = false,
     // This is an internal, already post-response-verified attestation from
     // AddinTcpTransport. It is never serialized or exposed to a caller.
-    AddinProcessAttestation? ProcessAttestation = null)
+    AddinProcessAttestation? ProcessAttestation = null,
+    string? RouteLocalSessionKey = null)
 {
     internal RbpAddinOutcome ConservativeClassification() =>
         Kind == RbpAddinOutcomeKind.KnownNotDispatched &&

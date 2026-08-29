@@ -10,6 +10,29 @@ namespace RevAgent.Bridge.Gateway.Connection;
 
 internal sealed partial class RbpConnectionCoordinator
 {
+    private const int MaximumDeferredRegistrations = 128;
+    private const int MaximumRegistrationAssessmentsPerPass = 4;
+    private const long RegistrationReassessmentMilliseconds = 30_000;
+
+    private enum DeferredRegistrationDisposition
+    {
+        Deferred,
+        CleanupPending,
+    }
+
+    private sealed record DeferredRegistration(
+        string RegistrationDigest,
+        string SafetyDecisionDigest,
+        DeferredRegistrationDisposition Disposition,
+        long LastAssessedMonotonicMilliseconds);
+
+    private sealed record RegistrationPreflight(
+        bool AssessmentPerformed,
+        RbpRegistrationSafetyAssessment? EligibleAssessment);
+
+    private readonly Dictionary<string, DeferredRegistration>
+        _deferredRegistrations = new(StringComparer.Ordinal);
+
     private async Task SynchronizeSessionsAsync(
         ConnectionCycleContext context,
         RbpJournalRecoveryPlan recovery)
@@ -21,6 +44,10 @@ internal sealed partial class RbpConnectionCoordinator
         var localByKey = locals.ToDictionary(
             item => item.LocalSessionKey,
             StringComparer.Ordinal);
+        await RehydrateRegistrationCleanupSuppressionsAsync(
+                recovery.PendingUnregister,
+                context.Token)
+            .ConfigureAwait(false);
         bool ambiguousResumeAuthority = recovery.ResumeCandidates
             .Where(candidate =>
                 localByKey.TryGetValue(
@@ -112,11 +139,29 @@ internal sealed partial class RbpConnectionCoordinator
                 .ConfigureAwait(false);
         }
 
+        int registrationAssessments = 0;
         foreach (RbpLocalSessionSnapshot local in locals)
         {
             if (!claimedLocalKeys.Contains(local.LocalSessionKey))
             {
-                await RegisterSessionAsync(context, local)
+                RegistrationPreflight preflight =
+                    await AssessRegistrationPreflightAsync(
+                            local,
+                            registrationAssessments <
+                                MaximumRegistrationAssessmentsPerPass,
+                            context.Token)
+                        .ConfigureAwait(false);
+                if (preflight.AssessmentPerformed)
+                {
+                    registrationAssessments++;
+                }
+
+                if (preflight.EligibleAssessment is not { } eligible)
+                {
+                    continue;
+                }
+
+                await RegisterSessionAsync(context, local, eligible)
                     .ConfigureAwait(false);
                 _ = claimedLocalKeys.Add(local.LocalSessionKey);
             }
@@ -173,11 +218,29 @@ internal sealed partial class RbpConnectionCoordinator
             context.GetBoundSessions().Select(
                 item => item.Local.LocalSessionKey),
             StringComparer.Ordinal);
+        int registrationAssessments = 0;
         foreach (RbpLocalSessionSnapshot local in locals)
         {
             if (!activeLocalKeys.Contains(local.LocalSessionKey))
             {
-                await RegisterSessionAsync(context, local)
+                RegistrationPreflight preflight =
+                    await AssessRegistrationPreflightAsync(
+                            local,
+                            registrationAssessments <
+                                MaximumRegistrationAssessmentsPerPass,
+                            context.Token)
+                        .ConfigureAwait(false);
+                if (preflight.AssessmentPerformed)
+                {
+                    registrationAssessments++;
+                }
+
+                if (preflight.EligibleAssessment is not { } eligible)
+                {
+                    continue;
+                }
+
+                await RegisterSessionAsync(context, local, eligible)
                     .ConfigureAwait(false);
                 _ = activeLocalKeys.Add(local.LocalSessionKey);
             }
@@ -418,7 +481,8 @@ internal sealed partial class RbpConnectionCoordinator
 
     private async Task RegisterSessionAsync(
         ConnectionCycleContext context,
-        RbpLocalSessionSnapshot local)
+        RbpLocalSessionSnapshot local,
+        RbpRegistrationSafetyAssessment preflight)
     {
         RbpSessionLifecycleState lifecycle =
             RbpConnectionReducer.CreateSessionLifecycle(
@@ -444,11 +508,13 @@ internal sealed partial class RbpConnectionCoordinator
                         "session_register",
                         context.Token)
                     .ConfigureAwait(false));
+            long registrationAcknowledgedAt =
+                _clock.MonotonicMilliseconds;
             ValidateGrantedSessionCapabilities(
                 local.RegistrationPayload,
                 parsed.GrantedCapabilities);
-            RbpStoredSession stored =
-                await _journal.PersistRegisteredSessionAsync(
+            RbpRegistrationCommitResult committed =
+                await _journal.PersistRegistrationAfterAcknowledgementAsync(
                         new RbpSessionRegistration(
                             parsed.Rsid,
                             local.LocalSessionKey,
@@ -456,14 +522,52 @@ internal sealed partial class RbpConnectionCoordinator
                             parsed.ResumeToken,
                             parsed.ResumeExpiresAt,
                             parsed.GrantedCapabilities),
+                        preflight,
                         context.Token)
                     .ConfigureAwait(false);
             if (!IsCurrentContext(context))
             {
                 throw new RbpCoordinatorException(
                     RbpCoordinatorErrorCode.SessionAuthorityConflict,
-                    "The registration connection generation changed before route publication.");
+                    "The registration connection generation changed before " +
+                    "the local disposition was applied.");
             }
+
+            if (committed.Disposition ==
+                RbpLocalRegistrationDisposition.CleanupPending)
+            {
+                RbpCleanupRegistrationReceipt receipt =
+                    committed.CleanupReceipt ??
+                    throw new RbpCoordinatorException(
+                        RbpCoordinatorErrorCode.SessionAuthorityConflict,
+                        "A cleanup-pending registration omitted its durable " +
+                        "receipt.");
+                MarkRegistrationCleanupPending(
+                    receipt.Session.LocalSessionKey,
+                    receipt.Session.RegistrationDigest,
+                    receipt.SafetyDecisionDigest);
+                context.InstallCleanupReceivePermit(
+                    receipt,
+                    registrationAcknowledgedAt);
+                context.AcknowledgeRegistrationDeferred(
+                    local.LocalSessionKey);
+                context.EndRegistration(local.LocalSessionKey);
+                await SendUnregisterAsync(context, receipt.Tombstone)
+                    .ConfigureAwait(false);
+                return;
+            }
+
+            if (committed.Disposition !=
+                    RbpLocalRegistrationDisposition.Registered ||
+                committed.CleanupReceipt is not null)
+            {
+                throw new RbpCoordinatorException(
+                    RbpCoordinatorErrorCode.SessionAuthorityConflict,
+                    "The registration journal returned an invalid typed " +
+                    "disposition.");
+            }
+
+            RbpStoredSession stored = committed.Session;
             lifecycle = AdvanceSession(
                 lifecycle,
                 new RbpSessionEvent(
@@ -488,6 +592,219 @@ internal sealed partial class RbpConnectionCoordinator
             context.EndRegistration(local.LocalSessionKey);
         }
     }
+
+    private async Task<RegistrationPreflight>
+        AssessRegistrationPreflightAsync(
+            RbpLocalSessionSnapshot local,
+            bool assessmentAllowed,
+            CancellationToken cancellationToken)
+    {
+        (_, string registrationDigest) =
+            RbpJournalSerialization.CanonicalRegistration(
+                local.RegistrationPayload);
+        long now = _clock.MonotonicMilliseconds;
+        lock (_sync)
+        {
+            if (_deferredRegistrations.TryGetValue(
+                    local.LocalSessionKey,
+                    out DeferredRegistration? existing))
+            {
+                if (existing.Disposition ==
+                    DeferredRegistrationDisposition.CleanupPending)
+                {
+                    return new RegistrationPreflight(false, null);
+                }
+
+                bool unchanged = string.Equals(
+                    existing.RegistrationDigest,
+                    registrationDigest,
+                    StringComparison.Ordinal);
+                if (unchanged &&
+                    now - existing.LastAssessedMonotonicMilliseconds <
+                        RegistrationReassessmentMilliseconds)
+                {
+                    return new RegistrationPreflight(false, null);
+                }
+            }
+            else if (_deferredRegistrations.Count >=
+                     MaximumDeferredRegistrations)
+            {
+                return new RegistrationPreflight(false, null);
+            }
+
+            if (!assessmentAllowed)
+            {
+                return new RegistrationPreflight(false, null);
+            }
+        }
+
+        RbpRegistrationSafetyAssessment assessment =
+            await _journal.AssessRegistrationSafetyAsync(
+                    local.LocalSessionKey,
+                    registrationDigest,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        RequireExactRegistrationAssessment(
+            assessment,
+            local.LocalSessionKey,
+            registrationDigest);
+        lock (_sync)
+        {
+            if (assessment.Disposition ==
+                RbpRegistrationSafetyDisposition.Eligible)
+            {
+                _ = _deferredRegistrations.Remove(
+                    local.LocalSessionKey);
+                return new RegistrationPreflight(true, assessment);
+            }
+
+            if (!_deferredRegistrations.ContainsKey(
+                    local.LocalSessionKey) &&
+                _deferredRegistrations.Count >=
+                    MaximumDeferredRegistrations)
+            {
+                return new RegistrationPreflight(true, null);
+            }
+
+            _deferredRegistrations[local.LocalSessionKey] =
+                new DeferredRegistration(
+                    registrationDigest,
+                    assessment.SafetyDecisionDigest,
+                    DeferredRegistrationDisposition.Deferred,
+                    now);
+            return new RegistrationPreflight(true, null);
+        }
+    }
+
+    private async Task RehydrateRegistrationCleanupSuppressionsAsync(
+        IReadOnlyList<RbpUnregisterTombstone> tombstones,
+        CancellationToken cancellationToken)
+    {
+        foreach (RbpUnregisterTombstone tombstone in tombstones)
+        {
+            RbpStoredSession session =
+                await _journal.GetStoredSessionAsync(
+                        tombstone.Rsid,
+                        cancellationToken)
+                    .ConfigureAwait(false) ??
+                throw new RbpJournalException(
+                    RbpJournalErrorCode.IntegrityCheckFailed,
+                    "A pending unregister tombstone has no stored session.");
+            MarkRegistrationCleanupPending(
+                session.LocalSessionKey,
+                session.RegistrationDigest,
+                CleanupSuppressionDigest(session, tombstone));
+        }
+    }
+
+    private void MarkRegistrationCleanupPending(
+        string localSessionKey,
+        string registrationDigest,
+        string safetyDecisionDigest)
+    {
+        lock (_sync)
+        {
+            if (_deferredRegistrations.TryGetValue(
+                    localSessionKey,
+                    out DeferredRegistration? existing) &&
+                existing.Disposition ==
+                    DeferredRegistrationDisposition.CleanupPending &&
+                (!string.Equals(
+                     existing.RegistrationDigest,
+                     registrationDigest,
+                     StringComparison.Ordinal) ||
+                 !string.Equals(
+                     existing.SafetyDecisionDigest,
+                     safetyDecisionDigest,
+                     StringComparison.Ordinal)))
+            {
+                throw new RbpJournalException(
+                    RbpJournalErrorCode.IntegrityCheckFailed,
+                    "Conflicting cleanup ownership claims the same local " +
+                    "registration key.");
+            }
+
+            if (!_deferredRegistrations.ContainsKey(localSessionKey) &&
+                _deferredRegistrations.Count >=
+                    MaximumDeferredRegistrations)
+            {
+                throw new RbpJournalException(
+                    RbpJournalErrorCode.IntegrityCheckFailed,
+                    "The bounded registration cleanup inventory is full.");
+            }
+
+            _deferredRegistrations[localSessionKey] =
+                new DeferredRegistration(
+                    registrationDigest,
+                    safetyDecisionDigest,
+                    DeferredRegistrationDisposition.CleanupPending,
+                    _clock.MonotonicMilliseconds);
+        }
+    }
+
+    private void MarkRegistrationCleanupCompleted(string localSessionKey)
+    {
+        lock (_sync)
+        {
+            if (_deferredRegistrations.TryGetValue(
+                    localSessionKey,
+                    out DeferredRegistration? existing) &&
+                existing.Disposition ==
+                    DeferredRegistrationDisposition.CleanupPending)
+            {
+                _ = _deferredRegistrations.Remove(localSessionKey);
+            }
+        }
+    }
+
+    private static void RequireExactRegistrationAssessment(
+        RbpRegistrationSafetyAssessment assessment,
+        string localSessionKey,
+        string registrationDigest)
+    {
+        bool exact = string.Equals(
+                         assessment.LocalSessionKey,
+                         localSessionKey,
+                         StringComparison.Ordinal) &&
+                     string.Equals(
+                         assessment.RegistrationDigest,
+                         registrationDigest,
+                         StringComparison.Ordinal) &&
+                     RbpJournalSerialization.IsSha256Digest(
+                         assessment.SafetyDecisionDigest) &&
+                     assessment.Disposition switch
+                     {
+                         RbpRegistrationSafetyDisposition.Eligible =>
+                             assessment.Reason is null,
+                         RbpRegistrationSafetyDisposition.Deferred =>
+                             assessment.Reason is
+                                 "unresolved_predecessor" or
+                                 "inventory_limit",
+                         _ => false,
+                     };
+        if (!exact)
+        {
+            throw new RbpJournalException(
+                RbpJournalErrorCode.IntegrityCheckFailed,
+                "The registration safety assessment is malformed or does " +
+                "not bind the exact local registration.");
+        }
+    }
+
+    private static string CleanupSuppressionDigest(
+        RbpStoredSession session,
+        RbpUnregisterTombstone tombstone) =>
+        Rfc8785Json.Sha256Digest(
+            JsonSerializer.SerializeToElement(
+                new
+                {
+                    schema = "bridge.registration-cleanup-suppression/v1",
+                    session.Rsid,
+                    session.LocalSessionKey,
+                    session.RegistrationDigest,
+                    Reason = tombstone.Reason.ToString(),
+                    Phase = tombstone.Phase.ToString(),
+                }));
 
     private void BindRegisteredRoute(
         ConnectionCycleContext context,
@@ -526,6 +843,10 @@ internal sealed partial class RbpConnectionCoordinator
                     reason,
                     context.Token)
                 .ConfigureAwait(false);
+        MarkRegistrationCleanupPending(
+            session.Stored.LocalSessionKey,
+            session.Stored.RegistrationDigest,
+            CleanupSuppressionDigest(session.Stored, tombstone));
         context.RevokeBoundSession(session.Stored.Rsid, reason);
         StopDocContextWatch(session.Stored.Rsid);
         await SendUnregisterAsync(context, tombstone).ConfigureAwait(false);
@@ -592,6 +913,18 @@ internal sealed partial class RbpConnectionCoordinator
                     reason,
                     context.Token)
                 .ConfigureAwait(false);
+        RbpStoredSession stored =
+            await _journal.GetStoredSessionAsync(
+                    rsid,
+                    context.Token)
+                .ConfigureAwait(false) ??
+            throw new RbpJournalException(
+                RbpJournalErrorCode.IntegrityCheckFailed,
+                "A newly recorded unregister tombstone has no stored session.");
+        MarkRegistrationCleanupPending(
+            stored.LocalSessionKey,
+            stored.RegistrationDigest,
+            CleanupSuppressionDigest(stored, tombstone));
         StopDocContextWatch(rsid);
         await SendUnregisterAsync(context, tombstone).ConfigureAwait(false);
     }

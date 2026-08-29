@@ -54,9 +54,6 @@ public sealed class RbpInvocationConflictGateTests
     private const string AuditId =
         "0197a3c2-0000-7000-8000-000000000102";
 
-    private static readonly string EvidenceDigest =
-        "sha256:" + new string('d', 64);
-
     /// <summary>
     /// The defect this suite exists for: with no gate on the ordinary path a
     /// fresh <c>invocation_id</c> is enough to walk straight past an active
@@ -300,15 +297,13 @@ public sealed class RbpInvocationConflictGateTests
     public async Task AClearanceThatClearsTheHoldAdmitsAndDispatches()
     {
         using var directory = new RbpJournalTestDirectory();
-        await using RbpJournalStore store = await OpenAsync(directory);
+        var fixture = new RbpApplicationErrorSafetyTests.RoutedFixture("{}", -32603);
+        await using RbpJournalStore store = await OpenAsync(directory, fixture);
         string holdId = await InstallActiveHoldAsync(store, DocumentOneScope);
-        _ = await store.RecordHoldVerificationEvidenceAsync(
-            Rsid,
-            new RbpHoldVerificationEvidence(
-                holdId,
-                VerificationInvocationId,
-                EvidenceDigest,
-                Conclusive: true));
+        string evidenceDigest = await ProduceCorrelatedVerificationEvidenceAsync(
+            store,
+            fixture,
+            holdId);
 
         var channel = new CountingChannel();
         RbpInvocationAnswer answer =
@@ -316,7 +311,7 @@ public sealed class RbpInvocationConflictGateTests
                 WriteRequest(
                     FreshInvocationId,
                     DocumentOneScope,
-                    ClearanceArray(holdId)),
+                    ClearanceArray(holdId, evidenceDigest)),
                 CancellationToken.None);
 
         Assert.Equal("result", answer.Type);
@@ -336,15 +331,38 @@ public sealed class RbpInvocationConflictGateTests
         new(store, channel, new RbpInFlightGate());
 
     private static async Task<RbpJournalStore> OpenAsync(
-        RbpJournalTestDirectory directory)
+        RbpJournalTestDirectory directory,
+        RbpApplicationErrorSafetyTests.RoutedFixture? fixture = null)
     {
         RbpJournalStore store = RbpJournalStore.Open(
             directory.JournalPath,
             new TestResumeTokenProtector(),
             RbpJournalTestData.Options());
         _ = await store.PersistRegisteredSessionAsync(
-            RbpJournalTestData.Registration());
+            RbpJournalTestData.Registration(
+                localSessionKey: fixture is null
+                    ? "port:8080:pid:1234"
+                    : fixture.Route.Handle!.LocalSessionKey));
         return store;
+    }
+
+    private static async Task<string> ProduceCorrelatedVerificationEvidenceAsync(
+        RbpJournalStore store,
+        RbpApplicationErrorSafetyTests.RoutedFixture fixture,
+        string holdId)
+    {
+        fixture.Transport.SetResponse("""{"success":true}""", null);
+        RbpInvocationAnswer verification =
+            await Dispatcher(store, fixture.Channel).DispatchAsync(
+                VerificationReadRequest(holdId),
+                CancellationToken.None);
+
+        Assert.Equal("result", verification.Type);
+        RbpVerificationHold hold =
+            (await store.GetHoldAsync(Rsid, holdId))!;
+        Assert.Equal(RbpHoldState.EvidenceRecorded, hold.State);
+        Assert.Equal(VerificationInvocationId, hold.VerificationInvocationId);
+        return hold.EvidenceDigest!;
     }
 
     /// <summary>
@@ -400,7 +418,7 @@ public sealed class RbpInvocationConflictGateTests
         return Rfc8785Json.Canonicalize(document.RootElement);
     }
 
-    private static string ClearanceArray(string holdId) =>
+    private static string ClearanceArray(string holdId, string evidenceDigest) =>
         $$"""
         [
           {
@@ -409,7 +427,7 @@ public sealed class RbpInvocationConflictGateTests
             "resolution_id": "{{ResolutionId}}",
             "basis": "verification_read",
             "verification_invocation_id": "{{VerificationInvocationId}}",
-            "evidence_digest": "{{EvidenceDigest}}",
+            "evidence_digest": "{{evidenceDigest}}",
             "decision": "postcondition_verified",
             "audit_id": "{{AuditId}}"
           }

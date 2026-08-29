@@ -96,8 +96,7 @@ internal sealed partial class RbpConnectionCoordinator
         RbpEnvelope envelope)
     {
         if (envelope.Rsid is not { } rsid ||
-            envelope.Sequence is not { } sequence ||
-            !context.IsDispatchAllowed(rsid))
+            envelope.Sequence is not { } sequence)
         {
             throw new RbpCoordinatorException(
                 RbpCoordinatorErrorCode.SessionAuthorityConflict,
@@ -114,6 +113,53 @@ internal sealed partial class RbpConnectionCoordinator
             envelope.Acknowledgement,
             envelope.Timestamp,
             envelope.Version ?? 1);
+        if (!context.IsDispatchAllowed(rsid))
+        {
+            long observedAt = _clock.MonotonicMilliseconds;
+            if (!context.HasCleanupReceivePermit(rsid, observedAt))
+            {
+                throw new RbpCoordinatorException(
+                    RbpCoordinatorErrorCode.SessionAuthorityConflict,
+                    "Inbound RBP data targets a session that is not bound to " +
+                    "the current connection.");
+            }
+
+            if (envelope.Disposition != RbpEnvelopeDisposition.Known)
+            {
+                throw new RbpCoordinatorException(
+                    RbpCoordinatorErrorCode.SequenceFault,
+                    "The cleanup-only receive window covers only known RBP " +
+                    "data messages.");
+            }
+
+            string correlationId = ValidateCleanupDiscardShape(snapshot);
+            string immutableDigest =
+                Rfc8785Json.ImmutableEnvelopeDigest(snapshot);
+            CleanupReceiveDisposition disposition =
+                context.TryDiscardCleanupData(
+                    snapshot,
+                    immutableDigest,
+                    correlationId,
+                    observedAt);
+            if (disposition == CleanupReceiveDisposition.Discarded)
+            {
+                return;
+            }
+
+            if (disposition == CleanupReceiveDisposition.Conflict)
+            {
+                throw new RbpCoordinatorException(
+                    RbpCoordinatorErrorCode.SequenceFault,
+                    "Inbound RBP data conflicts with the bounded cleanup-only " +
+                    "receive window.");
+            }
+
+            throw new RbpCoordinatorException(
+                RbpCoordinatorErrorCode.SessionAuthorityConflict,
+                "Inbound RBP data targets a session that is not bound to " +
+                "the current connection.");
+        }
+
         RbpInboundDataResult accepted =
             await _journal.AcceptInboundDataAsync(snapshot, context.Token)
                 .ConfigureAwait(false);
@@ -165,6 +211,76 @@ internal sealed partial class RbpConnectionCoordinator
             // the Gateway's Section 10.1 window stayed occupied forever while
             // the bridge held no record that anything was owed.
             context.StartBatch(snapshot);
+        }
+    }
+
+    private static string ValidateCleanupDiscardShape(
+        RbpDataEnvelopeSnapshot envelope)
+    {
+        switch (envelope.Type)
+        {
+            case "invoke":
+                {
+                    RbpInvokeRequest request =
+                        RbpInvokeRequest.Parse(envelope.Rsid, envelope.Payload);
+                    _ = Rfc8785Json.MakeParametersDigest(request.Parameters);
+                    _ = request.ParseClearances();
+                    return request.InvocationId;
+                }
+            case "invoke_batch":
+                {
+                    RbpBatchRequest request =
+                        RbpBatchRequest.Parse(envelope.Rsid, envelope.Payload);
+                    foreach (RbpBatchStepRequest step in request.Steps)
+                    {
+                        string expected =
+                            Rfc8785Json.MakeParametersDigest(step.Parameters);
+                        if (!string.Equals(
+                                step.ParametersDigest,
+                                expected,
+                                StringComparison.Ordinal))
+                        {
+                            throw new RbpCoordinatorException(
+                                RbpCoordinatorErrorCode.SequenceFault,
+                                "A cleanup-only invoke_batch step parameters " +
+                                "digest is invalid.");
+                        }
+                    }
+
+                    string expectedBatch = Rfc8785Json.MakeBatchDigest(
+                        RbpBatchDigestInput.Parse(envelope.Payload));
+                    if (!string.Equals(
+                            request.BatchDigest,
+                            expectedBatch,
+                            StringComparison.Ordinal))
+                    {
+                        throw new RbpCoordinatorException(
+                            RbpCoordinatorErrorCode.SequenceFault,
+                            "The cleanup-only invoke_batch digest is invalid.");
+                    }
+
+                    _ = request.ParseClearances();
+                    return request.BatchId;
+                }
+            case "cancel":
+                if (envelope.Payload.ValueKind == JsonValueKind.Object &&
+                    envelope.Payload.TryGetProperty(
+                        "invocation_id",
+                        out JsonElement target) &&
+                    target.ValueKind == JsonValueKind.String &&
+                    target.GetString() is { Length: > 0 } correlationId)
+                {
+                    return correlationId;
+                }
+
+                throw new RbpCoordinatorException(
+                    RbpCoordinatorErrorCode.SequenceFault,
+                    "The cleanup-only cancel correlation is invalid.");
+            default:
+                throw new RbpCoordinatorException(
+                    RbpCoordinatorErrorCode.SequenceFault,
+                    "The cleanup-only receive window does not cover this RBP " +
+                    "data type.");
         }
     }
 
@@ -472,11 +588,21 @@ internal sealed partial class RbpConnectionCoordinator
             }
             foreach (string rsid in applied.ConfirmedUnregisterRsids)
             {
+                RbpStoredSession? cleanupSession =
+                    await _journal.GetStoredSessionAsync(
+                            rsid,
+                            context.Token)
+                        .ConfigureAwait(false);
                 context.MarkUnregisterConfirmed(rsid);
                 _ = await _journal.CompleteConfirmedUnregisterAsync(
                         rsid,
                         context.Token)
                     .ConfigureAwait(false);
+                if (cleanupSession is not null)
+                {
+                    MarkRegistrationCleanupCompleted(
+                        cleanupSession.LocalSessionKey);
+                }
             }
 
             await ScheduleActiveRecoveryCarriersAsync(context)
