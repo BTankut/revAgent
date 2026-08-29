@@ -1,11 +1,18 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-# This module is test-only.  Production entry points never import it.  The
-# native implementation intentionally lives in one assembly so consumers can
-# require one exact runtime type rather than accepting shape-compatible objects.
-if (-not ('RevAgent.TestFixtures.RevAgentTestFixtureAuthority' -as [type])) {
-    Add-Type -TypeDefinition @'
+# This module is test-only. Production entry points never import it. A legacy
+# fixed-name preload is always hostile: the real implementation receives a
+# fresh unpredictable namespace and publishes its exact in-memory Type,
+# Assembly, MVID, module bytes and sealed ownership object through module-local
+# state for consumers to bind by reference.
+$legacyCollision = @([AppDomain]::CurrentDomain.GetAssemblies() | ForEach-Object {
+        $_.GetType('RevAgent.TestFixtures.RevAgentTestFixtureAuthority', $false, $false)
+    } | Where-Object { $null -ne $_ })
+if ($legacyCollision.Count -ne 0) { throw 'fixture_authority_type_preloaded' }
+
+$script:RevAgentFixtureNamespace = 'RevAgent.TestFixtures.Run_' + [Guid]::NewGuid().ToString('N')
+$typeDefinition = @'
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -20,7 +27,7 @@ using System.Text;
 using System.Threading;
 using Microsoft.Win32.SafeHandles;
 
-namespace RevAgent.TestFixtures
+namespace __REVAGENT_FIXTURE_NAMESPACE__
 {
     internal enum FixturePurpose { GuiStartupFailureLog = 1, DesktopLauncherDiscovery = 2 }
 
@@ -160,6 +167,15 @@ namespace RevAgent.TestFixtures
             catch { h.Dispose(); throw; }
         }
 
+        internal static SafeFileHandle CreateNewExclusiveFile(string path)
+        {
+            SafeFileHandle h = CreateFileW(path, GENERIC_READ | GENERIC_WRITE, 0, IntPtr.Zero, CREATE_NEW,
+                FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, IntPtr.Zero);
+            if (h.IsInvalid) throw new IOException("fixture_file_create_new_failed", Marshal.GetLastWin32Error());
+            try { ValidateNoReparse(h, false); FileIdentity id = Identity(h); if (id.Links != 1) throw new InvalidOperationException("fixture_hardlink_refused"); return h; }
+            catch { h.Dispose(); throw; }
+        }
+
         internal static void ValidateNoReparse(SafeFileHandle h, bool directory)
         {
             FILE_ATTRIBUTE_TAG_INFO info = ReadStruct<FILE_ATTRIBUTE_TAG_INFO>(h, 9);
@@ -219,16 +235,15 @@ namespace RevAgent.TestFixtures
             DirectorySecurity acl = new DirectoryInfo(root).GetAccessControl(AccessControlSections.Owner | AccessControlSections.Access);
             SecurityIdentifier owner = (SecurityIdentifier)acl.GetOwner(typeof(SecurityIdentifier));
             if (!owner.Equals(me)) throw new InvalidOperationException("fixture_owner_untrusted");
-            SecurityIdentifier[] broad = new SecurityIdentifier[] {
-                new SecurityIdentifier(WellKnownSidType.WorldSid, null),
-                new SecurityIdentifier(WellKnownSidType.AuthenticatedUserSid, null),
-                new SecurityIdentifier(WellKnownSidType.BuiltinUsersSid, null),
-                new SecurityIdentifier(WellKnownSidType.BuiltinGuestsSid, null)
+            SecurityIdentifier[] allowedWriters = new SecurityIdentifier[] {
+                me,
+                new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null),
+                new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null)
             };
             FileSystemRights write = FileSystemRights.Write | FileSystemRights.Modify | FileSystemRights.FullControl | FileSystemRights.Delete | FileSystemRights.DeleteSubdirectoriesAndFiles;
             foreach (FileSystemAccessRule rule in acl.GetAccessRules(true, true, typeof(SecurityIdentifier))) {
                 SecurityIdentifier sid = (SecurityIdentifier)rule.IdentityReference;
-                if (rule.AccessControlType == AccessControlType.Allow && broad.Any(delegate(SecurityIdentifier b) { return b.Equals(sid); }) && (rule.FileSystemRights & write) != 0)
+                if (rule.AccessControlType == AccessControlType.Allow && !allowedWriters.Any(delegate(SecurityIdentifier allowed) { return allowed.Equals(sid); }) && (rule.FileSystemRights & write) != 0)
                     throw new InvalidOperationException("fixture_acl_untrusted");
             }
         }
@@ -244,9 +259,10 @@ namespace RevAgent.TestFixtures
 
     public sealed class RevAgentPinnedLauncherFileLease : IDisposable
     {
-        private SafeFileHandle handle; private readonly FileIdentity identity; private readonly string path; private int disposed;
-        internal RevAgentPinnedLauncherFileLease(string candidate, ulong rootVolume)
+        private SafeFileHandle handle; private readonly FileIdentity identity; private readonly string path; private RevAgentTestFixtureAuthority owner; private int disposed;
+        internal RevAgentPinnedLauncherFileLease(RevAgentTestFixtureAuthority authority, string candidate, ulong rootVolume)
         {
+            owner = authority;
             path = NativeFixture.CanonicalInput(candidate, false);
             handle = NativeFixture.OpenReadFile(path); identity = NativeFixture.Identity(handle);
             if (identity.Volume != rootVolume) { Dispose(); throw new InvalidOperationException("fixture_volume_mismatch"); }
@@ -259,17 +275,19 @@ namespace RevAgent.TestFixtures
         public string ReadAllText() { return Encoding.UTF8.GetString(ReadBytesPreservingHandle()); }
         private byte[] ReadBytesPreservingHandle()
         {
-            Ensure(); NativeFixture.VerifyPathIdentity(path, handle, identity);
-            byte[] bytes;
-            using (FileStream stream = new FileStream(NativeFixture.DuplicateForStream(handle), FileAccess.Read, 65536, false)) {
-                stream.Position = 0;
-                bytes = new byte[stream.Length]; int at = 0; while (at < bytes.Length) { int n = stream.Read(bytes, at, bytes.Length - at); if (n == 0) break; at += n; }
-            }
-            NativeFixture.VerifyPathIdentity(path, handle, identity); return bytes;
+            try {
+                Ensure(); NativeFixture.VerifyPathIdentity(path, handle, identity);
+                byte[] bytes;
+                using (FileStream stream = new FileStream(NativeFixture.DuplicateForStream(handle), FileAccess.Read, 65536, false)) {
+                    stream.Position = 0;
+                    bytes = new byte[stream.Length]; int at = 0; while (at < bytes.Length) { int n = stream.Read(bytes, at, bytes.Length - at); if (n == 0) break; at += n; }
+                }
+                NativeFixture.VerifyPathIdentity(path, handle, identity); return bytes;
+            } catch { if (owner != null) owner.PoisonFromLease(); throw; }
         }
-        public void VerifyIdentity() { Ensure(); NativeFixture.VerifyPathIdentity(path, handle, identity); }
+        public void VerifyIdentity() { try { Ensure(); NativeFixture.VerifyPathIdentity(path, handle, identity); } catch { if (owner != null) owner.PoisonFromLease(); throw; } }
         private void Ensure() { if (disposed != 0 || handle == null || handle.IsInvalid || handle.IsClosed) throw new ObjectDisposedException("launcher_file_lease"); }
-        public void Dispose() { if (Interlocked.Exchange(ref disposed, 1) == 0 && handle != null) { handle.Dispose(); handle = null; } }
+        public void Dispose() { if (Interlocked.Exchange(ref disposed, 1) == 0 && handle != null) { handle.Dispose(); handle = null; owner = null; } }
     }
 
     public sealed class RevAgentGuiStartupFailureLogLease : IDisposable
@@ -298,16 +316,48 @@ namespace RevAgent.TestFixtures
         public void Dispose() { if (Interlocked.Exchange(ref disposed, 1) == 0 && owner != null) { RevAgentTestFixtureAuthority a = owner; owner = null; a.DisposeFromLease(); } }
     }
 
+    internal static class OwnershipState
+    {
+        internal static readonly object Nonce = new object();
+    }
+
+    public sealed class RevAgentTestFixtureOwnership
+    {
+        private readonly object nonce;
+        private RevAgentTestFixtureOwnership(Type authorityType, string modulePath, string moduleSha256)
+        {
+            if (authorityType == null || authorityType.Assembly != typeof(RevAgentTestFixtureOwnership).Assembly) throw new InvalidOperationException("fixture_ownership_type_mismatch");
+            AuthorityType = authorityType; ModulePath = modulePath; ModuleSha256 = moduleSha256;
+            ImplementationAssembly = authorityType.Assembly; ModuleVersionId = authorityType.Module.ModuleVersionId;
+            ImplementationModule = authorityType.Module; AssemblyIsDynamic = authorityType.Assembly.IsDynamic;
+            nonce = OwnershipState.Nonce;
+        }
+        public Type AuthorityType { get; private set; }
+        public Assembly ImplementationAssembly { get; private set; }
+        public Module ImplementationModule { get; private set; }
+        public bool AssemblyIsDynamic { get; private set; }
+        public Guid ModuleVersionId { get; private set; }
+        public string ModulePath { get; private set; }
+        public string ModuleSha256 { get; private set; }
+        public static RevAgentTestFixtureOwnership Create(Type authorityType, string modulePath, string moduleSha256) { return new RevAgentTestFixtureOwnership(authorityType, modulePath, moduleSha256); }
+        public bool OwnsAuthority(object value)
+        {
+            RevAgentTestFixtureAuthority authority = value as RevAgentTestFixtureAuthority;
+            return authority != null && Object.ReferenceEquals(value.GetType(), AuthorityType) && authority.OwnsNonce(nonce);
+        }
+    }
+
     public sealed class RevAgentTestFixtureAuthority : IDisposable
     {
         private static readonly ConditionalWeakTable<RevAgentTestFixtureAuthority, object> Issued = new ConditionalWeakTable<RevAgentTestFixtureAuthority, object>();
         private readonly FixturePurpose purpose; private readonly int creatorPid; private readonly string rootPath;
-        private readonly string guiLogPath; private readonly string discoveryPath; private readonly string reportsPath;
+        private readonly string guiLogPath; private readonly string discoveryPath; private readonly string reportsPath; private readonly string collisionLogName;
+        private readonly object ownershipNonce = OwnershipState.Nonce;
         private SafeFileHandle rootHandle, markerHandle, firstHandle, secondHandle; private readonly FileIdentity rootIdentity, markerIdentity, firstIdentity, secondIdentity;
         private readonly List<SafeFileHandle> retainedDirectories = new List<SafeFileHandle>(); private readonly Dictionary<string, string> retainedIds = new Dictionary<string, string>(StringComparer.Ordinal);
         private int state; // 0 issued, 1 consumed, 2 disposed/poisoned
 
-        private RevAgentTestFixtureAuthority(FixturePurpose p, string root, string first, string second)
+        private RevAgentTestFixtureAuthority(FixturePurpose p, string root, string first, string second, string forcedGuiLogName)
         {
             purpose = p; creatorPid = NativeFixture.CurrentPid(); rootPath = NativeFixture.RequireTempChild(root);
             try {
@@ -318,6 +368,9 @@ namespace RevAgent.TestFixtures
             using (FileStream marker = new FileStream(NativeFixture.DuplicateForStream(markerHandle), FileAccess.ReadWrite, 1, false)) { if (marker.Length != 0) throw new InvalidOperationException("fixture_marker_not_empty"); }
             NativeFixture.VerifyPathIdentity(markerPath, markerHandle, markerIdentity);
             if (p == FixturePurpose.GuiStartupFailureLog) {
+                if (!String.IsNullOrEmpty(forcedGuiLogName) && (Path.GetFileName(forcedGuiLogName) != forcedGuiLogName || !forcedGuiLogName.StartsWith("gui-startup-", StringComparison.Ordinal) || !forcedGuiLogName.EndsWith(".log", StringComparison.OrdinalIgnoreCase)))
+                    throw new InvalidOperationException("fixture_gui_log_name_refused");
+                collisionLogName = forcedGuiLogName;
                 guiLogPath = RequireDescendantDirectory(first); firstHandle = NativeFixture.OpenDirectory(guiLogPath); firstIdentity = ValidateChild(guiLogPath, firstHandle);
             } else {
                 discoveryPath = RequireDescendantDirectory(first); reportsPath = RequireDescendantDirectory(second);
@@ -329,8 +382,9 @@ namespace RevAgent.TestFixtures
             catch { DisposeHandles(); throw; }
         }
 
-        public static RevAgentTestFixtureAuthority IssueGui(string root, string logDirectory) { return new RevAgentTestFixtureAuthority(FixturePurpose.GuiStartupFailureLog, root, logDirectory, null); }
-        public static RevAgentTestFixtureAuthority IssueDesktop(string root, string discoveryRoot, string reportsRoot) { return new RevAgentTestFixtureAuthority(FixturePurpose.DesktopLauncherDiscovery, root, discoveryRoot, reportsRoot); }
+        public static RevAgentTestFixtureAuthority IssueGui(string root, string logDirectory, string forcedGuiLogName) { return new RevAgentTestFixtureAuthority(FixturePurpose.GuiStartupFailureLog, root, logDirectory, null, forcedGuiLogName); }
+        public static RevAgentTestFixtureAuthority IssueDesktop(string root, string discoveryRoot, string reportsRoot) { return new RevAgentTestFixtureAuthority(FixturePurpose.DesktopLauncherDiscovery, root, discoveryRoot, reportsRoot, null); }
+        internal bool OwnsNonce(object value) { return Object.ReferenceEquals(ownershipNonce, value); }
         private string RequireDescendantDirectory(string path) { string full = NativeFixture.CanonicalInput(path, true); if (!NativeFixture.IsWithin(full, rootPath)) throw new InvalidOperationException("fixture_target_outside_root"); return full; }
         private FileIdentity ValidateChild(string path, SafeFileHandle handle) { FileIdentity id = NativeFixture.Identity(handle); if (id.Volume != rootIdentity.Volume) throw new InvalidOperationException("fixture_volume_mismatch"); NativeFixture.VerifyPathIdentity(path, handle, id); return id; }
         internal void AssertCreator() { if (NativeFixture.CurrentPid() != creatorPid || Volatile.Read(ref state) != 1) { Poison(); throw new InvalidOperationException("fixture_authority_process_or_state_refused"); } }
@@ -411,7 +465,7 @@ namespace RevAgent.TestFixtures
         private void AddLauncher(string path, string[] extensions, HashSet<string> seen, List<RevAgentPinnedLauncherFileLease> files)
         {
             string extension = Path.GetExtension(path).ToLowerInvariant(); if (!extensions.Contains(extension, StringComparer.OrdinalIgnoreCase) || !seen.Add(path)) return;
-            RevAgentPinnedLauncherFileLease file = new RevAgentPinnedLauncherFileLease(path, rootIdentity.Volume); string key;
+            RevAgentPinnedLauncherFileLease file = new RevAgentPinnedLauncherFileLease(this, path, rootIdentity.Volume); string key;
             using (SafeFileHandle duplicate = NativeFixture.OpenReadFile(path)) { key = IdentityKey(NativeFixture.Identity(duplicate)); }
             string prior;
             if (retainedIds.TryGetValue(key, out prior) && !String.Equals(prior, path, StringComparison.OrdinalIgnoreCase)) { file.Dispose(); throw new InvalidOperationException("fixture_duplicate_fileid_refused"); }
@@ -430,7 +484,7 @@ namespace RevAgent.TestFixtures
         }
         internal string ReadReport(string relative)
         {
-            AssertCreator(); string full = ReportsRelative(relative); RevAgentPinnedLauncherFileLease file = new RevAgentPinnedLauncherFileLease(full, rootIdentity.Volume);
+            AssertCreator(); string full = ReportsRelative(relative); RevAgentPinnedLauncherFileLease file = new RevAgentPinnedLauncherFileLease(this, full, rootIdentity.Volume);
             try { return file.ReadAllText(); } finally { file.Dispose(); }
         }
         internal void WriteReport(string relative, string json)
@@ -447,15 +501,18 @@ namespace RevAgent.TestFixtures
         }
         internal string WriteGuiLog(string[] lines)
         {
-            AssertCreator(); VerifyAll(); string name = "gui-startup-" + DateTime.Now.ToString("yyyyMMdd-HHmmss-fff") + "-" + Guid.NewGuid().ToString("N") + ".log"; string full = Path.Combine(guiLogPath, name);
-            SafeFileHandle h = NativeFixture.OpenWritableFile(full); FileIdentity id = NativeFixture.Identity(h);
+            AssertCreator(); VerifyAll(); string name = String.IsNullOrEmpty(collisionLogName) ? "gui-startup-" + DateTime.Now.ToString("yyyyMMdd-HHmmss-fff") + "-" + Guid.NewGuid().ToString("N") + ".log" : collisionLogName; string full = Path.Combine(guiLogPath, name);
+            SafeFileHandle h = NativeFixture.CreateNewExclusiveFile(full); FileIdentity id = NativeFixture.Identity(h);
             try {
                 byte[] bytes = new UTF8Encoding(false).GetBytes(String.Join(Environment.NewLine, lines) + Environment.NewLine);
-                using (FileStream stream = new FileStream(NativeFixture.DuplicateForStream(h), FileAccess.ReadWrite, 65536, false)) { stream.Position = 0; stream.Write(bytes, 0, bytes.Length); stream.Flush(true); }
+                using (FileStream stream = new FileStream(NativeFixture.DuplicateForStream(h), FileAccess.ReadWrite, 65536, false)) { stream.Position = 0; stream.Write(bytes, 0, bytes.Length); stream.Flush(true); if (stream.Length != bytes.Length) throw new IOException("fixture_gui_log_length_mismatch"); }
+                NativeFixture.VerifyPathIdentity(full, h, id);
+                using (FileStream verify = new FileStream(NativeFixture.DuplicateForStream(h), FileAccess.Read, 65536, false)) { verify.Position = 0; byte[] read = new byte[bytes.Length]; int at = 0; while (at < read.Length) { int n = verify.Read(read, at, read.Length - at); if (n == 0) break; at += n; } if (!bytes.SequenceEqual(read)) throw new IOException("fixture_gui_log_readback_mismatch"); }
                 NativeFixture.VerifyPathIdentity(full, h, id); return full;
             } catch { Poison(); throw; } finally { h.Dispose(); }
         }
         private void Poison() { Interlocked.Exchange(ref state, 2); DisposeHandles(); }
+        internal void PoisonFromLease() { Poison(); }
         internal void DisposeFromLease() { Interlocked.Exchange(ref state, 2); DisposeHandles(); }
         public void Dispose() { Interlocked.Exchange(ref state, 2); DisposeHandles(); }
         private void DisposeHandles()
@@ -466,16 +523,31 @@ namespace RevAgent.TestFixtures
         }
     }
 }
-'@ -Language CSharp -ErrorAction Stop
-}
+'@
+$typeDefinition = $typeDefinition.Replace('__REVAGENT_FIXTURE_NAMESPACE__', $script:RevAgentFixtureNamespace)
+Add-Type -TypeDefinition $typeDefinition -Language CSharp -ErrorAction Stop
+$authorityTypes = @([AppDomain]::CurrentDomain.GetAssemblies() | ForEach-Object {
+        $_.GetType(($script:RevAgentFixtureNamespace + '.RevAgentTestFixtureAuthority'), $false, $false)
+    } | Where-Object { $null -ne $_ })
+$ownershipTypes = @([AppDomain]::CurrentDomain.GetAssemblies() | ForEach-Object {
+        $_.GetType(($script:RevAgentFixtureNamespace + '.RevAgentTestFixtureOwnership'), $false, $false)
+    } | Where-Object { $null -ne $_ })
+if ($authorityTypes.Count -ne 1 -or $ownershipTypes.Count -ne 1) { throw 'fixture_authority_compile_identity_refused' }
+$script:RevAgentFixtureAuthorityType = [type]$authorityTypes[0]
+$ownershipType = [type]$ownershipTypes[0]
+$modulePath = [IO.Path]::GetFullPath($PSCommandPath)
+$moduleSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $modulePath).Hash.ToLowerInvariant()
+$ownershipArguments = [object[]]@([type]$script:RevAgentFixtureAuthorityType, [string]$modulePath, [string]$moduleSha256)
+$script:RevAgentFixtureOwnership = $ownershipType.GetMethod('Create').Invoke($null, $ownershipArguments)
 
 function New-RevAgentGuiLogFixtureAuthority {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)][string]$FixtureRoot,
-        [Parameter(Mandatory = $true)][string]$LogDirectory
+        [Parameter(Mandatory = $true)][string]$LogDirectory,
+        [Parameter(DontShow = $true)][string]$CollisionLogNameForTest = ''
     )
-    return [RevAgent.TestFixtures.RevAgentTestFixtureAuthority]::IssueGui($FixtureRoot, $LogDirectory)
+    return $script:RevAgentFixtureAuthorityType.GetMethod('IssueGui').Invoke($null, @($FixtureRoot, $LogDirectory, $CollisionLogNameForTest))
 }
 
 function New-RevAgentDesktopDiscoveryFixtureAuthority {
@@ -485,7 +557,7 @@ function New-RevAgentDesktopDiscoveryFixtureAuthority {
         [Parameter(Mandatory = $true)][string]$DiscoveryRoot,
         [Parameter(Mandatory = $true)][string]$ReportsRoot
     )
-    return [RevAgent.TestFixtures.RevAgentTestFixtureAuthority]::IssueDesktop($FixtureRoot, $DiscoveryRoot, $ReportsRoot)
+    return $script:RevAgentFixtureAuthorityType.GetMethod('IssueDesktop').Invoke($null, @($FixtureRoot, $DiscoveryRoot, $ReportsRoot))
 }
 
 Export-ModuleMember -Function New-RevAgentGuiLogFixtureAuthority, New-RevAgentDesktopDiscoveryFixtureAuthority

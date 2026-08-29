@@ -67,12 +67,29 @@ function Invoke-FixturePublisher {
     finally { $authority.Dispose() }
 }
 
+function Protect-FixtureRoot {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $acl = [Security.AccessControl.DirectorySecurity]::new()
+    $acl.SetOwner($identity.User)
+    $acl.SetAccessRuleProtection($true, $false)
+    $inheritance = [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit
+    foreach ($sid in @($identity.User, [Security.Principal.SecurityIdentifier]::new('S-1-5-18'), [Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'))) {
+        $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($sid, [Security.AccessControl.FileSystemRights]::FullControl, $inheritance, [Security.AccessControl.PropagationFlags]::None, [Security.AccessControl.AccessControlType]::Allow))
+    }
+    if ('System.IO.FileSystemAclExtensions' -as [type]) { [IO.FileSystemAclExtensions]::SetAccessControl([IO.DirectoryInfo]$item, $acl) }
+    else { ([IO.DirectoryInfo]$item).SetAccessControl($acl) }
+}
+
 $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("revagent-desktop-launcher-test-" + [Guid]::NewGuid().ToString("N"))
 $reportsRoot = Join-Path $tempRoot "reports"
 $fixtureSpace = Join-Path $tempRoot 'discovery-space'
 $desktopRoot = Join-Path $fixtureSpace "desktop"
 $nowUtc = [datetime]"2026-06-30T10:00:00Z"
 
+New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
+Protect-FixtureRoot -Path $tempRoot
 try {
     New-Item -ItemType Directory -Path $desktopRoot, $reportsRoot -Force | Out-Null
     Set-Content -LiteralPath (Join-Path $desktopRoot "revAgent Updater STABLE.cmd") `
@@ -144,15 +161,86 @@ set "PRIMARY_ROOT=\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy"' `
     $publisherText = Get-Content -Raw -LiteralPath $scriptPath
     $authorityModuleText = Get-Content -Raw -LiteralPath $fixtureModulePath
     Assert-True ($publisherText -match '\[Environment\]::GetFolderPath\(\$specialFolder\)' -and $publisherText -notmatch 'Import-Module.+TestFixtureAuthority' -and $publisherText -notmatch 'TestDiscoveryRoot') 'Publisher default discovery changed or retained a path-authority seam.'
-    $forbiddenAuthorityCarrierPattern = ('TestFixtureAuthority' + 'Path|non' + 'ce|REVAGENT_.+AUTH' + 'ORITY|Raw' + 'Handle|caller' + 'Pid')
+    $forbiddenAuthorityCarrierPattern = ('TestFixtureAuthority' + 'Path|REVAGENT_.+AUTH' + 'ORITY|Raw' + 'Handle|caller' + 'Pid')
     Assert-True ($authorityModuleText -notmatch $forbiddenAuthorityCarrierPattern) 'Fixture module exposes a forbidden transferable authority carrier.'
+
+    $windowsPowerShell = Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe'
+    $escapedFixtureModulePath = $fixtureModulePath.Replace("'", "''")
+    $fixedPreloadScript = @"
+Add-Type -TypeDefinition @'
+using System;
+namespace RevAgent.TestFixtures {
+  public sealed class FakeLease { public string WriteStartupFailureLog(string[] lines) { return @"C:\forged\gui.log"; } }
+  public sealed class RevAgentTestFixtureAuthority {
+    public static object IssueGui(string root, string log, string name) { return new RevAgentTestFixtureAuthority(); }
+    public static object IssueDesktop(string root, string discovery, string reports) { return new RevAgentTestFixtureAuthority(); }
+    public FakeLease ConsumeGuiStartupFailureLog() { return new FakeLease(); }
+    public object ConsumeDesktopLauncherDiscovery() { return new object(); }
+  }
+}
+'@
+try { Import-Module '$escapedFixtureModulePath' -Force -ErrorAction Stop; exit 91 }
+catch { if (`$_.Exception.Message -match 'fixture_authority_type_preloaded') { 'fixed-preload-refused'; exit 0 }; throw }
+"@
+    $fixedPreloadEncoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($fixedPreloadScript))
+    $fixedPreloadOutput = @(& $windowsPowerShell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand $fixedPreloadEncoded 2>&1 | ForEach-Object { [string]$_ })
+    $fixedPreloadExit = $LASTEXITCODE
+    Assert-True ($fixedPreloadExit -eq 0 -and ((@($fixedPreloadOutput) -join ' | ') -match 'fixed-preload-refused')) 'A forged fixed-name Issue/Consume authority type survived module import.'
+
+    $duplicateRoot = Join-Path $tempRoot 'duplicate-type-root'
+    $duplicateDiscovery = Join-Path $duplicateRoot 'discovery'
+    $duplicateReports = Join-Path $duplicateRoot 'reports'
+    $duplicateDesktop = Join-Path $duplicateDiscovery 'Desktop'
+    $duplicateAssemblyPath = Join-Path $duplicateRoot 'forged-duplicate.dll'
+    New-Item -ItemType Directory -Path $duplicateDesktop, $duplicateReports -Force | Out-Null
+    [IO.File]::WriteAllText((Join-Path $duplicateDesktop 'revAgent Updater STABLE.cmd'), '@echo off', [Text.UTF8Encoding]::new($false))
+    $escapedPublisherPath = $scriptPath.Replace("'", "''")
+    $escapedDuplicateRoot = $duplicateRoot.Replace("'", "''")
+    $escapedDuplicateDiscovery = $duplicateDiscovery.Replace("'", "''")
+    $escapedDuplicateReports = $duplicateReports.Replace("'", "''")
+    $escapedDuplicateDesktop = $duplicateDesktop.Replace("'", "''")
+    $escapedDuplicateAssemblyPath = $duplicateAssemblyPath.Replace("'", "''")
+    $duplicateTypeScript = @"
+Import-Module '$escapedFixtureModulePath' -Force -ErrorAction Stop
+`$authority = New-RevAgentDesktopDiscoveryFixtureAuthority -FixtureRoot '$escapedDuplicateRoot' -DiscoveryRoot '$escapedDuplicateDiscovery' -ReportsRoot '$escapedDuplicateReports'
+try {
+  `$ns = `$authority.GetType().Namespace
+  `$source = 'namespace ' + `$ns + ' { public sealed class RevAgentTestFixtureAuthority { public object ConsumeDesktopLauncherDiscovery() { return new object(); } } }'
+  Add-Type -TypeDefinition `$source -OutputAssembly '$escapedDuplicateAssemblyPath' -ErrorAction Stop
+  [void][Reflection.Assembly]::Load([IO.File]::ReadAllBytes('$escapedDuplicateAssemblyPath'))
+  [IO.File]::Delete('$escapedDuplicateAssemblyPath')
+  try { & '$escapedPublisherPath' -Mode ScanLocal -MachineName DUPLICATE -LauncherPath '$escapedDuplicateDesktop' -OutputJson -TestFixtureAuthority `$authority | Out-Null; exit 92 }
+  catch { if (`$_.Exception.Message -match 'provenance_refused') { 'duplicate-type-refused'; exit 0 }; throw }
+}
+finally { `$authority.Dispose() }
+"@
+    $duplicateTypeEncoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($duplicateTypeScript))
+    $duplicateTypeOutput = @(& $windowsPowerShell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand $duplicateTypeEncoded 2>&1 | ForEach-Object { [string]$_ })
+    $duplicateTypeExit = $LASTEXITCODE
+    Assert-True ($duplicateTypeExit -eq 0 -and ((@($duplicateTypeOutput) -join ' | ') -match 'duplicate-type-refused')) 'A duplicate random full-name type survived exact Assembly/Module ownership binding.'
+
+    $carrierPath = Join-Path $tempRoot 'cross-process-authority.clixml'
+    $crossProcessAuthority = New-RevAgentDesktopDiscoveryFixtureAuthority -FixtureRoot $duplicateRoot -DiscoveryRoot $duplicateDiscovery -ReportsRoot $duplicateReports
+    try { $crossProcessAuthority | Export-Clixml -LiteralPath $carrierPath -Depth 4 }
+    finally { $crossProcessAuthority.Dispose() }
+    $escapedCarrierPath = $carrierPath.Replace("'", "''")
+    $crossProcessScript = @"
+Import-Module '$escapedFixtureModulePath' -Force -ErrorAction Stop
+`$carrier = Import-Clixml -LiteralPath '$escapedCarrierPath'
+try { & '$escapedPublisherPath' -Mode ScanLocal -MachineName CROSSPROCESS -TestFixtureAuthority `$carrier -OutputJson | Out-Null; exit 93 }
+catch { if (`$_.Exception.Message -match 'provenance_refused') { 'cross-process-carrier-refused'; exit 0 }; throw }
+"@
+    $crossProcessEncoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($crossProcessScript))
+    $crossProcessOutput = @(& $windowsPowerShell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand $crossProcessEncoded 2>&1 | ForEach-Object { [string]$_ })
+    $crossProcessExit = $LASTEXITCODE
+    Assert-True ($crossProcessExit -eq 0 -and ((@($crossProcessOutput) -join ' | ') -match 'cross-process-carrier-refused')) 'A real cross-process CLIXML authority carrier was accepted.'
 
     $wrongShapeError = $null
     try {
         & $scriptPath -Mode ScanLocal -MachineName 'WRONGSHAPE' -TestFixtureAuthority ([pscustomobject]@{ purpose = 'DesktopLauncherDiscovery' }) -NowUtc $nowUtc -OutputJson | Out-Null
     }
     catch { $wrongShapeError = $_ }
-    Assert-True ($null -ne $wrongShapeError -and $wrongShapeError.Exception.Message -match 'authority_refused') 'Publisher accepted a shape-compatible object as authority.'
+    Assert-True ($null -ne $wrongShapeError -and $wrongShapeError.Exception.Message -match 'authority.*refused') 'Publisher accepted a shape-compatible object as authority.'
 
     $outsideDiscoveryTarget = Join-Path $tempRoot 'outside-discovery-target'
     $swappedDiscoveryRoot = Join-Path $tempRoot 'swapped-discovery-root'
@@ -196,7 +284,7 @@ set "PRIMARY_ROOT=\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy"' `
     $serializedError = $null
     try { & $scriptPath -Mode ScanLocal -MachineName 'SERIALIZED' -TestFixtureAuthority $serializedClone -NowUtc $nowUtc -OutputJson | Out-Null }
     catch { $serializedError = $_ }
-    Assert-True ($null -ne $serializedError -and $serializedError.Exception.Message -match 'authority_refused') 'Serialized authority clone was accepted.'
+    Assert-True ($null -ne $serializedError -and $serializedError.Exception.Message -match 'authority.*refused') 'Serialized authority clone was accepted.'
 
     $wrongPurposeLog = Join-Path $tempRoot 'wrong-purpose-log'
     New-Item -ItemType Directory -Path $wrongPurposeLog -Force | Out-Null
@@ -232,7 +320,7 @@ set "PRIMARY_ROOT=\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy"' `
         $badCarrierError = $null
         try { & $scriptPath -Mode ScanLocal -MachineName 'BADCARRIER' -TestFixtureAuthority $badCarrier -NowUtc $nowUtc -OutputJson | Out-Null }
         catch { $badCarrierError = $_ }
-        Assert-True ($null -ne $badCarrierError -and $badCarrierError.Exception.Message -match 'authority_refused') 'A string/dictionary/JSON authority carrier was accepted.'
+        Assert-True ($null -ne $badCarrierError -and $badCarrierError.Exception.Message -match 'authority.*refused') 'A string/dictionary/JSON authority carrier was accepted.'
     }
 
     $wrongPidAuthority = New-RevAgentDesktopDiscoveryFixtureAuthority -FixtureRoot $tempRoot -DiscoveryRoot $fixtureSpace -ReportsRoot $reportsRoot
@@ -243,6 +331,20 @@ set "PRIMARY_ROOT=\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy"' `
     catch { $wrongPidError = $_ }
     finally { $wrongPidAuthority.Dispose() }
     Assert-True ($null -ne $wrongPidError -and $wrongPidError.Exception.Message -match 'process') 'Creator-PID mismatch did not poison the authority.'
+
+    $foreignAclRoot = Join-Path $tempRoot 'foreign-writer-acl-root'
+    $foreignAclDiscovery = Join-Path $foreignAclRoot 'discovery'
+    $foreignAclReports = Join-Path $foreignAclRoot 'reports'
+    New-Item -ItemType Directory -Path $foreignAclDiscovery, $foreignAclReports -Force | Out-Null
+    $foreignAcl = Get-Acl -LiteralPath $foreignAclRoot
+    $foreignSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-21-111111111-222222222-333333333-4242')
+    $foreignAcl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($foreignSid, [Security.AccessControl.FileSystemRights]::Modify, [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit, [Security.AccessControl.PropagationFlags]::None, [Security.AccessControl.AccessControlType]::Allow))
+    if ('System.IO.FileSystemAclExtensions' -as [type]) { [IO.FileSystemAclExtensions]::SetAccessControl([IO.DirectoryInfo](Get-Item -LiteralPath $foreignAclRoot -Force), $foreignAcl) }
+    else { ([IO.DirectoryInfo](Get-Item -LiteralPath $foreignAclRoot -Force)).SetAccessControl($foreignAcl) }
+    $foreignAclError = $null
+    try { New-RevAgentDesktopDiscoveryFixtureAuthority -FixtureRoot $foreignAclRoot -DiscoveryRoot $foreignAclDiscovery -ReportsRoot $foreignAclReports | Out-Null }
+    catch { $foreignAclError = $_ }
+    Assert-True ($null -ne $foreignAclError -and $foreignAclError.Exception.Message -match 'fixture_acl_untrusted') 'A specific unrelated SID writer ACE was accepted.'
 
     $descendantRoot = Join-Path $tempRoot 'descendant-swap-root'
     $descendantDiscovery = Join-Path $descendantRoot 'discovery'
@@ -282,6 +384,28 @@ set "PRIMARY_ROOT=\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy"' `
     foreach ($filePin in $filePins) { $filePin.Dispose() }
     $filePinLease.Dispose()
     $filePinAuthority.Dispose()
+
+    $driftRoot = Join-Path $tempRoot 'file-drift-root'
+    $driftDiscovery = Join-Path $driftRoot 'discovery'
+    $driftDesktop = Join-Path $driftDiscovery 'Desktop'
+    $driftReports = Join-Path $driftRoot 'reports'
+    New-Item -ItemType Directory -Path $driftDesktop, $driftReports -Force | Out-Null
+    $driftPath = Join-Path $driftDesktop 'revAgent Updater STABLE.cmd'
+    [IO.File]::WriteAllText($driftPath, '@echo off', [Text.UTF8Encoding]::new($false))
+    $driftAuthority = New-RevAgentDesktopDiscoveryFixtureAuthority -FixtureRoot $driftRoot -DiscoveryRoot $driftDiscovery -ReportsRoot $driftReports
+    $driftLease = $driftAuthority.ConsumeDesktopLauncherDiscovery()
+    $driftFiles = @($driftLease.OpenLauncherFiles(@($driftDesktop), $false, @('.cmd')))
+    $driftHandleField = $driftFiles[0].GetType().GetField('handle', [Reflection.BindingFlags]'Instance,NonPublic')
+    $driftHandleField.GetValue($driftFiles[0]).Dispose()
+    $driftReadError = $null
+    $driftPoisonError = $null
+    try { $driftFiles[0].ReadAllText() | Out-Null } catch { $driftReadError = $_ }
+    try { $driftLease.GetDefaultLauncherDirectories() | Out-Null } catch { $driftPoisonError = $_ }
+    Assert-True ($null -ne $driftReadError -and $null -ne $driftPoisonError -and $driftPoisonError.Exception.Message -match 'state_refused') 'Pinned read identity failure did not fail fatally and poison the authority.'
+    foreach ($driftFile in $driftFiles) { $driftFile.Dispose() }
+    $driftLease.Dispose()
+    $driftAuthority.Dispose()
+    Assert-True ($publisherText -match '(?s)catch\s*\{\s*if \(\$null -ne \$script:FixtureDiscoveryLease\) \{ throw \}') 'Fixture publisher still converts pinned read/verify failures into readWarning evidence.'
 
     foreach ($invalidRoot in @('relative-fixture', ('\\?\' + $tempRoot), ('\\.\' + $tempRoot), ('\\localhost\c$\fixture'), ($tempRoot + ':stream'), ($tempRoot + '\.'))) {
         $invalidPathError = $null

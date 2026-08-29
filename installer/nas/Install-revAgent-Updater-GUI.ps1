@@ -26,6 +26,37 @@ if ("$($ExecutionContext.SessionState.LanguageMode)" -ne 'FullLanguage') {
 $ErrorActionPreference = "Stop"
 $script:GuiStartupCompleted = $false
 
+function Get-RevAgentTestFixtureOwnership {
+    param([Parameter(Mandatory = $true)][object]$Authority)
+
+    $modules = @(Get-Module -Name 'RevAgent.TestFixtureAuthority' | Where-Object { $_.ModuleType -eq [Management.Automation.ModuleType]::Script })
+    if ($modules.Count -ne 1) { throw 'revagent_test_fixture_authority_provenance_refused' }
+    $module = $modules[0]
+    $modulePath = [IO.Path]::GetFullPath([string]$module.Path)
+    if ([IO.Path]::GetFileName($modulePath) -ne 'RevAgent.TestFixtureAuthority.psm1' -or
+        -not (Test-Path -LiteralPath (Join-Path (Split-Path -Parent $modulePath) 'Invoke-RevAgentUpdaterGuiTestHost.ps1') -PathType Leaf)) {
+        throw 'revagent_test_fixture_authority_provenance_refused'
+    }
+    $ownership = $module.SessionState.PSVariable.GetValue('RevAgentFixtureOwnership')
+    $authorityType = $module.SessionState.PSVariable.GetValue('RevAgentFixtureAuthorityType')
+    $assemblyLocation = try { [string]$Authority.GetType().Assembly.Location } catch { '__unavailable__' }
+    if ($null -eq $ownership -or $null -eq $authorityType -or -not $ownership.GetType().IsPublic -or -not $ownership.GetType().IsSealed -or
+        -not [object]::ReferenceEquals($Authority.GetType(), $authorityType) -or
+        -not [object]::ReferenceEquals($Authority.GetType().Assembly, $ownership.ImplementationAssembly) -or
+        -not [object]::ReferenceEquals($Authority.GetType().Module, $ownership.ImplementationModule) -or
+        -not [object]::ReferenceEquals($ownership.AuthorityType, $authorityType) -or
+        $ownership.ModuleVersionId -ne $Authority.GetType().Module.ModuleVersionId -or
+        -not [string]::Equals([string]$ownership.ModulePath, $modulePath, [StringComparison]::OrdinalIgnoreCase) -or
+        -not [string]::Equals([string]$ownership.ModuleSha256, (Get-FileHash -Algorithm SHA256 -LiteralPath $modulePath).Hash, [StringComparison]::OrdinalIgnoreCase) -or
+        [bool]$ownership.AssemblyIsDynamic -ne [bool]$Authority.GetType().Assembly.IsDynamic -or -not [string]::IsNullOrEmpty($assemblyLocation) -or -not [bool]$ownership.OwnsAuthority($Authority)) {
+        throw 'revagent_test_fixture_authority_provenance_refused'
+    }
+    $sameTypes = @([AppDomain]::CurrentDomain.GetAssemblies() | ForEach-Object { $_.GetType($Authority.GetType().FullName, $false, $false) } | Where-Object { $null -ne $_ })
+    $legacyTypes = @([AppDomain]::CurrentDomain.GetAssemblies() | ForEach-Object { $_.GetType('RevAgent.TestFixtures.RevAgentTestFixtureAuthority', $false, $false) } | Where-Object { $null -ne $_ })
+    if ($sameTypes.Count -ne 1 -or $legacyTypes.Count -ne 0) { throw 'revagent_test_fixture_authority_provenance_refused' }
+    return $ownership
+}
+
 function Write-RevAgentGuiStartupFailure {
     param([Parameter(Mandatory = $true)][Management.Automation.ErrorRecord]$ErrorRecord)
 
@@ -37,12 +68,7 @@ function Write-RevAgentGuiStartupFailure {
             if (-not ($SmokeTest -or $PreWindowBootstrapSmokeTest -or $SuppressStartupFailureDialogForTest -or -not [string]::IsNullOrWhiteSpace($TestStartupFailureMessage))) {
                 throw 'Test fixture authority is accepted only by explicit smoke/test modes.'
             }
-            $authorityTypes = @([AppDomain]::CurrentDomain.GetAssemblies() | ForEach-Object {
-                    $_.GetType('RevAgent.TestFixtures.RevAgentTestFixtureAuthority', $false, $false)
-                } | Where-Object { $null -ne $_ })
-            if ($authorityTypes.Count -ne 1 -or -not [object]::ReferenceEquals($TestFixtureAuthority.GetType(), $authorityTypes[0])) {
-                throw 'revagent_test_fixture_authority_refused'
-            }
+            [void](Get-RevAgentTestFixtureOwnership -Authority $TestFixtureAuthority)
             $fixtureLease = $TestFixtureAuthority.ConsumeGuiStartupFailureLog()
         }
         else {
@@ -101,6 +127,24 @@ function Write-RevAgentGuiStartupFailure {
         catch { }
     }
     return $logPath
+}
+
+$fixtureAuthorityPreflightError = ''
+try {
+    if ($null -ne $TestFixtureAuthority) {
+        if (-not ($SmokeTest -or $PreWindowBootstrapSmokeTest -or $SuppressStartupFailureDialogForTest -or -not [string]::IsNullOrWhiteSpace($TestStartupFailureMessage))) {
+            $fixtureAuthorityPreflightError = 'revagent_test_fixture_authority_mode_refused'
+        }
+        else { [void](Get-RevAgentTestFixtureOwnership -Authority $TestFixtureAuthority) }
+    }
+    elseif (-not [string]::IsNullOrWhiteSpace($TestStartupFailureMessage)) {
+        $fixtureAuthorityPreflightError = 'revagent_test_fixture_authority_required'
+    }
+}
+catch { $fixtureAuthorityPreflightError = $_.Exception.Message }
+if (-not [string]::IsNullOrWhiteSpace($fixtureAuthorityPreflightError)) {
+    try { [Console]::Error.WriteLine($fixtureAuthorityPreflightError) } catch { }
+    exit 1
 }
 
 trap {
@@ -694,7 +738,7 @@ if ($SmokeTest) {
 }
 
 if (Test-IsAdministrator) {
-    [void][Reflection.Assembly]::LoadWithPartialName('System.Windows.Forms')
+    Add-Type -AssemblyName System.Windows.Forms
     [System.Windows.Forms.MessageBox]::Show(
         "For security, the revAgent updater GUI must run as the normal interactive user.`r`n`r`nClose this elevated window and start revAgent Updater STABLE.cmd normally. The GUI will request administrator permission only for the machine update phase.",
         "revAgent",
@@ -877,8 +921,8 @@ function Resolve-GuiSnapshotUserEntrypoint {
     return $entrypointPath
 }
 
-[void][Reflection.Assembly]::LoadWithPartialName('System.Windows.Forms')
-[void][Reflection.Assembly]::LoadWithPartialName('System.Drawing')
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
 
 [System.Windows.Forms.Application]::EnableVisualStyles()
 

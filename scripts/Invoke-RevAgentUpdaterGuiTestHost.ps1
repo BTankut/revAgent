@@ -16,12 +16,29 @@ param(
     [switch]$PreWindowBootstrapSmokeTest,
     [switch]$SuppressStartupFailureDialogForTest,
     [string]$TestStartupFailureMessage = '',
-    [ValidateSet('Valid', 'Malformed')][string]$AuthorityMode = 'Valid',
-    [string]$PoisonMachineRootEnvironment = ''
+    [ValidateSet('Valid', 'Malformed', 'Missing', 'ExistingTarget')][string]$AuthorityMode = 'Valid',
+    [string]$PoisonMachineRootEnvironment = '',
+    [string]$PoisonWindowsRootEnvironment = ''
 )
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+
+function Protect-RevAgentOwnedFixtureRoot {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $acl = [Security.AccessControl.DirectorySecurity]::new()
+    $acl.SetOwner($identity.User)
+    $acl.SetAccessRuleProtection($true, $false)
+    $inheritance = [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit
+    foreach ($sid in @($identity.User, [Security.Principal.SecurityIdentifier]::new('S-1-5-18'), [Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'))) {
+        $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($sid, [Security.AccessControl.FileSystemRights]::FullControl, $inheritance, [Security.AccessControl.PropagationFlags]::None, [Security.AccessControl.AccessControlType]::Allow))
+    }
+    if ('System.IO.FileSystemAclExtensions' -as [type]) { [IO.FileSystemAclExtensions]::SetAccessControl([IO.DirectoryInfo]$item, $acl) }
+    else { ([IO.DirectoryInfo]$item).SetAccessControl($acl) }
+}
 
 $modulePath = Join-Path $PSScriptRoot 'RevAgent.TestFixtureAuthority.psm1'
 if (-not (Test-Path -LiteralPath $modulePath -PathType Leaf)) {
@@ -30,18 +47,27 @@ if (-not (Test-Path -LiteralPath $modulePath -PathType Leaf)) {
 if (-not (Test-Path -LiteralPath $GuiScriptPath -PathType Leaf)) {
     throw "Updater GUI test target was not found: $GuiScriptPath"
 }
+$guiCommand = Get-Command -Name ([IO.Path]::GetFullPath($GuiScriptPath)) -CommandType ExternalScript -ErrorAction Stop
 
-Import-Module -Name $modulePath -Force -ErrorAction Stop
+if (@(Get-Module -Name 'RevAgent.TestFixtureAuthority').Count -ne 0) { throw 'fixture_authority_module_preloaded' }
+$fixtureModule = Import-Module -Name $modulePath -Force -PassThru -ErrorAction Stop
+if ($null -eq $fixtureModule -or -not [string]::Equals([IO.Path]::GetFullPath([string]$fixtureModule.Path), [IO.Path]::GetFullPath($modulePath), [StringComparison]::OrdinalIgnoreCase)) {
+    throw 'fixture_authority_module_identity_refused'
+}
+Protect-RevAgentOwnedFixtureRoot -Path $FixtureRoot
 $authority = $null
 $guiExitCode = 0
 $savedPoisonedEnvironment = @{}
 try {
-    $authority = if ($AuthorityMode -eq 'Valid') {
-        New-RevAgentGuiLogFixtureAuthority -FixtureRoot $FixtureRoot -LogDirectory $LogDirectory
+    $authority = if ($AuthorityMode -in @('Valid', 'ExistingTarget')) {
+        $collisionName = if ($AuthorityMode -eq 'ExistingTarget') { 'gui-startup-existing-target.log' } else { '' }
+        if ($AuthorityMode -eq 'ExistingTarget') { [IO.File]::WriteAllText((Join-Path $LogDirectory $collisionName), 'must-remain-unchanged', [Text.UTF8Encoding]::new($false)) }
+        New-RevAgentGuiLogFixtureAuthority -FixtureRoot $FixtureRoot -LogDirectory $LogDirectory -CollisionLogNameForTest $collisionName
     }
-    else {
+    elseif ($AuthorityMode -eq 'Malformed') {
         [pscustomobject]@{ purpose = 'GuiStartupFailureLog'; fixtureRoot = $FixtureRoot }
     }
+    else { $null }
     $arguments = @{
         ChannelManifestPath = $ChannelManifestPath
         InstallRoot = $InstallRoot
@@ -66,8 +92,15 @@ try {
         }
         $env:OS = 'not-windows'
     }
+    if (-not [string]::IsNullOrWhiteSpace($PoisonWindowsRootEnvironment)) {
+        [void][Environment]::SystemDirectory
+        foreach ($name in @('WINDIR', 'SystemRoot')) {
+            $savedPoisonedEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
+            [Environment]::SetEnvironmentVariable($name, $PoisonWindowsRootEnvironment, 'Process')
+        }
+    }
     $global:LASTEXITCODE = 0
-    & $GuiScriptPath @arguments
+    & $guiCommand @arguments
     $guiExitCode = [int]$LASTEXITCODE
 }
 finally {

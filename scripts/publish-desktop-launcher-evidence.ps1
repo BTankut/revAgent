@@ -365,6 +365,7 @@ function Read-RevAgentLauncherText {
             if ($null -ne $script:FixtureDiscoveryLease) { $File.VerifyIdentity() }
         }
         catch {
+            if ($null -ne $script:FixtureDiscoveryLease) { throw }
             $details.readWarning = $_.Exception.Message
         }
     }
@@ -376,6 +377,7 @@ function Read-RevAgentLauncherText {
             }
         }
         catch {
+            if ($null -ne $script:FixtureDiscoveryLease) { throw }
             $details.readWarning = $_.Exception.Message
         }
     }
@@ -633,14 +635,39 @@ function Publish-RevAgentEvidence {
     }
 }
 
+function Get-RevAgentDesktopFixtureOwnership {
+    param([Parameter(Mandatory = $true)][object]$Authority)
+
+    $expectedModulePath = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot 'RevAgent.TestFixtureAuthority.psm1'))
+    $modules = @(Get-Module -Name 'RevAgent.TestFixtureAuthority' | Where-Object {
+            $_.ModuleType -eq [Management.Automation.ModuleType]::Script -and
+            [string]::Equals([IO.Path]::GetFullPath([string]$_.Path), $expectedModulePath, [StringComparison]::OrdinalIgnoreCase)
+        })
+    if ($modules.Count -ne 1) { throw 'revagent_test_fixture_authority_provenance_refused' }
+    $module = $modules[0]
+    $ownership = $module.SessionState.PSVariable.GetValue('RevAgentFixtureOwnership')
+    $authorityType = $module.SessionState.PSVariable.GetValue('RevAgentFixtureAuthorityType')
+    $assemblyLocation = try { [string]$Authority.GetType().Assembly.Location } catch { '__unavailable__' }
+    if ($null -eq $ownership -or $null -eq $authorityType -or -not $ownership.GetType().IsPublic -or -not $ownership.GetType().IsSealed -or
+        -not [object]::ReferenceEquals($Authority.GetType(), $authorityType) -or
+        -not [object]::ReferenceEquals($Authority.GetType().Assembly, $ownership.ImplementationAssembly) -or
+        -not [object]::ReferenceEquals($Authority.GetType().Module, $ownership.ImplementationModule) -or
+        -not [object]::ReferenceEquals($ownership.AuthorityType, $authorityType) -or
+        $ownership.ModuleVersionId -ne $Authority.GetType().Module.ModuleVersionId -or
+        -not [string]::Equals([string]$ownership.ModulePath, $expectedModulePath, [StringComparison]::OrdinalIgnoreCase) -or
+        -not [string]::Equals([string]$ownership.ModuleSha256, (Get-FileHash -Algorithm SHA256 -LiteralPath $expectedModulePath).Hash, [StringComparison]::OrdinalIgnoreCase) -or
+        [bool]$ownership.AssemblyIsDynamic -ne [bool]$Authority.GetType().Assembly.IsDynamic -or -not [string]::IsNullOrEmpty($assemblyLocation) -or -not [bool]$ownership.OwnsAuthority($Authority)) {
+        throw 'revagent_test_fixture_authority_provenance_refused'
+    }
+    $sameTypes = @([AppDomain]::CurrentDomain.GetAssemblies() | ForEach-Object { $_.GetType($Authority.GetType().FullName, $false, $false) } | Where-Object { $null -ne $_ })
+    $legacyTypes = @([AppDomain]::CurrentDomain.GetAssemblies() | ForEach-Object { $_.GetType('RevAgent.TestFixtures.RevAgentTestFixtureAuthority', $false, $false) } | Where-Object { $null -ne $_ })
+    if ($sameTypes.Count -ne 1 -or $legacyTypes.Count -ne 0) { throw 'revagent_test_fixture_authority_provenance_refused' }
+    return $ownership
+}
+
 $fixtureAuthority = $null
 if ($null -ne $TestFixtureAuthority) {
-    $authorityTypes = @([AppDomain]::CurrentDomain.GetAssemblies() | ForEach-Object {
-            $_.GetType('RevAgent.TestFixtures.RevAgentTestFixtureAuthority', $false, $false)
-        } | Where-Object { $null -ne $_ })
-    if ($authorityTypes.Count -ne 1 -or -not [object]::ReferenceEquals($TestFixtureAuthority.GetType(), $authorityTypes[0])) {
-        throw 'revagent_test_fixture_authority_refused'
-    }
+    [void](Get-RevAgentDesktopFixtureOwnership -Authority $TestFixtureAuthority)
     $fixtureAuthority = $TestFixtureAuthority
     $script:FixtureDiscoveryLease = $fixtureAuthority.ConsumeDesktopLauncherDiscovery()
     if (-not [string]::IsNullOrWhiteSpace($ConfigPath)) { throw 'fixture_external_config_read_refused' }
