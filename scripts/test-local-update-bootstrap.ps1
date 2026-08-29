@@ -44,6 +44,7 @@ $evidenceJunction = Join-Path $temp "evidence-parent"
 $evidenceTarget = Join-Path $temp "evidence-target"
 $trustedKeys = Join-Path $temp "fixture-release-trusted-keys.json"
 $productionBootstrapSource = Join-Path $RepoRoot "installer\nas\Start-revAgent-Update.ps1"
+$guiTestHost = Join-Path $RepoRoot 'scripts\Invoke-RevAgentUpdaterGuiTestHost.ps1'
 $keyFixtureRepo = Join-Path $temp 'synthetic-key-repo'
 $sources = [ordered]@{
     bootstrap = $productionBootstrapSource
@@ -127,7 +128,7 @@ try {
     $previousErrorActionPreference = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
-        $guiFailureOutput = @(& $windowsPowerShell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $RepoRoot 'installer\nas\Install-revAgent-Updater-GUI.ps1') -TestStartupFailureMessage $guiStartupMarker -TestStartupFailureLogRoot $guiLogDirectory 2>&1 | ForEach-Object { [string]$_ })
+        $guiFailureOutput = @(& $windowsPowerShell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $guiTestHost -GuiScriptPath (Join-Path $RepoRoot 'installer\nas\Install-revAgent-Updater-GUI.ps1') -FixtureRoot $temp -LogDirectory $guiLogDirectory -TestStartupFailureMessage $guiStartupMarker 2>&1 | ForEach-Object { [string]$_ })
         $guiFailureExitCode = $LASTEXITCODE
     }
     finally { $ErrorActionPreference = $previousErrorActionPreference }
@@ -263,16 +264,20 @@ $principal = [Security.Principal.WindowsPrincipal]::new($identity)
     [IO.File]::WriteAllText($fakeStableChannelPath, '{"channel":"stable"}', [Text.UTF8Encoding]::new($false))
     $protectedGuiPath = Join-Path $bootstrapRoot 'Install-revAgent-Updater-GUI.ps1'
     $protectedStatePath = Join-Path $bootstrapRoot 'bootstrap-state.json'
+    $preWindowGuiLogRoot = Join-Path $temp 'gui-prewindow-nominal-logs'
+    New-Item -ItemType Directory -Path $preWindowGuiLogRoot -Force | Out-Null
     $preWindowOutput = @(& $windowsPowerShell `
             -NoLogo `
             -NoProfile `
             -NonInteractive `
             -ExecutionPolicy Bypass `
-            -File $protectedGuiPath `
+            -File $guiTestHost `
+            -GuiScriptPath $protectedGuiPath `
+            -FixtureRoot $temp `
+            -LogDirectory $preWindowGuiLogRoot `
             -ChannelManifestPath $fakeStableChannelPath `
             -BootstrapStatePath $protectedStatePath `
-            -PreWindowBootstrapSmokeTest `
-            -TestStartupFailureLogRoot $guiLogDirectory 2>&1 | ForEach-Object { [string]$_ })
+            -PreWindowBootstrapSmokeTest 2>&1 | ForEach-Object { [string]$_ })
     $preWindowExitCode = $LASTEXITCODE
     Assert-True ($preWindowExitCode -eq 0) "Valid protected GUI pre-window PS5 child failed. output=$($preWindowOutput -join ' | ')"
     $preWindowJsonLine = @($preWindowOutput | Where-Object { $_.TrimStart().StartsWith('{') } | Select-Object -Last 1)

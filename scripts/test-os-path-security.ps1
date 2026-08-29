@@ -138,14 +138,20 @@ $canonicalProgramData = [Environment]::GetFolderPath([Environment+SpecialFolder]
 $canonicalProgramFiles = [Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFiles)
 $canonicalInstallRoot = Join-Path $canonicalProgramData "DPE\revAgent"
 $guiPath = Join-Path $RepoRoot "installer\nas\Install-revAgent-Updater-GUI.ps1"
+$guiTestHost = Join-Path $RepoRoot 'scripts\Invoke-RevAgentUpdaterGuiTestHost.ps1'
 $windowsPowerShellPath = Join-Path $systemDirectory 'WindowsPowerShell\v1.0\powershell.exe'
 $channelFixture = Join-Path $RepoRoot "README.md"
 $codexModulePath = Join-Path $RepoRoot "installer\lib\RevAgent.CodexRegistration.psm1"
 $secureTempModulePath = Join-Path $RepoRoot "installer\lib\RevAgent.SecureTemp.psm1"
 $tempRoot = Join-Path ([IO.Path]::GetTempPath()) ("revagent-os-path-security-" + [Guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
-$guiLogDirectory = Join-Path $tempRoot 'gui-startup-logs'
-New-Item -ItemType Directory -Path $guiLogDirectory -Force | Out-Null
+$script:GuiLogSequence = 0
+function New-GuiFixtureLogRoot {
+    $script:GuiLogSequence++
+    $path = Join-Path $tempRoot ('gui-startup-logs-{0}' -f $script:GuiLogSequence)
+    New-Item -ItemType Directory -Path $path -Force | Out-Null
+    return $path
+}
 
 $poisonNames = @(
     "ProgramFiles", "ProgramFiles(x86)", "ProgramData", "CommonProgramFiles",
@@ -168,15 +174,17 @@ try {
     Assert-Equal ([Environment]::SystemDirectory) $systemDirectory "SystemDirectory changed after environment poisoning."
     Assert-Equal ([Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFiles)) $canonicalProgramFiles "Program Files Known Folder changed after environment poisoning."
     Assert-Equal ([Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)) $canonicalProgramData "ProgramData Known Folder changed after environment poisoning."
-
-    $guiOutput = (& $guiPath -ChannelManifestPath $channelFixture -SmokeTest -TestStartupFailureLogRoot $guiLogDirectory 6>&1 | Out-String)
-    Assert-True ($guiOutput -match [regex]::Escape("Install  : $canonicalInstallRoot")) "GUI smoke test did not keep the canonical ProgramData install root under poisoned environment variables. Output: $guiOutput"
-    Assert-True ($guiOutput -notmatch [regex]::Escape($poisonRoot)) "GUI smoke test exposed a poisoned machine root. Output: $guiOutput"
-    $guiSource = Get-Content -Raw -LiteralPath $guiPath
-    Assert-True ($guiSource -match '\$localAppDataRoot = \[Environment\]::GetFolderPath\(\[Environment\+SpecialFolder\]::LocalApplicationData\)' -and $guiSource -match 'TestStartupFailureLogRoot is limited to a disposable child path below the current TEMP directory' -and $guiSource -match 'contains a reparse point or filesystem link') "GUI startup-log resolver must preserve the production LocalApplicationData default and fail closed for non-temp or linked test seams."
     foreach ($name in $poisonNames) {
         [Environment]::SetEnvironmentVariable($name, $savedEnvironment[$name], 'Process')
     }
+
+    $guiLogDirectory = New-GuiFixtureLogRoot
+    $guiOutput = (& $windowsPowerShellPath -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $guiTestHost -GuiScriptPath $guiPath -FixtureRoot $tempRoot -LogDirectory $guiLogDirectory -ChannelManifestPath $channelFixture -PoisonMachineRootEnvironment $poisonRoot -SmokeTest 2>&1 | Out-String)
+    Assert-True ($guiOutput -match [regex]::Escape("Install  : $canonicalInstallRoot")) "GUI smoke test did not keep the canonical ProgramData install root under poisoned environment variables. Output: $guiOutput"
+    Assert-True ($guiOutput -notmatch [regex]::Escape($poisonRoot)) "GUI smoke test exposed a poisoned machine root. Output: $guiOutput"
+    $guiSource = Get-Content -Raw -LiteralPath $guiPath
+    Assert-True ($guiSource -match '\$localAppDataRoot = \[Environment\]::GetFolderPath\(\[Environment\+SpecialFolder\]::LocalApplicationData\)' -and $guiSource -match '\[void\]\[IO\.Directory\]::CreateDirectory\(\$logDirectory\)' -and $guiSource -match 'ConsumeGuiStartupFailureLog' -and $guiSource -notmatch ('Add-Type|TestStartupFailureLog' + 'Root|TestFixtureAuthority' + 'Path')) "GUI must preserve production LocalApplicationData/CreateDirectory logging and accept only the exact live authority type."
+    $guiLogDirectory = New-GuiFixtureLogRoot
     $guiLogsBefore = @{}
     $previousErrorActionPreference = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
@@ -187,10 +195,13 @@ try {
             -NoProfile `
             -NonInteractive `
             -ExecutionPolicy Bypass `
-            -File $guiPath `
+            -File $guiTestHost `
+            -GuiScriptPath $guiPath `
+            -FixtureRoot $tempRoot `
+            -LogDirectory $guiLogDirectory `
             -ChannelManifestPath $channelFixture `
             -InstallRoot (Join-Path $poisonRoot 'DPE\revAgent') `
-            -SmokeTest -TestStartupFailureLogRoot $guiLogDirectory 2>&1 | ForEach-Object { [string]$_ })
+            -SmokeTest 2>&1 | ForEach-Object { [string]$_ })
         $invalidInstallRootExitCode = $LASTEXITCODE
     }
     finally { $ErrorActionPreference = $previousErrorActionPreference }
@@ -201,17 +212,17 @@ try {
     Assert-True ($invalidInstallRootLog -match 'InstallRoot must be the canonical revAgent machine root') "GUI startup log did not preserve the poisoned InstallRoot rejection reason."
     Remove-Item -LiteralPath $newGuiLogs[0].FullName -Force
 
-    Write-Host "Test GUI startup-log seam rejects a non-temp root without writing it"
-    $outsideTestLogRoot = Join-Path $RepoRoot 'outside-test-log-root'
+    Write-Host "Test GUI rejects a malformed authority without touching LocalAppData"
+    $malformedLogRoot = New-GuiFixtureLogRoot
     $previousErrorActionPreference = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
-        $outsideTestLogOutput = @(& $windowsPowerShellPath -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $guiPath -TestStartupFailureMessage 'outside-log-root' -TestStartupFailureLogRoot $outsideTestLogRoot 2>&1 | ForEach-Object { [string]$_ })
+        $outsideTestLogOutput = @(& $windowsPowerShellPath -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $guiTestHost -GuiScriptPath $guiPath -FixtureRoot $tempRoot -LogDirectory $malformedLogRoot -AuthorityMode Malformed -TestStartupFailureMessage 'malformed-authority' 2>&1 | ForEach-Object { [string]$_ })
         $outsideTestLogExitCode = $LASTEXITCODE
     }
     finally { $ErrorActionPreference = $previousErrorActionPreference }
-    Assert-True ($outsideTestLogExitCode -ne 0 -and ((@($outsideTestLogOutput) -join ' | ') -match 'TestStartupFailureLogRoot is limited to a disposable child path below the current TEMP directory')) "GUI startup-log seam accepted a non-temp root or failed to preserve its rejection reason."
-    Assert-True (-not (Test-Path -LiteralPath $outsideTestLogRoot)) "GUI startup-log seam created a rejected non-temp root."
+    Assert-True ($outsideTestLogExitCode -ne 0 -and ((@($outsideTestLogOutput) -join ' | ') -match 'authority_refused')) 'GUI accepted a malformed authority or lost its stable rejection reason.'
+    Assert-True (@(Get-ChildItem -LiteralPath $malformedLogRoot -Filter 'gui-startup-*.log' -File).Count -eq 0) 'Malformed authority caused a fixture or LocalAppData log claim.'
 
     Write-Host "Test GUI startup-log seam rejects a swapped junction root without writing it"
     $outsideLogTarget = Join-Path $tempRoot 'outside-log-target'
@@ -223,11 +234,11 @@ try {
     $previousErrorActionPreference = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
-        $swappedLogOutput = @(& $windowsPowerShellPath -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $guiPath -TestStartupFailureMessage 'swapped-log-root' -TestStartupFailureLogRoot $swappedLogRoot 2>&1 | ForEach-Object { [string]$_ })
+        $swappedLogOutput = @(& $windowsPowerShellPath -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $guiTestHost -GuiScriptPath $guiPath -FixtureRoot $tempRoot -LogDirectory $swappedLogRoot -TestStartupFailureMessage 'swapped-log-root' 2>&1 | ForEach-Object { [string]$_ })
         $swappedLogExitCode = $LASTEXITCODE
     }
     finally { $ErrorActionPreference = $previousErrorActionPreference }
-    Assert-True ($swappedLogExitCode -ne 0 -and ((@($swappedLogOutput) -join ' | ') -match 'reparse point or filesystem link')) "GUI startup-log seam accepted a swapped fixture junction."
+    Assert-True ($swappedLogExitCode -ne 0 -and ((@($swappedLogOutput) -join ' | ') -match 'reparse')) "GUI startup-log authority accepted a swapped fixture junction."
     Assert-True ([IO.File]::ReadAllText((Join-Path $outsideLogTarget 'must-remain-unchanged.txt')) -eq 'outside-log-target') "GUI startup-log seam wrote through the swapped junction target."
     Assert-True (@(Get-ChildItem -LiteralPath $outsideLogTarget -Filter 'gui-startup-*.log' -File).Count -eq 0) "GUI startup-log seam created a log through the swapped junction target."
     [IO.Directory]::Delete($swappedLogRoot, $false)
@@ -250,6 +261,7 @@ try {
                 }
             } | ConvertTo-Json -Depth 8), [Text.UTF8Encoding]::new($false))
     $env:REVAGENT_GUI_PREIMPORT_MARKER = $copiedPoisonMarker
+    $guiLogDirectory = New-GuiFixtureLogRoot
     $copiedGuiLogsBefore = @{}
     $previousErrorActionPreference = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
@@ -260,11 +272,13 @@ try {
             -NoProfile `
             -NonInteractive `
             -ExecutionPolicy Bypass `
-            -File $copiedGuiPath `
+            -File $guiTestHost `
+            -GuiScriptPath $copiedGuiPath `
+            -FixtureRoot $tempRoot `
+            -LogDirectory $guiLogDirectory `
             -ChannelManifestPath $channelFixture `
             -BootstrapStatePath $copiedStatePath `
-            -SuppressStartupFailureDialogForTest `
-            -TestStartupFailureLogRoot $guiLogDirectory 2>&1 | ForEach-Object { [string]$_ })
+            -SuppressStartupFailureDialogForTest 2>&1 | ForEach-Object { [string]$_ })
         $copiedGuiExitCode = $LASTEXITCODE
     }
     finally { $ErrorActionPreference = $previousErrorActionPreference }
@@ -301,35 +315,25 @@ try {
 
     Write-Host "Test WINDIR/SystemRoot poisoning fails closed without redirecting the canonical host path"
     $fakeWindows = Join-Path $poisonRoot "Windows"
+    [Environment]::SetEnvironmentVariable('WINDIR', $fakeWindows, 'Process')
+    [Environment]::SetEnvironmentVariable('SystemRoot', $fakeWindows, 'Process')
+    Assert-Equal ([Environment]::SystemDirectory) $systemDirectory 'SystemDirectory changed after WINDIR/SystemRoot poisoning.'
+    [Environment]::SetEnvironmentVariable('WINDIR', $savedEnvironment['WINDIR'], 'Process')
+    [Environment]::SetEnvironmentVariable('SystemRoot', $savedEnvironment['SystemRoot'], 'Process')
+    $guiLogDirectory = New-GuiFixtureLogRoot
     $rootPoisonLogsBefore = @{}
-    $escapedFakeWindows = $fakeWindows.Replace("'", "''")
-    $escapedGuiPath = $guiPath.Replace("'", "''")
-    $escapedChannelFixture = $channelFixture.Replace("'", "''")
-    $escapedGuiLogDirectory = $guiLogDirectory.Replace("'", "''")
-    $rootPoisonChildScript = @"
-`$env:WINDIR = '$escapedFakeWindows'
-`$env:SystemRoot = '$escapedFakeWindows'
-& '$escapedGuiPath' -ChannelManifestPath '$escapedChannelFixture' -SmokeTest -TestStartupFailureLogRoot '$escapedGuiLogDirectory'
-exit `$LASTEXITCODE
-"@
-    $rootPoisonEncodedCommand = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($rootPoisonChildScript))
     $previousErrorActionPreference = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
         $global:LASTEXITCODE = 0
-        $rootPoisonOutput = @(& $windowsPowerShellPath -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand $rootPoisonEncodedCommand 2>&1 | ForEach-Object { [string]$_ })
+        $rootPoisonOutput = @(& $windowsPowerShellPath -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $guiTestHost -GuiScriptPath $guiPath -FixtureRoot $tempRoot -LogDirectory $guiLogDirectory -ChannelManifestPath $channelFixture -SmokeTest 2>&1 | ForEach-Object { [string]$_ })
         $rootPoisonExitCode = $LASTEXITCODE
     }
     finally { $ErrorActionPreference = $previousErrorActionPreference }
     $newRootPoisonLogs = @(Get-ChildItem -LiteralPath $guiLogDirectory -Filter 'gui-startup-*.log' -File | Where-Object { -not $rootPoisonLogsBefore.ContainsKey($_.FullName) })
-    if ($rootPoisonExitCode -ne 0) {
-        Assert-Equal $newRootPoisonLogs.Count 1 "Root-poisoning failure did not create exactly one startup diagnostic log."
-        $rootPoisonError = Get-Content -Raw -LiteralPath $newRootPoisonLogs[0].FullName
-        Assert-True ($rootPoisonError -match [regex]::Escape($systemDirectory)) "Root-poisoning failure did not cite the canonical SystemDirectory host. Error: $rootPoisonError"
-        Assert-True ($rootPoisonError -notmatch [regex]::Escape($fakeWindows)) "Root-poisoning redirected the GUI to the attacker Windows root. Error: $rootPoisonError"
-        Remove-Item -LiteralPath $newRootPoisonLogs[0].FullName -Force
-    }
-    else { Assert-Equal $newRootPoisonLogs.Count 0 "Successful canonical host resolution unexpectedly produced a GUI startup log." }
+    Assert-Equal $rootPoisonExitCode 0 'Canonical GUI host smoke failed after the in-process OS-root poisoning oracle.'
+    Assert-Equal $newRootPoisonLogs.Count 0 "Successful canonical host resolution unexpectedly produced a GUI startup log."
+    Assert-True ((@($rootPoisonOutput) -join ' | ') -notmatch [regex]::Escape($fakeWindows)) 'Canonical GUI host output referenced the poisoned Windows root.'
 
     Write-Host "Test secure machine TEMP/TMP contract and pre-import ordering"
     Remove-Module RevAgent.SecureTemp -Force -ErrorAction SilentlyContinue

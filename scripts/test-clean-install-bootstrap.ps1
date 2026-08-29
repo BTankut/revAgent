@@ -22,6 +22,7 @@ function Assert-True {
 
 $refreshPath = Join-Path $RepoRoot 'installer\nas\Refresh-revAgent-LocalBootstrap-STABLE.ps1'
 $windowsPowerShell = Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe'
+$guiTestHost = Join-Path $RepoRoot 'scripts\Invoke-RevAgentUpdaterGuiTestHost.ps1'
 $fixtureRoot = Join-Path ([IO.Path]::GetTempPath()) ('revagent-clean-install-fixture-' + [Guid]::NewGuid().ToString('N'))
 $releaseRoot = Join-Path $fixtureRoot 'revAgent-deploy'
 $packageSource = Join-Path $fixtureRoot 'package-source'
@@ -224,11 +225,13 @@ $evidence = [ordered]@{
             -NoProfile `
             -NonInteractive `
             -ExecutionPolicy Bypass `
-            -File $protectedGui `
+            -File $guiTestHost `
+            -GuiScriptPath $protectedGui `
+            -FixtureRoot $fixtureRoot `
+            -LogDirectory $guiNominalLogRoot `
             -ChannelManifestPath $channelPath `
             -BootstrapStatePath $protectedState `
-            -PreWindowBootstrapSmokeTest `
-            -TestStartupFailureLogRoot $guiNominalLogRoot 2>&1 | ForEach-Object { [string]$_ })
+            -PreWindowBootstrapSmokeTest 2>&1 | ForEach-Object { [string]$_ })
     $guiExitCode = $LASTEXITCODE
     Assert-True ($guiExitCode -eq 0) "Clean-install GUI pre-window PS5 child failed. output=$($guiOutput -join ' | ')"
     $jsonLine = @($guiOutput | Where-Object { $_.TrimStart().StartsWith('{') } | Select-Object -Last 1)
@@ -251,12 +254,14 @@ $evidence = [ordered]@{
                 -NoProfile `
                 -NonInteractive `
                 -ExecutionPolicy Bypass `
-                -File $protectedGui `
+                -File $guiTestHost `
+                -GuiScriptPath $protectedGui `
+                -FixtureRoot $fixtureRoot `
+                -LogDirectory $guiFailureLogRoot `
                 -ChannelManifestPath $channelPath `
                 -BootstrapStatePath $protectedState `
                 -PreWindowBootstrapSmokeTest `
-                -TestStartupFailureMessage $guiFailureMarker `
-                -TestStartupFailureLogRoot $guiFailureLogRoot 2>&1 | ForEach-Object { [string]$_ })
+                -TestStartupFailureMessage $guiFailureMarker 2>&1 | ForEach-Object { [string]$_ })
         $guiFailureExitCode = $LASTEXITCODE
     }
     finally { $ErrorActionPreference = $previousErrorActionPreference }
@@ -266,7 +271,7 @@ $evidence = [ordered]@{
     Assert-True ($guiFailureLogText -match [regex]::Escape($guiFailureMarker) -and $guiFailureLogText -match 'revAgent GUI startup failure') 'Clean-install GUI startup failure did not preserve its reason in the owned fixture log.'
     Assert-True ((@($guiFailureOutput) -join ' | ') -match [regex]::Escape($guiFailureLogs[0].FullName)) 'Clean-install GUI startup failure did not disclose the owned fixture log path.'
     $protectedGuiSource = Get-Content -Raw -LiteralPath $protectedGui
-    Assert-True ($protectedGuiSource -match '\$localAppDataRoot = \[Environment\]::GetFolderPath\(\[Environment\+SpecialFolder\]::LocalApplicationData\)' -and $protectedGuiSource -match 'TestStartupFailureLogRoot is limited to a disposable child path below the current TEMP directory' -and $protectedGuiSource -match 'contains a reparse point or filesystem link') 'Clean-install copied GUI did not preserve production startup-log defaults and strict no-follow test containment.'
+    Assert-True ($protectedGuiSource -match '\$localAppDataRoot = \[Environment\]::GetFolderPath\(\[Environment\+SpecialFolder\]::LocalApplicationData\)' -and $protectedGuiSource -match '\[void\]\[IO\.Directory\]::CreateDirectory\(\$logDirectory\)' -and $protectedGuiSource -match 'ConsumeGuiStartupFailureLog' -and $protectedGuiSource -notmatch ('Add-Type|TestStartupFailureLog' + 'Root|TestFixtureAuthority' + 'Path')) 'Clean-install copied GUI did not preserve production logging or exact live-authority isolation.'
 
     Write-Host 'Prove production clean-machine self-service fails closed before acquisition, elevation, or coordinator work'
     $failClosedState = & $fixtureModule {

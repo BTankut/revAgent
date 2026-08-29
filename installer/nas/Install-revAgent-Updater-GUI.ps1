@@ -13,7 +13,7 @@ param(
     [Parameter(DontShow = $true)][switch]$PreWindowBootstrapSmokeTest,
     [Parameter(DontShow = $true)][switch]$SuppressStartupFailureDialogForTest,
     [Parameter(DontShow = $true)][string]$TestStartupFailureMessage = "",
-    [Parameter(DontShow = $true)][string]$TestStartupFailureLogRoot = ""
+    [Parameter(DontShow = $true)][object]$TestFixtureAuthority = $null
 )
 
 if ("$($ExecutionContext.SessionState.LanguageMode)" -ne 'FullLanguage') {
@@ -26,67 +26,31 @@ if ("$($ExecutionContext.SessionState.LanguageMode)" -ne 'FullLanguage') {
 $ErrorActionPreference = "Stop"
 $script:GuiStartupCompleted = $false
 
-function Assert-RevAgentTestFixturePathNoLinks {
-    param(
-        [Parameter(Mandatory = $true)][string]$Path,
-        [Parameter(Mandatory = $true)][string]$Label
-    )
-
-    if (-not (Test-Path -LiteralPath $Path -PathType Container)) {
-        throw "$Label does not exist: $Path"
-    }
-    $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
-    $linkType = if ($item.PSObject.Properties['LinkType']) { [string]$item.LinkType } else { '' }
-    if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or -not [string]::IsNullOrWhiteSpace($linkType)) {
-        throw "$Label contains a reparse point or filesystem link: $($item.FullName)"
-    }
-}
-
-function Resolve-RevAgentTestFixtureLogRoot {
-    param([Parameter(Mandatory = $true)][string]$Path)
-
-    $tempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\')
-    $tempPrefix = $tempRoot + '\'
-    $candidate = [IO.Path]::GetFullPath($Path).TrimEnd('\')
-    if ($candidate.Equals($tempRoot, [StringComparison]::OrdinalIgnoreCase) -or
-        -not $candidate.StartsWith($tempPrefix, [StringComparison]::OrdinalIgnoreCase)) {
-        throw 'TestStartupFailureLogRoot is limited to a disposable child path below the current TEMP directory.'
-    }
-
-    Assert-RevAgentTestFixturePathNoLinks -Path $tempRoot -Label 'TEMP fixture root'
-    $relative = $candidate.Substring($tempPrefix.Length)
-    $cursor = $tempRoot
-    foreach ($segment in @($relative -split '[\\/]' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })) {
-        $cursor = Join-Path $cursor $segment
-        if (-not (Test-Path -LiteralPath $cursor)) { break }
-        Assert-RevAgentTestFixturePathNoLinks -Path $cursor -Label 'TestStartupFailureLogRoot'
-    }
-    return $candidate
-}
-
 function Write-RevAgentGuiStartupFailure {
     param([Parameter(Mandatory = $true)][Management.Automation.ErrorRecord]$ErrorRecord)
 
     $logPath = ""
     $logWriteError = ""
+    $fixtureLease = $null
     try {
-        if (-not [string]::IsNullOrWhiteSpace($TestStartupFailureLogRoot)) {
+        if ($null -ne $TestFixtureAuthority) {
             if (-not ($SmokeTest -or $PreWindowBootstrapSmokeTest -or $SuppressStartupFailureDialogForTest -or -not [string]::IsNullOrWhiteSpace($TestStartupFailureMessage))) {
-                throw 'TestStartupFailureLogRoot is accepted only by explicit smoke/test modes.'
+                throw 'Test fixture authority is accepted only by explicit smoke/test modes.'
             }
-            $logDirectory = Resolve-RevAgentTestFixtureLogRoot -Path $TestStartupFailureLogRoot
+            $authorityTypes = @([AppDomain]::CurrentDomain.GetAssemblies() | ForEach-Object {
+                    $_.GetType('RevAgent.TestFixtures.RevAgentTestFixtureAuthority', $false, $false)
+                } | Where-Object { $null -ne $_ })
+            if ($authorityTypes.Count -ne 1 -or -not [object]::ReferenceEquals($TestFixtureAuthority.GetType(), $authorityTypes[0])) {
+                throw 'revagent_test_fixture_authority_refused'
+            }
+            $fixtureLease = $TestFixtureAuthority.ConsumeGuiStartupFailureLog()
         }
         else {
             $localAppDataRoot = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
             if ([string]::IsNullOrWhiteSpace($localAppDataRoot)) { throw 'Windows LocalApplicationData could not be resolved.' }
             $logDirectory = [IO.Path]::Combine($localAppDataRoot, 'DPE', 'revAgent', 'logs')
+            [void][IO.Directory]::CreateDirectory($logDirectory)
         }
-        [void][IO.Directory]::CreateDirectory($logDirectory)
-        if (-not [string]::IsNullOrWhiteSpace($TestStartupFailureLogRoot)) {
-            $logDirectory = Resolve-RevAgentTestFixtureLogRoot -Path $logDirectory
-        }
-        $logName = 'gui-startup-' + [DateTime]::Now.ToString('yyyyMMdd-HHmmss-fff') + '-' + [Guid]::NewGuid().ToString('N') + '.log'
-        $logPath = [IO.Path]::Combine($logDirectory, $logName)
         $lines = [System.Collections.Generic.List[string]]::new()
         [void]$lines.Add('revAgent GUI startup failure')
         [void]$lines.Add('timestampUtc=' + [DateTime]::UtcNow.ToString('o'))
@@ -99,11 +63,22 @@ function Write-RevAgentGuiStartupFailure {
         [void]$lines.Add('position=' + [string]$ErrorRecord.InvocationInfo.PositionMessage)
         [void]$lines.Add('scriptStackTrace=' + [string]$ErrorRecord.ScriptStackTrace)
         if ($null -ne $ErrorRecord.Exception) { [void]$lines.Add('exception=' + $ErrorRecord.Exception.ToString()) }
-        [IO.File]::WriteAllLines($logPath, $lines.ToArray(), [Text.UTF8Encoding]::new($false))
+        if ($null -ne $TestFixtureAuthority) {
+            $logPath = [string]$fixtureLease.WriteStartupFailureLog($lines.ToArray())
+        }
+        else {
+            $logName = 'gui-startup-' + [DateTime]::Now.ToString('yyyyMMdd-HHmmss-fff') + '-' + [Guid]::NewGuid().ToString('N') + '.log'
+            $logPath = [IO.Path]::Combine($logDirectory, $logName)
+            [IO.File]::WriteAllLines($logPath, $lines.ToArray(), [Text.UTF8Encoding]::new($false))
+        }
     }
     catch {
         $logWriteError = $_.Exception.Message
         $logPath = ""
+    }
+    finally {
+        if ($null -ne $fixtureLease) { $fixtureLease.Dispose() }
+        if ($null -ne $TestFixtureAuthority -and $TestFixtureAuthority -is [IDisposable]) { $TestFixtureAuthority.Dispose() }
     }
 
     $summary = if ([string]::IsNullOrWhiteSpace($logPath)) {
@@ -719,7 +694,7 @@ if ($SmokeTest) {
 }
 
 if (Test-IsAdministrator) {
-    Add-Type -AssemblyName System.Windows.Forms
+    [void][Reflection.Assembly]::LoadWithPartialName('System.Windows.Forms')
     [System.Windows.Forms.MessageBox]::Show(
         "For security, the revAgent updater GUI must run as the normal interactive user.`r`n`r`nClose this elevated window and start revAgent Updater STABLE.cmd normally. The GUI will request administrator permission only for the machine update phase.",
         "revAgent",
@@ -902,8 +877,8 @@ function Resolve-GuiSnapshotUserEntrypoint {
     return $entrypointPath
 }
 
-Add-Type -AssemblyName System.Windows.Forms
-Add-Type -AssemblyName System.Drawing
+[void][Reflection.Assembly]::LoadWithPartialName('System.Windows.Forms')
+[void][Reflection.Assembly]::LoadWithPartialName('System.Drawing')
 
 [System.Windows.Forms.Application]::EnableVisualStyles()
 

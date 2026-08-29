@@ -16,6 +16,8 @@ if ([string]::IsNullOrWhiteSpace($RepoRoot)) {
 }
 $RepoRoot = [System.IO.Path]::GetFullPath($RepoRoot)
 $scriptPath = Join-Path $RepoRoot "scripts\publish-desktop-launcher-evidence.ps1"
+$fixtureModulePath = Join-Path $RepoRoot 'scripts\RevAgent.TestFixtureAuthority.psm1'
+Import-Module -Name $fixtureModulePath -Force -ErrorAction Stop
 
 function Assert-True {
     param(
@@ -53,13 +55,26 @@ function Write-TestJson {
     $Value | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $Path -Encoding UTF8
 }
 
+function Invoke-FixturePublisher {
+    param(
+        [Parameter(Mandatory = $true)][string]$FixtureRoot,
+        [Parameter(Mandatory = $true)][string]$DiscoveryRoot,
+        [Parameter(Mandatory = $true)][string]$FixtureReportsRoot,
+        [Parameter(Mandatory = $true)][hashtable]$Arguments
+    )
+    $authority = New-RevAgentDesktopDiscoveryFixtureAuthority -FixtureRoot $FixtureRoot -DiscoveryRoot $DiscoveryRoot -ReportsRoot $FixtureReportsRoot
+    try { return & $scriptPath @Arguments -TestFixtureAuthority $authority }
+    finally { $authority.Dispose() }
+}
+
 $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("revagent-desktop-launcher-test-" + [Guid]::NewGuid().ToString("N"))
 $reportsRoot = Join-Path $tempRoot "reports"
-$desktopRoot = Join-Path $tempRoot "desktop"
+$fixtureSpace = Join-Path $tempRoot 'discovery-space'
+$desktopRoot = Join-Path $fixtureSpace "desktop"
 $nowUtc = [datetime]"2026-06-30T10:00:00Z"
 
 try {
-    New-Item -ItemType Directory -Path $desktopRoot -Force | Out-Null
+    New-Item -ItemType Directory -Path $desktopRoot, $reportsRoot -Force | Out-Null
     Set-Content -LiteralPath (Join-Path $desktopRoot "revAgent Updater STABLE.cmd") `
         -Value '@echo off
 set "PRIMARY_ROOT=\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy"
@@ -71,13 +86,9 @@ set "RELEASE_ROOT=\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy"
 call "%RELEASE_ROOT%\tools\Install-Revit-MCP-Updater-GUI.cmd"' `
         -Encoding ASCII
 
-    $legacyScan = & $scriptPath `
-        -Mode ScanLocal `
-        -ReportsRoot $reportsRoot `
-        -MachineName "NET01" `
-        -LauncherPath $desktopRoot `
-        -NowUtc $nowUtc `
-        -OutputJson | ConvertFrom-Json
+    $legacyScan = Invoke-FixturePublisher -FixtureRoot $tempRoot -DiscoveryRoot $fixtureSpace -FixtureReportsRoot $reportsRoot -Arguments @{
+        Mode = 'ScanLocal'; MachineName = 'NET01'; LauncherPath = @($desktopRoot); NowUtc = $nowUtc; OutputJson = $true
+    } | ConvertFrom-Json
 
     Assert-True (-not [bool]$legacyScan.passed) "Legacy launcher scan should fail."
     Assert-Equal ([int]$legacyScan.legacyLauncherCount) 1 "Legacy launcher count mismatch."
@@ -85,19 +96,15 @@ call "%RELEASE_ROOT%\tools\Install-Revit-MCP-Updater-GUI.cmd"' `
     Assert-True (Test-Path -LiteralPath (Join-Path $reportsRoot "machines\NET01\desktop-launcher-latest.json") -PathType Leaf) "Per-machine launcher evidence was not published."
 
     Remove-Item -LiteralPath (Join-Path $desktopRoot "Revit MCP Updater STABLE.cmd") -Force
-    $cleanScan = & $scriptPath `
-        -Mode ScanLocal `
-        -ReportsRoot $reportsRoot `
-        -MachineName "NET01" `
-        -LauncherPath $desktopRoot `
-        -NowUtc $nowUtc.AddMinutes(1) `
-        -OutputJson | ConvertFrom-Json
+    $cleanScan = Invoke-FixturePublisher -FixtureRoot $tempRoot -DiscoveryRoot $fixtureSpace -FixtureReportsRoot $reportsRoot -Arguments @{
+        Mode = 'ScanLocal'; MachineName = 'NET01'; LauncherPath = @($desktopRoot); NowUtc = $nowUtc.AddMinutes(1); OutputJson = $true
+    } | ConvertFrom-Json
 
     Assert-True ([bool]$cleanScan.passed) "Clean revAgent launcher scan should pass."
     Assert-Equal ([int]$cleanScan.legacyLauncherCount) 0 "Clean legacy launcher count mismatch."
     Assert-Equal ([int]$cleanScan.legacyRootReferenceCount) 0 "Clean legacy root reference count mismatch."
 
-    $discoveryRoot = Join-Path $tempRoot 'fixture-discovery'
+    $discoveryRoot = Join-Path $fixtureSpace 'fixture-discovery'
     $knownDesktop = Join-Path $discoveryRoot 'known-folders\DesktopDirectory'
     $knownCommonDesktop = Join-Path $discoveryRoot 'known-folders\CommonDesktopDirectory'
     $currentProfileDesktop = Join-Path $discoveryRoot 'current-profile\Desktop'
@@ -122,14 +129,9 @@ set "PRIMARY_ROOT=\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy"' `
 set "PRIMARY_ROOT=\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy"' `
         -Encoding ASCII
 
-    $allProfileScan = & $scriptPath `
-        -Mode ScanLocal `
-        -ReportsRoot $reportsRoot `
-        -MachineName "PROFILESCAN" `
-        -UserProfilesRoot $profilesRoot `
-        -TestDiscoveryRoot $discoveryRoot `
-        -NowUtc $nowUtc.AddMinutes(1) `
-        -OutputJson | ConvertFrom-Json
+    $allProfileScan = Invoke-FixturePublisher -FixtureRoot $tempRoot -DiscoveryRoot $discoveryRoot -FixtureReportsRoot $reportsRoot -Arguments @{
+        Mode = 'ScanLocal'; MachineName = 'PROFILESCAN'; NowUtc = $nowUtc.AddMinutes(1); OutputJson = $true
+    } | ConvertFrom-Json
 
     Assert-True (@($allProfileScan.scannedPaths) -contains $aliceDesktop) "Default scan did not include Alice desktop."
     Assert-True (@($allProfileScan.scannedPaths) -contains $bobDesktop) "Default scan did not include Bob desktop."
@@ -140,13 +142,18 @@ set "PRIMARY_ROOT=\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy"' `
     Assert-True ([int]$allProfileScan.legacyLauncherCount -ge 1) "Default all-profile scan did not find the legacy launcher."
     Assert-True (@($allProfileScan.launchers | Where-Object { [string]$_.path -eq (Join-Path $aliceDesktop "Revit MCP Updater STABLE.cmd") }).Count -eq 1) "Default all-profile scan did not report Alice legacy launcher."
     $publisherText = Get-Content -Raw -LiteralPath $scriptPath
-    Assert-True ($publisherText -match 'TestDiscoveryRoot is limited to a disposable child path below the current TEMP directory' -and $publisherText -match 'contains a reparse point or filesystem link' -and $publisherText -match '\[Environment\]::GetFolderPath\(\$specialFolder\)') "Desktop discovery seam must retain the production known-folder resolver and reject non-temp or linked test roots."
-    $outsideFixtureError = $null
+    $authorityModuleText = Get-Content -Raw -LiteralPath $fixtureModulePath
+    Assert-True ($publisherText -match '\[Environment\]::GetFolderPath\(\$specialFolder\)' -and $publisherText -notmatch 'Import-Module.+TestFixtureAuthority' -and $publisherText -notmatch 'TestDiscoveryRoot') 'Publisher default discovery changed or retained a path-authority seam.'
+    $forbiddenAuthorityCarrierPattern = ('TestFixtureAuthority' + 'Path|non' + 'ce|REVAGENT_.+AUTH' + 'ORITY|Raw' + 'Handle|caller' + 'Pid')
+    Assert-True ($authorityModuleText -notmatch $forbiddenAuthorityCarrierPattern) 'Fixture module exposes a forbidden transferable authority carrier.'
+
+    $wrongShapeError = $null
     try {
-        & $scriptPath -Mode ScanLocal -ReportsRoot $reportsRoot -MachineName 'FIXTUREGUARD' -TestDiscoveryRoot $RepoRoot -NowUtc $nowUtc -OutputJson | Out-Null
+        & $scriptPath -Mode ScanLocal -MachineName 'WRONGSHAPE' -TestFixtureAuthority ([pscustomobject]@{ purpose = 'DesktopLauncherDiscovery' }) -NowUtc $nowUtc -OutputJson | Out-Null
     }
-    catch { $outsideFixtureError = $_ }
-    Assert-True ($null -ne $outsideFixtureError -and $outsideFixtureError.Exception.Message -match 'limited to a disposable child path') "Desktop discovery seam accepted a non-temp test root."
+    catch { $wrongShapeError = $_ }
+    Assert-True ($null -ne $wrongShapeError -and $wrongShapeError.Exception.Message -match 'authority_refused') 'Publisher accepted a shape-compatible object as authority.'
+
     $outsideDiscoveryTarget = Join-Path $tempRoot 'outside-discovery-target'
     $swappedDiscoveryRoot = Join-Path $tempRoot 'swapped-discovery-root'
     New-Item -ItemType Directory -Path $outsideDiscoveryTarget, $swappedDiscoveryRoot -Force | Out-Null
@@ -155,30 +162,157 @@ set "PRIMARY_ROOT=\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy"' `
     New-Item -ItemType Junction -Path $swappedDiscoveryRoot -Target $outsideDiscoveryTarget | Out-Null
     $swappedFixtureError = $null
     try {
-        & $scriptPath -Mode ScanLocal -ReportsRoot $reportsRoot -MachineName 'FIXTUREJUNCTION' -TestDiscoveryRoot $swappedDiscoveryRoot -NowUtc $nowUtc -OutputJson | Out-Null
+        New-RevAgentDesktopDiscoveryFixtureAuthority -FixtureRoot $tempRoot -DiscoveryRoot $swappedDiscoveryRoot -ReportsRoot $reportsRoot | Out-Null
     }
     catch { $swappedFixtureError = $_ }
-    Assert-True ($null -ne $swappedFixtureError -and $swappedFixtureError.Exception.Message -match 'reparse point or filesystem link') "Desktop discovery seam accepted a swapped fixture junction."
+    Assert-True ($null -ne $swappedFixtureError -and $swappedFixtureError.Exception.Message -match 'reparse') 'Authority factory accepted a discovery junction.'
     Assert-True ([IO.File]::ReadAllText((Join-Path $outsideDiscoveryTarget 'must-remain-unchanged.txt')) -eq 'outside-discovery-target') "Desktop discovery seam touched the junction target."
     [IO.Directory]::Delete($swappedDiscoveryRoot, $false)
 
-    $configPath = Join-Path $tempRoot "rollout-readiness.json"
-    Write-TestJson -Path $configPath -Value ([ordered]@{
-            reportsRoot = $reportsRoot
-            expectedMachines = @("NET01", "EMIN", "OLD")
-            outOfScopeMachines = @(
-                [ordered]@{
-                    name = "OLD"
-                    reason = "Retired workstation."
-                }
-            )
-        })
+    $pinRoot = Join-Path $tempRoot 'pin-root'
+    $pinDiscovery = Join-Path $pinRoot 'discovery'
+    $pinReports = Join-Path $pinRoot 'reports'
+    New-Item -ItemType Directory -Path $pinDiscovery, $pinReports -Force | Out-Null
+    $pinAuthority = New-RevAgentDesktopDiscoveryFixtureAuthority -FixtureRoot $pinRoot -DiscoveryRoot $pinDiscovery -ReportsRoot $pinReports
+    $pinSwapError = $null
+    try { Move-Item -LiteralPath $pinDiscovery -Destination (Join-Path $pinRoot 'moved-discovery') -ErrorAction Stop }
+    catch { $pinSwapError = $_ }
+    finally { $pinAuthority.Dispose() }
+    Assert-True ($null -ne $pinSwapError) 'Pinned discovery root allowed an after-issuance rename/rebind.'
 
-    $missingAggregate = & $scriptPath `
-        -Mode Aggregate `
-        -ConfigPath $configPath `
-        -NowUtc $nowUtc.AddMinutes(2) `
-        -OutputJson | ConvertFrom-Json
+    $replayAuthority = New-RevAgentDesktopDiscoveryFixtureAuthority -FixtureRoot $tempRoot -DiscoveryRoot $fixtureSpace -ReportsRoot $reportsRoot
+    try {
+        & $scriptPath -Mode ScanLocal -MachineName 'REPLAY1' -LauncherPath $desktopRoot -NowUtc $nowUtc -OutputJson -TestFixtureAuthority $replayAuthority | Out-Null
+        $replayError = $null
+        try { & $scriptPath -Mode ScanLocal -MachineName 'REPLAY2' -LauncherPath $desktopRoot -NowUtc $nowUtc -OutputJson -TestFixtureAuthority $replayAuthority | Out-Null }
+        catch { $replayError = $_ }
+        Assert-True ($null -ne $replayError -and $replayError.Exception.Message -match 'reuse') 'One-use authority was replayed.'
+    }
+    finally { $replayAuthority.Dispose() }
+
+    $serializedAuthority = New-RevAgentDesktopDiscoveryFixtureAuthority -FixtureRoot $tempRoot -DiscoveryRoot $fixtureSpace -ReportsRoot $reportsRoot
+    try { $serializedClone = [Management.Automation.PSSerializer]::Deserialize([Management.Automation.PSSerializer]::Serialize($serializedAuthority)) }
+    finally { $serializedAuthority.Dispose() }
+    $serializedError = $null
+    try { & $scriptPath -Mode ScanLocal -MachineName 'SERIALIZED' -TestFixtureAuthority $serializedClone -NowUtc $nowUtc -OutputJson | Out-Null }
+    catch { $serializedError = $_ }
+    Assert-True ($null -ne $serializedError -and $serializedError.Exception.Message -match 'authority_refused') 'Serialized authority clone was accepted.'
+
+    $wrongPurposeLog = Join-Path $tempRoot 'wrong-purpose-log'
+    New-Item -ItemType Directory -Path $wrongPurposeLog -Force | Out-Null
+    $wrongPurposeAuthority = New-RevAgentGuiLogFixtureAuthority -FixtureRoot $tempRoot -LogDirectory $wrongPurposeLog
+    $wrongPurposeError = $null
+    try { & $scriptPath -Mode ScanLocal -MachineName 'WRONGPURPOSE' -TestFixtureAuthority $wrongPurposeAuthority -NowUtc $nowUtc -OutputJson | Out-Null }
+    catch { $wrongPurposeError = $_ }
+    finally { $wrongPurposeAuthority.Dispose() }
+    Assert-True ($null -ne $wrongPurposeError -and $wrongPurposeError.Exception.Message -match 'purpose') 'Publisher accepted a GUI-purpose authority.'
+
+    $hardlinkRoot = Join-Path $tempRoot 'hardlink-root'
+    $hardlinkDiscovery = Join-Path $hardlinkRoot 'discovery'
+    $hardlinkDesktop = Join-Path $hardlinkDiscovery 'Desktop'
+    $hardlinkReports = Join-Path $hardlinkRoot 'reports'
+    New-Item -ItemType Directory -Path $hardlinkDesktop, $hardlinkReports -Force | Out-Null
+    $hardlinkSource = Join-Path $hardlinkDesktop 'revAgent Updater STABLE.cmd'
+    $hardlinkAlias = Join-Path $hardlinkDesktop 'revAgent Updater STABLE alias.cmd'
+    Set-Content -LiteralPath $hardlinkSource -Value '@echo off' -Encoding ASCII
+    New-Item -ItemType HardLink -Path $hardlinkAlias -Target $hardlinkSource | Out-Null
+    $hardlinkError = $null
+    try { Invoke-FixturePublisher -FixtureRoot $hardlinkRoot -DiscoveryRoot $hardlinkDiscovery -FixtureReportsRoot $hardlinkReports -Arguments @{ Mode='ScanLocal'; MachineName='HARDLINK'; LauncherPath=@($hardlinkDesktop); NowUtc=$nowUtc; OutputJson=$true } | Out-Null }
+    catch { $hardlinkError = $_ }
+    Assert-True ($null -ne $hardlinkError -and $hardlinkError.Exception.Message -match 'hardlink') 'Publisher accepted a multi-link launcher file.'
+
+    $disposedAuthority = New-RevAgentDesktopDiscoveryFixtureAuthority -FixtureRoot $tempRoot -DiscoveryRoot $fixtureSpace -ReportsRoot $reportsRoot
+    $disposedAuthority.Dispose()
+    $disposedError = $null
+    try { $disposedAuthority.ConsumeDesktopLauncherDiscovery() | Out-Null }
+    catch { $disposedError = $_ }
+    Assert-True ($null -ne $disposedError -and $disposedError.Exception.Message -match 'reuse') 'Disposed authority was accepted.'
+
+    foreach ($badCarrier in @('fixture-path', @{}, ('{"purpose":"DesktopLauncherDiscovery"}' | ConvertFrom-Json))) {
+        $badCarrierError = $null
+        try { & $scriptPath -Mode ScanLocal -MachineName 'BADCARRIER' -TestFixtureAuthority $badCarrier -NowUtc $nowUtc -OutputJson | Out-Null }
+        catch { $badCarrierError = $_ }
+        Assert-True ($null -ne $badCarrierError -and $badCarrierError.Exception.Message -match 'authority_refused') 'A string/dictionary/JSON authority carrier was accepted.'
+    }
+
+    $wrongPidAuthority = New-RevAgentDesktopDiscoveryFixtureAuthority -FixtureRoot $tempRoot -DiscoveryRoot $fixtureSpace -ReportsRoot $reportsRoot
+    $creatorPidField = $wrongPidAuthority.GetType().GetField('creatorPid', [Reflection.BindingFlags]'Instance,NonPublic')
+    $creatorPidField.SetValue($wrongPidAuthority, -1)
+    $wrongPidError = $null
+    try { $wrongPidAuthority.ConsumeDesktopLauncherDiscovery() | Out-Null }
+    catch { $wrongPidError = $_ }
+    finally { $wrongPidAuthority.Dispose() }
+    Assert-True ($null -ne $wrongPidError -and $wrongPidError.Exception.Message -match 'process') 'Creator-PID mismatch did not poison the authority.'
+
+    $descendantRoot = Join-Path $tempRoot 'descendant-swap-root'
+    $descendantDiscovery = Join-Path $descendantRoot 'discovery'
+    $descendantDesktop = Join-Path $descendantDiscovery 'Desktop'
+    $descendantReports = Join-Path $descendantRoot 'reports'
+    $descendantOutside = Join-Path $tempRoot 'descendant-swap-outside'
+    New-Item -ItemType Directory -Path $descendantDesktop, $descendantReports, $descendantOutside -Force | Out-Null
+    [IO.File]::WriteAllText((Join-Path $descendantOutside 'must-remain-unchanged.txt'), 'descendant-outside', [Text.UTF8Encoding]::new($false))
+    $descendantAuthority = New-RevAgentDesktopDiscoveryFixtureAuthority -FixtureRoot $descendantRoot -DiscoveryRoot $descendantDiscovery -ReportsRoot $descendantReports
+    [IO.Directory]::Delete($descendantDesktop, $false)
+    New-Item -ItemType Junction -Path $descendantDesktop -Target $descendantOutside | Out-Null
+    $descendantSwapError = $null
+    try { & $scriptPath -Mode ScanLocal -MachineName 'DESCENDANTSWAP' -LauncherPath $descendantDesktop -NowUtc $nowUtc -OutputJson -TestFixtureAuthority $descendantAuthority | Out-Null }
+    catch { $descendantSwapError = $_ }
+    finally { $descendantAuthority.Dispose() }
+    Assert-True ($null -ne $descendantSwapError -and $descendantSwapError.Exception.Message -match 'reparse') 'After-issuance descendant junction swap was accepted.'
+    Assert-True ([IO.File]::ReadAllText((Join-Path $descendantOutside 'must-remain-unchanged.txt')) -eq 'descendant-outside') 'Descendant swap touched its outside target.'
+    [IO.Directory]::Delete($descendantDesktop, $false)
+
+    $filePinRoot = Join-Path $tempRoot 'file-pin-root'
+    $filePinDiscovery = Join-Path $filePinRoot 'discovery'
+    $filePinDesktop = Join-Path $filePinDiscovery 'Desktop'
+    $filePinReports = Join-Path $filePinRoot 'reports'
+    New-Item -ItemType Directory -Path $filePinDesktop, $filePinReports -Force | Out-Null
+    $filePinPath = Join-Path $filePinDesktop 'revAgent Updater STABLE.cmd'
+    [IO.File]::WriteAllText($filePinPath, '@echo off', [Text.UTF8Encoding]::new($false))
+    $filePinAuthority = New-RevAgentDesktopDiscoveryFixtureAuthority -FixtureRoot $filePinRoot -DiscoveryRoot $filePinDiscovery -ReportsRoot $filePinReports
+    $filePinLease = $filePinAuthority.ConsumeDesktopLauncherDiscovery()
+    $filePins = @($filePinLease.OpenLauncherFiles(@($filePinDesktop), $false, @('.cmd')))
+    $fileWriteError = $null
+    $fileMoveError = $null
+    try { [IO.File]::WriteAllText($filePinPath, 'tampered', [Text.UTF8Encoding]::new($false)) }
+    catch { $fileWriteError = $_ }
+    try { Move-Item -LiteralPath $filePinPath -Destination (Join-Path $filePinDesktop 'moved.cmd') -ErrorAction Stop }
+    catch { $fileMoveError = $_ }
+    Assert-True ($null -ne $fileWriteError -and $null -ne $fileMoveError -and $filePins[0].ReadAllText() -eq '@echo off') 'Pinned launcher file allowed write/delete-share mutation.'
+    foreach ($filePin in $filePins) { $filePin.Dispose() }
+    $filePinLease.Dispose()
+    $filePinAuthority.Dispose()
+
+    foreach ($invalidRoot in @('relative-fixture', ('\\?\' + $tempRoot), ('\\.\' + $tempRoot), ('\\localhost\c$\fixture'), ($tempRoot + ':stream'), ($tempRoot + '\.'))) {
+        $invalidPathError = $null
+        try { New-RevAgentGuiLogFixtureAuthority -FixtureRoot $invalidRoot -LogDirectory $wrongPurposeLog | Out-Null }
+        catch { $invalidPathError = $_ }
+        Assert-True ($null -ne $invalidPathError -and $invalidPathError.Exception.Message -match 'fixture_path|noncanonical') "Alias/device/ADS path was accepted: $invalidRoot"
+    }
+
+    $substExe = Join-Path ([Environment]::SystemDirectory) 'subst.exe'
+    $substDrive = @('R','S','T','U','V','W','X','Y','Z' | Where-Object { -not (Test-Path ($_.ToString() + ':\')) } | Select-Object -First 1)
+    Assert-True ($substDrive.Count -eq 1 -and (Test-Path -LiteralPath $substExe -PathType Leaf)) 'No deterministic free drive letter or canonical subst.exe was available.'
+    $substName = [string]$substDrive[0] + ':'
+    $substFixtureRoot = Join-Path $tempRoot 'subst-fixture-root'
+    $substFixtureLogs = Join-Path $substFixtureRoot 'logs'
+    New-Item -ItemType Directory -Path $substFixtureLogs -Force | Out-Null
+    & $substExe $substName $tempRoot | Out-Null
+    Assert-Equal $LASTEXITCODE 0 'Could not create the disposable SUBST alias.'
+    try {
+        $substError = $null
+        try { New-RevAgentGuiLogFixtureAuthority -FixtureRoot ($substName + '\subst-fixture-root') -LogDirectory ($substName + '\subst-fixture-root\logs') | Out-Null }
+        catch { $substError = $_ }
+        Assert-True ($null -ne $substError -and $substError.Exception.Message -match 'dos_alias') 'SUBST/DOS-device fixture alias was accepted.'
+    }
+    finally {
+        & $substExe $substName /D | Out-Null
+        Assert-Equal $LASTEXITCODE 0 'Could not remove the disposable SUBST alias.'
+    }
+
+    $missingAggregate = Invoke-FixturePublisher -FixtureRoot $tempRoot -DiscoveryRoot $fixtureSpace -FixtureReportsRoot $reportsRoot -Arguments @{
+        Mode='Aggregate'; ExpectedMachines=@('NET01','EMIN','OLD'); OutOfScopeMachines=@('OLD'); NowUtc=$nowUtc.AddMinutes(2); OutputJson=$true
+    } | ConvertFrom-Json
 
     Assert-True (-not [bool]$missingAggregate.passed) "Aggregate should fail while an expected machine is missing evidence."
     Assert-Equal ([int]$missingAggregate.expectedMachineCount) 2 "Aggregate expected machine count mismatch."
@@ -201,11 +335,9 @@ set "PRIMARY_ROOT=\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy"' `
             completedAtUtc = $nowUtc.AddMinutes(3).ToString("o")
         })
 
-    $passedAggregate = & $scriptPath `
-        -Mode Aggregate `
-        -ConfigPath $configPath `
-        -NowUtc $nowUtc.AddMinutes(4) `
-        -OutputJson | ConvertFrom-Json
+    $passedAggregate = Invoke-FixturePublisher -FixtureRoot $tempRoot -DiscoveryRoot $fixtureSpace -FixtureReportsRoot $reportsRoot -Arguments @{
+        Mode='Aggregate'; ExpectedMachines=@('NET01','EMIN','OLD'); OutOfScopeMachines=@('OLD'); NowUtc=$nowUtc.AddMinutes(4); OutputJson=$true
+    } | ConvertFrom-Json
 
     Assert-True ([bool]$passedAggregate.passed) "Aggregate should pass when all in-scope machines have clean launcher evidence."
     Assert-Equal ([int]$passedAggregate.expectedMachineCount) 2 "Passed aggregate expected machine count mismatch."
@@ -220,3 +352,4 @@ finally {
 }
 
 Write-Host "Desktop launcher evidence tests passed." -ForegroundColor Green
+$global:LASTEXITCODE = 0

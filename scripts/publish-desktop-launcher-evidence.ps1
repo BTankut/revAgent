@@ -32,7 +32,7 @@ param(
     [string]$UserProfilesRoot = "",
 
     [Parameter(DontShow = $true)]
-    [string]$TestDiscoveryRoot = "",
+    [object]$TestFixtureAuthority = $null,
 
     [switch]$Recurse,
 
@@ -75,6 +75,7 @@ if ($NowUtc -eq [datetime]::MinValue) {
 else {
     $NowUtc = $NowUtc.ToUniversalTime()
 }
+$script:FixtureDiscoveryLease = $null
 
 function Normalize-RevAgentMachineName {
     param([string]$Value)
@@ -120,6 +121,19 @@ function Get-RevAgentValue {
 function Read-RevAgentJsonFile {
     param([string]$Path)
 
+    if ($null -ne $script:FixtureDiscoveryLease) {
+        $fixtureReportsRoot = [IO.Path]::GetFullPath([string]$script:FixtureDiscoveryLease.ReportsRoot).TrimEnd('\')
+        $fixturePath = [IO.Path]::GetFullPath($Path)
+        if (-not $fixturePath.StartsWith($fixtureReportsRoot + '\', [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'fixture_external_report_read_refused'
+        }
+        $relative = $fixturePath.Substring($fixtureReportsRoot.Length).TrimStart('\')
+        try { return $script:FixtureDiscoveryLease.ReadReport($relative) | ConvertFrom-Json }
+        catch {
+            if ($_.Exception.Message -match 'fixture_file_open_failed') { return $null }
+            throw
+        }
+    }
     if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) {
         return $null
     }
@@ -209,72 +223,16 @@ function Select-RevAgentMatchedPatterns {
     return @($matches.ToArray() | Select-Object -Unique)
 }
 
-function Assert-RevAgentFixtureDiscoveryPathNoLinks {
-    param(
-        [Parameter(Mandatory = $true)][string]$Path,
-        [Parameter(Mandatory = $true)][string]$Label
-    )
-
-    if (-not (Test-Path -LiteralPath $Path -PathType Container)) {
-        throw "$Label does not exist: $Path"
-    }
-    $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
-    $linkType = if ($item.PSObject.Properties['LinkType']) { [string]$item.LinkType } else { '' }
-    if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or -not [string]::IsNullOrWhiteSpace($linkType)) {
-        throw "$Label contains a reparse point or filesystem link: $($item.FullName)"
-    }
-}
-
-function Resolve-RevAgentFixtureDiscoveryPathUnderTemp {
-    param([Parameter(Mandatory = $true)][string]$Path)
-
-    $tempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\')
-    $tempPrefix = $tempRoot + '\'
-    $fullPath = [IO.Path]::GetFullPath($Path).TrimEnd('\')
-    if ($fullPath.Equals($tempRoot, [StringComparison]::OrdinalIgnoreCase) -or
-        -not $fullPath.StartsWith($tempPrefix, [StringComparison]::OrdinalIgnoreCase)) {
-        throw "TestDiscoveryRoot is limited to a disposable child path below the current TEMP directory."
-    }
-
-    Assert-RevAgentFixtureDiscoveryPathNoLinks -Path $tempRoot -Label 'TEMP fixture root'
-    $relative = $fullPath.Substring($tempPrefix.Length)
-    $cursor = $tempRoot
-    foreach ($segment in @($relative -split '[\\/]' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })) {
-        $cursor = Join-Path $cursor $segment
-        if (-not (Test-Path -LiteralPath $cursor)) { break }
-        Assert-RevAgentFixtureDiscoveryPathNoLinks -Path $cursor -Label 'TestDiscoveryRoot'
-    }
-    return $fullPath
-}
-
 function Get-RevAgentDefaultLauncherPaths {
     param(
-        [string]$ProfilesRoot = "",
-        [string]$FixtureDiscoveryRoot = ""
+        [string]$ProfilesRoot = ""
     )
 
     $paths = [System.Collections.Generic.List[string]]::new()
     $profileRoots = [System.Collections.Generic.List[string]]::new()
-    if (-not [string]::IsNullOrWhiteSpace($FixtureDiscoveryRoot)) {
-        $fixtureRoot = Resolve-RevAgentFixtureDiscoveryPathUnderTemp -Path $FixtureDiscoveryRoot
-        Assert-RevAgentFixtureDiscoveryPathNoLinks -Path $fixtureRoot -Label 'TestDiscoveryRoot'
-        if ([string]::IsNullOrWhiteSpace($ProfilesRoot)) {
-            $ProfilesRoot = Join-Path $fixtureRoot 'profiles'
-        }
-        $profilesRootFull = Resolve-RevAgentFixtureDiscoveryPathUnderTemp -Path $ProfilesRoot
-        if (-not ($profilesRootFull.Equals($fixtureRoot, [StringComparison]::OrdinalIgnoreCase) -or $profilesRootFull.StartsWith($fixtureRoot + '\', [StringComparison]::OrdinalIgnoreCase))) {
-            throw "UserProfilesRoot must be contained by TestDiscoveryRoot."
-        }
-
-        foreach ($knownFolder in @('DesktopDirectory', 'CommonDesktopDirectory')) {
-            [void]$paths.Add((Join-Path $fixtureRoot (Join-Path 'known-folders' $knownFolder)))
-        }
-        $fixtureCurrentProfile = Join-Path $fixtureRoot 'current-profile'
-        [void]$profileRoots.Add($fixtureCurrentProfile)
-        [void]$paths.Add((Join-Path $fixtureCurrentProfile 'Desktop'))
-        foreach ($oneDriveFolder in @(Get-ChildItem -LiteralPath $fixtureCurrentProfile -Directory -Filter 'OneDrive*' -ErrorAction SilentlyContinue)) {
-            [void]$paths.Add((Join-Path $oneDriveFolder.FullName 'Desktop'))
-        }
+    if ($null -ne $script:FixtureDiscoveryLease) {
+        if (-not [string]::IsNullOrWhiteSpace($ProfilesRoot)) { throw 'UserProfilesRoot is not accepted with a fixture authority.' }
+        return @($script:FixtureDiscoveryLease.GetDefaultLauncherDirectories())
     }
     else {
     foreach ($folder in @("DesktopDirectory", "CommonDesktopDirectory")) {
@@ -335,6 +293,10 @@ function Get-RevAgentLauncherFiles {
         [switch]$Recursive
     )
 
+    if ($null -ne $script:FixtureDiscoveryLease) {
+        return @($script:FixtureDiscoveryLease.OpenLauncherFiles($Paths, [bool]$Recursive, [string[]]$candidateExtensions))
+    }
+
     $seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
     $files = [System.Collections.Generic.List[object]]::new()
     foreach ($path in $Paths) {
@@ -370,7 +332,7 @@ function Get-RevAgentLauncherFiles {
 }
 
 function Read-RevAgentLauncherText {
-    param([System.IO.FileInfo]$File)
+    param([object]$File)
 
     $details = [ordered]@{
         targetPath = ""
@@ -387,6 +349,7 @@ function Read-RevAgentLauncherText {
     $extension = $File.Extension.ToLowerInvariant()
     if ($extension -eq ".lnk") {
         try {
+            if ($null -ne $script:FixtureDiscoveryLease) { $File.VerifyIdentity() }
             $shell = New-Object -ComObject WScript.Shell
             $shortcut = $shell.CreateShortcut($File.FullName)
             $details.targetPath = [string]$shortcut.TargetPath
@@ -399,6 +362,7 @@ function Read-RevAgentLauncherText {
                     [void]$parts.Add($field)
                 }
             }
+            if ($null -ne $script:FixtureDiscoveryLease) { $File.VerifyIdentity() }
         }
         catch {
             $details.readWarning = $_.Exception.Message
@@ -406,7 +370,7 @@ function Read-RevAgentLauncherText {
     }
     else {
         try {
-            $text = Get-Content -Raw -LiteralPath $File.FullName -ErrorAction Stop
+            $text = if ($null -ne $script:FixtureDiscoveryLease) { [string]$File.ReadAllText() } else { Get-Content -Raw -LiteralPath $File.FullName -ErrorAction Stop }
             if (-not [string]::IsNullOrWhiteSpace($text)) {
                 [void]$parts.Add($text)
             }
@@ -439,37 +403,40 @@ function New-RevAgentLocalLauncherEvidence {
     }
 
     if ($Paths.Count -eq 0) {
-        $Paths = @(Get-RevAgentDefaultLauncherPaths -ProfilesRoot $UserProfilesRoot -FixtureDiscoveryRoot $TestDiscoveryRoot)
+        $Paths = @(Get-RevAgentDefaultLauncherPaths -ProfilesRoot $UserProfilesRoot)
     }
 
     $files = @(Get-RevAgentLauncherFiles -Paths $Paths -Recursive:$Recursive)
     $records = [System.Collections.Generic.List[object]]::new()
     foreach ($file in $files) {
-        $read = Read-RevAgentLauncherText -File $file
-        $text = [string]$read.text
-        $isProductCandidate = Test-RevAgentTextContainsAny -Text $text -Patterns $productLauncherPatterns
-        $hasLegacyLauncher = Test-RevAgentTextContainsAny -Text $text -Patterns $legacyLauncherPatterns
-        $hasLegacyRoot = Test-RevAgentTextContainsAny -Text $text -Patterns $legacyRootPatterns
-        $hasCanonicalRoot = Test-RevAgentTextContainsAny -Text $text -Patterns $canonicalRootPatterns
-        if (-not $isProductCandidate -and -not $hasLegacyLauncher -and -not $hasLegacyRoot -and -not $hasCanonicalRoot) {
-            continue
-        }
+        try {
+            $read = Read-RevAgentLauncherText -File $file
+            $text = [string]$read.text
+            $isProductCandidate = Test-RevAgentTextContainsAny -Text $text -Patterns $productLauncherPatterns
+            $hasLegacyLauncher = Test-RevAgentTextContainsAny -Text $text -Patterns $legacyLauncherPatterns
+            $hasLegacyRoot = Test-RevAgentTextContainsAny -Text $text -Patterns $legacyRootPatterns
+            $hasCanonicalRoot = Test-RevAgentTextContainsAny -Text $text -Patterns $canonicalRootPatterns
+            if (-not $isProductCandidate -and -not $hasLegacyLauncher -and -not $hasLegacyRoot -and -not $hasCanonicalRoot) { continue }
 
-        [void]$records.Add([pscustomobject][ordered]@{
-                path = $file.FullName
-                name = $file.Name
-                extension = $file.Extension
-                productLauncher = $isProductCandidate
-                legacyLauncher = $hasLegacyLauncher
-                legacyRootReference = $hasLegacyRoot
-                canonicalRootReference = $hasCanonicalRoot
-                matchedLegacyLauncherTerms = @(Select-RevAgentMatchedPatterns -Text $text -Patterns $legacyLauncherPatterns)
-                matchedLegacyRootTerms = @(Select-RevAgentMatchedPatterns -Text $text -Patterns $legacyRootPatterns)
-                targetPath = [string]$read.details.targetPath
-                arguments = [string]$read.details.arguments
-                workingDirectory = [string]$read.details.workingDirectory
-                readWarning = [string]$read.details.readWarning
-            })
+            [void]$records.Add([pscustomobject][ordered]@{
+                    path = $file.FullName
+                    name = $file.Name
+                    extension = $file.Extension
+                    productLauncher = $isProductCandidate
+                    legacyLauncher = $hasLegacyLauncher
+                    legacyRootReference = $hasLegacyRoot
+                    canonicalRootReference = $hasCanonicalRoot
+                    matchedLegacyLauncherTerms = @(Select-RevAgentMatchedPatterns -Text $text -Patterns $legacyLauncherPatterns)
+                    matchedLegacyRootTerms = @(Select-RevAgentMatchedPatterns -Text $text -Patterns $legacyRootPatterns)
+                    targetPath = [string]$read.details.targetPath
+                    arguments = [string]$read.details.arguments
+                    workingDirectory = [string]$read.details.workingDirectory
+                    readWarning = [string]$read.details.readWarning
+                })
+        }
+        finally {
+            if ($null -ne $script:FixtureDiscoveryLease -and $null -ne $file) { $file.Dispose() }
+        }
     }
 
     $legacyLaunchers = @($records.ToArray() | Where-Object { [bool]$_.legacyLauncher })
@@ -547,6 +514,7 @@ function New-RevAgentAggregateLauncherEvidence {
 
     $expectedNames = @(Expand-RevAgentMachineNames -Values $Expected | Where-Object { -not $excludedSet.Contains($_) } | Select-Object -Unique)
     if ($expectedNames.Count -eq 0) {
+        if ($null -ne $script:FixtureDiscoveryLease) { throw 'fixture_expected_machine_scope_required' }
         $machineRoot = Join-Path $Root "machines"
         if (Test-Path -LiteralPath $machineRoot -PathType Container) {
             $expectedNames = @(
@@ -638,11 +606,22 @@ function Publish-RevAgentEvidence {
     if ([string]::IsNullOrWhiteSpace($Path)) {
         return
     }
+    $json = $Evidence | ConvertTo-Json -Depth 20
+    if ($null -ne $script:FixtureDiscoveryLease) {
+        $fixtureReportsRoot = [IO.Path]::GetFullPath([string]$script:FixtureDiscoveryLease.ReportsRoot).TrimEnd('\')
+        foreach ($fixtureOutput in @($Path, $TimestampedPath)) {
+            if ([string]::IsNullOrWhiteSpace($fixtureOutput)) { continue }
+            $fixtureOutputFull = [IO.Path]::GetFullPath($fixtureOutput)
+            if (-not $fixtureOutputFull.StartsWith($fixtureReportsRoot + '\', [StringComparison]::OrdinalIgnoreCase)) { throw 'fixture_external_report_write_refused' }
+            $relative = $fixtureOutputFull.Substring($fixtureReportsRoot.Length).TrimStart('\')
+            $script:FixtureDiscoveryLease.WriteReport($relative, $json)
+        }
+        return
+    }
     $directory = Split-Path -Parent $Path
     if (-not [string]::IsNullOrWhiteSpace($directory)) {
         New-Item -ItemType Directory -Path $directory -Force | Out-Null
     }
-    $json = $Evidence | ConvertTo-Json -Depth 20
     Set-Content -LiteralPath $Path -Value $json -Encoding UTF8
 
     if (-not [string]::IsNullOrWhiteSpace($TimestampedPath)) {
@@ -654,6 +633,25 @@ function Publish-RevAgentEvidence {
     }
 }
 
+$fixtureAuthority = $null
+if ($null -ne $TestFixtureAuthority) {
+    $authorityTypes = @([AppDomain]::CurrentDomain.GetAssemblies() | ForEach-Object {
+            $_.GetType('RevAgent.TestFixtures.RevAgentTestFixtureAuthority', $false, $false)
+        } | Where-Object { $null -ne $_ })
+    if ($authorityTypes.Count -ne 1 -or -not [object]::ReferenceEquals($TestFixtureAuthority.GetType(), $authorityTypes[0])) {
+        throw 'revagent_test_fixture_authority_refused'
+    }
+    $fixtureAuthority = $TestFixtureAuthority
+    $script:FixtureDiscoveryLease = $fixtureAuthority.ConsumeDesktopLauncherDiscovery()
+    if (-not [string]::IsNullOrWhiteSpace($ConfigPath)) { throw 'fixture_external_config_read_refused' }
+    $authorityReportsRoot = [IO.Path]::GetFullPath([string]$script:FixtureDiscoveryLease.ReportsRoot).TrimEnd('\')
+    if (-not [string]::IsNullOrWhiteSpace($ReportsRoot) -and -not [string]::Equals([IO.Path]::GetFullPath($ReportsRoot).TrimEnd('\'), $authorityReportsRoot, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'fixture_reports_root_mismatch'
+    }
+    $ReportsRoot = $authorityReportsRoot
+}
+
+try {
 $config = $null
 if (-not [string]::IsNullOrWhiteSpace($ConfigPath)) {
     if (-not (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) {
@@ -705,7 +703,6 @@ else {
         $timestampedPath = ""
     }
 }
-
 Publish-RevAgentEvidence -Evidence $evidence -Path $OutputPath -TimestampedPath $timestampedPath
 
 if ($OutputJson) {
@@ -717,4 +714,9 @@ else {
     if ($Mode -eq "Aggregate") {
         Write-Host ("Machines: {0} expected, {1} checked, {2} missing, {3} failed" -f $evidence.expectedMachineCount, $evidence.checkedMachineCount, $evidence.missingMachineCount, $evidence.failedMachineCount)
     }
+}
+}
+finally {
+    if ($null -ne $script:FixtureDiscoveryLease) { $script:FixtureDiscoveryLease.Dispose() }
+    if ($null -ne $fixtureAuthority) { $fixtureAuthority.Dispose() }
 }
