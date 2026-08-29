@@ -33,6 +33,7 @@ $bootstrapRoot = Join-Path $fixtureRoot 'protected-bootstrap'
 $fixtureProgramDataRoot = Join-Path $fixtureRoot 'programdata'
 $desktopRoot = Join-Path $fixtureRoot 'desktop'
 $applySentinel = Join-Path $fixtureRoot 'mock-elevated-apply.json'
+$guiNominalLogRoot = Join-Path $fixtureRoot 'gui-nominal-logs'
 $fixtureModule = $null
 $cleanInput = $null
 
@@ -41,6 +42,7 @@ $cleanInput = $null
 [void][IO.Directory]::CreateDirectory((Split-Path -Parent $channelPath))
 [void][IO.Directory]::CreateDirectory((Split-Path -Parent $trustedKeysPath))
 [void][IO.Directory]::CreateDirectory($bootstrapTempRoot)
+[void][IO.Directory]::CreateDirectory($guiNominalLogRoot)
 
 try {
     Write-Host 'Build clean-install signed-release fixture'
@@ -225,7 +227,8 @@ $evidence = [ordered]@{
             -File $protectedGui `
             -ChannelManifestPath $channelPath `
             -BootstrapStatePath $protectedState `
-            -PreWindowBootstrapSmokeTest 2>&1 | ForEach-Object { [string]$_ })
+            -PreWindowBootstrapSmokeTest `
+            -TestStartupFailureLogRoot $guiNominalLogRoot 2>&1 | ForEach-Object { [string]$_ })
     $guiExitCode = $LASTEXITCODE
     Assert-True ($guiExitCode -eq 0) "Clean-install GUI pre-window PS5 child failed. output=$($guiOutput -join ' | ')"
     $jsonLine = @($guiOutput | Where-Object { $_.TrimStart().StartsWith('{') } | Select-Object -Last 1)
@@ -263,7 +266,7 @@ $evidence = [ordered]@{
     Assert-True ($guiFailureLogText -match [regex]::Escape($guiFailureMarker) -and $guiFailureLogText -match 'revAgent GUI startup failure') 'Clean-install GUI startup failure did not preserve its reason in the owned fixture log.'
     Assert-True ((@($guiFailureOutput) -join ' | ') -match [regex]::Escape($guiFailureLogs[0].FullName)) 'Clean-install GUI startup failure did not disclose the owned fixture log path.'
     $protectedGuiSource = Get-Content -Raw -LiteralPath $protectedGui
-    Assert-True ($protectedGuiSource -match '\$localAppDataRoot = \[Environment\]::GetFolderPath\(\[Environment\+SpecialFolder\]::LocalApplicationData\)' -and $protectedGuiSource -match 'TestStartupFailureLogRoot is limited to a disposable path below the current TEMP directory') 'Clean-install copied GUI did not preserve production startup-log defaults and strict test containment.'
+    Assert-True ($protectedGuiSource -match '\$localAppDataRoot = \[Environment\]::GetFolderPath\(\[Environment\+SpecialFolder\]::LocalApplicationData\)' -and $protectedGuiSource -match 'TestStartupFailureLogRoot is limited to a disposable child path below the current TEMP directory' -and $protectedGuiSource -match 'contains a reparse point or filesystem link') 'Clean-install copied GUI did not preserve production startup-log defaults and strict no-follow test containment.'
 
     Write-Host 'Prove production clean-machine self-service fails closed before acquisition, elevation, or coordinator work'
     $failClosedState = & $fixtureModule {
@@ -402,3 +405,4 @@ finally {
     if ($null -ne $fixtureModule) { Remove-Module $fixtureModule.Name -Force -ErrorAction SilentlyContinue }
     if (Test-Path -LiteralPath $fixtureRoot) { Remove-Item -LiteralPath $fixtureRoot -Recurse -Force -ErrorAction SilentlyContinue }
 }
+$global:LASTEXITCODE = 0

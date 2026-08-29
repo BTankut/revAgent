@@ -209,12 +209,42 @@ function Select-RevAgentMatchedPatterns {
     return @($matches.ToArray() | Select-Object -Unique)
 }
 
-function Test-RevAgentFixturePathUnderTemp {
+function Assert-RevAgentFixtureDiscoveryPathNoLinks {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Label
+    )
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Container)) {
+        throw "$Label does not exist: $Path"
+    }
+    $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+    $linkType = if ($item.PSObject.Properties['LinkType']) { [string]$item.LinkType } else { '' }
+    if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or -not [string]::IsNullOrWhiteSpace($linkType)) {
+        throw "$Label contains a reparse point or filesystem link: $($item.FullName)"
+    }
+}
+
+function Resolve-RevAgentFixtureDiscoveryPathUnderTemp {
     param([Parameter(Mandatory = $true)][string]$Path)
 
-    $tempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\') + '\'
+    $tempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\')
+    $tempPrefix = $tempRoot + '\'
     $fullPath = [IO.Path]::GetFullPath($Path).TrimEnd('\')
-    return $fullPath.StartsWith($tempRoot, [StringComparison]::OrdinalIgnoreCase)
+    if ($fullPath.Equals($tempRoot, [StringComparison]::OrdinalIgnoreCase) -or
+        -not $fullPath.StartsWith($tempPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "TestDiscoveryRoot is limited to a disposable child path below the current TEMP directory."
+    }
+
+    Assert-RevAgentFixtureDiscoveryPathNoLinks -Path $tempRoot -Label 'TEMP fixture root'
+    $relative = $fullPath.Substring($tempPrefix.Length)
+    $cursor = $tempRoot
+    foreach ($segment in @($relative -split '[\\/]' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })) {
+        $cursor = Join-Path $cursor $segment
+        if (-not (Test-Path -LiteralPath $cursor)) { break }
+        Assert-RevAgentFixtureDiscoveryPathNoLinks -Path $cursor -Label 'TestDiscoveryRoot'
+    }
+    return $fullPath
 }
 
 function Get-RevAgentDefaultLauncherPaths {
@@ -226,17 +256,12 @@ function Get-RevAgentDefaultLauncherPaths {
     $paths = [System.Collections.Generic.List[string]]::new()
     $profileRoots = [System.Collections.Generic.List[string]]::new()
     if (-not [string]::IsNullOrWhiteSpace($FixtureDiscoveryRoot)) {
-        if (-not (Test-RevAgentFixturePathUnderTemp -Path $FixtureDiscoveryRoot)) {
-            throw "TestDiscoveryRoot is limited to a disposable path below the current TEMP directory."
-        }
-        $fixtureRoot = [IO.Path]::GetFullPath($FixtureDiscoveryRoot).TrimEnd('\')
-        if (-not [string]::IsNullOrWhiteSpace($ProfilesRoot) -and -not (Test-RevAgentFixturePathUnderTemp -Path $ProfilesRoot)) {
-            throw "UserProfilesRoot must be below the disposable TestDiscoveryRoot fixture."
-        }
+        $fixtureRoot = Resolve-RevAgentFixtureDiscoveryPathUnderTemp -Path $FixtureDiscoveryRoot
+        Assert-RevAgentFixtureDiscoveryPathNoLinks -Path $fixtureRoot -Label 'TestDiscoveryRoot'
         if ([string]::IsNullOrWhiteSpace($ProfilesRoot)) {
             $ProfilesRoot = Join-Path $fixtureRoot 'profiles'
         }
-        $profilesRootFull = [IO.Path]::GetFullPath($ProfilesRoot).TrimEnd('\')
+        $profilesRootFull = Resolve-RevAgentFixtureDiscoveryPathUnderTemp -Path $ProfilesRoot
         if (-not ($profilesRootFull.Equals($fixtureRoot, [StringComparison]::OrdinalIgnoreCase) -or $profilesRootFull.StartsWith($fixtureRoot + '\', [StringComparison]::OrdinalIgnoreCase))) {
             throw "UserProfilesRoot must be contained by TestDiscoveryRoot."
         }

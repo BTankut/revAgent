@@ -169,11 +169,11 @@ try {
     Assert-Equal ([Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFiles)) $canonicalProgramFiles "Program Files Known Folder changed after environment poisoning."
     Assert-Equal ([Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)) $canonicalProgramData "ProgramData Known Folder changed after environment poisoning."
 
-    $guiOutput = (& $guiPath -ChannelManifestPath $channelFixture -SmokeTest 6>&1 | Out-String)
+    $guiOutput = (& $guiPath -ChannelManifestPath $channelFixture -SmokeTest -TestStartupFailureLogRoot $guiLogDirectory 6>&1 | Out-String)
     Assert-True ($guiOutput -match [regex]::Escape("Install  : $canonicalInstallRoot")) "GUI smoke test did not keep the canonical ProgramData install root under poisoned environment variables. Output: $guiOutput"
     Assert-True ($guiOutput -notmatch [regex]::Escape($poisonRoot)) "GUI smoke test exposed a poisoned machine root. Output: $guiOutput"
     $guiSource = Get-Content -Raw -LiteralPath $guiPath
-    Assert-True ($guiSource -match '\$localAppDataRoot = \[Environment\]::GetFolderPath\(\[Environment\+SpecialFolder\]::LocalApplicationData\)' -and $guiSource -match 'TestStartupFailureLogRoot is limited to a disposable path below the current TEMP directory') "GUI startup-log resolver must preserve the production LocalApplicationData default and fail closed for a non-temp test seam."
+    Assert-True ($guiSource -match '\$localAppDataRoot = \[Environment\]::GetFolderPath\(\[Environment\+SpecialFolder\]::LocalApplicationData\)' -and $guiSource -match 'TestStartupFailureLogRoot is limited to a disposable child path below the current TEMP directory' -and $guiSource -match 'contains a reparse point or filesystem link') "GUI startup-log resolver must preserve the production LocalApplicationData default and fail closed for non-temp or linked test seams."
     foreach ($name in $poisonNames) {
         [Environment]::SetEnvironmentVariable($name, $savedEnvironment[$name], 'Process')
     }
@@ -210,8 +210,27 @@ try {
         $outsideTestLogExitCode = $LASTEXITCODE
     }
     finally { $ErrorActionPreference = $previousErrorActionPreference }
-    Assert-True ($outsideTestLogExitCode -ne 0 -and ((@($outsideTestLogOutput) -join ' | ') -match 'TestStartupFailureLogRoot is limited to a disposable path below the current TEMP directory')) "GUI startup-log seam accepted a non-temp root or failed to preserve its rejection reason."
+    Assert-True ($outsideTestLogExitCode -ne 0 -and ((@($outsideTestLogOutput) -join ' | ') -match 'TestStartupFailureLogRoot is limited to a disposable child path below the current TEMP directory')) "GUI startup-log seam accepted a non-temp root or failed to preserve its rejection reason."
     Assert-True (-not (Test-Path -LiteralPath $outsideTestLogRoot)) "GUI startup-log seam created a rejected non-temp root."
+
+    Write-Host "Test GUI startup-log seam rejects a swapped junction root without writing it"
+    $outsideLogTarget = Join-Path $tempRoot 'outside-log-target'
+    $swappedLogRoot = Join-Path $tempRoot 'swapped-log-root'
+    New-Item -ItemType Directory -Path $outsideLogTarget, $swappedLogRoot -Force | Out-Null
+    [IO.File]::WriteAllText((Join-Path $outsideLogTarget 'must-remain-unchanged.txt'), 'outside-log-target', [Text.UTF8Encoding]::new($false))
+    [IO.Directory]::Delete($swappedLogRoot, $false)
+    New-Item -ItemType Junction -Path $swappedLogRoot -Target $outsideLogTarget | Out-Null
+    $previousErrorActionPreference = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $swappedLogOutput = @(& $windowsPowerShellPath -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $guiPath -TestStartupFailureMessage 'swapped-log-root' -TestStartupFailureLogRoot $swappedLogRoot 2>&1 | ForEach-Object { [string]$_ })
+        $swappedLogExitCode = $LASTEXITCODE
+    }
+    finally { $ErrorActionPreference = $previousErrorActionPreference }
+    Assert-True ($swappedLogExitCode -ne 0 -and ((@($swappedLogOutput) -join ' | ') -match 'reparse point or filesystem link')) "GUI startup-log seam accepted a swapped fixture junction."
+    Assert-True ([IO.File]::ReadAllText((Join-Path $outsideLogTarget 'must-remain-unchanged.txt')) -eq 'outside-log-target') "GUI startup-log seam wrote through the swapped junction target."
+    Assert-True (@(Get-ChildItem -LiteralPath $outsideLogTarget -Filter 'gui-startup-*.log' -File).Count -eq 0) "GUI startup-log seam created a log through the swapped junction target."
+    [IO.Directory]::Delete($swappedLogRoot, $false)
 
     Write-Host "Test copied GUI fails canonical-origin guard before bootstrap-selected module import"
     $copiedGuiRoot = Join-Path $tempRoot "copied-gui"
@@ -800,3 +819,4 @@ finally {
 }
 
 Write-Host "OS path and secure-temp security tests passed." -ForegroundColor Green
+$global:LASTEXITCODE = 0

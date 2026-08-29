@@ -271,7 +271,8 @@ $principal = [Security.Principal.WindowsPrincipal]::new($identity)
             -File $protectedGuiPath `
             -ChannelManifestPath $fakeStableChannelPath `
             -BootstrapStatePath $protectedStatePath `
-            -PreWindowBootstrapSmokeTest 2>&1 | ForEach-Object { [string]$_ })
+            -PreWindowBootstrapSmokeTest `
+            -TestStartupFailureLogRoot $guiLogDirectory 2>&1 | ForEach-Object { [string]$_ })
     $preWindowExitCode = $LASTEXITCODE
     Assert-True ($preWindowExitCode -eq 0) "Valid protected GUI pre-window PS5 child failed. output=$($preWindowOutput -join ' | ')"
     $preWindowJsonLine = @($preWindowOutput | Where-Object { $_.TrimStart().StartsWith('{') } | Select-Object -Last 1)
@@ -1256,3 +1257,4 @@ finally {
     }
 }
 Write-Host "Local protected update bootstrap tests passed." -ForegroundColor Green
+$global:LASTEXITCODE = 0

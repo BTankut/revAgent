@@ -26,6 +26,44 @@ if ("$($ExecutionContext.SessionState.LanguageMode)" -ne 'FullLanguage') {
 $ErrorActionPreference = "Stop"
 $script:GuiStartupCompleted = $false
 
+function Assert-RevAgentTestFixturePathNoLinks {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Label
+    )
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Container)) {
+        throw "$Label does not exist: $Path"
+    }
+    $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+    $linkType = if ($item.PSObject.Properties['LinkType']) { [string]$item.LinkType } else { '' }
+    if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or -not [string]::IsNullOrWhiteSpace($linkType)) {
+        throw "$Label contains a reparse point or filesystem link: $($item.FullName)"
+    }
+}
+
+function Resolve-RevAgentTestFixtureLogRoot {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $tempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\')
+    $tempPrefix = $tempRoot + '\'
+    $candidate = [IO.Path]::GetFullPath($Path).TrimEnd('\')
+    if ($candidate.Equals($tempRoot, [StringComparison]::OrdinalIgnoreCase) -or
+        -not $candidate.StartsWith($tempPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'TestStartupFailureLogRoot is limited to a disposable child path below the current TEMP directory.'
+    }
+
+    Assert-RevAgentTestFixturePathNoLinks -Path $tempRoot -Label 'TEMP fixture root'
+    $relative = $candidate.Substring($tempPrefix.Length)
+    $cursor = $tempRoot
+    foreach ($segment in @($relative -split '[\\/]' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })) {
+        $cursor = Join-Path $cursor $segment
+        if (-not (Test-Path -LiteralPath $cursor)) { break }
+        Assert-RevAgentTestFixturePathNoLinks -Path $cursor -Label 'TestStartupFailureLogRoot'
+    }
+    return $candidate
+}
+
 function Write-RevAgentGuiStartupFailure {
     param([Parameter(Mandatory = $true)][Management.Automation.ErrorRecord]$ErrorRecord)
 
@@ -36,12 +74,7 @@ function Write-RevAgentGuiStartupFailure {
             if (-not ($SmokeTest -or $PreWindowBootstrapSmokeTest -or $SuppressStartupFailureDialogForTest -or -not [string]::IsNullOrWhiteSpace($TestStartupFailureMessage))) {
                 throw 'TestStartupFailureLogRoot is accepted only by explicit smoke/test modes.'
             }
-            $tempPrefix = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\') + '\'
-            $candidateLogDirectory = [IO.Path]::GetFullPath($TestStartupFailureLogRoot).TrimEnd('\')
-            if (-not $candidateLogDirectory.StartsWith($tempPrefix, [StringComparison]::OrdinalIgnoreCase)) {
-                throw 'TestStartupFailureLogRoot is limited to a disposable path below the current TEMP directory.'
-            }
-            $logDirectory = $candidateLogDirectory
+            $logDirectory = Resolve-RevAgentTestFixtureLogRoot -Path $TestStartupFailureLogRoot
         }
         else {
             $localAppDataRoot = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
@@ -49,6 +82,9 @@ function Write-RevAgentGuiStartupFailure {
             $logDirectory = [IO.Path]::Combine($localAppDataRoot, 'DPE', 'revAgent', 'logs')
         }
         [void][IO.Directory]::CreateDirectory($logDirectory)
+        if (-not [string]::IsNullOrWhiteSpace($TestStartupFailureLogRoot)) {
+            $logDirectory = Resolve-RevAgentTestFixtureLogRoot -Path $logDirectory
+        }
         $logName = 'gui-startup-' + [DateTime]::Now.ToString('yyyyMMdd-HHmmss-fff') + '-' + [Guid]::NewGuid().ToString('N') + '.log'
         $logPath = [IO.Path]::Combine($logDirectory, $logName)
         $lines = [System.Collections.Generic.List[string]]::new()

@@ -140,13 +140,27 @@ set "PRIMARY_ROOT=\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy"' `
     Assert-True ([int]$allProfileScan.legacyLauncherCount -ge 1) "Default all-profile scan did not find the legacy launcher."
     Assert-True (@($allProfileScan.launchers | Where-Object { [string]$_.path -eq (Join-Path $aliceDesktop "Revit MCP Updater STABLE.cmd") }).Count -eq 1) "Default all-profile scan did not report Alice legacy launcher."
     $publisherText = Get-Content -Raw -LiteralPath $scriptPath
-    Assert-True ($publisherText -match 'TestDiscoveryRoot is limited to a disposable path below the current TEMP directory' -and $publisherText -match '\[Environment\]::GetFolderPath\(\$specialFolder\)') "Desktop discovery seam must retain the production known-folder resolver and reject non-temp test roots."
+    Assert-True ($publisherText -match 'TestDiscoveryRoot is limited to a disposable child path below the current TEMP directory' -and $publisherText -match 'contains a reparse point or filesystem link' -and $publisherText -match '\[Environment\]::GetFolderPath\(\$specialFolder\)') "Desktop discovery seam must retain the production known-folder resolver and reject non-temp or linked test roots."
     $outsideFixtureError = $null
     try {
         & $scriptPath -Mode ScanLocal -ReportsRoot $reportsRoot -MachineName 'FIXTUREGUARD' -TestDiscoveryRoot $RepoRoot -NowUtc $nowUtc -OutputJson | Out-Null
     }
     catch { $outsideFixtureError = $_ }
-    Assert-True ($null -ne $outsideFixtureError -and $outsideFixtureError.Exception.Message -match 'limited to a disposable path') "Desktop discovery seam accepted a non-temp test root."
+    Assert-True ($null -ne $outsideFixtureError -and $outsideFixtureError.Exception.Message -match 'limited to a disposable child path') "Desktop discovery seam accepted a non-temp test root."
+    $outsideDiscoveryTarget = Join-Path $tempRoot 'outside-discovery-target'
+    $swappedDiscoveryRoot = Join-Path $tempRoot 'swapped-discovery-root'
+    New-Item -ItemType Directory -Path $outsideDiscoveryTarget, $swappedDiscoveryRoot -Force | Out-Null
+    [IO.File]::WriteAllText((Join-Path $outsideDiscoveryTarget 'must-remain-unchanged.txt'), 'outside-discovery-target', [Text.UTF8Encoding]::new($false))
+    [IO.Directory]::Delete($swappedDiscoveryRoot, $false)
+    New-Item -ItemType Junction -Path $swappedDiscoveryRoot -Target $outsideDiscoveryTarget | Out-Null
+    $swappedFixtureError = $null
+    try {
+        & $scriptPath -Mode ScanLocal -ReportsRoot $reportsRoot -MachineName 'FIXTUREJUNCTION' -TestDiscoveryRoot $swappedDiscoveryRoot -NowUtc $nowUtc -OutputJson | Out-Null
+    }
+    catch { $swappedFixtureError = $_ }
+    Assert-True ($null -ne $swappedFixtureError -and $swappedFixtureError.Exception.Message -match 'reparse point or filesystem link') "Desktop discovery seam accepted a swapped fixture junction."
+    Assert-True ([IO.File]::ReadAllText((Join-Path $outsideDiscoveryTarget 'must-remain-unchanged.txt')) -eq 'outside-discovery-target') "Desktop discovery seam touched the junction target."
+    [IO.Directory]::Delete($swappedDiscoveryRoot, $false)
 
     $configPath = Join-Path $tempRoot "rollout-readiness.json"
     Write-TestJson -Path $configPath -Value ([ordered]@{
