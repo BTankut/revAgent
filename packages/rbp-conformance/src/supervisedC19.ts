@@ -103,21 +103,22 @@ function retained(relative: string): string {
   return `${canonicalManifest.retainedEvidence.root}/${relative}`;
 }
 
-function artifact(
+async function artifact(
   store: SecureEvidenceStore,
   kind: ArtifactEvidence["kind"],
   relativePath: string,
   contents: string | Buffer,
   mediaType: string,
-): ArtifactEvidence {
-  const stored = store.write(relativePath, contents);
-  return {
+): Promise<ArtifactEvidence> {
+  const bytes = Buffer.isBuffer(contents) ? Buffer.from(contents) : Buffer.from(contents, "utf8");
+  const sha256 = createHash("sha256").update(bytes).digest("hex");
+  return await store.writeAccepted(relativePath, bytes, (candidate) => candidate.acceptExact({ logicalPath: relativePath, absolutePath: store.resolve(relativePath), bytes, sha256 }, {
     kind,
     path: relativePath,
-    sha256: createHash("sha256").update(stored.bytes).digest("hex"),
-    bytes: stored.bytes.length,
+    sha256,
+    bytes: bytes.length,
     mediaType,
-  };
+  }));
 }
 
 function privateTempDirectory(runId: string, binding: Binding): string {
@@ -829,7 +830,7 @@ export async function executeSupervisedC19Run(input: SupervisedC19RunInput): Pro
   if (evidenceIssues.length > 0) {
     throw new Error(`parent-generated C19 evidence v2 is invalid: ${stableJson(evidenceIssues)}`);
   }
-  const evidence = artifact(
+  const evidence = await artifact(
     store,
     "case_evidence",
     evidencePath,
@@ -852,8 +853,10 @@ export async function executeSupervisedC19Run(input: SupervisedC19RunInput): Pro
     teardownDurationMs: 0,
   };
   const junitPath = retained(`runs/${report.run.runId}/junit.xml`);
-  report.artifacts.push(artifact(store, "junit", junitPath, runReportToJUnitXml(report), "application/xml"));
+  report.artifacts.push(await artifact(store, "junit", junitPath, runReportToJUnitXml(report), "application/xml"));
   const reportPath = retained(`runs/${report.run.runId}/run-report.json`);
-  store.write(reportPath, stableJson(report));
+  const reportBytes = Buffer.from(stableJson(report), "utf8");
+  const reportSha256 = createHash("sha256").update(reportBytes).digest("hex");
+  await store.writeAccepted(reportPath, reportBytes, (candidate) => candidate.acceptExact({ logicalPath: reportPath, absolutePath: store.resolve(reportPath), bytes: reportBytes, sha256: reportSha256 }, undefined));
   return { report, reportPath };
 }

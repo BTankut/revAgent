@@ -453,7 +453,19 @@ export async function runReconnectSoak(
     "utf8",
   );
   const store = new SecureEvidenceStore(artifactRoot);
-  const storedMetrics = store.write(metricsPath, metricsBytes);
+  const metricsSha256 = createHash("sha256").update(metricsBytes).digest("hex");
+  const metricsArtifact = await store.writeAccepted(metricsPath, metricsBytes, (candidate) => candidate.acceptExact({
+    logicalPath: metricsPath,
+    absolutePath: store.resolve(metricsPath),
+    bytes: metricsBytes,
+    sha256: metricsSha256,
+  }, {
+    kind: "soak_metrics" as const,
+    path: metricsPath,
+    sha256: metricsSha256,
+    bytes: metricsBytes.length,
+    mediaType: "application/x-ndjson",
+  }));
   const actualDurationMs = Math.floor(finishedMonotonicMs - startedMonotonicMs);
   const report: SoakReport = {
     schemaVersion: "rbp-reconnect-soak/v1",
@@ -473,13 +485,7 @@ export async function runReconnectSoak(
     actualDurationMs,
     cycles,
     resources,
-    artifacts: [{
-      kind: "soak_metrics",
-      path: metricsPath,
-      sha256: createHash("sha256").update(storedMetrics.bytes).digest("hex"),
-      bytes: storedMetrics.bytes.length,
-      mediaType: "application/x-ndjson",
-    }],
+    artifacts: [metricsArtifact],
     failure,
   };
   const reportPath = template(
@@ -487,6 +493,13 @@ export async function runReconnectSoak(
     mode,
     plan.runId,
   );
-  store.write(reportPath, stableJson(report));
+  const reportBytes = Buffer.from(stableJson(report), "utf8");
+  const reportSha256 = createHash("sha256").update(reportBytes).digest("hex");
+  await store.writeAccepted(reportPath, reportBytes, (candidate) => candidate.acceptExact({
+    logicalPath: reportPath,
+    absolutePath: store.resolve(reportPath),
+    bytes: reportBytes,
+    sha256: reportSha256,
+  }, undefined));
   return { report, reportPath };
 }

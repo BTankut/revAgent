@@ -2314,7 +2314,7 @@ export class CaseStackSupervisor {
       killEscalated: Object.fromEntries(killEscalated) as unknown as JsonValue,
     };
     try {
-      this.#retainTeardownEvidence({
+      await this.#retainTeardownEvidence({
         stack,
         stepId,
         action,
@@ -2345,7 +2345,7 @@ export class CaseStackSupervisor {
     return { result, observations };
   }
 
-  #retainTeardownEvidence(input: {
+  async #retainTeardownEvidence(input: {
     readonly stack: ActiveStack;
     readonly stepId: string;
     readonly action: string;
@@ -2354,7 +2354,7 @@ export class CaseStackSupervisor {
     readonly survivors: readonly number[];
     readonly gatewayProxyStopped: boolean;
     readonly fixtureProxyStopped: boolean;
-  }): void {
+  }): Promise<void> {
     if (this.#teardownEvidenceStore === null) return;
     const runHash = createHash("sha256").update(this.#plan.runId).digest("hex");
     const stepHash = createHash("sha256").update(input.stepId).digest("hex").slice(0, 16);
@@ -2377,9 +2377,7 @@ export class CaseStackSupervisor {
             },
       };
     });
-    this.#teardownEvidenceStore.write(
-      relativePath,
-      `${JSON.stringify({
+    const bytes = Buffer.from(`${JSON.stringify({
         schemaVersion: "rbp-c29-teardown-evidence/v1",
         runId: this.#plan.runId,
         caseId: input.stack.caseId,
@@ -2395,8 +2393,14 @@ export class CaseStackSupervisor {
           fixtureProxyStopped: input.fixtureProxyStopped,
         },
         components,
-      })}\n`,
-    );
+      })}\n`, "utf8");
+    const sha256 = createHash("sha256").update(bytes).digest("hex");
+    await this.#teardownEvidenceStore.writeAccepted(relativePath, bytes, (candidate) => candidate.acceptExact({
+      logicalPath: relativePath,
+      absolutePath: this.#teardownEvidenceStore!.resolve(relativePath),
+      bytes,
+      sha256,
+    }, undefined));
   }
 
   async gatewayControl(

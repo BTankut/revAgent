@@ -271,7 +271,7 @@ class ProcessEvidenceRecorder {
   #signal: string | null = null;
   readonly #evidenceDirectoryReal: string | undefined;
   readonly #evidenceStore: SecureEvidenceStore | undefined;
-  #persisted = false;
+  #persistLogsPromise: Promise<void> | null = null;
 
   constructor(
     private readonly component: string,
@@ -328,7 +328,7 @@ class ProcessEvidenceRecorder {
     for (const line of lines) this.#record(stream, line);
   }
 
-  failure(phase: string): void {
+  async failure(phase: string): Promise<void> {
     this.#timeline.push(`failure:${phase}`);
     this.#flushPartials();
     if (this.evidenceDirectory === undefined) return;
@@ -344,8 +344,8 @@ class ProcessEvidenceRecorder {
       stderr: Object.freeze({ hash: `sha256:${this.#stderr.copy().digest("hex")}`, safeLines: Object.freeze([...this.#safeLines.stderr]) }),
       timeline: Object.freeze([...this.#timeline]),
     });
-    this.#persist(`${this.component}.start-failure.json`, `${JSON.stringify(failure)}\n`);
-    this.#persistLogs();
+    await this.#persist(`${this.component}.start-failure.json`, `${JSON.stringify(failure)}\n`);
+    await this.#persistLogs();
   }
 
   #record(stream: "stdout" | "stderr", line: string): void {
@@ -364,10 +364,10 @@ class ProcessEvidenceRecorder {
     }
   }
 
-  complete(): void {
+  async complete(): Promise<void> {
     this.#flushPartials();
     this.#timeline.push("stdio_closed");
-    this.#persistLogs();
+    await this.#persistLogs();
   }
 
   #assertEvidenceDirectoryIdentity(): void {
@@ -378,33 +378,29 @@ class ProcessEvidenceRecorder {
     }
   }
 
-  #persist(fileName: string, contents: string): void {
+  async #persist(fileName: string, contents: string): Promise<void> {
     if (this.evidenceDirectory === undefined) return;
     this.#assertEvidenceDirectoryIdentity();
-    const stored = this.#evidenceStore?.writeDirect(fileName, contents);
-    if (stored !== undefined) {
-      let accepted = false;
-      try {
-        stored.identityLease.verify();
-        if (stored.absolutePath !== path.resolve(this.evidenceDirectory, fileName) ||
-            !stored.bytes.equals(Buffer.from(contents, "utf8"))) {
-          throw new Error("process evidence consumer binding changed");
-        }
-        accepted = true;
-      } finally {
-        if (accepted) stored.identityLease.verifyAndDispose();
-        else stored.identityLease.dispose();
-      }
-    }
+    if (this.#evidenceStore === undefined) return;
+    const bytes = Buffer.from(contents, "utf8");
+    const sha256 = createHash("sha256").update(bytes).digest("hex");
+    await this.#evidenceStore.writeDirectAccepted(fileName, bytes, (candidate) => candidate.acceptExact({
+      logicalPath: fileName,
+      absolutePath: path.resolve(this.evidenceDirectory!, fileName),
+      bytes,
+      sha256,
+    }, undefined));
     this.#assertEvidenceDirectoryIdentity();
   }
 
-  #persistLogs(): void {
-    if (this.evidenceDirectory === undefined || this.#persisted) return;
-    this.#persisted = true;
-    for (const stream of ["stdout", "stderr"] as const) {
-      this.#persist(`${this.component}.${stream}.log`, `${this.#safeLines[stream].join("\n")}${this.#safeLines[stream].length === 0 ? "" : "\n"}`);
-    }
+  async #persistLogs(): Promise<void> {
+    if (this.evidenceDirectory === undefined) return;
+    this.#persistLogsPromise ??= (async () => {
+      for (const stream of ["stdout", "stderr"] as const) {
+        await this.#persist(`${this.component}.${stream}.log`, `${this.#safeLines[stream].join("\n")}${this.#safeLines[stream].length === 0 ? "" : "\n"}`);
+      }
+    })();
+    await this.#persistLogsPromise;
   }
 }
 
@@ -598,7 +594,7 @@ export class StrictJsonlProcess {
     const evidenceCompletion = stdioCompletion.then(() => evidence.complete());
     void evidenceCompletion.catch(() => undefined);
     if (child.pid === undefined) {
-      evidence.failure("spawn");
+      await evidence.failure("spawn");
       throw new Error(`${options.componentId} did not receive a process id`);
     }
 
@@ -613,21 +609,20 @@ export class StrictJsonlProcess {
     };
     const readiness = new Promise<{ value: JsonlReadiness; at: string }>((resolve, reject) => {
       const timer = setTimeout(() => {
-        reject(new Error(`${options.componentId} readiness timed out`));
-        child.kill("SIGTERM");
+        fail(new Error(`${options.componentId} readiness timed out`));
       }, options.command.readiness.timeoutMs);
       const fail = (failure: Error): void => {
-        try { evidence.failure("pre_ready"); } catch (error) {
-          failure = error instanceof Error ? error : new Error(String(error));
-        }
         if (settled) {
           child.kill("SIGTERM");
           return;
         }
         settled = true;
         clearTimeout(timer);
-        reject(failure);
         child.kill("SIGTERM");
+        void evidence.failure("pre_ready").then(
+          () => reject(failure),
+          (error: unknown) => reject(error instanceof Error ? error : new Error(String(error))),
+        );
       };
       child.once("error", fail);
       child.once("close", (code, signal) => {
@@ -1145,7 +1140,7 @@ export class StrictReadyProcess {
     const evidenceCompletion = stdioCompletion.then(() => evidence.complete());
     void evidenceCompletion.catch(() => undefined);
     if (child.pid === undefined) {
-      evidence.failure("spawn");
+      await evidence.failure("spawn");
       throw new Error(`${options.componentId} did not receive a process id`);
     }
     const transcript: ProcessTranscriptRecord[] = [];
@@ -1160,11 +1155,14 @@ export class StrictReadyProcess {
       let buffer = Buffer.alloc(0);
       let settled = false;
       const fail = (failure: Error): void => {
-        try { evidence.failure("pre_ready"); } catch (error) {
-          failure = error instanceof Error ? error : new Error(String(error));
-        }
-        reject(failure);
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
         child.kill("SIGTERM");
+        void evidence.failure("pre_ready").then(
+          () => reject(failure),
+          (error: unknown) => reject(error instanceof Error ? error : new Error(String(error))),
+        );
       };
       const timer = setTimeout(() => {
         fail(new Error(`${options.componentId} readiness timed out`));

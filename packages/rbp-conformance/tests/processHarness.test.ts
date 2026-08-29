@@ -650,9 +650,9 @@ describe("strict JSONL process control", () => {
     mkdirSync(evidenceDirectory);
     const attacker = new Worker(`
       const {parentPort,workerData}=require('node:worker_threads');const fs=require('node:fs');
-      const timer=setInterval(()=>{if(!fs.existsSync(workerData.reached))return;clearInterval(timer);fs.rmSync(workerData.target);fs.writeFileSync(workerData.target,'attacker-bytes');fs.writeFileSync(workerData.continued,'continue');parentPort.postMessage({attacked:true});},5);
+      const timer=setInterval(()=>{if(!fs.existsSync(workerData.reached))return;clearInterval(timer);let replaced=false;let code=null;try{fs.rmSync(workerData.target);fs.writeFileSync(workerData.target,'attacker-bytes');replaced=true;}catch(error){code=error.code;}fs.writeFileSync(workerData.continued,'continue');parentPort.postMessage({attacked:true,replaced,code});},5);
     `, { eval: true, workerData: { reached, continued, target } });
-    const attacked = new Promise<{ attacked: boolean }>((resolve, reject) => {
+    const attacked = new Promise<{ attacked: boolean; replaced: boolean; code: string | null }>((resolve, reject) => {
       attacker.once("message", resolve); attacker.once("error", reject);
     });
     try {
@@ -665,9 +665,16 @@ describe("strict JSONL process control", () => {
         expectedReadinessFields: { component: "fixture-test" },
         requiredActions: ["shutdown"],
       });
-      await expect(child.stop()).rejects.toThrow(/leased identity|leased pathname/u);
-      await expect(attacked).resolves.toEqual({ attacked: true });
-      expect(readFileSync(target, "utf8")).toBe("attacker-bytes");
+      const stopped = child.stop();
+      const attack = await attacked;
+      expect(attack.attacked).toBe(true);
+      if (attack.replaced) {
+        await expect(stopped).rejects.toMatchObject({ code: "EVIDENCE_CONSUMER_AND_LEASE_FAILED" });
+        expect(readFileSync(target, "utf8")).toBe("attacker-bytes");
+      } else {
+        expect(attack.code).toBe("EPERM");
+        await expect(stopped).resolves.toMatchObject({ exitCode: 0 });
+      }
     } finally {
       await attacker.terminate();
       rmSync(root, { recursive: true, force: true });

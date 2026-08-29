@@ -8,8 +8,52 @@ import { describe, expect, it } from "vitest";
 import { canonicalManifest } from "../src/manifest.js";
 import { MAX_SECURE_EVIDENCE_CONTENT_BYTES, SecureEvidenceStore } from "../src/secureEvidenceStore.js";
 
+async function acceptWrite(store: SecureEvidenceStore, relativePath: string, contents: string | Buffer): Promise<{ absolutePath: string; bytes: Buffer }> {
+  const bytes = Buffer.isBuffer(contents) ? Buffer.from(contents) : Buffer.from(contents, "utf8");
+  const sha256 = createHash("sha256").update(bytes).digest("hex");
+  return await store.writeAccepted(relativePath, bytes, (candidate) => candidate.acceptExact({
+    logicalPath: relativePath,
+    absolutePath: store.resolve(relativePath),
+    bytes,
+    sha256,
+  }, { absolutePath: candidate.absolutePath, bytes: candidate.bytes }));
+}
+
 describe("secure retained-evidence store", () => {
-  it.runIf(process.platform === "win32")("fails closed on malformed, crashed, timed-out, and cleanup-uncertain native helper states", () => {
+  it("requires nominal exact awaited acceptance and exposes no legacy write methods", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "rbp-secure-acceptance-"));
+    try {
+      const store = new SecureEvidenceStore(root);
+      expect((store as unknown as { write?: unknown }).write).toBeUndefined();
+      expect((store as unknown as { writeDirect?: unknown }).writeDirect).toBeUndefined();
+      const base = canonicalManifest.retainedEvidence.root;
+      await expect((store.writeAccepted as unknown as (path: string, bytes: Buffer, consume?: unknown) => Promise<unknown>)(`${base}/missing.json`, Buffer.from("x")))
+        .rejects.toMatchObject({ code: "EVIDENCE_ACCEPTOR_REQUIRED" });
+      expect(existsSync(store.resolve(`${base}/missing.json`))).toBe(false);
+
+      await expect(store.writeAccepted(`${base}/plain.json`, "plain", (() => undefined) as never))
+        .rejects.toMatchObject({ code: "EVIDENCE_ACCEPTANCE_REQUIRED" });
+      await expect(store.writeAccepted(`${base}/wrong.json`, "wrong", (candidate) => candidate.acceptExact({
+        logicalPath: `${base}/different.json`,
+        absolutePath: candidate.absolutePath,
+        bytes: candidate.bytes,
+        sha256: candidate.sha256,
+      }, undefined))).rejects.toMatchObject({ code: "EVIDENCE_CONSUMER_BINDING_MISMATCH" });
+
+      let foreignToken: unknown;
+      await store.writeAccepted(`${base}/mint.json`, "mint", (candidate) => {
+        const token = candidate.acceptExact({ logicalPath: candidate.logicalPath, absolutePath: candidate.absolutePath, bytes: candidate.bytes, sha256: candidate.sha256 }, undefined);
+        foreignToken = token;
+        return token;
+      });
+      await expect(store.writeAccepted(`${base}/foreign.json`, "foreign", (() => foreignToken) as never))
+        .rejects.toMatchObject({ code: "EVIDENCE_ACCEPTANCE_REQUIRED" });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.runIf(process.platform === "win32")("fails closed on malformed, crashed, timed-out, and cleanup-uncertain native helper states", async () => {
     for (const helperFault of ["malformed_output", "unknown_error_code", "crash", "timeout"] as const) {
       const root = mkdtempSync(path.join(tmpdir(), `rbp-secure-helper-${helperFault}-`));
       try {
@@ -26,7 +70,7 @@ describe("secure retained-evidence store", () => {
     try {
       const store = new SecureEvidenceStore(root, { test: { helperFault: "cleanup_uncertain" } });
       const relative = `${canonicalManifest.retainedEvidence.root}/runs/uncertain/evidence.json`;
-      expect(() => store.write(relative, "published but cleanup uncertain")).toThrow(/cleanup is uncertain/u);
+      await expect(acceptWrite(store, relative, "published but cleanup uncertain")).rejects.toThrow(/cleanup is uncertain/u);
       const directory = path.dirname(store.resolve(relative));
       expect(readdirSync(directory)).toEqual(expect.arrayContaining(["evidence.json"]));
       expect(readdirSync(directory).some((entry) => entry.endsWith(".tmp"))).toBe(true);
@@ -35,19 +79,19 @@ describe("secure retained-evidence store", () => {
     }
   });
 
-  it("rejects content at the fixed size bound plus one before publication allocation", () => {
+  it("rejects content at the fixed size bound plus one before publication allocation", async () => {
     const root = mkdtempSync(path.join(tmpdir(), "rbp-secure-size-bound-"));
     try {
       const store = new SecureEvidenceStore(root);
       const relative = `${canonicalManifest.retainedEvidence.root}/runs/size/evidence.bin`;
-      expect(() => store.write(relative, Buffer.alloc(MAX_SECURE_EVIDENCE_CONTENT_BYTES + 1))).toThrow(/fixed bound/u);
+      await expect(acceptWrite(store, relative, Buffer.alloc(MAX_SECURE_EVIDENCE_CONTENT_BYTES + 1))).rejects.toThrow(/fixed bound/u);
       expect(existsSync(store.resolve(relative))).toBe(false);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
   });
 
-  it.runIf(process.platform === "win32")("binds the GLOBALROOT Windows identity and rejects ambient mismatch, mutation, or junction substitution", () => {
+  it.runIf(process.platform === "win32")("binds the GLOBALROOT Windows identity and rejects ambient mismatch, mutation, or junction substitution", async () => {
     const originalPath = process.env.PATH;
     const originalSystemRoot = process.env.SystemRoot;
     const originalWindir = process.env.WINDIR;
@@ -55,15 +99,15 @@ describe("secure retained-evidence store", () => {
     try {
       process.env.PATH = path.join(root, "hostile-path");
       const store = new SecureEvidenceStore(path.join(root, "safe"));
-      store.write(`${canonicalManifest.retainedEvidence.root}/identity.json`, "safe");
+      await acceptWrite(store, `${canonicalManifest.retainedEvidence.root}/identity.json`, "safe");
 
       process.env.SystemRoot = path.join(root, "missing-system-root");
       expect(() => new SecureEvidenceStore(path.join(root, "mismatch"))).toThrow(/GLOBALROOT/u);
 
       process.env.WINDIR = process.env.SystemRoot;
       expect(() => new SecureEvidenceStore(path.join(root, "plain-fake-initial"))).toThrow(/GLOBALROOT/u);
-      expect(() => store.write(`${canonicalManifest.retainedEvidence.root}/identity-after-mutation.json`, "blocked"))
-        .toThrow(/GLOBALROOT|environment changed/u);
+      await expect(acceptWrite(store, `${canonicalManifest.retainedEvidence.root}/identity-after-mutation.json`, "blocked"))
+        .rejects.toThrow(/GLOBALROOT|environment changed/u);
 
       if (originalSystemRoot === undefined) delete process.env.SystemRoot; else process.env.SystemRoot = originalSystemRoot;
       if (originalWindir === undefined) delete process.env.WINDIR; else process.env.WINDIR = originalWindir;
@@ -97,10 +141,11 @@ describe("secure retained-evidence store", () => {
     const worker = new Worker(`
       const { parentPort, workerData } = require('node:worker_threads');
       if(process.platform==='win32'){process.env.SystemRoot=workerData.windowsRoot;process.env.WINDIR=workerData.windowsRoot;}
-      import(workerData.moduleUrl).then(({SecureEvidenceStore}) => {
+      import(workerData.moduleUrl).then(async ({SecureEvidenceStore}) => {
         try {
           const store=new SecureEvidenceStore(workerData.root,{test:{boundary:'stage_complete',reachedMarker:workerData.reached,continueMarker:workerData.continued,timeoutMs:5000}});
-          store.write(workerData.relative,'pinned bytes');
+          const bytes=Buffer.from('pinned bytes');const sha256=require('node:crypto').createHash('sha256').update(bytes).digest('hex');
+          await store.writeAccepted(workerData.relative,bytes,c=>c.acceptExact({logicalPath:workerData.relative,absolutePath:store.resolve(workerData.relative),bytes,sha256},undefined));
           parentPort.postMessage({ok:true});
         } catch(error) { parentPort.postMessage({ok:false,message:error.message}); }
       });
@@ -151,8 +196,8 @@ describe("secure retained-evidence store", () => {
     const worker = new Worker(`
       const {parentPort,workerData}=require('node:worker_threads');
       if(process.platform==='win32'){process.env.SystemRoot=workerData.windowsRoot;process.env.WINDIR=workerData.windowsRoot;}
-      import(workerData.moduleUrl).then(({SecureEvidenceStore})=>{
-        try { new SecureEvidenceStore(workerData.root,{test:{boundary:'stage_complete',reachedMarker:workerData.reached,continueMarker:workerData.continued,timeoutMs:5000}}).write(workerData.relative,'staged-evidence-bytes'); parentPort.postMessage({ok:true}); }
+      import(workerData.moduleUrl).then(async ({SecureEvidenceStore})=>{
+        try { const store=new SecureEvidenceStore(workerData.root,{test:{boundary:'stage_complete',reachedMarker:workerData.reached,continueMarker:workerData.continued,timeoutMs:5000}});const bytes=Buffer.from('staged-evidence-bytes');const sha256=require('node:crypto').createHash('sha256').update(bytes).digest('hex');await store.writeAccepted(workerData.relative,bytes,c=>c.acceptExact({logicalPath:workerData.relative,absolutePath:store.resolve(workerData.relative),bytes,sha256},undefined)); parentPort.postMessage({ok:true}); }
         catch(error){ parentPort.postMessage({ok:false,message:error.message}); }
       });
     `, { eval: true, workerData: {
@@ -195,8 +240,8 @@ describe("secure retained-evidence store", () => {
     const worker = new Worker(`
       const {parentPort,workerData}=require('node:worker_threads');
       if(process.platform==='win32'){process.env.SystemRoot=workerData.windowsRoot;process.env.WINDIR=workerData.windowsRoot;}
-      import(workerData.moduleUrl).then(({SecureEvidenceStore})=>{
-        try { new SecureEvidenceStore(workerData.root,{test:{boundary:'after_cleanup_before_return',reachedMarker:workerData.reached,continueMarker:workerData.continued,timeoutMs:5000}}).write(workerData.relative,'original-bytes'); parentPort.postMessage({ok:true}); }
+      import(workerData.moduleUrl).then(async ({SecureEvidenceStore})=>{
+        try { const store=new SecureEvidenceStore(workerData.root,{test:{boundary:'after_cleanup_before_return',reachedMarker:workerData.reached,continueMarker:workerData.continued,timeoutMs:5000}});const bytes=Buffer.from('original-bytes');const sha256=require('node:crypto').createHash('sha256').update(bytes).digest('hex');await store.writeAccepted(workerData.relative,bytes,c=>c.acceptExact({logicalPath:workerData.relative,absolutePath:store.resolve(workerData.relative),bytes,sha256},undefined)); parentPort.postMessage({ok:true}); }
         catch(error){ parentPort.postMessage({ok:false,message:error.message}); }
       });
     `, { eval: true, workerData: {
@@ -222,7 +267,7 @@ describe("secure retained-evidence store", () => {
     }
   });
 
-  it("rejects replacement at the actual leased last boundary before caller success", async () => {
+  it("holds or rejects replacement at the actual leased last boundary before caller success", async () => {
     const root = mkdtempSync(path.join(tmpdir(), "rbp-secure-lease-race-"));
     const reached = path.join(root, "lease-reached");
     const continued = path.join(root, "continue");
@@ -231,8 +276,8 @@ describe("secure retained-evidence store", () => {
     const worker = new Worker(`
       const {parentPort,workerData}=require('node:worker_threads');
       if(process.platform==='win32'){process.env.SystemRoot=workerData.windowsRoot;process.env.WINDIR=workerData.windowsRoot;}
-      import(workerData.moduleUrl).then(({SecureEvidenceStore})=>{
-        try { new SecureEvidenceStore(workerData.root,{test:{boundary:'lease_verified_before_return',reachedMarker:workerData.reached,continueMarker:workerData.continued,timeoutMs:5000}}).write(workerData.relative,'leased-original'); parentPort.postMessage({ok:true}); }
+      import(workerData.moduleUrl).then(async ({SecureEvidenceStore})=>{
+        try { const store=new SecureEvidenceStore(workerData.root,{test:{boundary:'lease_verified_before_return',reachedMarker:workerData.reached,continueMarker:workerData.continued,timeoutMs:5000}});const bytes=Buffer.from('leased-original');const sha256=require('node:crypto').createHash('sha256').update(bytes).digest('hex');await store.writeAccepted(workerData.relative,bytes,c=>c.acceptExact({logicalPath:workerData.relative,absolutePath:store.resolve(workerData.relative),bytes,sha256},undefined)); parentPort.postMessage({ok:true}); }
         catch(error){ parentPort.postMessage({ok:false,message:error.message}); }
       });
     `, { eval: true, workerData: {
@@ -246,11 +291,18 @@ describe("secure retained-evidence store", () => {
       const deadline = Date.now() + 5_000;
       while (!existsSync(reached) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
       expect(existsSync(reached)).toBe(true);
-      rmSync(target);
-      writeFileSync(target, "leased-attacker");
+      let replaced = false;
+      try {
+        rmSync(target);
+        writeFileSync(target, "leased-attacker");
+        replaced = true;
+      } catch (error) {
+        if (process.platform !== "win32" || (error as NodeJS.ErrnoException).code !== "EPERM") throw error;
+      }
       writeFileSync(continued, "continue");
       const outcome = await outcomePromise;
-      expect(outcome).toMatchObject({ ok: false, message: expect.stringMatching(/leased identity|leased pathname/u) });
+      if (replaced) expect(outcome).toMatchObject({ ok: false, message: expect.stringMatching(/consumer and lease both failed/u) });
+      else expect(outcome).toEqual({ ok: true });
     } finally {
       await worker.terminate();
       rmSync(root, { recursive: true, force: true });
@@ -266,8 +318,8 @@ describe("secure retained-evidence store", () => {
     const worker = new Worker(`
       const {parentPort,workerData}=require('node:worker_threads');
       if(process.platform==='win32'){process.env.SystemRoot=workerData.windowsRoot;process.env.WINDIR=workerData.windowsRoot;}
-      import(workerData.moduleUrl).then(({SecureEvidenceStore})=>{
-        try { new SecureEvidenceStore(workerData.root,{test:{boundary:'final_handle_pinned',reachedMarker:workerData.reached,continueMarker:workerData.continued,timeoutMs:5000}}).write(workerData.relative,'original-bytes'); parentPort.postMessage({ok:true}); }
+      import(workerData.moduleUrl).then(async ({SecureEvidenceStore})=>{
+        try { const store=new SecureEvidenceStore(workerData.root,{test:{boundary:'final_handle_pinned',reachedMarker:workerData.reached,continueMarker:workerData.continued,timeoutMs:5000}});const bytes=Buffer.from('original-bytes');const sha256=require('node:crypto').createHash('sha256').update(bytes).digest('hex');await store.writeAccepted(workerData.relative,bytes,c=>c.acceptExact({logicalPath:workerData.relative,absolutePath:store.resolve(workerData.relative),bytes,sha256},undefined)); parentPort.postMessage({ok:true}); }
         catch(error){ parentPort.postMessage({ok:false,message:error.message}); }
       });
     `, { eval: true, workerData: {
@@ -291,7 +343,7 @@ describe("secure retained-evidence store", () => {
     }
   });
 
-  it("rejects a fresh directory recreated at the same lexical root pathname", () => {
+  it("rejects a fresh directory recreated at the same lexical root pathname", async () => {
     const owner = mkdtempSync(path.join(tmpdir(), "rbp-secure-root-id-"));
     const root = path.join(owner, "artifact");
     const moved = path.join(owner, "artifact-moved");
@@ -300,8 +352,8 @@ describe("secure retained-evidence store", () => {
     renameSync(root, moved);
     mkdirSync(root);
     try {
-      expect(() => store.write(`${canonicalManifest.retainedEvidence.root}/identity.json`, "must not publish"))
-        .toThrow(/identity changed|IDENTITY_CHANGED/u);
+      await expect(acceptWrite(store, `${canonicalManifest.retainedEvidence.root}/identity.json`, "must not publish"))
+        .rejects.toThrow(/identity changed|IDENTITY_CHANGED/u);
       expect(readdirSync(root)).toEqual([]);
     } finally {
       rmSync(owner, { recursive: true, force: true });
@@ -344,26 +396,23 @@ describe("secure retained-evidence store", () => {
     }
   });
 
-  it("confines atomic writes, refuses replacement, and leaves no staging file", () => {
+  it("confines atomic writes, refuses replacement, and leaves no staging file", async () => {
     const root = mkdtempSync(path.join(tmpdir(), "rbp-secure-store-"));
     try {
       const store = new SecureEvidenceStore(root);
       const relative = `${canonicalManifest.retainedEvidence.root}/runs/run-1/cases/O1-C19/evidence.json`;
-      const stored = store.write(relative, "observed bytes");
+      const stored = await acceptWrite(store, relative, "observed bytes");
       expect(readFileSync(stored.absolutePath, "utf8")).toBe("observed bytes");
       expect(readdirSync(path.dirname(stored.absolutePath))).toEqual(["evidence.json"]);
-      expect(() => store.write(relative, "replacement")).toThrow(/already exists/u);
-      expect(() => store.write(
+      await expect(acceptWrite(store, relative, "replacement")).rejects.toThrow(/already exists/u);
+      await expect(acceptWrite(store,
         `${canonicalManifest.retainedEvidence.root}/../../escaped.json`,
         "escape",
-      )).toThrow(/escapes retained root/u);
+      )).rejects.toThrow(/escapes retained root/u);
       if (process.platform !== "win32") {
         expect(statSync(store.retainedRoot).mode & 0o777).toBe(0o700);
         expect(statSync(stored.absolutePath).mode & 0o777).toBe(0o600);
       }
-      expect(stored.identityLease.disposed).toBe(false);
-      stored.identityLease.verifyAndDispose();
-      expect(stored.identityLease.disposed).toBe(true);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -382,10 +431,11 @@ describe("secure retained-evidence store", () => {
       const publisher = `
         const { parentPort, workerData } = require('node:worker_threads');
         if(process.platform==='win32'){process.env.SystemRoot=workerData.windowsRoot;process.env.WINDIR=workerData.windowsRoot;}
-        import(workerData.moduleUrl).then(({ SecureEvidenceStore }) => {
+        import(workerData.moduleUrl).then(async ({ SecureEvidenceStore }) => {
           try {
             const store = new SecureEvidenceStore(workerData.root,{test:{boundary:'stage_complete',reachedMarker:workerData.reached,continueMarker:workerData.continued,timeoutMs:5000}});
-            const result = store.write(workerData.relative, workerData.contents);
+            const bytes=Buffer.from(workerData.contents);const sha256=require('node:crypto').createHash('sha256').update(bytes).digest('hex');
+            const result = await store.writeAccepted(workerData.relative,bytes,c=>c.acceptExact({logicalPath:workerData.relative,absolutePath:store.resolve(workerData.relative),bytes,sha256},{bytes:c.bytes}));
             parentPort.postMessage({ phase: 'result', ok: true, bytes: result.bytes.toString('utf8') });
           } catch (error) {
             parentPort.postMessage({ phase: 'result', ok: false, code: error.code, message: error.message });
@@ -426,7 +476,7 @@ describe("secure retained-evidence store", () => {
       expect(contents).toContain(winner.bytes);
       expect(readFileSync(target, "utf8")).toBe(winner.bytes);
       expect(readdirSync(path.dirname(target))).toEqual(["evidence.json"]);
-      expect(() => store.write(relative, "replacement")).toThrow(/already exists/u);
+      await expect(acceptWrite(store, relative, "replacement")).rejects.toThrow(/already exists/u);
       expect(readFileSync(target, "utf8")).toBe(winner.bytes);
     } finally {
       await Promise.all(workers.map((worker) => worker.terminate()));
@@ -434,7 +484,7 @@ describe("secure retained-evidence store", () => {
     }
   });
 
-  it("rejects real junction or symlink roots and intermediate directories without writing through them", () => {
+  it("rejects real junction or symlink roots and intermediate directories without writing through them", async () => {
     const root = mkdtempSync(path.join(tmpdir(), "rbp-secure-store-reparse-"));
     const target = mkdtempSync(path.join(tmpdir(), "rbp-secure-store-target-"));
     try {
@@ -449,8 +499,8 @@ describe("secure retained-evidence store", () => {
       const linkDirectory = path.join(store.retainedRoot, "junction");
       symlinkSync(target, linkDirectory, kind);
       expect(lstatSync(linkDirectory).isSymbolicLink()).toBe(true);
-      expect(() => store.write(`${canonicalManifest.retainedEvidence.root}/junction/escape.json`, "escape"))
-        .toThrow(/plain directory|IDENTITY_CHANGED|identity changed/u);
+      await expect(acceptWrite(store, `${canonicalManifest.retainedEvidence.root}/junction/escape.json`, "escape"))
+        .rejects.toThrow(/plain directory|IDENTITY_CHANGED|identity changed/u);
       expect(readdirSync(target)).toEqual([]);
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -458,3 +508,4 @@ describe("secure retained-evidence store", () => {
     }
   });
 });
+import { createHash } from "node:crypto";

@@ -399,20 +399,32 @@ export async function runFinalEvidenceAsyncCli(
   });
 
   const store = new SecureEvidenceStore(context.artifactRoot);
-  const storedJunit = store.write(aggregateJunitPath, aggregateJunitBytes);
-  if (!storedJunit.bytes.equals(aggregateJunitBytes)) {
+  const aggregateJunitSha256 = createHash("sha256").update(aggregateJunitBytes).digest("hex");
+  const storedJunitBytes = await store.writeAccepted(aggregateJunitPath, aggregateJunitBytes, (candidate) => candidate.acceptExact({
+    logicalPath: aggregateJunitPath,
+    absolutePath: store.resolve(aggregateJunitPath),
+    bytes: aggregateJunitBytes,
+    sha256: aggregateJunitSha256,
+  }, candidate.bytes));
+  if (!storedJunitBytes.equals(aggregateJunitBytes)) {
     throw new Error("retained aggregate JUnit bytes differ from the in-memory result");
   }
   if (
-    createHash("sha256").update(storedJunit.bytes).digest("hex") !==
+    createHash("sha256").update(storedJunitBytes).digest("hex") !==
     aggregate.artifacts[0]!.sha256
   ) {
     throw new Error("retained aggregate JUnit hash differs from the in-memory result");
   }
 
   const aggregateBytes = Buffer.from(stableJson(aggregate), "utf8");
-  const storedAggregate = store.write(aggregate.reportPath, aggregateBytes);
-  if (!storedAggregate.bytes.equals(aggregateBytes)) {
+  const aggregateSha256 = createHash("sha256").update(aggregateBytes).digest("hex");
+  const storedAggregateBytes = await store.writeAccepted(aggregate.reportPath, aggregateBytes, (candidate) => candidate.acceptExact({
+    logicalPath: aggregate.reportPath,
+    absolutePath: store.resolve(aggregate.reportPath),
+    bytes: aggregateBytes,
+    sha256: aggregateSha256,
+  }, candidate.bytes));
+  if (!storedAggregateBytes.equals(aggregateBytes)) {
     throw new Error("retained aggregate JSON bytes differ from the in-memory result");
   }
   const retainedAggregate = readExactRetainedJson(

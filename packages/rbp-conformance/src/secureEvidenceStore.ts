@@ -1,5 +1,5 @@
-import { spawnSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { createHash, randomUUID } from "node:crypto";
 import {
   chmodSync,
   closeSync,
@@ -17,6 +17,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
+import { createInterface } from "node:readline";
 
 import { canonicalManifest } from "./manifest.js";
 import {
@@ -33,7 +34,6 @@ const NATIVE_HELPER_TIMEOUT_MS = 15_000;
 const MAX_NATIVE_HELPER_INPUT_BYTES = 128 * 1024 * 1024;
 const MAX_NATIVE_HELPER_OUTPUT_BYTES = 4 * 1024;
 export const MAX_SECURE_EVIDENCE_CONTENT_BYTES = 32 * 1024 * 1024;
-export const SECURE_EVIDENCE_LEASE_MS = 10_000;
 
 export type SecureEvidenceTestBoundary =
   | "constructor_baseline_pinned"
@@ -83,6 +83,27 @@ function boundedContentBytes(contents: string | Buffer): Buffer {
   const length = Buffer.isBuffer(contents) ? contents.length : Buffer.byteLength(contents, "utf8");
   if (length > MAX_SECURE_EVIDENCE_CONTENT_BYTES) throw new Error("secure evidence content exceeds its fixed bound");
   return Buffer.isBuffer(contents) ? Buffer.from(contents) : Buffer.from(contents, "utf8");
+}
+
+function evidenceError(code: string, message: string, cause?: unknown): Error {
+  const error = new Error(message, cause === undefined ? undefined : { cause }) as NodeJS.ErrnoException;
+  error.code = code;
+  return error;
+}
+
+async function beforeDeadline<T>(promise: Promise<T>, deadlineMs: number, onTimeout: () => void): Promise<T> {
+  const remaining = deadlineMs - Date.now();
+  if (remaining <= 0) {
+    onTimeout();
+    throw evidenceError("EVIDENCE_DISPOSAL_FAILED", "evidence lifecycle deadline expired");
+  }
+  return await new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      onTimeout();
+      reject(evidenceError("EVIDENCE_DISPOSAL_FAILED", "evidence lifecycle deadline expired"));
+    }, remaining);
+    void promise.then((value) => { clearTimeout(timer); resolve(value); }, (error: unknown) => { clearTimeout(timer); reject(error); });
+  });
 }
 
 function waitForTestBoundary(test: SecureEvidenceStoreTestOptions | undefined, boundary: SecureEvidenceTestBoundary): void {
@@ -142,6 +163,8 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
+using System.Threading.Tasks;
 using Microsoft.Win32.SafeHandles;
 public static class RevAgentPinnedEvidencePublisher {
   const uint FILE_READ_ATTRIBUTES=0x80, FILE_SHARE_READ=1, FILE_SHARE_WRITE=2, OPEN_EXISTING=3;
@@ -157,9 +180,11 @@ public static class RevAgentPinnedEvidencePublisher {
   static SafeFileHandle Pin(string p,string expected,string expectedVolume,string expectedFileId) { var h=CreateFileW(p,FILE_READ_ATTRIBUTES,FILE_SHARE_READ|FILE_SHARE_WRITE,IntPtr.Zero,OPEN_EXISTING,FILE_FLAG_BACKUP_SEMANTICS|FILE_FLAG_OPEN_REPARSE_POINT,IntPtr.Zero); if(h.IsInvalid)throw new IOException("PIN_FAILED"); Info i; ulong fileId; if(!GetFileInformationByHandle(h,out i)||(i.Attr&FILE_ATTRIBUTE_DIRECTORY)==0||(i.Attr&FILE_ATTRIBUTE_REPARSE_POINT)!=0||Final(h)!=Norm(expected)){h.Dispose();throw new IOException("IDENTITY_CHANGED");} fileId=((ulong)i.L1<<32)|i.L2; if(expectedVolume.Length>0 && (i.V1.ToString()!=expectedVolume || fileId.ToString()!=expectedFileId)){h.Dispose();throw new IOException("IDENTITY_CHANGED");} return h; }
   static Info AssertFile(FileStream stream,string expected,uint expectedLinks) { Info i; if(!GetFileInformationByHandle(stream.SafeFileHandle,out i)||(i.Attr&FILE_ATTRIBUTE_DIRECTORY)!=0||(i.Attr&FILE_ATTRIBUTE_REPARSE_POINT)!=0||Final(stream.SafeFileHandle)!=Norm(expected))throw new IOException("IDENTITY_CHANGED");if(i.S2!=expectedLinks)throw new IOException("LINK_COUNT_CHANGED");return i; }
   static string FileId(FileStream stream) { Info i; if(!GetFileInformationByHandle(stream.SafeFileHandle,out i))throw new IOException("IDENTITY_CHANGED"); return i.V1.ToString()+":"+((((ulong)i.L1)<<32)|i.L2).ToString(); }
-  static string Verify(FileStream read,string target,byte[] bytes,uint expectedLinks) { AssertFile(read,target,expectedLinks);if(read.Length!=bytes.Length)throw new IOException("READBACK_MISMATCH");byte[] observed=new byte[bytes.Length];for(int o=0;o<observed.Length;){int n=read.Read(observed,o,observed.Length-o);if(n==0)throw new IOException("READBACK_MISMATCH");o+=n;}int mismatch=0;for(int i=0;i<bytes.Length;i++)mismatch|=bytes[i]^observed[i];if(mismatch!=0)throw new IOException("READBACK_MISMATCH");AssertFile(read,target,expectedLinks);return FileId(read); }
+  static string Verify(FileStream read,string target,byte[] bytes,uint expectedLinks) { AssertFile(read,target,expectedLinks);if(read.Length!=bytes.Length)throw new IOException("READBACK_MISMATCH");read.Position=0;byte[] observed=new byte[bytes.Length];for(int o=0;o<observed.Length;){int n=read.Read(observed,o,observed.Length-o);if(n==0)throw new IOException("READBACK_MISMATCH");o+=n;}int mismatch=0;for(int i=0;i<bytes.Length;i++)mismatch|=bytes[i]^observed[i];if(mismatch!=0)throw new IOException("READBACK_MISMATCH");AssertFile(read,target,expectedLinks);return FileId(read); }
+  static void CheckDeadline(long deadlineUnixMs) { if(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()>=deadlineUnixMs)throw new IOException("HELPER_DEADLINE"); }
+  static string Sha256(byte[] bytes) { using(var hash=SHA256.Create())return BitConverter.ToString(hash.ComputeHash(bytes)).Replace("-","").ToLowerInvariant(); }
   static void Sync(string selected,string reached,string continued,int timeoutMs,string boundary) { if(selected!=boundary)return; File.WriteAllText(reached,boundary); var until=DateTime.UtcNow.AddMilliseconds(timeoutMs); while(!File.Exists(continued)){if(DateTime.UtcNow>=until)throw new IOException("SYNC_TIMEOUT");System.Threading.Thread.Sleep(10);} }
-  public static void Run(string root,string expected,string expectedVolume,string expectedFileId,string[] directories,string operation,string fileName,byte[] bytes,string boundary,string reachedMarker,string continueMarker,int syncTimeoutMs,int helperTimeoutMs,string fault) {
+  public static void Run(string root,string expected,string expectedVolume,string expectedFileId,string[] directories,string operation,string fileName,byte[] bytes,string boundary,string reachedMarker,string continueMarker,int syncTimeoutMs,int helperTimeoutMs,string fault,long deadlineUnixMs) {
     var held=new List<SafeFileHandle>(); string temp=null; bool published=false;
     try {
       held.Add(Pin(root,expected,expectedVolume,expectedFileId));
@@ -178,14 +203,22 @@ public static class RevAgentPinnedEvidencePublisher {
       File.Delete(temp); temp=null;
       Sync(boundary,reachedMarker,continueMarker,syncTimeoutMs,"after_cleanup_before_return");
       Sync(boundary,reachedMarker,continueMarker,syncTimeoutMs,"after_verification_before_return");
-      using(var finalRead=new FileStream(target,FileMode.Open,FileAccess.Read,FileShare.Read)){Sync(boundary,reachedMarker,continueMarker,syncTimeoutMs,"final_handle_pinned");if(Verify(finalRead,target,bytes,1)!=verifiedId)throw new IOException("IDENTITY_CHANGED");}
+      using(var finalRead=new FileStream(target,FileMode.Open,FileAccess.Read,FileShare.Read)){
+        Sync(boundary,reachedMarker,continueMarker,syncTimeoutMs,"final_handle_pinned");if(Verify(finalRead,target,bytes,1)!=verifiedId)throw new IOException("IDENTITY_CHANGED");
+        CheckDeadline(deadlineUnixMs);Info finalInfo=AssertFile(finalRead,target,1);string nonce=Guid.NewGuid().ToString("N");ulong finalFileId=((ulong)finalInfo.L1<<32)|finalInfo.L2;
+        Console.Out.WriteLine("{\"schema\":\"revagent-pinned-evidence-helper/v2\",\"status\":\"READY\",\"nonce\":\""+nonce+"\",\"volumeSerialNumber\":\""+finalInfo.V1.ToString()+"\",\"fileId\":\""+finalFileId.ToString()+"\",\"nlink\":1,\"byteLength\":"+bytes.Length.ToString()+",\"sha256\":\""+Sha256(bytes)+"\"}");Console.Out.Flush();
+        int remaining=(int)Math.Max(1,Math.Min(Int32.MaxValue,deadlineUnixMs-DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()));var controlTask=Task.Run(()=>Console.In.ReadLine());if(!controlTask.Wait(remaining))throw new IOException("HELPER_DEADLINE");string control=controlTask.Result;
+        if(control=="COMMIT "+nonce){CheckDeadline(deadlineUnixMs);Verify(finalRead,target,bytes,1);Console.Out.WriteLine("{\"schema\":\"revagent-pinned-evidence-helper/v2\",\"status\":\"COMMITTED\",\"nonce\":\""+nonce+"\"}");Console.Out.Flush();}
+        else if(control=="ABORT "+nonce){Verify(finalRead,target,bytes,1);Console.Out.WriteLine("{\"schema\":\"revagent-pinned-evidence-helper/v2\",\"status\":\"ABORTED\",\"nonce\":\""+nonce+"\"}");Console.Out.Flush();}
+        else throw new IOException("CONTROL_PROTOCOL");
+      }
     } finally { foreach(var h in held)h.Dispose(); if(temp!=null && !published){try{File.Delete(temp);}catch{}} }
   }
 }
 '@
 try {
   $phase='input'
-  $raw=[Console]::In.ReadToEnd()
+  $raw=[Console]::In.ReadLine()
   if([Text.Encoding]::UTF8.GetByteCount($raw)-gt ${MAX_NATIVE_HELPER_INPUT_BYTES}){throw 'INPUT_TOO_LARGE'}
   $q=$raw|ConvertFrom-Json
   if($q.fault-eq'malformed_output'){[Console]::Out.Write('{');exit 0}
@@ -193,8 +226,8 @@ try {
   $phase='compile'
   Add-Type -TypeDefinition $source | Out-Null
   $phase='run'
-  [RevAgentPinnedEvidencePublisher]::Run([string]$q.rootPath,[string]$q.expectedRoot,[string]$q.expectedVolume,[string]$q.expectedFileId,[string[]]$q.directories,[string]$q.operation,[string]$q.fileName,[Convert]::FromBase64String([string]$q.contentsBase64),[string]$q.boundary,[string]$q.reachedMarker,[string]$q.continueMarker,[int]$q.syncTimeoutMs,[int]$q.helperTimeoutMs,[string]$q.fault)
-  [Console]::Out.Write('{"schema":"revagent-pinned-evidence-helper/v1","status":"ok"}')
+  [RevAgentPinnedEvidencePublisher]::Run([string]$q.rootPath,[string]$q.expectedRoot,[string]$q.expectedVolume,[string]$q.expectedFileId,[string[]]$q.directories,[string]$q.operation,[string]$q.fileName,[Convert]::FromBase64String([string]$q.contentsBase64),[string]$q.boundary,[string]$q.reachedMarker,[string]$q.continueMarker,[int]$q.syncTimeoutMs,[int]$q.helperTimeoutMs,[string]$q.fault,[long]$q.deadlineUnixMs)
+  if($q.operation-eq'ensure'){[Console]::Out.Write('{"schema":"revagent-pinned-evidence-helper/v1","status":"ok"}')}
   exit 0
 } catch {
   $code='operation_failed'
@@ -205,24 +238,53 @@ try {
   exit 71
 }`;
 
-export interface StoredEvidenceFile {
-  absolutePath: string;
-  bytes: Buffer;
-  identityLease: StoredEvidenceIdentityLease;
+const acceptedEvidenceBrand: unique symbol = Symbol("accepted-evidence");
+
+export interface AcceptedEvidence<T> {
+  readonly [acceptedEvidenceBrand]: T;
 }
 
-export interface StoredEvidenceIdentityLease {
-  readonly expiresAt: string;
-  readonly disposed: boolean;
-  verify(): void;
-  verifyAndDispose(): void;
-  dispose(): void;
+export interface EvidenceConsumerBinding {
+  readonly logicalPath: string;
+  readonly absolutePath: string;
+  readonly bytes: Buffer;
+  readonly sha256: string;
 }
 
-class FileIdentityLease implements StoredEvidenceIdentityLease {
-  readonly expiresAt: string;
+export type PublishedEvidenceIdentity = Readonly<{
+  platform: "win32";
+  volumeSerialNumber: string;
+  fileId: string;
+  nlink: 1;
+  byteLength: number;
+  sha256: string;
+}> | Readonly<{
+  platform: "posix";
+  device: string;
+  inode: string;
+  nlink: 1;
+  byteLength: number;
+  sha256: string;
+}>;
+
+export interface LeasedEvidenceCandidate {
+  readonly logicalPath: string;
+  readonly absolutePath: string;
+  readonly bytes: Buffer;
+  readonly sha256: string;
+  acceptExact<T>(expected: EvidenceConsumerBinding, value: T): AcceptedEvidence<T>;
+}
+
+export type VerifiedEvidenceConsumer<T> =
+  (candidate: LeasedEvidenceCandidate) => AcceptedEvidence<T> | Promise<AcceptedEvidence<T>>;
+
+class AcceptedEvidenceToken<T> implements AcceptedEvidence<T> {
+  readonly [acceptedEvidenceBrand]: T;
+  constructor(readonly leaseId: object, value: T) { this[acceptedEvidenceBrand] = value; }
+}
+
+class FileIdentityLease {
   #disposed = false;
-  readonly #timer: NodeJS.Timeout;
 
   constructor(
     private readonly descriptor: number,
@@ -231,13 +293,7 @@ class FileIdentityLease implements StoredEvidenceIdentityLease {
     private readonly device: bigint,
     private readonly inode: bigint,
   ) {
-    const expiresAtMs = Date.now() + SECURE_EVIDENCE_LEASE_MS;
-    this.expiresAt = new Date(expiresAtMs).toISOString();
-    this.#timer = setTimeout(() => this.dispose(), SECURE_EVIDENCE_LEASE_MS);
-    this.#timer.unref();
   }
-
-  get disposed(): boolean { return this.#disposed; }
 
   verify(): void {
     if (this.#disposed) throw new Error("secure evidence identity lease is disposed");
@@ -258,14 +314,9 @@ class FileIdentityLease implements StoredEvidenceIdentityLease {
     if (!observed.equals(this.expectedBytes)) throw new Error("secure evidence leased readback mismatch");
   }
 
-  verifyAndDispose(): void {
-    try { this.verify(); } finally { this.dispose(); }
-  }
-
   dispose(): void {
     if (this.#disposed) return;
     this.#disposed = true;
-    clearTimeout(this.#timer);
     closeSync(this.descriptor);
   }
 }
@@ -280,6 +331,7 @@ export class SecureEvidenceStore {
   readonly #powerShellIdentity: ProductionPowerShellIdentity | null;
   readonly #windowsControllerRoot: string | null;
   readonly #test: SecureEvidenceStoreTestOptions | undefined;
+  #acceptanceBoundaryConsumed = false;
 
   constructor(artifactRoot: string, options: SecureEvidenceStoreOptions = {}) {
     this.artifactRoot = path.resolve(artifactRoot);
@@ -311,35 +363,307 @@ export class SecureEvidenceStore {
     return target;
   }
 
-  write(relativePath: string, contents: string | Buffer): StoredEvidenceFile {
+  async writeAccepted<T>(
+    relativePath: string,
+    contents: string | Buffer,
+    consume: VerifiedEvidenceConsumer<T>,
+  ): Promise<T> {
+    if (typeof consume !== "function") throw evidenceError("EVIDENCE_ACCEPTOR_REQUIRED", "evidence acceptor is required");
     const bytes = boundedContentBytes(contents);
     const target = this.resolve(relativePath);
-    this.#operate(path.relative(this.artifactRoot, path.dirname(target)).split(path.sep), path.basename(target), bytes);
-    return this.#leaseResult(target, bytes);
+    if (process.platform === "win32") {
+      return await this.#writeWindowsAccepted(relativePath, target, path.relative(this.artifactRoot, path.dirname(target)).split(path.sep), path.basename(target), bytes, consume);
+    }
+    return await this.#writePosixAccepted(relativePath, target, path.relative(this.artifactRoot, path.dirname(target)).split(path.sep), path.basename(target), bytes, consume);
   }
 
-  writeDirect(fileName: string, contents: string | Buffer): StoredEvidenceFile {
+  async writeDirectAccepted<T>(
+    fileName: string,
+    contents: string | Buffer,
+    consume: VerifiedEvidenceConsumer<T>,
+  ): Promise<T> {
+    if (typeof consume !== "function") throw evidenceError("EVIDENCE_ACCEPTOR_REQUIRED", "evidence acceptor is required");
     if (path.basename(fileName) !== fileName || fileName === "." || fileName === "..") {
       throw new Error("direct evidence filename must be one plain segment");
     }
     const bytes = boundedContentBytes(contents);
     const target = path.join(this.artifactRoot, fileName);
-    this.#operate([], fileName, bytes);
-    return this.#leaseResult(target, bytes);
+    if (process.platform === "win32") return await this.#writeWindowsAccepted(fileName, target, [], fileName, bytes, consume);
+    return await this.#writePosixAccepted(fileName, target, [], fileName, bytes, consume);
   }
 
-  #leaseResult(target: string, bytes: Buffer): StoredEvidenceFile {
-    const descriptor = openSync(target, constants.O_RDONLY | constants.O_NOFOLLOW);
+  async #acceptPublished<T>(
+    logicalPath: string,
+    target: string,
+    bytes: Buffer,
+    consume: VerifiedEvidenceConsumer<T>,
+    expectedIdentity?: PublishedEvidenceIdentity,
+    finalizePublisher?: (accepted: boolean) => Promise<void>,
+    publishedDescriptor?: number,
+    deadlineMs: number = Date.now() + NATIVE_HELPER_TIMEOUT_MS,
+  ): Promise<T> {
+    const descriptor = publishedDescriptor ?? openSync(target, constants.O_RDONLY | constants.O_NOFOLLOW);
     const stat = fstatSync(descriptor, { bigint: true });
     const lease = new FileIdentityLease(descriptor, target, Buffer.from(bytes), stat.dev, stat.ino);
+    const sha256 = createHash("sha256").update(bytes).digest("hex");
+    if (expectedIdentity !== undefined) {
+      const matches = expectedIdentity.platform === "win32"
+        ? stat.dev.toString() === expectedIdentity.volumeSerialNumber && stat.ino.toString() === expectedIdentity.fileId
+        : stat.dev.toString() === expectedIdentity.device && stat.ino.toString() === expectedIdentity.inode;
+      if (!matches || stat.nlink !== 1n || stat.size !== BigInt(expectedIdentity.byteLength) || sha256 !== expectedIdentity.sha256) {
+        let abortError: unknown;
+        try { await finalizePublisher?.(false); } catch (error) { abortError = error; }
+        finally { lease.dispose(); }
+        const mismatch = evidenceError("EVIDENCE_PUBLISHED_IDENTITY_MISMATCH", "published evidence identity mismatch");
+        if (abortError !== undefined) {
+          throw evidenceError("EVIDENCE_CONSUMER_AND_LEASE_FAILED", "evidence consumer and lease both failed", new AggregateError([mismatch, abortError]));
+        }
+        throw mismatch;
+      }
+    }
+    const leaseId = Object.freeze({});
+    const binding = Object.freeze({ logicalPath, absolutePath: target, bytes: Buffer.from(bytes), sha256 });
+    const candidate: LeasedEvidenceCandidate = Object.freeze({
+      logicalPath,
+      absolutePath: target,
+      bytes: Buffer.from(bytes),
+      sha256,
+      acceptExact: <TValue>(expected: EvidenceConsumerBinding, value: TValue): AcceptedEvidence<TValue> => {
+        if (expected.logicalPath !== binding.logicalPath || expected.absolutePath !== binding.absolutePath ||
+            expected.sha256 !== binding.sha256 || !Buffer.isBuffer(expected.bytes) || !expected.bytes.equals(binding.bytes)) {
+          throw evidenceError("EVIDENCE_CONSUMER_BINDING_MISMATCH", "evidence consumer binding mismatch");
+        }
+        return new AcceptedEvidenceToken(leaseId, value);
+      },
+    });
+    let primaryError: unknown;
+    let accepted: AcceptedEvidenceToken<T> | undefined;
     try {
       lease.verify();
-      waitForTestBoundary(this.#test, "lease_verified_before_return");
+      if (!this.#acceptanceBoundaryConsumed && this.#test?.boundary === "lease_verified_before_return") {
+        this.#acceptanceBoundaryConsumed = true;
+        waitForTestBoundary(this.#test, "lease_verified_before_return");
+      }
       lease.verify();
-      return { absolutePath: target, bytes: Buffer.from(bytes), identityLease: lease };
+      const value = await beforeDeadline(Promise.resolve(consume(candidate)), deadlineMs, () => undefined);
+      if (!(value instanceof AcceptedEvidenceToken) || value.leaseId !== leaseId) {
+        throw evidenceError("EVIDENCE_ACCEPTANCE_REQUIRED", "exact evidence acceptance is required");
+      }
+      accepted = value;
     } catch (error) {
-      lease.dispose();
+      primaryError = error;
+    }
+    let finalError: unknown;
+    try {
+      lease.verify();
+      await finalizePublisher?.(primaryError === undefined && accepted !== undefined);
+      lease.verify();
+    } catch (error) {
+      finalError = error;
+    } finally {
+      try { lease.dispose(); } catch (error) { finalError ??= error; }
+    }
+    if (primaryError !== undefined && finalError !== undefined) {
+      throw evidenceError("EVIDENCE_CONSUMER_AND_LEASE_FAILED", "evidence consumer and lease both failed", new AggregateError([primaryError, finalError]));
+    }
+    if (primaryError !== undefined) throw primaryError;
+    if (finalError !== undefined) throw evidenceError("EVIDENCE_IDENTITY_CHANGED", "evidence identity changed", finalError);
+    if (accepted === undefined) throw evidenceError("EVIDENCE_ACCEPTANCE_REQUIRED", "exact evidence acceptance is required");
+    return accepted[acceptedEvidenceBrand];
+  }
+
+  async #writeWindowsAccepted<T>(
+    logicalPath: string,
+    target: string,
+    directories: string[],
+    fileName: string,
+    bytes: Buffer,
+    consume: VerifiedEvidenceConsumer<T>,
+  ): Promise<T> {
+    if (this.#powerShellIdentity === null || this.#windowsControllerRoot === null) {
+      throw evidenceError("EVIDENCE_DISPOSAL_FAILED", "bound Windows helper identity is unavailable");
+    }
+    verifyWindowsControllerRoot(this.#windowsControllerRoot);
+    const identity = verifyPowerShellIdentityCurrent(this.#powerShellIdentity);
+    const timeoutMs = Math.max(1, this.#test?.timeoutMs ?? NATIVE_HELPER_TIMEOUT_MS);
+    const deadlineMs = Date.now() + timeoutMs;
+    const request = Buffer.from(`${JSON.stringify({
+      operation: "write",
+      rootPath: this.artifactRoot,
+      expectedRoot: this.#artifactRootReal,
+      expectedVolume: this.#artifactRootDevice.toString(),
+      expectedFileId: this.#artifactRootInode.toString(),
+      directories,
+      fileName,
+      contentsBase64: bytes.toString("base64"),
+      boundary: this.#test?.boundary ?? "",
+      reachedMarker: this.#test?.reachedMarker ?? "",
+      continueMarker: this.#test?.continueMarker ?? "",
+      syncTimeoutMs: timeoutMs,
+      helperTimeoutMs: timeoutMs,
+      fault: this.#test?.helperFault ?? "",
+      deadlineUnixMs: deadlineMs,
+    })}\n`, "utf8");
+    if (request.length > MAX_NATIVE_HELPER_INPUT_BYTES) throw new Error("secure evidence helper input exceeds its fixed bound");
+    const child = spawn(identity.realPath, [
+      "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand",
+      Buffer.from(WINDOWS_HELPER, "utf16le").toString("base64"),
+    ], {
+      shell: false,
+      stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
+      env: sanitizedProductionRuntimeEnvironment(process.env, {
+        SystemRoot: this.#windowsControllerRoot,
+        WINDIR: this.#windowsControllerRoot,
+      }),
+    }) as ChildProcessWithoutNullStreams;
+    let stderrObserved = false;
+    child.stderr.on("data", () => { stderrObserved = true; });
+    const exit = new Promise<number>((resolve, reject) => {
+      child.once("error", reject);
+      child.once("exit", (code) => resolve(code ?? 1));
+    });
+    const reader = createInterface({ input: child.stdout, crlfDelay: Infinity })[Symbol.asyncIterator]();
+    const stopHelper = (): void => { if (child.exitCode === null) child.kill("SIGKILL"); };
+    const nextRecord = async (): Promise<Record<string, unknown>> => {
+      const next = await beforeDeadline(reader.next(), deadlineMs, stopHelper);
+      if (next.done || typeof next.value !== "string" || Buffer.byteLength(next.value, "utf8") > MAX_NATIVE_HELPER_OUTPUT_BYTES) {
+        throw evidenceError("EVIDENCE_DISPOSAL_FAILED", "evidence helper protocol ended unexpectedly");
+      }
+      let parsed: unknown;
+      try { parsed = JSON.parse(next.value) as unknown; } catch { throw evidenceError("EVIDENCE_DISPOSAL_FAILED", "evidence helper protocol is malformed"); }
+      if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) throw evidenceError("EVIDENCE_DISPOSAL_FAILED", "evidence helper protocol is malformed");
+      return parsed as Record<string, unknown>;
+    };
+    child.stdin.write(request);
+    const ready = await nextRecord();
+    if (ready.schema === "revagent-pinned-evidence-helper/v1" && ready.status === "error") {
+      const exitCode = await beforeDeadline(exit, deadlineMs, stopHelper);
+      if (ready.code === "EEXIST" && exitCode === 71) {
+        const error = evidenceError("EEXIST", "evidence target already exists");
+        throw error;
+      }
+      if (ready.code === "cleanup_uncertain") throw new Error("secure evidence publication cleanup is uncertain");
+      throw evidenceError("EVIDENCE_DISPOSAL_FAILED", `evidence helper failed before READY (${String(ready.code ?? "unknown")})`);
+    }
+    if (ready.schema !== "revagent-pinned-evidence-helper/v2" || ready.status !== "READY" ||
+        typeof ready.nonce !== "string" || !/^[a-f0-9]{32}$/u.test(ready.nonce) ||
+        typeof ready.volumeSerialNumber !== "string" || !/^[0-9]+$/u.test(ready.volumeSerialNumber) ||
+        typeof ready.fileId !== "string" || !/^[0-9]+$/u.test(ready.fileId) || ready.nlink !== 1 ||
+        ready.byteLength !== bytes.length || typeof ready.sha256 !== "string" || !/^[a-f0-9]{64}$/u.test(ready.sha256) ||
+        Object.keys(ready).sort().join(",") !== "byteLength,fileId,nlink,nonce,schema,sha256,status,volumeSerialNumber") {
+      stopHelper();
+      throw evidenceError("EVIDENCE_DISPOSAL_FAILED", "evidence helper READY protocol is invalid");
+    }
+    const nonce = ready.nonce;
+    const published: PublishedEvidenceIdentity = Object.freeze({
+      platform: "win32",
+      volumeSerialNumber: ready.volumeSerialNumber,
+      fileId: ready.fileId,
+      nlink: 1,
+      byteLength: bytes.length,
+      sha256: ready.sha256,
+    });
+    const finalize = async (accepted: boolean): Promise<void> => {
+      if (child.stdin.destroyed) throw evidenceError("EVIDENCE_DISPOSAL_FAILED", "evidence helper control channel is closed");
+      child.stdin.write(`${accepted ? "COMMIT" : "ABORT"} ${nonce}\n`);
+      const final = await nextRecord();
+      const expectedStatus = accepted ? "COMMITTED" : "ABORTED";
+      if (final.schema !== "revagent-pinned-evidence-helper/v2" || final.status !== expectedStatus || final.nonce !== nonce ||
+          Object.keys(final).sort().join(",") !== "nonce,schema,status") {
+        throw evidenceError("EVIDENCE_DISPOSAL_FAILED", `evidence helper final protocol is invalid (${String(final.status)}:${String(final.code ?? "none")})`);
+      }
+      child.stdin.end();
+      const exitCode = await beforeDeadline(exit, deadlineMs, stopHelper);
+      if (exitCode !== 0 || stderrObserved) throw evidenceError("EVIDENCE_DISPOSAL_FAILED", "evidence helper exit is not clean");
+    };
+    try {
+      return await this.#acceptPublished(logicalPath, target, bytes, consume, published, finalize, undefined, deadlineMs);
+    } catch (error) {
+      stopHelper();
+      try { await beforeDeadline(exit, deadlineMs, stopHelper); } catch { /* primary bounded error wins */ }
       throw error;
+    }
+  }
+
+  async #writePosixAccepted<T>(
+    logicalPath: string,
+    absoluteTarget: string,
+    directories: string[],
+    fileName: string,
+    bytes: Buffer,
+    consume: VerifiedEvidenceConsumer<T>,
+  ): Promise<T> {
+    const fdRoot = "/proc/self/fd";
+    if (!existsSync(fdRoot)) throw new Error("fd-relative secure evidence operations are unavailable on this platform");
+    const held: number[] = [];
+    const deadlineMs = Date.now() + Math.max(1, this.#test?.timeoutMs ?? NATIVE_HELPER_TIMEOUT_MS);
+    let temporary: string | undefined;
+    let finalDescriptor: number | undefined;
+    try {
+      let directoryDescriptor = openSync(this.artifactRoot, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+      held.push(directoryDescriptor);
+      const rootStat = fstatSync(directoryDescriptor, { bigint: true });
+      if (!rootStat.isDirectory() || rootStat.dev !== this.#artifactRootDevice || rootStat.ino !== this.#artifactRootInode) {
+        throw evidenceError("EVIDENCE_IDENTITY_CHANGED", "evidence root identity changed");
+      }
+      for (const segment of directories) {
+        const candidate = path.join(fdRoot, String(directoryDescriptor), segment);
+        if (!existsSync(candidate)) mkdirSync(candidate, { mode: DIRECTORY_MODE });
+        const child = openSync(candidate, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+        held.push(child);
+        if (!fstatSync(child).isDirectory()) throw evidenceError("EVIDENCE_IDENTITY_CHANGED", "evidence directory identity changed");
+        chmodSync(path.join(fdRoot, String(child)), DIRECTORY_MODE);
+        directoryDescriptor = child;
+      }
+      waitForTestBoundary(this.#test, "directories_pinned");
+      const directory = path.join(fdRoot, String(directoryDescriptor));
+      const target = path.join(directory, fileName);
+      temporary = path.join(directory, `.${fileName}.${randomUUID()}.tmp`);
+      const staged = openSync(temporary, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, FILE_MODE);
+      try { writeFileSync(staged, bytes); fsyncSync(staged); } finally { closeSync(staged); }
+      chmodSync(temporary, FILE_MODE);
+      waitForTestBoundary(this.#test, "stage_complete");
+      linkSync(temporary, target);
+      waitForTestBoundary(this.#test, "publish_complete");
+      rmSync(temporary);
+      temporary = undefined;
+      waitForTestBoundary(this.#test, "after_cleanup_before_return");
+      finalDescriptor = openSync(target, constants.O_RDONLY | constants.O_NOFOLLOW);
+      const publishedStat = fstatSync(finalDescriptor, { bigint: true });
+      const sha256 = createHash("sha256").update(bytes).digest("hex");
+      const published: PublishedEvidenceIdentity = Object.freeze({
+        platform: "posix",
+        device: publishedStat.dev.toString(),
+        inode: publishedStat.ino.toString(),
+        nlink: 1,
+        byteLength: bytes.length,
+        sha256,
+      });
+      const verifyPublisher = async (): Promise<void> => {
+        if (finalDescriptor === undefined) throw evidenceError("EVIDENCE_DISPOSAL_FAILED", "published descriptor is unavailable");
+        const handleStat = fstatSync(finalDescriptor, { bigint: true });
+        const lexicalStat = lstatSync(absoluteTarget, { bigint: true });
+        if (!handleStat.isFile() || !lexicalStat.isFile() || lexicalStat.isSymbolicLink() ||
+            handleStat.dev.toString() !== published.device || handleStat.ino.toString() !== published.inode ||
+            lexicalStat.dev !== handleStat.dev || lexicalStat.ino !== handleStat.ino || handleStat.nlink !== 1n || lexicalStat.nlink !== 1n ||
+            handleStat.size !== BigInt(bytes.length)) throw evidenceError("EVIDENCE_IDENTITY_CHANGED", "published POSIX identity changed");
+        const observed = Buffer.alloc(bytes.length);
+        for (let offset = 0; offset < observed.length;) {
+          const count = readSync(finalDescriptor, observed, offset, observed.length - offset, offset);
+          if (count === 0) throw evidenceError("EVIDENCE_IDENTITY_CHANGED", "published POSIX readback changed");
+          offset += count;
+        }
+        if (!observed.equals(bytes)) throw evidenceError("EVIDENCE_IDENTITY_CHANGED", "published POSIX readback changed");
+        fsyncSync(directoryDescriptor);
+      };
+      const result = await this.#acceptPublished(logicalPath, absoluteTarget, bytes, consume, published, verifyPublisher, finalDescriptor, deadlineMs);
+      finalDescriptor = undefined; // ownership was disposed by #acceptPublished
+      return result;
+    } finally {
+      if (finalDescriptor !== undefined) try { closeSync(finalDescriptor); } catch { /* primary error wins */ }
+      if (temporary !== undefined) try { rmSync(temporary); } catch { /* primary error wins */ }
+      for (const descriptor of held.reverse()) closeSync(descriptor);
     }
   }
 

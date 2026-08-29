@@ -39,7 +39,7 @@ function observations(runId: string, caseId: string): ProcessObservationRecord[]
 }
 
 describe("supervised case evidence writer", () => {
-  it("atomically binds assertions to one v2 parent evidence digest", () => {
+  it("atomically binds assertions to one v2 parent evidence digest", async () => {
     const root = mkdtempSync(path.join(tmpdir(), "rbp-case-writer-"));
     try {
       const report = createUnexecutedRunReport(createPlan());
@@ -58,7 +58,7 @@ describe("supervised case evidence writer", () => {
         message: null,
       }));
 
-      const artifacts = retainSupervisedCaseEvidence({
+      const artifacts = await retainSupervisedCaseEvidence({
         artifactRoot: root,
         runId: report.run.runId,
         result,
@@ -92,7 +92,7 @@ describe("supervised case evidence writer", () => {
     }
   });
 
-  it("rejects foreign, duplicate, or out-of-interval observations before writing", () => {
+  it("rejects foreign, duplicate, or out-of-interval observations before writing", async () => {
     const root = mkdtempSync(path.join(tmpdir(), "rbp-case-writer-invalid-"));
     try {
       const report = createUnexecutedRunReport(createPlan());
@@ -101,20 +101,20 @@ describe("supervised case evidence writer", () => {
       result.finishedAt = "2026-07-23T00:00:01.000Z";
       result.durationMs = 1_000;
       const rows = observations(report.run.runId, result.caseId);
-      expect(() => retainSupervisedCaseEvidence({
+      await expect(retainSupervisedCaseEvidence({
         artifactRoot: root,
         runId: report.run.runId,
         result,
         observations: rows,
-      })).toThrow(/must be terminal/u);
+      })).rejects.toThrow(/must be terminal/u);
       result.status = "failed";
       rows[0]!.at = "2026-07-23T00:00:02.000Z";
-      expect(() => retainSupervisedCaseEvidence({
+      await expect(retainSupervisedCaseEvidence({
         artifactRoot: root,
         runId: report.run.runId,
         result,
         observations: rows,
-      })).toThrow(/outside the case interval/u);
+      })).rejects.toThrow(/outside the case interval/u);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
