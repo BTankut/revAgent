@@ -23,7 +23,8 @@ describe("secure retained-evidence store", () => {
   it("requires nominal exact awaited acceptance and exposes no legacy write methods", async () => {
     const root = mkdtempSync(path.join(tmpdir(), "rbp-secure-acceptance-"));
     try {
-      const store = new SecureEvidenceStore(root);
+      const lifecycle = { leasesOpened: 0, leasesDisposed: 0, helpersSpawned: 0, helpersClosed: 0 };
+      const store = new SecureEvidenceStore(root, { test: { lifecycle } });
       expect((store as unknown as { write?: unknown }).write).toBeUndefined();
       expect((store as unknown as { writeDirect?: unknown }).writeDirect).toBeUndefined();
       const base = canonicalManifest.retainedEvidence.root;
@@ -48,10 +49,53 @@ describe("secure retained-evidence store", () => {
       });
       await expect(store.writeAccepted(`${base}/foreign.json`, "foreign", (() => foreignToken) as never))
         .rejects.toMatchObject({ code: "EVIDENCE_ACCEPTANCE_REQUIRED" });
+      expect(lifecycle).toEqual({ leasesOpened: 4, leasesDisposed: 4, helpersSpawned: 4, helpersClosed: 4 });
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it.runIf(process.platform === "win32")("rejects a post-consumer hardlink before COMMIT", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "rbp-secure-post-consumer-link-"));
+    const alias = path.join(root, "alias.bin");
+    try {
+      const store = new SecureEvidenceStore(root);
+      const logicalPath = `${canonicalManifest.retainedEvidence.root}/post-consumer.json`;
+      const bytes = Buffer.from("post-consumer");
+      const sha256 = createHash("sha256").update(bytes).digest("hex");
+      await expect(store.writeAccepted(logicalPath, bytes, (candidate) => {
+        linkSync(candidate.absolutePath, alias);
+        return candidate.acceptExact({ logicalPath, absolutePath: store.resolve(logicalPath), bytes, sha256 }, "accepted-value");
+      })).rejects.toMatchObject({ code: "EVIDENCE_IDENTITY_CHANGED" });
+      expect(readFileSync(alias, "utf8")).toBe("post-consumer");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.runIf(process.platform === "win32")("retains callback and lease causes when both fail", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "rbp-secure-composed-failure-"));
+    const alias = path.join(root, "alias.bin");
+    try {
+      const store = new SecureEvidenceStore(root);
+      const logicalPath = `${canonicalManifest.retainedEvidence.root}/composed.json`;
+      let observed: Error | undefined;
+      try {
+        await store.writeAccepted(logicalPath, "composed", (candidate) => {
+          linkSync(candidate.absolutePath, alias);
+          throw new Error("planned consumer failure");
+        });
+      } catch (error) { observed = error as Error; }
+      expect(observed).toMatchObject({ code: "EVIDENCE_CONSUMER_AND_LEASE_FAILED", cause: expect.any(AggregateError) });
+      const causes = (observed!.cause as AggregateError).errors;
+      expect(causes).toHaveLength(2);
+      expect(String(causes[0])).toMatch(/planned consumer failure/u);
+      expect(String(causes[1])).toMatch(/leased identity|LINK_COUNT|identity/u);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
 
   it.runIf(process.platform === "win32")("fails closed on malformed, crashed, timed-out, and cleanup-uncertain native helper states", async () => {
     for (const helperFault of ["malformed_output", "unknown_error_code", "crash", "timeout"] as const) {

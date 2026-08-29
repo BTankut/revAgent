@@ -45,7 +45,9 @@ export type SecureEvidenceTestBoundary =
   | "after_verification_before_return"
   | "after_cleanup_before_return"
   | "final_handle_pinned"
-  | "lease_verified_before_return";
+  | "lease_verified_before_return"
+  | "posix_linked_before_unlink"
+  | "consumer_accepted_before_commit";
 
 export interface SecureEvidenceStoreTestOptions {
   readonly boundary?: SecureEvidenceTestBoundary;
@@ -53,6 +55,7 @@ export interface SecureEvidenceStoreTestOptions {
   readonly continueMarker?: string;
   readonly timeoutMs?: number;
   readonly helperFault?: "malformed_output" | "unknown_error_code" | "timeout" | "crash" | "cleanup_uncertain";
+  readonly lifecycle?: { leasesOpened: number; leasesDisposed: number; helpersSpawned: number; helpersClosed: number };
 }
 
 export interface SecureEvidenceStoreOptions {
@@ -292,6 +295,7 @@ class FileIdentityLease {
     private readonly expectedBytes: Buffer,
     private readonly device: bigint,
     private readonly inode: bigint,
+    private readonly onDispose: () => void,
   ) {
   }
 
@@ -317,7 +321,7 @@ class FileIdentityLease {
   dispose(): void {
     if (this.#disposed) return;
     this.#disposed = true;
-    closeSync(this.descriptor);
+    try { closeSync(this.descriptor); } finally { this.onDispose(); }
   }
 }
 
@@ -404,7 +408,10 @@ export class SecureEvidenceStore {
   ): Promise<T> {
     const descriptor = publishedDescriptor ?? openSync(target, constants.O_RDONLY | constants.O_NOFOLLOW);
     const stat = fstatSync(descriptor, { bigint: true });
-    const lease = new FileIdentityLease(descriptor, target, Buffer.from(bytes), stat.dev, stat.ino);
+    if (this.#test?.lifecycle !== undefined) this.#test.lifecycle.leasesOpened += 1;
+    const lease = new FileIdentityLease(descriptor, target, Buffer.from(bytes), stat.dev, stat.ino, () => {
+      if (this.#test?.lifecycle !== undefined) this.#test.lifecycle.leasesDisposed += 1;
+    });
     const sha256 = createHash("sha256").update(bytes).digest("hex");
     if (expectedIdentity !== undefined) {
       const matches = expectedIdentity.platform === "win32"
@@ -450,6 +457,9 @@ export class SecureEvidenceStore {
         throw evidenceError("EVIDENCE_ACCEPTANCE_REQUIRED", "exact evidence acceptance is required");
       }
       accepted = value;
+      if (this.#test?.boundary === "consumer_accepted_before_commit") {
+        waitForTestBoundary(this.#test, "consumer_accepted_before_commit");
+      }
     } catch (error) {
       primaryError = error;
     }
@@ -486,7 +496,8 @@ export class SecureEvidenceStore {
     verifyWindowsControllerRoot(this.#windowsControllerRoot);
     const identity = verifyPowerShellIdentityCurrent(this.#powerShellIdentity);
     const timeoutMs = Math.max(1, this.#test?.timeoutMs ?? NATIVE_HELPER_TIMEOUT_MS);
-    const deadlineMs = Date.now() + timeoutMs;
+    const lifecycleDeadlineMs = Date.now() + timeoutMs;
+    const deadlineMs = lifecycleDeadlineMs - Math.min(250, Math.max(1, Math.floor(timeoutMs / 4)));
     const request = Buffer.from(`${JSON.stringify({
       operation: "write",
       rootPath: this.artifactRoot,
@@ -517,11 +528,17 @@ export class SecureEvidenceStore {
         WINDIR: this.#windowsControllerRoot,
       }),
     }) as ChildProcessWithoutNullStreams;
+    if (this.#test?.lifecycle !== undefined) this.#test.lifecycle.helpersSpawned += 1;
     let stderrObserved = false;
     child.stderr.on("data", () => { stderrObserved = true; });
+    let helperClosed = false;
     const exit = new Promise<number>((resolve, reject) => {
       child.once("error", reject);
-      child.once("exit", (code) => resolve(code ?? 1));
+      child.once("close", (code) => {
+        helperClosed = true;
+        if (this.#test?.lifecycle !== undefined) this.#test.lifecycle.helpersClosed += 1;
+        resolve(code ?? 1);
+      });
     });
     const reader = createInterface({ input: child.stdout, crlfDelay: Infinity })[Symbol.asyncIterator]();
     const stopHelper = (): void => { if (child.exitCode === null) child.kill("SIGKILL"); };
@@ -535,10 +552,11 @@ export class SecureEvidenceStore {
       if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) throw evidenceError("EVIDENCE_DISPOSAL_FAILED", "evidence helper protocol is malformed");
       return parsed as Record<string, unknown>;
     };
-    child.stdin.write(request);
-    const ready = await nextRecord();
+    try {
+      child.stdin.write(request);
+      const ready = await nextRecord();
     if (ready.schema === "revagent-pinned-evidence-helper/v1" && ready.status === "error") {
-      const exitCode = await beforeDeadline(exit, deadlineMs, stopHelper);
+      const exitCode = await beforeDeadline(exit, lifecycleDeadlineMs, stopHelper);
       if (ready.code === "EEXIST" && exitCode === 71) {
         const error = evidenceError("EEXIST", "evidence target already exists");
         throw error;
@@ -555,8 +573,8 @@ export class SecureEvidenceStore {
       stopHelper();
       throw evidenceError("EVIDENCE_DISPOSAL_FAILED", "evidence helper READY protocol is invalid");
     }
-    const nonce = ready.nonce;
-    const published: PublishedEvidenceIdentity = Object.freeze({
+      const nonce = ready.nonce;
+      const published: PublishedEvidenceIdentity = Object.freeze({
       platform: "win32",
       volumeSerialNumber: ready.volumeSerialNumber,
       fileId: ready.fileId,
@@ -564,7 +582,7 @@ export class SecureEvidenceStore {
       byteLength: bytes.length,
       sha256: ready.sha256,
     });
-    const finalize = async (accepted: boolean): Promise<void> => {
+      const finalize = async (accepted: boolean): Promise<void> => {
       if (child.stdin.destroyed) throw evidenceError("EVIDENCE_DISPOSAL_FAILED", "evidence helper control channel is closed");
       child.stdin.write(`${accepted ? "COMMIT" : "ABORT"} ${nonce}\n`);
       const final = await nextRecord();
@@ -574,15 +592,13 @@ export class SecureEvidenceStore {
         throw evidenceError("EVIDENCE_DISPOSAL_FAILED", `evidence helper final protocol is invalid (${String(final.status)}:${String(final.code ?? "none")})`);
       }
       child.stdin.end();
-      const exitCode = await beforeDeadline(exit, deadlineMs, stopHelper);
+      const exitCode = await beforeDeadline(exit, lifecycleDeadlineMs, stopHelper);
       if (exitCode !== 0 || stderrObserved) throw evidenceError("EVIDENCE_DISPOSAL_FAILED", "evidence helper exit is not clean");
-    };
-    try {
+      };
       return await this.#acceptPublished(logicalPath, target, bytes, consume, published, finalize, undefined, deadlineMs);
-    } catch (error) {
-      stopHelper();
-      try { await beforeDeadline(exit, deadlineMs, stopHelper); } catch { /* primary bounded error wins */ }
-      throw error;
+    } finally {
+      if (!helperClosed) stopHelper();
+      try { await beforeDeadline(exit, lifecycleDeadlineMs, stopHelper); } catch { /* caller receives the primary bounded error */ }
     }
   }
 
@@ -620,16 +636,30 @@ export class SecureEvidenceStore {
       const directory = path.join(fdRoot, String(directoryDescriptor));
       const target = path.join(directory, fileName);
       temporary = path.join(directory, `.${fileName}.${randomUUID()}.tmp`);
-      const staged = openSync(temporary, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, FILE_MODE);
-      try { writeFileSync(staged, bytes); fsyncSync(staged); } finally { closeSync(staged); }
+      const staged = openSync(temporary, constants.O_CREAT | constants.O_EXCL | constants.O_RDWR | constants.O_NOFOLLOW, FILE_MODE);
+      finalDescriptor = staged;
+      writeFileSync(staged, bytes);
+      fsyncSync(staged);
+      const stagedIdentity = fstatSync(staged, { bigint: true });
+      if (!stagedIdentity.isFile() || stagedIdentity.nlink !== 1n || stagedIdentity.size !== BigInt(bytes.length)) {
+        throw evidenceError("EVIDENCE_IDENTITY_CHANGED", "staged POSIX identity changed");
+      }
       chmodSync(temporary, FILE_MODE);
       waitForTestBoundary(this.#test, "stage_complete");
       linkSync(temporary, target);
+      const linkedIdentity = fstatSync(staged, { bigint: true });
+      if (linkedIdentity.dev !== stagedIdentity.dev || linkedIdentity.ino !== stagedIdentity.ino || linkedIdentity.nlink !== 2n) {
+        throw evidenceError("EVIDENCE_IDENTITY_CHANGED", "linked POSIX identity changed");
+      }
+      waitForTestBoundary(this.#test, "posix_linked_before_unlink");
       waitForTestBoundary(this.#test, "publish_complete");
       rmSync(temporary);
       temporary = undefined;
+      const publishedIdentity = fstatSync(staged, { bigint: true });
+      if (publishedIdentity.dev !== stagedIdentity.dev || publishedIdentity.ino !== stagedIdentity.ino || publishedIdentity.nlink !== 1n) {
+        throw evidenceError("EVIDENCE_IDENTITY_CHANGED", "published POSIX identity changed");
+      }
       waitForTestBoundary(this.#test, "after_cleanup_before_return");
-      finalDescriptor = openSync(target, constants.O_RDONLY | constants.O_NOFOLLOW);
       const publishedStat = fstatSync(finalDescriptor, { bigint: true });
       const sha256 = createHash("sha256").update(bytes).digest("hex");
       const published: PublishedEvidenceIdentity = Object.freeze({

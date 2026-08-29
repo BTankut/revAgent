@@ -335,6 +335,26 @@ describe("strict JSONL process control", () => {
     }
   });
 
+  it.runIf(process.platform === "win32")("does not spawn taskkill after delayed verification exhausts the original deadline", async () => {
+    let spawnCount = 0;
+    const child = await StrictReadyProcess.start({
+      componentId: "addin_loopback_fixture",
+      command: { ...command(), args: ["--eval", "process.stdout.write(JSON.stringify({ready:true,component:'fixture-test'})+'\\n');setInterval(()=>{},1000);"] },
+      absoluteWorkingDirectory: here,
+      taskkillVerificationDelayMsForTest: 200,
+      taskkillSpawnObserverForTest: () => { spawnCount += 1; },
+      validateReadiness(value) { expect(value).toMatchObject({ ready: true, component: "fixture-test" }); },
+    });
+    const started = Date.now();
+    try {
+      await expect(child.stop("SIGTERM", 50)).rejects.toThrow(/taskkill lifecycle deadline/u);
+      expect(Date.now() - started).toBeLessThan(150);
+      expect(spawnCount).toBe(0);
+    } finally {
+      if (child.process.exitCode === null) try { process.kill(child.pid, "SIGKILL"); } catch { /* already exited */ }
+    }
+  });
+
   it("returns a bounded truthful direct-child survivor when STOP acknowledgement and tree exit miss one deadline", async () => {
     const child = await startReadyIpc("missing-ack");
     const handle = testIpcSend(child);

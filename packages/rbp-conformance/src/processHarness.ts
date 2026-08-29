@@ -994,6 +994,8 @@ export interface ReadyProcessOptions extends ProcessEvidenceDirectoryOptions {
    * process can still execute its real graceful signal handler and exit 0.
    */
   useTestSignalProxy?: boolean;
+  taskkillVerificationDelayMsForTest?: number;
+  taskkillSpawnObserverForTest?: () => void;
   validateReadiness(value: JsonObject): void;
 }
 
@@ -1036,18 +1038,29 @@ function resolveWindowsTaskkillIdentity(): WindowsTaskkillIdentity | null {
   });
 }
 
-function verifyWindowsTaskkillIdentity(expected: WindowsTaskkillIdentity): void {
+function assertTaskkillDeadline(deadlineMs: number): void {
+  if (Date.now() >= deadlineMs) throw new Error("taskkill lifecycle deadline expired before spawn");
+}
+
+function verifyWindowsTaskkillIdentity(expected: WindowsTaskkillIdentity, deadlineMs: number): void {
+  assertTaskkillDeadline(deadlineMs);
   const systemPaths = resolveWindowsSystemPaths();
+  assertTaskkillDeadline(deadlineMs);
   if (systemPaths === null || normalizeWindowsPath(systemPaths.windowsRoot) !== normalizeWindowsPath(expected.controllerRoot) ||
       normalizeWindowsPath(systemPaths.taskkill) !== normalizeWindowsPath(expected.path)) {
     throw new Error("Windows controller environment changed after taskkill planning");
   }
   const entry = lstatSync(expected.path, { bigint: true });
+  assertTaskkillDeadline(deadlineMs);
   const realPath = realpathSync.native(expected.path);
+  assertTaskkillDeadline(deadlineMs);
   const stat = statSync(realPath, { bigint: true });
+  assertTaskkillDeadline(deadlineMs);
+  const sha256 = taskkillSha256(realPath);
+  assertTaskkillDeadline(deadlineMs);
   if (!entry.isFile() || entry.isSymbolicLink() || !stat.isFile() || entry.dev !== expected.device || entry.ino !== expected.inode ||
       stat.dev !== expected.device || stat.ino !== expected.inode || normalizeWindowsPath(realPath) !== normalizeWindowsPath(expected.realPath) ||
-      taskkillSha256(realPath) !== expected.sha256) {
+      sha256 !== expected.sha256) {
     throw new Error("bound Windows taskkill identity or bytes changed");
   }
 }
@@ -1077,6 +1090,8 @@ export class StrictReadyProcess {
     readyAt: string,
     private readonly useTestSignalProxy: boolean,
     private readonly taskkillIdentity: WindowsTaskkillIdentity | null,
+    private readonly taskkillVerificationDelayMsForTest: number,
+    private readonly taskkillSpawnObserverForTest: (() => void) | undefined,
     private readonly evidence: ProcessEvidenceRecorder,
     stdioCompletion: Promise<void>,
   ) {
@@ -1231,6 +1246,8 @@ export class StrictReadyProcess {
       ready.at,
       options.useTestSignalProxy === true,
       taskkillIdentity,
+      Math.max(0, options.taskkillVerificationDelayMsForTest ?? 0),
+      options.taskkillSpawnObserverForTest,
       evidence,
       evidenceCompletion,
     );
@@ -1287,7 +1304,13 @@ export class StrictReadyProcess {
     const killTree = async (): Promise<boolean> => {
       let termination: ExactTreeTerminationResult;
       try {
-        termination = await terminateExactChildTree(this.child, this.taskkillIdentity, remaining());
+        termination = await terminateExactChildTree(
+          this.child,
+          this.taskkillIdentity,
+          deadline,
+          this.taskkillVerificationDelayMsForTest,
+          this.taskkillSpawnObserverForTest,
+        );
       } catch (error) {
         if ((error as { readonly killAttempted?: unknown }).killAttempted === true) killEscalationAttempted = true;
         throw error;
@@ -1394,16 +1417,29 @@ interface ExactTreeTerminationResult {
 async function terminateExactChildTree(
   child: ChildProcessWithoutNullStreams,
   taskkillIdentity: WindowsTaskkillIdentity | null,
-  timeoutMs: number,
+  deadlineMs: number,
+  verificationDelayMsForTest: number,
+  spawnObserverForTest: (() => void) | undefined,
 ): Promise<ExactTreeTerminationResult> {
   const pid = child.pid;
   if (pid === undefined || child.exitCode !== null) return { attempted: false, confirmed: false };
   if (process.platform !== "win32") {
+    assertTaskkillDeadline(deadlineMs);
     try { return { attempted: child.kill("SIGKILL"), confirmed: false }; }
     catch { return { attempted: false, confirmed: false }; }
   }
   if (taskkillIdentity === null) throw new Error("bound Windows taskkill identity is unavailable");
-  verifyWindowsTaskkillIdentity(taskkillIdentity);
+  if (verificationDelayMsForTest > 0) {
+    const completed = await completionWithin(
+      new Promise<void>((resolve) => setTimeout(resolve, verificationDelayMsForTest)),
+      Math.max(1, deadlineMs - Date.now()),
+    );
+    if (!completed) throw new Error("taskkill lifecycle deadline expired during identity verification");
+  }
+  verifyWindowsTaskkillIdentity(taskkillIdentity, deadlineMs);
+  assertTaskkillDeadline(deadlineMs);
+  spawnObserverForTest?.();
+  assertTaskkillDeadline(deadlineMs);
   const taskkill = spawn(taskkillIdentity.realPath, ["/pid", String(pid), "/T", "/F"], {
     shell: false,
     stdio: "ignore",
@@ -1413,7 +1449,7 @@ async function terminateExactChildTree(
       WINDIR: taskkillIdentity.controllerRoot,
     }),
   });
-  const boundedTimeout = Math.max(1, timeoutMs);
+  const boundedTimeout = Math.max(1, deadlineMs - Date.now());
   const joinReserve = Math.min(100, Math.max(1, Math.floor(boundedTimeout / 4)));
   return await new Promise<ExactTreeTerminationResult>((resolve, reject) => {
     let joinTimer: NodeJS.Timeout | null = null;

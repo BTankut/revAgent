@@ -16,6 +16,8 @@ import { createThreeRunAggregate } from "../src/aggregate.js";
 import { canonicalManifest } from "../src/index.js";
 import { aggregateReportToJUnitXml } from "../src/junit.js";
 import { stableJson } from "../src/stableJson.js";
+import { productionComponentLaunchConfigs } from "../src/productionExecutionPlan.js";
+import { resolveNodeExecutableIdentity } from "../src/productionRuntimeIdentity.js";
 import {
   createCurrentProductionPlan,
   materializePassingRunInputs,
@@ -66,8 +68,19 @@ describe("aggregate CLI retained-evidence flow", () => {
         )) as [
           ReturnType<typeof createCurrentProductionPlan>,
           ReturnType<typeof createCurrentProductionPlan>,
-          ReturnType<typeof createCurrentProductionPlan>,
-        ];
+        ReturnType<typeof createCurrentProductionPlan>,
+      ];
+      const programFiles = process.env.ProgramFiles;
+      if (programFiles === undefined) throw new Error("aggregate CLI test requires ProgramFiles");
+      const runtimeNode = path.join(programFiles, "nodejs", "node.exe");
+      const runtimeIdentity = resolveNodeExecutableIdentity(runtimeNode);
+      const commands = new Map(productionComponentLaunchConfigs(repoRoot, runtimeNode).map((entry) => [entry.id, entry.command]));
+      for (const plan of plans) {
+        for (const component of plan.components) {
+          component.command = structuredClone(commands.get(component.id)!);
+          component.expectedIdentity.buildProvenance!.toolchain.runtimeNode = structuredClone(runtimeIdentity);
+        }
+      }
       const planFiles = plans.map((plan, index) => {
         const target = path.join(root, `plan-${String(index + 1)}.json`);
         writeFileSync(target, stableJson(plan), "utf8");
