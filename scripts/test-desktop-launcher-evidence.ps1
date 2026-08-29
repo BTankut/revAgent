@@ -97,11 +97,18 @@ call "%RELEASE_ROOT%\tools\Install-Revit-MCP-Updater-GUI.cmd"' `
     Assert-Equal ([int]$cleanScan.legacyLauncherCount) 0 "Clean legacy launcher count mismatch."
     Assert-Equal ([int]$cleanScan.legacyRootReferenceCount) 0 "Clean legacy root reference count mismatch."
 
-    $profilesRoot = Join-Path $tempRoot "Users"
+    $discoveryRoot = Join-Path $tempRoot 'fixture-discovery'
+    $knownDesktop = Join-Path $discoveryRoot 'known-folders\DesktopDirectory'
+    $knownCommonDesktop = Join-Path $discoveryRoot 'known-folders\CommonDesktopDirectory'
+    $currentProfileDesktop = Join-Path $discoveryRoot 'current-profile\Desktop'
+    $currentProfileOneDriveDesktop = Join-Path $discoveryRoot 'current-profile\OneDrive - DPE\Desktop'
+    $profilesRoot = Join-Path $discoveryRoot "profiles"
     $aliceDesktop = Join-Path $profilesRoot "Alice\Desktop"
     $bobDesktop = Join-Path $profilesRoot "Bob\Desktop"
     $bobOneDriveDesktop = Join-Path $profilesRoot "Bob\OneDrive - DPE\Desktop"
-    New-Item -ItemType Directory -Path $aliceDesktop, $bobDesktop, $bobOneDriveDesktop -Force | Out-Null
+    New-Item -ItemType Directory -Path $knownDesktop, $knownCommonDesktop, $currentProfileDesktop, $currentProfileOneDriveDesktop, $aliceDesktop, $bobDesktop, $bobOneDriveDesktop -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $knownDesktop 'revAgent Updater STABLE.cmd') -Value '@echo off' -Encoding ASCII
+    Set-Content -LiteralPath (Join-Path $currentProfileOneDriveDesktop 'revAgent Updater STABLE.cmd') -Value '@echo off' -Encoding ASCII
     Set-Content -LiteralPath (Join-Path $aliceDesktop "Revit MCP Updater STABLE.cmd") `
         -Value '@echo off
 set "RELEASE_ROOT=\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy"' `
@@ -120,14 +127,26 @@ set "PRIMARY_ROOT=\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy"' `
         -ReportsRoot $reportsRoot `
         -MachineName "PROFILESCAN" `
         -UserProfilesRoot $profilesRoot `
+        -TestDiscoveryRoot $discoveryRoot `
         -NowUtc $nowUtc.AddMinutes(1) `
         -OutputJson | ConvertFrom-Json
 
     Assert-True (@($allProfileScan.scannedPaths) -contains $aliceDesktop) "Default scan did not include Alice desktop."
     Assert-True (@($allProfileScan.scannedPaths) -contains $bobDesktop) "Default scan did not include Bob desktop."
     Assert-True (@($allProfileScan.scannedPaths) -contains $bobOneDriveDesktop) "Default scan did not include Bob OneDrive desktop."
+    Assert-True (@($allProfileScan.scannedPaths) -contains $knownDesktop) "Fixture-only known-folder Desktop discovery was not included."
+    Assert-True (@($allProfileScan.scannedPaths) -contains $knownCommonDesktop) "Fixture-only known-folder CommonDesktop discovery was not included."
+    Assert-True (@($allProfileScan.scannedPaths) -contains $currentProfileOneDriveDesktop) "Fixture-only current-profile OneDrive discovery was not included."
     Assert-True ([int]$allProfileScan.legacyLauncherCount -ge 1) "Default all-profile scan did not find the legacy launcher."
     Assert-True (@($allProfileScan.launchers | Where-Object { [string]$_.path -eq (Join-Path $aliceDesktop "Revit MCP Updater STABLE.cmd") }).Count -eq 1) "Default all-profile scan did not report Alice legacy launcher."
+    $publisherText = Get-Content -Raw -LiteralPath $scriptPath
+    Assert-True ($publisherText -match 'TestDiscoveryRoot is limited to a disposable path below the current TEMP directory' -and $publisherText -match '\[Environment\]::GetFolderPath\(\$specialFolder\)') "Desktop discovery seam must retain the production known-folder resolver and reject non-temp test roots."
+    $outsideFixtureError = $null
+    try {
+        & $scriptPath -Mode ScanLocal -ReportsRoot $reportsRoot -MachineName 'FIXTUREGUARD' -TestDiscoveryRoot $RepoRoot -NowUtc $nowUtc -OutputJson | Out-Null
+    }
+    catch { $outsideFixtureError = $_ }
+    Assert-True ($null -ne $outsideFixtureError -and $outsideFixtureError.Exception.Message -match 'limited to a disposable path') "Desktop discovery seam accepted a non-temp test root."
 
     $configPath = Join-Path $tempRoot "rollout-readiness.json"
     Write-TestJson -Path $configPath -Value ([ordered]@{

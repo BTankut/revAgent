@@ -144,6 +144,8 @@ $codexModulePath = Join-Path $RepoRoot "installer\lib\RevAgent.CodexRegistration
 $secureTempModulePath = Join-Path $RepoRoot "installer\lib\RevAgent.SecureTemp.psm1"
 $tempRoot = Join-Path ([IO.Path]::GetTempPath()) ("revagent-os-path-security-" + [Guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
+$guiLogDirectory = Join-Path $tempRoot 'gui-startup-logs'
+New-Item -ItemType Directory -Path $guiLogDirectory -Force | Out-Null
 
 $poisonNames = @(
     "ProgramFiles", "ProgramFiles(x86)", "ProgramData", "CommonProgramFiles",
@@ -170,14 +172,12 @@ try {
     $guiOutput = (& $guiPath -ChannelManifestPath $channelFixture -SmokeTest 6>&1 | Out-String)
     Assert-True ($guiOutput -match [regex]::Escape("Install  : $canonicalInstallRoot")) "GUI smoke test did not keep the canonical ProgramData install root under poisoned environment variables. Output: $guiOutput"
     Assert-True ($guiOutput -notmatch [regex]::Escape($poisonRoot)) "GUI smoke test exposed a poisoned machine root. Output: $guiOutput"
+    $guiSource = Get-Content -Raw -LiteralPath $guiPath
+    Assert-True ($guiSource -match '\$localAppDataRoot = \[Environment\]::GetFolderPath\(\[Environment\+SpecialFolder\]::LocalApplicationData\)' -and $guiSource -match 'TestStartupFailureLogRoot is limited to a disposable path below the current TEMP directory') "GUI startup-log resolver must preserve the production LocalApplicationData default and fail closed for a non-temp test seam."
     foreach ($name in $poisonNames) {
         [Environment]::SetEnvironmentVariable($name, $savedEnvironment[$name], 'Process')
     }
-    $guiLogDirectory = Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)) 'DPE\revAgent\logs'
     $guiLogsBefore = @{}
-    if (Test-Path -LiteralPath $guiLogDirectory -PathType Container) {
-        Get-ChildItem -LiteralPath $guiLogDirectory -Filter 'gui-startup-*.log' -File | ForEach-Object { $guiLogsBefore[$_.FullName] = $true }
-    }
     $previousErrorActionPreference = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
@@ -190,7 +190,7 @@ try {
             -File $guiPath `
             -ChannelManifestPath $channelFixture `
             -InstallRoot (Join-Path $poisonRoot 'DPE\revAgent') `
-            -SmokeTest 2>&1 | ForEach-Object { [string]$_ })
+            -SmokeTest -TestStartupFailureLogRoot $guiLogDirectory 2>&1 | ForEach-Object { [string]$_ })
         $invalidInstallRootExitCode = $LASTEXITCODE
     }
     finally { $ErrorActionPreference = $previousErrorActionPreference }
@@ -200,6 +200,18 @@ try {
     $invalidInstallRootLog = Get-Content -Raw -LiteralPath $newGuiLogs[0].FullName
     Assert-True ($invalidInstallRootLog -match 'InstallRoot must be the canonical revAgent machine root') "GUI startup log did not preserve the poisoned InstallRoot rejection reason."
     Remove-Item -LiteralPath $newGuiLogs[0].FullName -Force
+
+    Write-Host "Test GUI startup-log seam rejects a non-temp root without writing it"
+    $outsideTestLogRoot = Join-Path $RepoRoot 'outside-test-log-root'
+    $previousErrorActionPreference = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $outsideTestLogOutput = @(& $windowsPowerShellPath -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $guiPath -TestStartupFailureMessage 'outside-log-root' -TestStartupFailureLogRoot $outsideTestLogRoot 2>&1 | ForEach-Object { [string]$_ })
+        $outsideTestLogExitCode = $LASTEXITCODE
+    }
+    finally { $ErrorActionPreference = $previousErrorActionPreference }
+    Assert-True ($outsideTestLogExitCode -ne 0 -and ((@($outsideTestLogOutput) -join ' | ') -match 'TestStartupFailureLogRoot is limited to a disposable path below the current TEMP directory')) "GUI startup-log seam accepted a non-temp root or failed to preserve its rejection reason."
+    Assert-True (-not (Test-Path -LiteralPath $outsideTestLogRoot)) "GUI startup-log seam created a rejected non-temp root."
 
     Write-Host "Test copied GUI fails canonical-origin guard before bootstrap-selected module import"
     $copiedGuiRoot = Join-Path $tempRoot "copied-gui"
@@ -220,9 +232,6 @@ try {
             } | ConvertTo-Json -Depth 8), [Text.UTF8Encoding]::new($false))
     $env:REVAGENT_GUI_PREIMPORT_MARKER = $copiedPoisonMarker
     $copiedGuiLogsBefore = @{}
-    if (Test-Path -LiteralPath $guiLogDirectory -PathType Container) {
-        Get-ChildItem -LiteralPath $guiLogDirectory -Filter 'gui-startup-*.log' -File | ForEach-Object { $copiedGuiLogsBefore[$_.FullName] = $true }
-    }
     $previousErrorActionPreference = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
@@ -235,7 +244,8 @@ try {
             -File $copiedGuiPath `
             -ChannelManifestPath $channelFixture `
             -BootstrapStatePath $copiedStatePath `
-            -SuppressStartupFailureDialogForTest 2>&1 | ForEach-Object { [string]$_ })
+            -SuppressStartupFailureDialogForTest `
+            -TestStartupFailureLogRoot $guiLogDirectory 2>&1 | ForEach-Object { [string]$_ })
         $copiedGuiExitCode = $LASTEXITCODE
     }
     finally { $ErrorActionPreference = $previousErrorActionPreference }
@@ -273,16 +283,14 @@ try {
     Write-Host "Test WINDIR/SystemRoot poisoning fails closed without redirecting the canonical host path"
     $fakeWindows = Join-Path $poisonRoot "Windows"
     $rootPoisonLogsBefore = @{}
-    if (Test-Path -LiteralPath $guiLogDirectory -PathType Container) {
-        Get-ChildItem -LiteralPath $guiLogDirectory -Filter 'gui-startup-*.log' -File | ForEach-Object { $rootPoisonLogsBefore[$_.FullName] = $true }
-    }
     $escapedFakeWindows = $fakeWindows.Replace("'", "''")
     $escapedGuiPath = $guiPath.Replace("'", "''")
     $escapedChannelFixture = $channelFixture.Replace("'", "''")
+    $escapedGuiLogDirectory = $guiLogDirectory.Replace("'", "''")
     $rootPoisonChildScript = @"
 `$env:WINDIR = '$escapedFakeWindows'
 `$env:SystemRoot = '$escapedFakeWindows'
-& '$escapedGuiPath' -ChannelManifestPath '$escapedChannelFixture' -SmokeTest
+& '$escapedGuiPath' -ChannelManifestPath '$escapedChannelFixture' -SmokeTest -TestStartupFailureLogRoot '$escapedGuiLogDirectory'
 exit `$LASTEXITCODE
 "@
     $rootPoisonEncodedCommand = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($rootPoisonChildScript))

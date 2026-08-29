@@ -31,6 +31,9 @@ param(
 
     [string]$UserProfilesRoot = "",
 
+    [Parameter(DontShow = $true)]
+    [string]$TestDiscoveryRoot = "",
+
     [switch]$Recurse,
 
     [string]$OutputPath = "",
@@ -206,11 +209,49 @@ function Select-RevAgentMatchedPatterns {
     return @($matches.ToArray() | Select-Object -Unique)
 }
 
+function Test-RevAgentFixturePathUnderTemp {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $tempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\') + '\'
+    $fullPath = [IO.Path]::GetFullPath($Path).TrimEnd('\')
+    return $fullPath.StartsWith($tempRoot, [StringComparison]::OrdinalIgnoreCase)
+}
+
 function Get-RevAgentDefaultLauncherPaths {
-    param([string]$ProfilesRoot = "")
+    param(
+        [string]$ProfilesRoot = "",
+        [string]$FixtureDiscoveryRoot = ""
+    )
 
     $paths = [System.Collections.Generic.List[string]]::new()
     $profileRoots = [System.Collections.Generic.List[string]]::new()
+    if (-not [string]::IsNullOrWhiteSpace($FixtureDiscoveryRoot)) {
+        if (-not (Test-RevAgentFixturePathUnderTemp -Path $FixtureDiscoveryRoot)) {
+            throw "TestDiscoveryRoot is limited to a disposable path below the current TEMP directory."
+        }
+        $fixtureRoot = [IO.Path]::GetFullPath($FixtureDiscoveryRoot).TrimEnd('\')
+        if (-not [string]::IsNullOrWhiteSpace($ProfilesRoot) -and -not (Test-RevAgentFixturePathUnderTemp -Path $ProfilesRoot)) {
+            throw "UserProfilesRoot must be below the disposable TestDiscoveryRoot fixture."
+        }
+        if ([string]::IsNullOrWhiteSpace($ProfilesRoot)) {
+            $ProfilesRoot = Join-Path $fixtureRoot 'profiles'
+        }
+        $profilesRootFull = [IO.Path]::GetFullPath($ProfilesRoot).TrimEnd('\')
+        if (-not ($profilesRootFull.Equals($fixtureRoot, [StringComparison]::OrdinalIgnoreCase) -or $profilesRootFull.StartsWith($fixtureRoot + '\', [StringComparison]::OrdinalIgnoreCase))) {
+            throw "UserProfilesRoot must be contained by TestDiscoveryRoot."
+        }
+
+        foreach ($knownFolder in @('DesktopDirectory', 'CommonDesktopDirectory')) {
+            [void]$paths.Add((Join-Path $fixtureRoot (Join-Path 'known-folders' $knownFolder)))
+        }
+        $fixtureCurrentProfile = Join-Path $fixtureRoot 'current-profile'
+        [void]$profileRoots.Add($fixtureCurrentProfile)
+        [void]$paths.Add((Join-Path $fixtureCurrentProfile 'Desktop'))
+        foreach ($oneDriveFolder in @(Get-ChildItem -LiteralPath $fixtureCurrentProfile -Directory -Filter 'OneDrive*' -ErrorAction SilentlyContinue)) {
+            [void]$paths.Add((Join-Path $oneDriveFolder.FullName 'Desktop'))
+        }
+    }
+    else {
     foreach ($folder in @("DesktopDirectory", "CommonDesktopDirectory")) {
         try {
             $specialFolder = [Enum]::Parse([Environment+SpecialFolder], $folder)
@@ -231,6 +272,7 @@ function Get-RevAgentDefaultLauncherPaths {
         if (-not [string]::IsNullOrWhiteSpace($oneDriveRoot)) {
             [void]$paths.Add((Join-Path $oneDriveRoot "Desktop"))
         }
+    }
     }
 
     if ([string]::IsNullOrWhiteSpace($ProfilesRoot)) {
@@ -372,7 +414,7 @@ function New-RevAgentLocalLauncherEvidence {
     }
 
     if ($Paths.Count -eq 0) {
-        $Paths = @(Get-RevAgentDefaultLauncherPaths -ProfilesRoot $UserProfilesRoot)
+        $Paths = @(Get-RevAgentDefaultLauncherPaths -ProfilesRoot $UserProfilesRoot -FixtureDiscoveryRoot $TestDiscoveryRoot)
     }
 
     $files = @(Get-RevAgentLauncherFiles -Paths $Paths -Recursive:$Recursive)

@@ -12,7 +12,8 @@ param(
     [switch]$ModulePathSecuritySmokeTest,
     [Parameter(DontShow = $true)][switch]$PreWindowBootstrapSmokeTest,
     [Parameter(DontShow = $true)][switch]$SuppressStartupFailureDialogForTest,
-    [Parameter(DontShow = $true)][string]$TestStartupFailureMessage = ""
+    [Parameter(DontShow = $true)][string]$TestStartupFailureMessage = "",
+    [Parameter(DontShow = $true)][string]$TestStartupFailureLogRoot = ""
 )
 
 if ("$($ExecutionContext.SessionState.LanguageMode)" -ne 'FullLanguage') {
@@ -31,9 +32,22 @@ function Write-RevAgentGuiStartupFailure {
     $logPath = ""
     $logWriteError = ""
     try {
-        $localAppDataRoot = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
-        if ([string]::IsNullOrWhiteSpace($localAppDataRoot)) { throw 'Windows LocalApplicationData could not be resolved.' }
-        $logDirectory = [IO.Path]::Combine($localAppDataRoot, 'DPE', 'revAgent', 'logs')
+        if (-not [string]::IsNullOrWhiteSpace($TestStartupFailureLogRoot)) {
+            if (-not ($SmokeTest -or $PreWindowBootstrapSmokeTest -or $SuppressStartupFailureDialogForTest -or -not [string]::IsNullOrWhiteSpace($TestStartupFailureMessage))) {
+                throw 'TestStartupFailureLogRoot is accepted only by explicit smoke/test modes.'
+            }
+            $tempPrefix = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\') + '\'
+            $candidateLogDirectory = [IO.Path]::GetFullPath($TestStartupFailureLogRoot).TrimEnd('\')
+            if (-not $candidateLogDirectory.StartsWith($tempPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+                throw 'TestStartupFailureLogRoot is limited to a disposable path below the current TEMP directory.'
+            }
+            $logDirectory = $candidateLogDirectory
+        }
+        else {
+            $localAppDataRoot = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
+            if ([string]::IsNullOrWhiteSpace($localAppDataRoot)) { throw 'Windows LocalApplicationData could not be resolved.' }
+            $logDirectory = [IO.Path]::Combine($localAppDataRoot, 'DPE', 'revAgent', 'logs')
+        }
         [void][IO.Directory]::CreateDirectory($logDirectory)
         $logName = 'gui-startup-' + [DateTime]::Now.ToString('yyyyMMdd-HHmmss-fff') + '-' + [Guid]::NewGuid().ToString('N') + '.log'
         $logPath = [IO.Path]::Combine($logDirectory, $logName)

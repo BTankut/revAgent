@@ -236,6 +236,35 @@ $evidence = [ordered]@{
         Assert-True ([IO.Path]::GetFullPath([string]$loadedPath).StartsWith([IO.Path]::GetFullPath($bootstrapRoot).TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)) "Clean-install GUI loaded evidence outside the fixture bootstrap: $loadedPath"
     }
 
+    Write-Host 'Execute protected GUI startup-failure logging in the owned fixture root'
+    $guiFailureLogRoot = Join-Path $fixtureRoot 'gui-startup-logs'
+    [void][IO.Directory]::CreateDirectory($guiFailureLogRoot)
+    $guiFailureMarker = 'clean-install-gui-startup-' + [Guid]::NewGuid().ToString('N')
+    $previousErrorActionPreference = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $guiFailureOutput = @(& $windowsPowerShell `
+                -NoLogo `
+                -NoProfile `
+                -NonInteractive `
+                -ExecutionPolicy Bypass `
+                -File $protectedGui `
+                -ChannelManifestPath $channelPath `
+                -BootstrapStatePath $protectedState `
+                -PreWindowBootstrapSmokeTest `
+                -TestStartupFailureMessage $guiFailureMarker `
+                -TestStartupFailureLogRoot $guiFailureLogRoot 2>&1 | ForEach-Object { [string]$_ })
+        $guiFailureExitCode = $LASTEXITCODE
+    }
+    finally { $ErrorActionPreference = $previousErrorActionPreference }
+    $guiFailureLogs = @(Get-ChildItem -LiteralPath $guiFailureLogRoot -Filter 'gui-startup-*.log' -File)
+    Assert-True ($guiFailureExitCode -ne 0 -and $guiFailureLogs.Count -eq 1) 'Clean-install GUI startup failure did not create exactly one owned-fixture diagnostic log.'
+    $guiFailureLogText = Get-Content -Raw -LiteralPath $guiFailureLogs[0].FullName
+    Assert-True ($guiFailureLogText -match [regex]::Escape($guiFailureMarker) -and $guiFailureLogText -match 'revAgent GUI startup failure') 'Clean-install GUI startup failure did not preserve its reason in the owned fixture log.'
+    Assert-True ((@($guiFailureOutput) -join ' | ') -match [regex]::Escape($guiFailureLogs[0].FullName)) 'Clean-install GUI startup failure did not disclose the owned fixture log path.'
+    $protectedGuiSource = Get-Content -Raw -LiteralPath $protectedGui
+    Assert-True ($protectedGuiSource -match '\$localAppDataRoot = \[Environment\]::GetFolderPath\(\[Environment\+SpecialFolder\]::LocalApplicationData\)' -and $protectedGuiSource -match 'TestStartupFailureLogRoot is limited to a disposable path below the current TEMP directory') 'Clean-install copied GUI did not preserve production startup-log defaults and strict test containment.'
+
     Write-Host 'Prove production clean-machine self-service fails closed before acquisition, elevation, or coordinator work'
     $failClosedState = & $fixtureModule {
         $script:ElevatedApply = $false
