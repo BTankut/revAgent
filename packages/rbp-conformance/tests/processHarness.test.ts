@@ -464,6 +464,31 @@ describe("strict JSONL process control", () => {
     expect(child.transcript.some((entry) => entry.line.includes('"stopped":true'))).toBe(false);
   });
 
+  it("does not infer JSONL kill effectiveness from a later unrelated nonzero exit", async () => {
+    const source = "process.stdout.write(JSON.stringify({ready:true,component:'fixture-test',controlVersion:1,maxControlLineBytes:65536,actions:['shutdown']})+'\\n');setTimeout(()=>process.exit(7),900);";
+    const child = await StrictJsonlProcess.start({
+      componentId: "addin_loopback_fixture",
+      command: { ...command(), args: ["--eval", source] },
+      absoluteWorkingDirectory: here,
+      expectedReadinessFields: { component: "fixture-test" },
+      requiredActions: ["shutdown"],
+    });
+    const handle = (child as unknown as { readonly child: { kill(signal?: NodeJS.Signals | number): boolean } }).child;
+    const originalKill = handle.kill.bind(handle);
+    handle.kill = () => false;
+    try {
+      await expect(child.terminateForConformance(1_000)).resolves.toMatchObject({
+        exitCode: 7,
+        killEscalationAttempted: true,
+        killEscalationEffective: false,
+        killEscalated: false,
+      });
+    } finally {
+      handle.kill = originalKill;
+      if (child.process.exitCode === null) try { process.kill(child.pid, "SIGKILL"); } catch { /* already exited */ }
+    }
+  });
+
   it("keeps the control chain usable after an expected control error", async () => {
     const child = await StrictJsonlProcess.start({
       componentId: "addin_loopback_fixture",

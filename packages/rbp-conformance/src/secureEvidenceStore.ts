@@ -41,7 +41,8 @@ export type SecureEvidenceTestBoundary =
   | "readback_complete"
   | "before_cleanup"
   | "after_verification_before_return"
-  | "after_cleanup_before_return";
+  | "after_cleanup_before_return"
+  | "final_handle_pinned";
 
 export interface SecureEvidenceStoreTestOptions {
   readonly boundary?: SecureEvidenceTestBoundary;
@@ -167,7 +168,7 @@ public static class RevAgentPinnedEvidencePublisher {
       File.Delete(temp); temp=null;
       Sync(boundary,reachedMarker,continueMarker,syncTimeoutMs,"after_cleanup_before_return");
       Sync(boundary,reachedMarker,continueMarker,syncTimeoutMs,"after_verification_before_return");
-      using(var finalRead=new FileStream(target,FileMode.Open,FileAccess.Read,FileShare.Read)){if(Verify(finalRead,target,bytes)!=verifiedId)throw new IOException("IDENTITY_CHANGED");}
+      using(var finalRead=new FileStream(target,FileMode.Open,FileAccess.Read,FileShare.Read)){Sync(boundary,reachedMarker,continueMarker,syncTimeoutMs,"final_handle_pinned");if(Verify(finalRead,target,bytes)!=verifiedId)throw new IOException("IDENTITY_CHANGED");}
     } finally { foreach(var h in held)h.Dispose(); if(temp!=null && !published){try{File.Delete(temp);}catch{}} }
   }
 }
@@ -393,6 +394,19 @@ export class SecureEvidenceStore {
       waitForTestBoundary(this.#test, "after_verification_before_return");
       const finalRead = openSync(target, constants.O_RDONLY | constants.O_NOFOLLOW);
       try {
+        waitForTestBoundary(this.#test, "final_handle_pinned");
+        const assertFinalPathIdentity = (): void => {
+          const handleStat = fstatSync(finalRead, { bigint: true });
+          let lexicalStat;
+          try { lexicalStat = lstatSync(target, { bigint: true }); } catch { throw new Error("secure evidence final pathname changed"); }
+          if (!handleStat.isFile() || !lexicalStat.isFile() || lexicalStat.isSymbolicLink() ||
+              handleStat.dev !== publishedDevice || handleStat.ino !== publishedInode ||
+              lexicalStat.dev !== handleStat.dev || lexicalStat.ino !== handleStat.ino ||
+              handleStat.nlink !== 1n || lexicalStat.nlink !== 1n || handleStat.size !== BigInt(bytes.length)) {
+            throw new Error("secure evidence final pathname identity changed");
+          }
+        };
+        assertFinalPathIdentity();
         const finalStat = fstatSync(finalRead, { bigint: true });
         if (!finalStat.isFile() || finalStat.dev !== publishedDevice || finalStat.ino !== publishedInode || finalStat.size !== BigInt(bytes.length)) {
           throw new Error("secure evidence final identity changed");
@@ -404,6 +418,7 @@ export class SecureEvidenceStore {
           offset += count;
         }
         if (!finalBytes.equals(bytes)) throw new Error("secure evidence final readback mismatch");
+        assertFinalPathIdentity();
       } finally { closeSync(finalRead); }
       fsyncSync(descriptor);
     } finally {

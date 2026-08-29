@@ -159,6 +159,39 @@ describe("secure retained-evidence store", () => {
     }
   });
 
+  it.runIf(process.platform !== "win32")("rejects pathname replacement after the final verified inode handle is open", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "rbp-secure-final-handle-"));
+    const reached = path.join(root, "handle-pinned");
+    const continued = path.join(root, "continue");
+    const relative = `${canonicalManifest.retainedEvidence.root}/runs/final-handle/evidence.json`;
+    const target = new SecureEvidenceStore(root).resolve(relative);
+    const worker = new Worker(`
+      const {parentPort,workerData}=require('node:worker_threads');
+      import(workerData.moduleUrl).then(({SecureEvidenceStore})=>{
+        try { new SecureEvidenceStore(workerData.root,{test:{boundary:'final_handle_pinned',reachedMarker:workerData.reached,continueMarker:workerData.continued,timeoutMs:5000}}).write(workerData.relative,'original-bytes'); parentPort.postMessage({ok:true}); }
+        catch(error){ parentPort.postMessage({ok:false,message:error.message}); }
+      });
+    `, { eval: true, workerData: {
+      moduleUrl: new URL("../dist/src/secureEvidenceStore.js", import.meta.url).href,
+      root, relative, reached, continued,
+    } });
+    try {
+      const deadline = Date.now() + 5_000;
+      while (!existsSync(reached) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(existsSync(reached)).toBe(true);
+      rmSync(target);
+      writeFileSync(target, "attacker-bytes");
+      writeFileSync(continued, "continue");
+      const outcome = await new Promise<{ ok: boolean; message?: string }>((resolve, reject) => {
+        worker.once("message", resolve); worker.once("error", reject);
+      });
+      expect(outcome).toMatchObject({ ok: false, message: expect.stringMatching(/pathname|identity/u) });
+    } finally {
+      await worker.terminate();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("rejects a fresh directory recreated at the same lexical root pathname", () => {
     const owner = mkdtempSync(path.join(tmpdir(), "rbp-secure-root-id-"));
     const root = path.join(owner, "artifact");

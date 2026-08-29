@@ -867,7 +867,7 @@ export class StrictJsonlProcess {
       throw new ProcessExitTimeoutError(this.componentId, this.evidence.snapshot(), killEscalationAttempted, killEscalationEffective);
     }
     killEscalationEffective = killEscalationAttempted &&
-      (this.child.signalCode === "SIGKILL" || exit.code !== 0);
+      this.child.signalCode === "SIGKILL";
     // Do not send EOF to a live Bridge: its stdin end is itself a shutdown
     // trigger. After the child has exited, release only the parent handle so
     // ChildProcess close accounting can finish and flush the final stdio tail.
@@ -931,7 +931,7 @@ export class StrictJsonlProcess {
       throw new ProcessExitTimeoutError(this.componentId, this.evidence.snapshot(), killEscalationAttempted, killEscalationEffective);
     }
     killEscalationEffective = killEscalationAttempted &&
-      (this.child.signalCode === "SIGKILL" || exit.code !== 0);
+      this.child.signalCode === "SIGKILL";
     if (!this.child.stdin.destroyed) this.child.stdin.destroy();
     if (!await completionWithin(this.#stdioClosed, remaining())) {
       throw new ProcessStdioDrainTimeoutError(
