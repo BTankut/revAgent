@@ -52,9 +52,9 @@ internal sealed partial class RbpConnectionCoordinator
                 materialized.ReservedSequence != started.CurrentReservedSequence ||
                 materialized.PlanVersion != started.PlanVersion) return;
 
-        // All outer fields are reproducible from durable metadata.  A retry
-        // therefore re-encodes identical bytes without retaining a raw frame,
-        // base64 carrier, or payload outside the protected journal source.
+            // All outer fields are reproducible from durable metadata.  A retry
+            // therefore re-encodes identical bytes without retaining a raw frame,
+            // base64 carrier, or payload outside the protected journal source.
             var snapshot = new RbpDataEnvelopeSnapshot(
                 Type: materialized.Answer.Type,
                 Id: started.RecoveryInvocationId,

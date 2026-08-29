@@ -3,6 +3,62 @@ namespace RevAgent.Bridge.Tests.Worker;
 public sealed class WorkerCommandLineTests
 {
     [Fact]
+    public void DiagnosticStateIsExplicitAndDoctorOnly()
+    {
+        string config = Path.GetFullPath("bridge-config.json");
+        string state = Path.GetFullPath("doctor-state");
+        WorkerCommand command = WorkerCommandLine.Parse(
+            ["__doctor", "--config", config, "--diagnostic-state-root", state]);
+        Assert.Equal(state, command.DiagnosticStateRoot);
+        Assert.Null(WorkerCommandLine.Parse(
+            ["__doctor", "--config", config]).DiagnosticStateRoot);
+        foreach (string verb in new[] { "__worker", "__re-enroll-file", "--version", "install", "__attestation-helper" })
+        {
+            Assert.Throws<WorkerCommandLineException>(() => WorkerCommandLine.Parse(
+                [verb, "--config", config, "--diagnostic-state-root", state]));
+        }
+        Assert.Throws<WorkerCommandLineException>(() => WorkerCommandLine.Parse(
+            ["__worker", "--control-pipe", "pipe", "--host-pid", "42",
+             "--instance-id", Guid.NewGuid().ToString("D"), "--config", config,
+             "--diagnostic-state-root", state]));
+        Assert.Throws<WorkerCommandLineException>(() => WorkerCommandLine.Parse(
+            ["__re-enroll-file", "--config", config, "--artifact", config,
+             "--diagnostic-state-root", state]));
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("relative")]
+    [InlineData("C:\\fixture\\..\\doctor-state")]
+    [InlineData("C:\\fixture\\doctor-state.")]
+    [InlineData("C:\\fixture\\doctor-state ")]
+    [InlineData("C:\\FIXTUR~1\\doctor-state")]
+    [InlineData("C:\\fixture\\doctor-state:stream")]
+    [InlineData("\\\\server\\share\\doctor-state")]
+    [InlineData("\\\\?\\C:\\fixture\\doctor-state")]
+    public void DiagnosticStateRejectsNoncanonicalPaths(string state)
+    {
+        Assert.Throws<WorkerCommandLineException>(() => WorkerCommandLine.Parse(
+            ["__doctor", "--config", Path.GetFullPath("bridge-config.json"),
+             "--diagnostic-state-root", state]));
+    }
+
+    [Fact]
+    public void DiagnosticStateRequiresOneValueAndCanonicalConfig()
+    {
+        string config = Path.GetFullPath("bridge-config.json");
+        string state = Path.GetFullPath("doctor-state");
+        Assert.Throws<WorkerCommandLineException>(() => WorkerCommandLine.Parse(
+            ["__doctor", "--config", config, "--diagnostic-state-root"]));
+        Assert.Throws<WorkerCommandLineException>(() => WorkerCommandLine.Parse(
+            ["__doctor", "--config", config, "--diagnostic-state-root", state,
+             "--diagnostic-state-root", state]));
+        Assert.Throws<WorkerCommandLineException>(() => WorkerCommandLine.Parse(
+            ["__doctor", "--config", Path.Combine(Path.GetDirectoryName(config)!, ".", "bridge-config.json"),
+             "--diagnostic-state-root", state]));
+    }
+
+    [Fact]
     public void VersionRequiresExactSingleToken()
     {
         var command = WorkerCommandLine.Parse(["--version"]);

@@ -102,9 +102,14 @@ public sealed class RecoveryCarrierObservationProjectionTests
         {
             object observation = Activator.CreateInstance(observationType,
                 Enum.Parse(phaseType, item.Item1), 2L, item.Item2,
-                Digest, Digest, Digest)!;
+                Digest, Digest, Digest, null, false, 0L)!;
             observe.Invoke(ring, new[] { observation });
         }
+        const string rawConnection = "raw-connection-sentinel";
+        object invalidObservation = Activator.CreateInstance(observationType,
+            Enum.Parse(phaseType, "WatcherStarted"), 2L, 4L,
+            Digest, Digest, rawConnection, null, false, 0L)!;
+        observe.Invoke(ring, new[] { invalidObservation });
         object[] rows = Assert.IsType<object[]>(snapshot.Invoke(ring, null));
         using JsonDocument json = JsonDocument.Parse(JsonSerializer.Serialize(rows));
         Assert.Equal(2, json.RootElement.GetArrayLength());
@@ -113,6 +118,7 @@ public sealed class RecoveryCarrierObservationProjectionTests
         Assert.True(json.RootElement[0].TryGetProperty("routeAuthorityCheckpoint", out _));
         Assert.True(json.RootElement[0].TryGetProperty("causalOrdinal", out _));
         Assert.DoesNotContain("rsid\"", json.RootElement.GetRawText());
+        Assert.DoesNotContain(rawConnection, json.RootElement.GetRawText());
     }
 
     [Fact]
@@ -132,7 +138,29 @@ public sealed class RecoveryCarrierObservationProjectionTests
             Enum.Parse(phaseType, "RestartResend"), Digest, 6L, Digest, 2L,
             null, Digest, false, 12L,
         })!;
-        string json = JsonSerializer.Serialize(proofless);
+        Type ringType = HostAssembly.GetType(
+            "RevAgent.Bridge.RealWorkerHost.Program+RecoveryCarrierObservationRing",
+            throwOnError: true)!;
+        object ring = Activator.CreateInstance(ringType,
+            BindingFlags.Instance | BindingFlags.NonPublic,
+            binder: null, args: new object[] { 4, 4096 }, culture: null)!;
+        MethodInfo observe = ringType.GetMethod("Observe")!;
+        observe.Invoke(ring, new[] { proofless });
+        // Exercise the real typed-digest rejection boundary with actual raw
+        // inputs, not absent literals that never entered the observer.
+        foreach (string raw in new[] { rawConnection, rawProof, rawContext })
+        {
+            object rejected = Activator.CreateInstance(type, new object?[]
+            {
+                Enum.Parse(phaseType, "RestartResend"), raw, 7L, Digest, 3L,
+                null, Digest, false, 13L,
+            })!;
+            observe.Invoke(ring, new[] { rejected });
+        }
+        MethodInfo snapshot = ringType.GetMethod("Snapshot", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        object[] rows = Assert.IsType<object[]>(snapshot.Invoke(ring, null));
+        Assert.Single(rows);
+        string json = JsonSerializer.Serialize(rows);
         Assert.Contains("\"routeAuthorityCheckpoint\":null", json, StringComparison.Ordinal);
         Assert.Contains("\"causalOrdinal\":12", json, StringComparison.Ordinal);
         Assert.DoesNotContain(rawConnection, json, StringComparison.Ordinal);
@@ -151,6 +179,7 @@ public sealed class RecoveryCarrierObservationProjectionTests
         return Activator.CreateInstance(type, new object[]
         {
             Enum.Parse(phaseType, phase), Digest, ordinal, Digest, ordinal,
+            null!, null!, false, 0L,
         })!;
     }
 

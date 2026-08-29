@@ -101,8 +101,11 @@ internal static class Program
                 {
                     await Console.Out.WriteLineAsync(JsonSerializer.Serialize(new
                     {
-                        controlVersion = 1, id = id.GetString(), ok = true,
-                        result = new {
+                        controlVersion = 1,
+                        id = id.GetString(),
+                        ok = true,
+                        result = new
+                        {
                             observations = recoveryObservations.Snapshot(),
                             reconnectWatchObservations = reconnectObservations.Snapshot(),
                             routeRebindProofGranted = runtime.Coordinator
@@ -134,7 +137,9 @@ internal static class Program
                     };
                     await Console.Out.WriteLineAsync(JsonSerializer.Serialize(new
                     {
-                        controlVersion = 1, id = id.GetString(), ok = true,
+                        controlVersion = 1,
+                        id = id.GetString(),
+                        ok = true,
                         result = new { state },
                     })).ConfigureAwait(false);
                     continue;
@@ -145,7 +150,9 @@ internal static class Program
                         "test host control action is not allowed");
                 await Console.Out.WriteLineAsync(JsonSerializer.Serialize(new
                 {
-                    controlVersion = 1, id = id.GetString(), ok = true,
+                    controlVersion = 1,
+                    id = id.GetString(),
+                    ok = true,
                     result = new { stopping = true },
                 })).ConfigureAwait(false);
                 break;
@@ -511,7 +518,8 @@ internal static class Program
         {
             lock (_gate)
             {
-                return _rows.Select(row => new {
+                return _rows.Select(row => new
+                {
                     phase = row.Phase == RbpReconnectObservationPhase.ResumeAcknowledgementApplied
                         ? "resume_ack_applied" : "watcher_started",
                     generation = row.Generation,

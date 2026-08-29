@@ -23,7 +23,9 @@ internal sealed record BridgeDoctorReport(
     [property: JsonPropertyName("configuration")] RedactedBridgeConfigurationReport Configuration,
     [property: JsonPropertyName("gateway")] BridgeDoctorGatewayReport Gateway,
     [property: JsonPropertyName("addin")] BridgeDoctorAddinReport Addin,
-    [property: JsonPropertyName("enrollment")] BridgeDoctorEnrollmentReport? Enrollment = null);
+    [property: JsonPropertyName("enrollment")] BridgeDoctorEnrollmentReport? Enrollment = null,
+    [property: JsonPropertyName("stateScope")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? StateScope = null);
 
 /// <summary>
 /// The RES-30 doctor enrollment section: enrolled-or-not plus the

@@ -15,7 +15,8 @@ internal sealed record WorkerCommand(
     Guid? InstanceId = null,
     string? ConfigurationPath = null,
     string? EnrollmentArtifactPath = null,
-    bool ReEnroll = false);
+    bool ReEnroll = false,
+    string? DiagnosticStateRoot = null);
 
 internal sealed class WorkerCommandLineException : Exception
 {
@@ -119,13 +120,22 @@ internal static class WorkerCommandLine
             reEnroll = true;
         }
 
+        options.Remove("--diagnostic-state-root", out string? diagnosticStateRoot);
+        if (diagnosticStateRoot is not null && reEnroll)
+        {
+            throw new WorkerCommandLineException("diagnostic_state_command_invalid");
+        }
+
         RequireExactOptions(options, "--config");
         return new WorkerCommand(
             WorkerCommandKind.Doctor,
-            ConfigurationPath: NormalizeAbsolutePath(
-                options["--config"],
-                "--config"),
-            ReEnroll: reEnroll);
+            ConfigurationPath: diagnosticStateRoot is null
+                ? NormalizeAbsolutePath(options["--config"], "--config")
+                : Diagnostics.WorkerDoctorState.ValidateArgument(options["--config"]),
+            ReEnroll: reEnroll,
+            DiagnosticStateRoot: diagnosticStateRoot is null
+                ? null
+                : Diagnostics.WorkerDoctorState.ValidateArgument(diagnosticStateRoot));
     }
 
     private static WorkerCommand ParseReEnrollFile(
