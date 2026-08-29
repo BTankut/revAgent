@@ -7,6 +7,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, s
 import { once } from "node:events";
 import { execFileSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { tmpdir } from "node:os";
+import { Worker } from "node:worker_threads";
 
 import {
   ControlResponseError,
@@ -314,7 +315,7 @@ describe("strict JSONL process control", () => {
     expect(child.process.exitCode).not.toBeNull();
   });
 
-  it.runIf(process.platform === "win32")("does not infer effective escalation from an unconfirmed nonzero exit", async () => {
+  it.runIf(process.platform === "win32")("rejects controller environment mutation before bound taskkill use", async () => {
     const child = await StrictReadyProcess.start({
       componentId: "addin_loopback_fixture",
       command: { ...command(), args: ["--eval", "process.stdout.write(JSON.stringify({ready:true,component:'fixture-test'})+'\\n');setTimeout(()=>process.exit(7),100);"] },
@@ -323,20 +324,11 @@ describe("strict JSONL process control", () => {
     });
     const originalSystemRoot = process.env.SystemRoot;
     const originalWindir = process.env.WINDIR;
-    const handle = (child as unknown as { readonly child: { kill(signal?: NodeJS.Signals | number): boolean } }).child;
-    const originalKill = handle.kill.bind(handle);
     try {
-      delete process.env.SystemRoot;
-      delete process.env.WINDIR;
-      handle.kill = () => false;
-      await expect(child.stop("SIGTERM", 1_000)).resolves.toMatchObject({
-        exitCode: expect.any(Number),
-        killEscalationAttempted: true,
-        killEscalationEffective: false,
-        killEscalated: false,
-      });
+      process.env.SystemRoot = path.join(tmpdir(), "mutated-system-root");
+      process.env.WINDIR = process.env.SystemRoot;
+      await expect(child.stop("SIGTERM", 1_000)).rejects.toThrow(/GLOBALROOT|environment changed/u);
     } finally {
-      handle.kill = originalKill;
       if (originalSystemRoot === undefined) delete process.env.SystemRoot; else process.env.SystemRoot = originalSystemRoot;
       if (originalWindir === undefined) delete process.env.WINDIR; else process.env.WINDIR = originalWindir;
       if (child.process.exitCode === null) try { process.kill(child.pid, "SIGKILL"); } catch { /* already exited */ }
@@ -648,4 +640,37 @@ describe("strict JSONL process control", () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it("rejects a recorder artifact replaced while its consumer identity lease is live", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "wp12-process-lease-race-"));
+    const evidenceDirectory = path.join(root, "evidence");
+    const reached = path.join(root, "lease-reached");
+    const continued = path.join(root, "continue");
+    const target = path.join(evidenceDirectory, "addin_loopback_fixture.stdout.log");
+    mkdirSync(evidenceDirectory);
+    const attacker = new Worker(`
+      const {parentPort,workerData}=require('node:worker_threads');const fs=require('node:fs');
+      const timer=setInterval(()=>{if(!fs.existsSync(workerData.reached))return;clearInterval(timer);fs.rmSync(workerData.target);fs.writeFileSync(workerData.target,'attacker-bytes');fs.writeFileSync(workerData.continued,'continue');parentPort.postMessage({attacked:true});},5);
+    `, { eval: true, workerData: { reached, continued, target } });
+    const attacked = new Promise<{ attacked: boolean }>((resolve, reject) => {
+      attacker.once("message", resolve); attacker.once("error", reject);
+    });
+    try {
+      const child = await StrictJsonlProcess.start({
+        componentId: "addin_loopback_fixture",
+        command: command(),
+        absoluteWorkingDirectory: here,
+        evidenceDirectory,
+        evidenceStoreTest: { boundary: "lease_verified_before_return", reachedMarker: reached, continueMarker: continued, timeoutMs: 5_000 },
+        expectedReadinessFields: { component: "fixture-test" },
+        requiredActions: ["shutdown"],
+      });
+      await expect(child.stop()).rejects.toThrow(/leased identity|leased pathname/u);
+      await expect(attacked).resolves.toEqual({ attacked: true });
+      expect(readFileSync(target, "utf8")).toBe("attacker-bytes");
+    } finally {
+      await attacker.terminate();
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 15_000);
 });

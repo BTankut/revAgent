@@ -1,12 +1,13 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { lstatSync, realpathSync } from "node:fs";
+import { lstatSync, readFileSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
 import { TextDecoder } from "node:util";
 
 import { sanitizedProductionRuntimeEnvironment } from "./productionRuntimeIdentity.js";
-import { SecureEvidenceStore } from "./secureEvidenceStore.js";
+import { SecureEvidenceStore, type SecureEvidenceStoreTestOptions } from "./secureEvidenceStore.js";
 import type { ComponentId, ProcessCommandDescriptor, ProcessEvidence } from "./types.js";
+import { resolveWindowsSystemPaths } from "./windowsSystemPaths.js";
 
 export const MAX_CONTROL_LINE_BYTES = 64 * 1024;
 export const MAX_PROCESS_TRANSCRIPT_RECORDS = 128;
@@ -72,6 +73,8 @@ export interface ProcessTranscriptRecord {
 export interface ProcessEvidenceDirectoryOptions {
   /** Caller-selected test evidence directory; no runtime path is inferred. */
   readonly evidenceDirectory?: string;
+  /** Deterministic evidence-store synchronization used by adversarial tests. */
+  readonly evidenceStoreTest?: SecureEvidenceStoreTestOptions;
 }
 
 export interface ProcessOutputEvidence {
@@ -274,6 +277,7 @@ class ProcessEvidenceRecorder {
     private readonly component: string,
     private readonly commandHash: string,
     private readonly evidenceDirectory: string | undefined,
+    evidenceStoreTest: SecureEvidenceStoreTestOptions | undefined,
   ) {
     if (evidenceDirectory === undefined) {
       this.#evidenceDirectoryReal = undefined;
@@ -284,7 +288,7 @@ class ProcessEvidenceRecorder {
         throw new Error("process evidence directory must be a pre-existing plain caller-owned directory");
       }
       this.#evidenceDirectoryReal = realpathSync.native(evidenceDirectory);
-      this.#evidenceStore = new SecureEvidenceStore(evidenceDirectory, { directRootOnly: true });
+      this.#evidenceStore = new SecureEvidenceStore(evidenceDirectory, { directRootOnly: true, test: evidenceStoreTest });
     }
   }
 
@@ -377,7 +381,21 @@ class ProcessEvidenceRecorder {
   #persist(fileName: string, contents: string): void {
     if (this.evidenceDirectory === undefined) return;
     this.#assertEvidenceDirectoryIdentity();
-    this.#evidenceStore?.writeDirect(fileName, contents);
+    const stored = this.#evidenceStore?.writeDirect(fileName, contents);
+    if (stored !== undefined) {
+      let accepted = false;
+      try {
+        stored.identityLease.verify();
+        if (stored.absolutePath !== path.resolve(this.evidenceDirectory, fileName) ||
+            !stored.bytes.equals(Buffer.from(contents, "utf8"))) {
+          throw new Error("process evidence consumer binding changed");
+        }
+        accepted = true;
+      } finally {
+        if (accepted) stored.identityLease.verifyAndDispose();
+        else stored.identityLease.dispose();
+      }
+    }
     this.#assertEvidenceDirectoryIdentity();
   }
 
@@ -566,6 +584,7 @@ export class StrictJsonlProcess {
       options.componentId,
       processCommandHash(options.command),
       options.evidenceDirectory,
+      options.evidenceStoreTest,
     );
     const child = spawn(options.command.executable, options.command.args, {
       cwd: options.absoluteWorkingDirectory,
@@ -847,8 +866,10 @@ export class StrictJsonlProcess {
       }
     }
     const forced = setTimeout(() => {
-      killEscalationAttempted = true;
-      if (this.child.exitCode === null) this.child.kill("SIGKILL");
+      if (this.child.exitCode === null) {
+        killEscalationAttempted = true;
+        this.child.kill("SIGKILL");
+      }
     }, gracefulRemaining());
     let exit: { code: number; at: string } | null;
     try {
@@ -914,8 +935,10 @@ export class StrictJsonlProcess {
     let killEscalationEffective = false;
     if (this.process.exitCode === null) this.child.kill("SIGTERM");
     const forced = setTimeout(() => {
-      killEscalationAttempted = true;
-      if (this.child.exitCode === null) this.child.kill("SIGKILL");
+      if (this.child.exitCode === null) {
+        killEscalationAttempted = true;
+        this.child.kill("SIGKILL");
+      }
     }, gracefulRemaining());
     let exit: { code: number; at: string } | null;
     try {
@@ -979,6 +1002,61 @@ export interface ReadyProcessOptions extends ProcessEvidenceDirectoryOptions {
   validateReadiness(value: JsonObject): void;
 }
 
+interface WindowsTaskkillIdentity {
+  readonly controllerRoot: string;
+  readonly path: string;
+  readonly realPath: string;
+  readonly device: bigint;
+  readonly inode: bigint;
+  readonly sha256: string;
+}
+
+function normalizeWindowsPath(value: string): string {
+  return value.replace(/^\\\\\?\\/u, "").replace(/[\\/]+$/u, "").toLowerCase();
+}
+
+function taskkillSha256(file: string): string {
+  return createHash("sha256").update(readFileSync(file)).digest("hex");
+}
+
+function resolveWindowsTaskkillIdentity(): WindowsTaskkillIdentity | null {
+  const systemPaths = resolveWindowsSystemPaths();
+  if (systemPaths === null) return null;
+  const controllerRoot = systemPaths.windowsRoot;
+  const executable = systemPaths.taskkill;
+  const entry = lstatSync(executable, { bigint: true });
+  const realPath = realpathSync.native(executable);
+  const stat = statSync(realPath, { bigint: true });
+  if (!entry.isFile() || entry.isSymbolicLink() || !stat.isFile() || entry.dev !== stat.dev || entry.ino !== stat.ino ||
+      normalizeWindowsPath(executable) !== normalizeWindowsPath(realPath)) {
+    throw new Error("Windows taskkill identity resolves through a substituted path");
+  }
+  return Object.freeze({
+    controllerRoot,
+    path: executable,
+    realPath,
+    device: stat.dev,
+    inode: stat.ino,
+    sha256: taskkillSha256(realPath),
+  });
+}
+
+function verifyWindowsTaskkillIdentity(expected: WindowsTaskkillIdentity): void {
+  const systemPaths = resolveWindowsSystemPaths();
+  if (systemPaths === null || normalizeWindowsPath(systemPaths.windowsRoot) !== normalizeWindowsPath(expected.controllerRoot) ||
+      normalizeWindowsPath(systemPaths.taskkill) !== normalizeWindowsPath(expected.path)) {
+    throw new Error("Windows controller environment changed after taskkill planning");
+  }
+  const entry = lstatSync(expected.path, { bigint: true });
+  const realPath = realpathSync.native(expected.path);
+  const stat = statSync(realPath, { bigint: true });
+  if (!entry.isFile() || entry.isSymbolicLink() || !stat.isFile() || entry.dev !== expected.device || entry.ino !== expected.inode ||
+      stat.dev !== expected.device || stat.ino !== expected.inode || normalizeWindowsPath(realPath) !== normalizeWindowsPath(expected.realPath) ||
+      taskkillSha256(realPath) !== expected.sha256) {
+    throw new Error("bound Windows taskkill identity or bytes changed");
+  }
+}
+
 interface PendingReadyProcessStop {
   readonly nonce: string;
   readonly settle: (status: "closed" | "failed") => void;
@@ -1003,6 +1081,7 @@ export class StrictReadyProcess {
     startedAt: string,
     readyAt: string,
     private readonly useTestSignalProxy: boolean,
+    private readonly taskkillIdentity: WindowsTaskkillIdentity | null,
     private readonly evidence: ProcessEvidenceRecorder,
     stdioCompletion: Promise<void>,
   ) {
@@ -1042,10 +1121,12 @@ export class StrictReadyProcess {
 
   static async start(options: ReadyProcessOptions): Promise<StrictReadyProcess> {
     const startedAt = new Date().toISOString();
+    const taskkillIdentity = resolveWindowsTaskkillIdentity();
     const evidence = new ProcessEvidenceRecorder(
       options.componentId,
       processCommandHash(options.command),
       options.evidenceDirectory,
+      options.evidenceStoreTest,
     );
     const child = spawn(options.command.executable, options.command.args, {
       cwd: options.absoluteWorkingDirectory,
@@ -1151,6 +1232,7 @@ export class StrictReadyProcess {
       startedAt,
       ready.at,
       options.useTestSignalProxy === true,
+      taskkillIdentity,
       evidence,
       evidenceCompletion,
     );
@@ -1205,12 +1287,16 @@ export class StrictReadyProcess {
       return await result(this.process.stoppedAt ?? new Date().toISOString(), this.process.exitCode, false);
     }
     const killTree = async (): Promise<boolean> => {
-      killEscalationAttempted = true;
-      let confirmed = false;
-      const termination = terminateExactChildTree(this.child).then((value) => { confirmed = value; });
-      const completed = await completionWithin(termination, remaining());
-      if (completed) ownedTreeTerminationConfirmed ||= confirmed;
-      return completed;
+      let termination: ExactTreeTerminationResult;
+      try {
+        termination = await terminateExactChildTree(this.child, this.taskkillIdentity, remaining());
+      } catch (error) {
+        if ((error as { readonly killAttempted?: unknown }).killAttempted === true) killEscalationAttempted = true;
+        throw error;
+      }
+      killEscalationAttempted ||= termination.attempted;
+      ownedTreeTerminationConfirmed ||= termination.confirmed;
+      return true;
     };
     try {
       if (!this.useTestSignalProxy || !this.child.connected || this.child.send === undefined) {
@@ -1273,7 +1359,7 @@ export class StrictReadyProcess {
         acknowledgement = "failed_or_timed_out";
       }
       this.#pendingStop = null;
-      if (this.process.exitCode === null && !await killTree()) {
+      if (this.process.exitCode === null && !killEscalationAttempted && !await killTree()) {
         throw new ProcessExitTimeoutError(this.componentId, this.evidence.snapshot(), true, false);
       }
       const exit = await awaitExitWithin(this.#exit, remaining());
@@ -1302,29 +1388,56 @@ async function completionWithin(completion: Promise<void>, timeoutMs: number): P
 }
 
 /** Terminate only the supervised child (and, on Windows, only its exact tree). */
-async function terminateExactChildTree(child: ChildProcessWithoutNullStreams): Promise<boolean> {
+interface ExactTreeTerminationResult {
+  readonly attempted: boolean;
+  readonly confirmed: boolean;
+}
+
+async function terminateExactChildTree(
+  child: ChildProcessWithoutNullStreams,
+  taskkillIdentity: WindowsTaskkillIdentity | null,
+  timeoutMs: number,
+): Promise<ExactTreeTerminationResult> {
   const pid = child.pid;
-  if (pid === undefined || child.exitCode !== null) return false;
+  if (pid === undefined || child.exitCode !== null) return { attempted: false, confirmed: false };
   if (process.platform !== "win32") {
-    try { child.kill("SIGKILL"); } catch { /* already exited */ }
-    return false;
+    try { return { attempted: child.kill("SIGKILL"), confirmed: false }; }
+    catch { return { attempted: false, confirmed: false }; }
   }
-  const systemRoot = process.env.SystemRoot ?? process.env.WINDIR;
-  if (systemRoot === undefined) {
-    try { child.kill("SIGKILL"); } catch { /* already exited */ }
-    return false;
-  }
-  const taskkill = spawn(path.join(systemRoot, "System32", "taskkill.exe"), ["/pid", String(pid), "/T", "/F"], {
+  if (taskkillIdentity === null) throw new Error("bound Windows taskkill identity is unavailable");
+  verifyWindowsTaskkillIdentity(taskkillIdentity);
+  const taskkill = spawn(taskkillIdentity.realPath, ["/pid", String(pid), "/T", "/F"], {
     shell: false,
     stdio: "ignore",
     windowsHide: true,
+    env: sanitizedProductionRuntimeEnvironment(process.env, {
+      SystemRoot: taskkillIdentity.controllerRoot,
+      WINDIR: taskkillIdentity.controllerRoot,
+    }),
   });
-  return await new Promise<boolean>((resolve) => {
+  const boundedTimeout = Math.max(1, timeoutMs);
+  const joinReserve = Math.min(100, Math.max(1, Math.floor(boundedTimeout / 4)));
+  return await new Promise<ExactTreeTerminationResult>((resolve, reject) => {
+    let joinTimer: NodeJS.Timeout | null = null;
+    let timedOut = false;
+    const actionTimer = setTimeout(() => {
+      timedOut = true;
+      if (taskkill.exitCode === null && taskkill.signalCode === null) taskkill.kill("SIGKILL");
+      joinTimer = setTimeout(() => reject(Object.assign(
+        new Error("bound taskkill did not exit within the lifecycle deadline"),
+        { killAttempted: true },
+      )), joinReserve);
+    }, Math.max(1, boundedTimeout - joinReserve));
     taskkill.once("error", () => {
-      try { child.kill("SIGKILL"); } catch { /* already exited */ }
-      resolve(false);
+      clearTimeout(actionTimer);
+      if (joinTimer !== null) clearTimeout(joinTimer);
+      resolve({ attempted: true, confirmed: false });
     });
-    taskkill.once("close", (code) => resolve(code === 0));
+    taskkill.once("close", (code) => {
+      clearTimeout(actionTimer);
+      if (joinTimer !== null) clearTimeout(joinTimer);
+      resolve({ attempted: true, confirmed: !timedOut && code === 0 });
+    });
   });
 }
 

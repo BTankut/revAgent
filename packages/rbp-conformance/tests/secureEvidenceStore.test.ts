@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Worker } from "node:worker_threads";
@@ -47,9 +47,10 @@ describe("secure retained-evidence store", () => {
     }
   });
 
-  it.runIf(process.platform === "win32")("binds the absolute helper identity and rejects PATH, SystemRoot, or junction substitution", () => {
+  it.runIf(process.platform === "win32")("binds the GLOBALROOT Windows identity and rejects ambient mismatch, mutation, or junction substitution", () => {
     const originalPath = process.env.PATH;
     const originalSystemRoot = process.env.SystemRoot;
+    const originalWindir = process.env.WINDIR;
     const root = mkdtempSync(path.join(tmpdir(), "rbp-secure-helper-identity-"));
     try {
       process.env.PATH = path.join(root, "hostile-path");
@@ -57,16 +58,26 @@ describe("secure retained-evidence store", () => {
       store.write(`${canonicalManifest.retainedEvidence.root}/identity.json`, "safe");
 
       process.env.SystemRoot = path.join(root, "missing-system-root");
-      expect(() => new SecureEvidenceStore(path.join(root, "missing"))).toThrow();
+      expect(() => new SecureEvidenceStore(path.join(root, "mismatch"))).toThrow(/GLOBALROOT/u);
+
+      process.env.WINDIR = process.env.SystemRoot;
+      expect(() => new SecureEvidenceStore(path.join(root, "plain-fake-initial"))).toThrow(/GLOBALROOT/u);
+      expect(() => store.write(`${canonicalManifest.retainedEvidence.root}/identity-after-mutation.json`, "blocked"))
+        .toThrow(/GLOBALROOT|environment changed/u);
+
+      if (originalSystemRoot === undefined) delete process.env.SystemRoot; else process.env.SystemRoot = originalSystemRoot;
+      if (originalWindir === undefined) delete process.env.WINDIR; else process.env.WINDIR = originalWindir;
 
       const substitutedRoot = path.join(root, "substituted-system-root");
       mkdirSync(substitutedRoot);
       symlinkSync(path.join(originalSystemRoot!, "System32"), path.join(substitutedRoot, "System32"), "junction");
       process.env.SystemRoot = substitutedRoot;
-      expect(() => new SecureEvidenceStore(path.join(root, "substituted"))).toThrow(/substituted directory identity/u);
+      process.env.WINDIR = substitutedRoot;
+      expect(() => new SecureEvidenceStore(path.join(root, "substituted"))).toThrow(/GLOBALROOT/u);
     } finally {
       if (originalPath === undefined) delete process.env.PATH; else process.env.PATH = originalPath;
       if (originalSystemRoot === undefined) delete process.env.SystemRoot; else process.env.SystemRoot = originalSystemRoot;
+      if (originalWindir === undefined) delete process.env.WINDIR; else process.env.WINDIR = originalWindir;
       rmSync(root, { recursive: true, force: true });
     }
   });
@@ -85,6 +96,7 @@ describe("secure retained-evidence store", () => {
     mkdirSync(attacked, { recursive: true });
     const worker = new Worker(`
       const { parentPort, workerData } = require('node:worker_threads');
+      if(process.platform==='win32'){process.env.SystemRoot=workerData.windowsRoot;process.env.WINDIR=workerData.windowsRoot;}
       import(workerData.moduleUrl).then(({SecureEvidenceStore}) => {
         try {
           const store=new SecureEvidenceStore(workerData.root,{test:{boundary:'stage_complete',reachedMarker:workerData.reached,continueMarker:workerData.continued,timeoutMs:5000}});
@@ -94,12 +106,18 @@ describe("secure retained-evidence store", () => {
       });
     `, { eval: true, workerData: {
       moduleUrl: new URL("../dist/src/secureEvidenceStore.js", import.meta.url).href,
-      root: artifactRoot, relative, reached, continued,
+      root: artifactRoot, relative, reached, continued, windowsRoot: process.env.SystemRoot ?? process.env.WINDIR,
     } });
+    const outcomePromise = new Promise<{ ok: boolean; message?: string }>((resolve, reject) => {
+      worker.once("message", resolve); worker.once("error", reject);
+    });
     try {
       const deadline = Date.now() + 5_000;
       while (!existsSync(reached) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
-      expect(existsSync(reached)).toBe(true);
+      if (!existsSync(reached)) {
+        const early = await Promise.race([outcomePromise, new Promise<{ ok: false; message: string }>((resolve) => setTimeout(() => resolve({ ok: false, message: "no worker outcome" }), 100))]);
+        throw new Error(`stage boundary was not reached: ${String(early.message)}`);
+      }
       const moved = `${attacked}-moved`;
       let substituted = false;
       try {
@@ -110,10 +128,7 @@ describe("secure retained-evidence store", () => {
         // Windows directory handles deliberately deny the rename.
       }
       writeFileSync(continued, "continue");
-      const outcome = await new Promise<{ ok: boolean; message?: string }>((resolve, reject) => {
-        worker.once("message", resolve);
-        worker.once("error", reject);
-      });
+      const outcome = await outcomePromise;
       expect(outcome.ok).toBe(!substituted);
       expect(readdirSync(outside)).toEqual([]);
       if (!substituted) expect(readFileSync(seed.resolve(relative), "utf8")).toBe("pinned bytes");
@@ -124,6 +139,52 @@ describe("secure retained-evidence store", () => {
     }
   });
 
+  it.runIf(process.platform === "win32")("rejects a same-user hardlink alias added at the staged publication boundary", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "rbp-secure-stage-alias-"));
+    const reached = path.join(root, "stage-reached");
+    const continued = path.join(root, "continue");
+    const alias = path.join(root, "owner-alias.bin");
+    const relative = `${canonicalManifest.retainedEvidence.root}/runs/alias/evidence.json`;
+    const seed = new SecureEvidenceStore(root);
+    const target = seed.resolve(relative);
+    mkdirSync(path.dirname(target), { recursive: true });
+    const worker = new Worker(`
+      const {parentPort,workerData}=require('node:worker_threads');
+      if(process.platform==='win32'){process.env.SystemRoot=workerData.windowsRoot;process.env.WINDIR=workerData.windowsRoot;}
+      import(workerData.moduleUrl).then(({SecureEvidenceStore})=>{
+        try { new SecureEvidenceStore(workerData.root,{test:{boundary:'stage_complete',reachedMarker:workerData.reached,continueMarker:workerData.continued,timeoutMs:5000}}).write(workerData.relative,'staged-evidence-bytes'); parentPort.postMessage({ok:true}); }
+        catch(error){ parentPort.postMessage({ok:false,message:error.message}); }
+      });
+    `, { eval: true, workerData: {
+      moduleUrl: new URL("../dist/src/secureEvidenceStore.js", import.meta.url).href,
+      root, relative, reached, continued, windowsRoot: process.env.SystemRoot ?? process.env.WINDIR,
+    } });
+    const outcomePromise = new Promise<{ ok: boolean; message?: string }>((resolve, reject) => {
+      worker.once("message", resolve); worker.once("error", reject);
+    });
+    try {
+      const deadline = Date.now() + 5_000;
+      while (!existsSync(reached) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
+      if (!existsSync(reached)) {
+        const early = await Promise.race([outcomePromise, new Promise<{ ok: false; message: string }>((resolve) => setTimeout(() => resolve({ ok: false, message: "no worker outcome" }), 100))]);
+        throw new Error(`lease boundary was not reached: ${String(early.message)}`);
+      }
+      const staged = readdirSync(path.dirname(target)).filter((entry) => entry.endsWith(".tmp"));
+      expect(staged).toHaveLength(1);
+      linkSync(path.join(path.dirname(target), staged[0]!), alias);
+      writeFileSync(continued, "continue");
+      const outcome = await outcomePromise;
+      expect(outcome).toMatchObject({ ok: false, message: expect.stringMatching(/LINK_COUNT_CHANGED/u) });
+      expect(existsSync(target)).toBe(false);
+      expect(readdirSync(path.dirname(target)).filter((entry) => entry.endsWith(".tmp"))).toEqual([]);
+      expect(readFileSync(alias, "utf8")).toBe("staged-evidence-bytes");
+      expect(statSync(alias).nlink).toBe(1);
+    } finally {
+      await worker.terminate();
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 15_000);
+
   it("rejects a same-size target replacement after readback and before return", async () => {
     const root = mkdtempSync(path.join(tmpdir(), "rbp-secure-final-replace-"));
     const reached = path.join(root, "verified");
@@ -133,14 +194,18 @@ describe("secure retained-evidence store", () => {
     const target = seed.resolve(relative);
     const worker = new Worker(`
       const {parentPort,workerData}=require('node:worker_threads');
+      if(process.platform==='win32'){process.env.SystemRoot=workerData.windowsRoot;process.env.WINDIR=workerData.windowsRoot;}
       import(workerData.moduleUrl).then(({SecureEvidenceStore})=>{
         try { new SecureEvidenceStore(workerData.root,{test:{boundary:'after_cleanup_before_return',reachedMarker:workerData.reached,continueMarker:workerData.continued,timeoutMs:5000}}).write(workerData.relative,'original-bytes'); parentPort.postMessage({ok:true}); }
         catch(error){ parentPort.postMessage({ok:false,message:error.message}); }
       });
     `, { eval: true, workerData: {
       moduleUrl: new URL("../dist/src/secureEvidenceStore.js", import.meta.url).href,
-      root, relative, reached, continued,
+      root, relative, reached, continued, windowsRoot: process.env.SystemRoot ?? process.env.WINDIR,
     } });
+    const outcomePromise = new Promise<{ ok: boolean; message?: string }>((resolve, reject) => {
+      worker.once("message", resolve); worker.once("error", reject);
+    });
     try {
       const deadline = Date.now() + 5_000;
       while (!existsSync(reached) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
@@ -149,15 +214,48 @@ describe("secure retained-evidence store", () => {
       writeFileSync(target, "attacker-bytes");
       expect(Buffer.byteLength("attacker-bytes")).toBe(Buffer.byteLength("original-bytes"));
       writeFileSync(continued, "continue");
-      const outcome = await new Promise<{ ok: boolean; message?: string }>((resolve, reject) => {
-        worker.once("message", resolve); worker.once("error", reject);
-      });
+      const outcome = await outcomePromise;
       expect(outcome).toMatchObject({ ok: false, message: expect.stringMatching(/IDENTITY_CHANGED|READBACK_MISMATCH|identity changed|readback mismatch/u) });
     } finally {
       await worker.terminate();
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it("rejects replacement at the actual leased last boundary before caller success", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "rbp-secure-lease-race-"));
+    const reached = path.join(root, "lease-reached");
+    const continued = path.join(root, "continue");
+    const relative = `${canonicalManifest.retainedEvidence.root}/runs/lease/evidence.json`;
+    const target = new SecureEvidenceStore(root).resolve(relative);
+    const worker = new Worker(`
+      const {parentPort,workerData}=require('node:worker_threads');
+      if(process.platform==='win32'){process.env.SystemRoot=workerData.windowsRoot;process.env.WINDIR=workerData.windowsRoot;}
+      import(workerData.moduleUrl).then(({SecureEvidenceStore})=>{
+        try { new SecureEvidenceStore(workerData.root,{test:{boundary:'lease_verified_before_return',reachedMarker:workerData.reached,continueMarker:workerData.continued,timeoutMs:5000}}).write(workerData.relative,'leased-original'); parentPort.postMessage({ok:true}); }
+        catch(error){ parentPort.postMessage({ok:false,message:error.message}); }
+      });
+    `, { eval: true, workerData: {
+      moduleUrl: new URL("../dist/src/secureEvidenceStore.js", import.meta.url).href,
+      root, relative, reached, continued, windowsRoot: process.env.SystemRoot ?? process.env.WINDIR,
+    } });
+    const outcomePromise = new Promise<{ ok: boolean; message?: string }>((resolve, reject) => {
+      worker.once("message", resolve); worker.once("error", reject);
+    });
+    try {
+      const deadline = Date.now() + 5_000;
+      while (!existsSync(reached) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(existsSync(reached)).toBe(true);
+      rmSync(target);
+      writeFileSync(target, "leased-attacker");
+      writeFileSync(continued, "continue");
+      const outcome = await outcomePromise;
+      expect(outcome).toMatchObject({ ok: false, message: expect.stringMatching(/leased identity|leased pathname/u) });
+    } finally {
+      await worker.terminate();
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 15_000);
 
   it.runIf(process.platform !== "win32")("rejects pathname replacement after the final verified inode handle is open", async () => {
     const root = mkdtempSync(path.join(tmpdir(), "rbp-secure-final-handle-"));
@@ -167,13 +265,14 @@ describe("secure retained-evidence store", () => {
     const target = new SecureEvidenceStore(root).resolve(relative);
     const worker = new Worker(`
       const {parentPort,workerData}=require('node:worker_threads');
+      if(process.platform==='win32'){process.env.SystemRoot=workerData.windowsRoot;process.env.WINDIR=workerData.windowsRoot;}
       import(workerData.moduleUrl).then(({SecureEvidenceStore})=>{
         try { new SecureEvidenceStore(workerData.root,{test:{boundary:'final_handle_pinned',reachedMarker:workerData.reached,continueMarker:workerData.continued,timeoutMs:5000}}).write(workerData.relative,'original-bytes'); parentPort.postMessage({ok:true}); }
         catch(error){ parentPort.postMessage({ok:false,message:error.message}); }
       });
     `, { eval: true, workerData: {
       moduleUrl: new URL("../dist/src/secureEvidenceStore.js", import.meta.url).href,
-      root, relative, reached, continued,
+      root, relative, reached, continued, windowsRoot: process.env.SystemRoot ?? process.env.WINDIR,
     } });
     try {
       const deadline = Date.now() + 5_000;
@@ -218,13 +317,14 @@ describe("secure retained-evidence store", () => {
     mkdirSync(root);
     const worker = new Worker(`
       const {parentPort,workerData}=require('node:worker_threads');
+      if(process.platform==='win32'){process.env.SystemRoot=workerData.windowsRoot;process.env.WINDIR=workerData.windowsRoot;}
       import(workerData.moduleUrl).then(({SecureEvidenceStore})=>{
         try { new SecureEvidenceStore(workerData.root,{test:{boundary:'constructor_baseline_pinned',reachedMarker:workerData.reached,continueMarker:workerData.continued,timeoutMs:5000}}); parentPort.postMessage({ok:true}); }
         catch(error){ parentPort.postMessage({ok:false,message:error.message}); }
       });
     `, { eval: true, workerData: {
       moduleUrl: new URL("../dist/src/secureEvidenceStore.js", import.meta.url).href,
-      root, reached, continued,
+      root, reached, continued, windowsRoot: process.env.SystemRoot ?? process.env.WINDIR,
     } });
     try {
       const deadline = Date.now() + 5_000;
@@ -261,6 +361,9 @@ describe("secure retained-evidence store", () => {
         expect(statSync(store.retainedRoot).mode & 0o777).toBe(0o700);
         expect(statSync(stored.absolutePath).mode & 0o777).toBe(0o600);
       }
+      expect(stored.identityLease.disposed).toBe(false);
+      stored.identityLease.verifyAndDispose();
+      expect(stored.identityLease.disposed).toBe(true);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -278,6 +381,7 @@ describe("secure retained-evidence store", () => {
       const continued = path.join(root, "publish-continue");
       const publisher = `
         const { parentPort, workerData } = require('node:worker_threads');
+        if(process.platform==='win32'){process.env.SystemRoot=workerData.windowsRoot;process.env.WINDIR=workerData.windowsRoot;}
         import(workerData.moduleUrl).then(({ SecureEvidenceStore }) => {
           try {
             const store = new SecureEvidenceStore(workerData.root,{test:{boundary:'stage_complete',reachedMarker:workerData.reached,continueMarker:workerData.continued,timeoutMs:5000}});
@@ -296,7 +400,7 @@ describe("secure retained-evidence store", () => {
           workerData: {
             // Canonical preparation builds this exact checkout before tests.
             moduleUrl: new URL("../dist/src/secureEvidenceStore.js", import.meta.url).href,
-            root, relative, contents: content, reached: path.join(root, `publisher-${index}-staged`), continued,
+            root, relative, contents: content, reached: path.join(root, `publisher-${index}-staged`), continued, windowsRoot: process.env.SystemRoot ?? process.env.WINDIR,
           },
         });
         workers.push(worker);

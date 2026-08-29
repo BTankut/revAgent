@@ -25,6 +25,7 @@ import {
   verifyPowerShellIdentityCurrent,
   type ProductionPowerShellIdentity,
 } from "./productionRuntimeIdentity.js";
+import { resolveWindowsSystemPaths } from "./windowsSystemPaths.js";
 
 const DIRECTORY_MODE = 0o700;
 const FILE_MODE = 0o600;
@@ -32,6 +33,7 @@ const NATIVE_HELPER_TIMEOUT_MS = 15_000;
 const MAX_NATIVE_HELPER_INPUT_BYTES = 128 * 1024 * 1024;
 const MAX_NATIVE_HELPER_OUTPUT_BYTES = 4 * 1024;
 export const MAX_SECURE_EVIDENCE_CONTENT_BYTES = 32 * 1024 * 1024;
+export const SECURE_EVIDENCE_LEASE_MS = 10_000;
 
 export type SecureEvidenceTestBoundary =
   | "constructor_baseline_pinned"
@@ -42,7 +44,8 @@ export type SecureEvidenceTestBoundary =
   | "before_cleanup"
   | "after_verification_before_return"
   | "after_cleanup_before_return"
-  | "final_handle_pinned";
+  | "final_handle_pinned"
+  | "lease_verified_before_return";
 
 export interface SecureEvidenceStoreTestOptions {
   readonly boundary?: SecureEvidenceTestBoundary;
@@ -66,6 +69,14 @@ function isInside(root: string, candidate: string): boolean {
 
 function normalizeWindowsIdentity(value: string): string {
   return value.replace(/^\\\\\?\\/u, "").replace(/[\\/]+$/u, "").toLowerCase();
+}
+
+function verifyWindowsControllerRoot(expected: string | null): void {
+  if (expected === null) return;
+  const current = resolveWindowsSystemPaths()?.windowsRoot ?? null;
+  if (current === null || normalizeWindowsIdentity(current) !== normalizeWindowsIdentity(expected)) {
+    throw new Error("Windows controller environment changed after identity planning");
+  }
 }
 
 function boundedContentBytes(contents: string | Buffer): Buffer {
@@ -144,9 +155,9 @@ public static class RevAgentPinnedEvidencePublisher {
   static string Norm(string p) { if(p.StartsWith(@"\\?\"))p=p.Substring(4); return p.TrimEnd('\\').ToLowerInvariant(); }
   static string Final(SafeFileHandle h) { var b=new System.Text.StringBuilder(32768); var n=GetFinalPathNameByHandleW(h,b,(uint)b.Capacity,0); if(n==0||n>=b.Capacity)throw new IOException("FINAL_PATH"); return Norm(b.ToString()); }
   static SafeFileHandle Pin(string p,string expected,string expectedVolume,string expectedFileId) { var h=CreateFileW(p,FILE_READ_ATTRIBUTES,FILE_SHARE_READ|FILE_SHARE_WRITE,IntPtr.Zero,OPEN_EXISTING,FILE_FLAG_BACKUP_SEMANTICS|FILE_FLAG_OPEN_REPARSE_POINT,IntPtr.Zero); if(h.IsInvalid)throw new IOException("PIN_FAILED"); Info i; ulong fileId; if(!GetFileInformationByHandle(h,out i)||(i.Attr&FILE_ATTRIBUTE_DIRECTORY)==0||(i.Attr&FILE_ATTRIBUTE_REPARSE_POINT)!=0||Final(h)!=Norm(expected)){h.Dispose();throw new IOException("IDENTITY_CHANGED");} fileId=((ulong)i.L1<<32)|i.L2; if(expectedVolume.Length>0 && (i.V1.ToString()!=expectedVolume || fileId.ToString()!=expectedFileId)){h.Dispose();throw new IOException("IDENTITY_CHANGED");} return h; }
-  static void AssertFile(FileStream stream,string expected) { Info i; if(!GetFileInformationByHandle(stream.SafeFileHandle,out i)||(i.Attr&FILE_ATTRIBUTE_DIRECTORY)!=0||(i.Attr&FILE_ATTRIBUTE_REPARSE_POINT)!=0||Final(stream.SafeFileHandle)!=Norm(expected))throw new IOException("IDENTITY_CHANGED"); }
+  static Info AssertFile(FileStream stream,string expected,uint expectedLinks) { Info i; if(!GetFileInformationByHandle(stream.SafeFileHandle,out i)||(i.Attr&FILE_ATTRIBUTE_DIRECTORY)!=0||(i.Attr&FILE_ATTRIBUTE_REPARSE_POINT)!=0||Final(stream.SafeFileHandle)!=Norm(expected))throw new IOException("IDENTITY_CHANGED");if(i.S2!=expectedLinks)throw new IOException("LINK_COUNT_CHANGED");return i; }
   static string FileId(FileStream stream) { Info i; if(!GetFileInformationByHandle(stream.SafeFileHandle,out i))throw new IOException("IDENTITY_CHANGED"); return i.V1.ToString()+":"+((((ulong)i.L1)<<32)|i.L2).ToString(); }
-  static string Verify(FileStream read,string target,byte[] bytes) { AssertFile(read,target);if(read.Length!=bytes.Length)throw new IOException("READBACK_MISMATCH");byte[] observed=new byte[bytes.Length];for(int o=0;o<observed.Length;){int n=read.Read(observed,o,observed.Length-o);if(n==0)throw new IOException("READBACK_MISMATCH");o+=n;}int mismatch=0;for(int i=0;i<bytes.Length;i++)mismatch|=bytes[i]^observed[i];if(mismatch!=0)throw new IOException("READBACK_MISMATCH");return FileId(read); }
+  static string Verify(FileStream read,string target,byte[] bytes,uint expectedLinks) { AssertFile(read,target,expectedLinks);if(read.Length!=bytes.Length)throw new IOException("READBACK_MISMATCH");byte[] observed=new byte[bytes.Length];for(int o=0;o<observed.Length;){int n=read.Read(observed,o,observed.Length-o);if(n==0)throw new IOException("READBACK_MISMATCH");o+=n;}int mismatch=0;for(int i=0;i<bytes.Length;i++)mismatch|=bytes[i]^observed[i];if(mismatch!=0)throw new IOException("READBACK_MISMATCH");AssertFile(read,target,expectedLinks);return FileId(read); }
   static void Sync(string selected,string reached,string continued,int timeoutMs,string boundary) { if(selected!=boundary)return; File.WriteAllText(reached,boundary); var until=DateTime.UtcNow.AddMilliseconds(timeoutMs); while(!File.Exists(continued)){if(DateTime.UtcNow>=until)throw new IOException("SYNC_TIMEOUT");System.Threading.Thread.Sleep(10);} }
   public static void Run(string root,string expected,string expectedVolume,string expectedFileId,string[] directories,string operation,string fileName,byte[] bytes,string boundary,string reachedMarker,string continueMarker,int syncTimeoutMs,int helperTimeoutMs,string fault) {
     var held=new List<SafeFileHandle>(); string temp=null; bool published=false;
@@ -159,16 +170,15 @@ public static class RevAgentPinnedEvidencePublisher {
       if(fault=="timeout")System.Threading.Thread.Sleep(helperTimeoutMs+5000);
       if(operation=="ensure")return;
       string target=Path.Combine(cursor,fileName); temp=Path.Combine(cursor,"."+fileName+"."+Guid.NewGuid().ToString("N")+".tmp");
-      using(var stream=new FileStream(temp,FileMode.CreateNew,FileAccess.Write,FileShare.None)){AssertFile(stream,temp);stream.Write(bytes,0,bytes.Length);stream.Flush(true);}
-      Sync(boundary,reachedMarker,continueMarker,syncTimeoutMs,"stage_complete");
-      if(!CreateHardLinkW(target,temp,IntPtr.Zero)){int e=Marshal.GetLastWin32Error();if(e==183)throw new IOException("EEXIST");throw new IOException("PUBLISH_FAILED");}
-      published=true;Sync(boundary,reachedMarker,continueMarker,syncTimeoutMs,"publish_complete");
-      string verifiedId; using(var read=new FileStream(target,FileMode.Open,FileAccess.Read,FileShare.Read)){verifiedId=Verify(read,target,bytes);}
+      using(var stream=new FileStream(temp,FileMode.CreateNew,FileAccess.Write,FileShare.None)){AssertFile(stream,temp,1);stream.Write(bytes,0,bytes.Length);stream.Flush(true);AssertFile(stream,temp,1);Sync(boundary,reachedMarker,continueMarker,syncTimeoutMs,"stage_complete");AssertFile(stream,temp,1);if(!CreateHardLinkW(target,temp,IntPtr.Zero)){int e=Marshal.GetLastWin32Error();if(e==183)throw new IOException("EEXIST");throw new IOException("PUBLISH_FAILED");}AssertFile(stream,temp,2);published=true;}
+      Sync(boundary,reachedMarker,continueMarker,syncTimeoutMs,"publish_complete");
+      string verifiedId; using(var read=new FileStream(target,FileMode.Open,FileAccess.Read,FileShare.Read)){verifiedId=Verify(read,target,bytes,2);}
       Sync(boundary,reachedMarker,continueMarker,syncTimeoutMs,"readback_complete");Sync(boundary,reachedMarker,continueMarker,syncTimeoutMs,"before_cleanup");if(fault=="cleanup_uncertain")throw new IOException("CLEANUP_UNCERTAIN");
+      using(var targetBeforeCleanup=new FileStream(target,FileMode.Open,FileAccess.Read,FileShare.Read))using(var tempBeforeCleanup=new FileStream(temp,FileMode.Open,FileAccess.Read,FileShare.Read)){if(Verify(targetBeforeCleanup,target,bytes,2)!=verifiedId||Verify(tempBeforeCleanup,temp,bytes,2)!=verifiedId)throw new IOException("IDENTITY_CHANGED");}
       File.Delete(temp); temp=null;
       Sync(boundary,reachedMarker,continueMarker,syncTimeoutMs,"after_cleanup_before_return");
       Sync(boundary,reachedMarker,continueMarker,syncTimeoutMs,"after_verification_before_return");
-      using(var finalRead=new FileStream(target,FileMode.Open,FileAccess.Read,FileShare.Read)){Sync(boundary,reachedMarker,continueMarker,syncTimeoutMs,"final_handle_pinned");if(Verify(finalRead,target,bytes)!=verifiedId)throw new IOException("IDENTITY_CHANGED");}
+      using(var finalRead=new FileStream(target,FileMode.Open,FileAccess.Read,FileShare.Read)){Sync(boundary,reachedMarker,continueMarker,syncTimeoutMs,"final_handle_pinned");if(Verify(finalRead,target,bytes,1)!=verifiedId)throw new IOException("IDENTITY_CHANGED");}
     } finally { foreach(var h in held)h.Dispose(); if(temp!=null && !published){try{File.Delete(temp);}catch{}} }
   }
 }
@@ -188,7 +198,7 @@ try {
   exit 0
 } catch {
   $code='operation_failed'
-  foreach($known in @('EEXIST','CLEANUP_UNCERTAIN','FINAL_PATH','PIN_FAILED','IDENTITY_CHANGED','SYNC_TIMEOUT','PUBLISH_FAILED','READBACK_MISMATCH')){if($_.Exception.ToString()-match$known){$code=$known}}
+  foreach($known in @('EEXIST','CLEANUP_UNCERTAIN','FINAL_PATH','PIN_FAILED','IDENTITY_CHANGED','LINK_COUNT_CHANGED','SYNC_TIMEOUT','PUBLISH_FAILED','READBACK_MISMATCH')){if($_.Exception.ToString()-match$known){$code=$known}}
   if($code-eq'CLEANUP_UNCERTAIN'){$code='cleanup_uncertain'}
   if($code-eq'operation_failed'){$code='operation_failed'}
   [Console]::Out.Write('{"schema":"revagent-pinned-evidence-helper/v1","status":"error","code":"'+$code+'"}')
@@ -198,6 +208,66 @@ try {
 export interface StoredEvidenceFile {
   absolutePath: string;
   bytes: Buffer;
+  identityLease: StoredEvidenceIdentityLease;
+}
+
+export interface StoredEvidenceIdentityLease {
+  readonly expiresAt: string;
+  readonly disposed: boolean;
+  verify(): void;
+  verifyAndDispose(): void;
+  dispose(): void;
+}
+
+class FileIdentityLease implements StoredEvidenceIdentityLease {
+  readonly expiresAt: string;
+  #disposed = false;
+  readonly #timer: NodeJS.Timeout;
+
+  constructor(
+    private readonly descriptor: number,
+    private readonly target: string,
+    private readonly expectedBytes: Buffer,
+    private readonly device: bigint,
+    private readonly inode: bigint,
+  ) {
+    const expiresAtMs = Date.now() + SECURE_EVIDENCE_LEASE_MS;
+    this.expiresAt = new Date(expiresAtMs).toISOString();
+    this.#timer = setTimeout(() => this.dispose(), SECURE_EVIDENCE_LEASE_MS);
+    this.#timer.unref();
+  }
+
+  get disposed(): boolean { return this.#disposed; }
+
+  verify(): void {
+    if (this.#disposed) throw new Error("secure evidence identity lease is disposed");
+    const handleStat = fstatSync(this.descriptor, { bigint: true });
+    let lexicalStat;
+    try { lexicalStat = lstatSync(this.target, { bigint: true }); } catch { throw new Error("secure evidence leased pathname changed"); }
+    if (!handleStat.isFile() || !lexicalStat.isFile() || lexicalStat.isSymbolicLink() ||
+        handleStat.dev !== this.device || handleStat.ino !== this.inode || lexicalStat.dev !== this.device || lexicalStat.ino !== this.inode ||
+        handleStat.nlink !== 1n || lexicalStat.nlink !== 1n || handleStat.size !== BigInt(this.expectedBytes.length)) {
+      throw new Error("secure evidence leased identity changed");
+    }
+    const observed = Buffer.alloc(this.expectedBytes.length);
+    for (let offset = 0; offset < observed.length;) {
+      const count = readSync(this.descriptor, observed, offset, observed.length - offset, offset);
+      if (count === 0) throw new Error("secure evidence leased readback mismatch");
+      offset += count;
+    }
+    if (!observed.equals(this.expectedBytes)) throw new Error("secure evidence leased readback mismatch");
+  }
+
+  verifyAndDispose(): void {
+    try { this.verify(); } finally { this.dispose(); }
+  }
+
+  dispose(): void {
+    if (this.#disposed) return;
+    this.#disposed = true;
+    clearTimeout(this.#timer);
+    closeSync(this.descriptor);
+  }
 }
 
 /** Parent-owned, identity-pinned, atomic no-clobber retained-evidence writer. */
@@ -208,6 +278,7 @@ export class SecureEvidenceStore {
   readonly #artifactRootDevice: bigint;
   readonly #artifactRootInode: bigint;
   readonly #powerShellIdentity: ProductionPowerShellIdentity | null;
+  readonly #windowsControllerRoot: string | null;
   readonly #test: SecureEvidenceStoreTestOptions | undefined;
 
   constructor(artifactRoot: string, options: SecureEvidenceStoreOptions = {}) {
@@ -220,6 +291,7 @@ export class SecureEvidenceStore {
     this.retainedRoot = path.resolve(this.artifactRoot, canonicalManifest.retainedEvidence.root);
     if (!isInside(this.artifactRoot, this.retainedRoot)) throw new Error("canonical retained evidence root escapes artifactRoot");
     this.#test = options.test;
+    this.#windowsControllerRoot = resolveWindowsSystemPaths()?.windowsRoot ?? null;
     this.#powerShellIdentity = process.platform === "win32" ? resolvePowerShellIdentity() : null;
     if (this.#powerShellIdentity !== null && normalizeWindowsIdentity(this.#powerShellIdentity.path) !== normalizeWindowsIdentity(this.#powerShellIdentity.realPath)) {
       throw new Error("canonical PowerShell helper path resolves through a substituted directory identity");
@@ -243,7 +315,7 @@ export class SecureEvidenceStore {
     const bytes = boundedContentBytes(contents);
     const target = this.resolve(relativePath);
     this.#operate(path.relative(this.artifactRoot, path.dirname(target)).split(path.sep), path.basename(target), bytes);
-    return { absolutePath: target, bytes: Buffer.from(bytes) };
+    return this.#leaseResult(target, bytes);
   }
 
   writeDirect(fileName: string, contents: string | Buffer): StoredEvidenceFile {
@@ -253,7 +325,22 @@ export class SecureEvidenceStore {
     const bytes = boundedContentBytes(contents);
     const target = path.join(this.artifactRoot, fileName);
     this.#operate([], fileName, bytes);
-    return { absolutePath: target, bytes: Buffer.from(bytes) };
+    return this.#leaseResult(target, bytes);
+  }
+
+  #leaseResult(target: string, bytes: Buffer): StoredEvidenceFile {
+    const descriptor = openSync(target, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const stat = fstatSync(descriptor, { bigint: true });
+    const lease = new FileIdentityLease(descriptor, target, Buffer.from(bytes), stat.dev, stat.ino);
+    try {
+      lease.verify();
+      waitForTestBoundary(this.#test, "lease_verified_before_return");
+      lease.verify();
+      return { absolutePath: target, bytes: Buffer.from(bytes), identityLease: lease };
+    } catch (error) {
+      lease.dispose();
+      throw error;
+    }
   }
 
   #operate(directories: string[], fileName: string | undefined, bytes: Buffer | undefined): void {
@@ -266,6 +353,7 @@ export class SecureEvidenceStore {
 
   #operateWindows(directories: string[], fileName: string | undefined, bytes: Buffer | undefined): void {
     if (this.#powerShellIdentity === null) throw new Error("canonical PowerShell helper identity is unavailable");
+    verifyWindowsControllerRoot(this.#windowsControllerRoot);
     const identity = verifyPowerShellIdentityCurrent(this.#powerShellIdentity);
     const helperTimeoutMs = Math.max(1, this.#test?.timeoutMs ?? NATIVE_HELPER_TIMEOUT_MS);
     const input = Buffer.from(JSON.stringify({
@@ -295,7 +383,10 @@ export class SecureEvidenceStore {
       windowsHide: true,
       timeout: helperTimeoutMs,
       maxBuffer: MAX_NATIVE_HELPER_OUTPUT_BYTES,
-      env: sanitizedProductionRuntimeEnvironment(),
+      env: sanitizedProductionRuntimeEnvironment(process.env, {
+        SystemRoot: this.#windowsControllerRoot ?? undefined,
+        WINDIR: this.#windowsControllerRoot ?? undefined,
+      }),
     });
     if (result.error !== undefined) throw new Error("secure evidence native helper failed or exceeded its fixed bound", { cause: result.error });
     if (Buffer.byteLength(result.stdout, "utf8") > MAX_NATIVE_HELPER_OUTPUT_BYTES) {
@@ -311,7 +402,7 @@ export class SecureEvidenceStore {
       throw new Error("secure evidence native helper violated its output contract");
     }
     if (result.status !== 0 || record.status !== "ok") {
-      if (!["EEXIST", "cleanup_uncertain", "operation_failed", "FINAL_PATH", "PIN_FAILED", "IDENTITY_CHANGED", "SYNC_TIMEOUT", "PUBLISH_FAILED", "READBACK_MISMATCH"].includes(String(record.code))) {
+      if (!["EEXIST", "cleanup_uncertain", "operation_failed", "FINAL_PATH", "PIN_FAILED", "IDENTITY_CHANGED", "LINK_COUNT_CHANGED", "SYNC_TIMEOUT", "PUBLISH_FAILED", "READBACK_MISMATCH"].includes(String(record.code))) {
         throw new Error("secure evidence native helper returned an unknown error code");
       }
       if (record.code === "EEXIST") {
