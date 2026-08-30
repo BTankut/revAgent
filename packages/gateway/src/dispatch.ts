@@ -1322,20 +1322,52 @@ export class GatewayDispatcher {
             invocationId,
           });
         }
+        const mutationProbeReadOnlyPreview =
+          projection.previewExecutorMethod === "get_ui_state" &&
+          (tool.name === "conformance.fixture.mutation_probe_origin" ||
+            tool.name === "conformance.fixture.mutation_probe_next");
+        let executorContext = context;
+        if (mutationProbeReadOnlyPreview) {
+          try {
+            executorContext = createGatewayInvocationContext({
+              auth,
+              route: route!,
+              mcpSessionId: input.mcpSessionId,
+              effectiveMcpRequestScope: input.effectiveMcpRequestScope,
+              invocationId,
+              toolName: tool.name,
+              toolVersion: tool.version,
+              policyClass: "auto",
+              policyDecision: "auto",
+              mutationScopePolicy: "none",
+              executor: tool.executor,
+              args: projection.previewArgs,
+              startedAtMs,
+            });
+          } catch (error) {
+            return finishFailure({
+              code: "invalid_invocation_context",
+              detailCode: error instanceof GatewayInvocationContextError ? error.code : undefined,
+              message: errorMessage(error),
+              invocationId,
+              context,
+            });
+          }
+        }
         const request: GatewayExecutorRequest = {
           toolName: tool.name,
           toolVersion: tool.version,
           executorMethod: projection.previewExecutorMethod,
-          policyClass: tool.policyClass,
+          policyClass: mutationProbeReadOnlyPreview ? "auto" : tool.policyClass,
           mutationScopePolicy: "none",
           args: projection.previewArgs,
-          context,
+          context: executorContext,
         };
         let rawPreview: Awaited<
           ReturnType<NonNullable<GatewayExecutor["previewConfirmation"]>>
         >;
         try {
-          rawPreview = await runWithGatewayInvocationContext(context, () =>
+          rawPreview = await runWithGatewayInvocationContext(executorContext, () =>
             executor.previewConfirmation!(request),
           );
         } catch (error) {

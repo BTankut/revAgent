@@ -59,6 +59,7 @@ import {
   bindMutationProbeVerificationWorkflow,
   createMutationProbeVerificationWorkflow,
 } from "./productionConformanceVerification.js";
+import { MUTATION_PROBE_CONFORMANCE_TOOL_RECORDS } from "./productionConformanceTools.js";
 import {
   createCapturingEventSink,
   createReadOnlyRecoveryAuthorityFixture,
@@ -638,6 +639,7 @@ async function createConfirmationDispatchHarness(
     readonly eventSink?: CapturingEventSink;
     readonly idBase?: number;
     readonly openStore?: boolean;
+    readonly record?: GatewayToolRecord;
   } = {},
 ): Promise<ConfirmationDispatchHarness> {
   const durable = input.durable ?? createRestartableTestStore();
@@ -673,7 +675,7 @@ async function createConfirmationDispatchHarness(
     recoveryAuthority: recovery.authority,
     confirmationAuthority,
     executor: executor.executor,
-    record: confirmRecord,
+    record: input.record ?? confirmRecord,
     idBase: input.idBase,
     ...(input.eventSink === undefined ? {} : { eventSink: input.eventSink }),
   });
@@ -2292,6 +2294,30 @@ describe("GatewayDispatcher fail-closed boundaries", () => {
 });
 
 describe("GW-8 durable confirmation round trip", () => {
+  it("routes mutation-probe preview as an auto read while retaining confirm audit authority", async () => {
+    const record = MUTATION_PROBE_CONFORMANCE_TOOL_RECORDS[0]!;
+    const harness = await createConfirmationDispatchHarness({ record });
+    const outcome = await harness.dispatcher.dispatch(
+      dispatchInput({}, { toolName: record.name }),
+    );
+    expect(outcome).toMatchObject({ ok: true, state: "confirmation_required" });
+    expect(harness.previewRequests()).toHaveLength(1);
+    expect(harness.previewRequests()[0]).toMatchObject({
+      executorMethod: "get_ui_state",
+      policyClass: "auto",
+      mutationScopePolicy: "none",
+      args: {},
+      context: {
+        toolName: record.name,
+        policyClass: "auto",
+        policyDecision: "auto",
+        mutating: false,
+        mutationScope: null,
+        confirmationId: null,
+      },
+    });
+  });
+
   async function preview(
     harness: ConfirmationDispatchHarness,
     args: Readonly<Record<string, unknown>> = { value: "ready" },
