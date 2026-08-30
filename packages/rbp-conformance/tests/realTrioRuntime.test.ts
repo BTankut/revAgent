@@ -367,22 +367,22 @@ describe.sequential("WP-12 direct real trio runtime fixture", () => {
           const rebound = await runtime.issueReboundNorthCredential();
           await withRealTrioNorthMcpClient({ endpoint: runtime.endpoint,
             certificateSha256: runtime.certificateSha256, credential: rebound }, async (foreignSession) => {
-            const denied = await foreignSession.toolCall({
+            const denied = await callToolOutcome(foreignSession, {
               name: "conformance.fixture.mutation_probe_verify", arguments: {},
               requestId: `wp12-verification-rebound-${binding}`,
             });
-            expect(denied.content).toMatchObject({ state: "failed", executorReached: false,
+            expect(denied).toMatchObject({ state: "failed", executorReached: false,
               error: { code: "recovery_blocked", detailCode: "verification_owner_or_hold_missing" } });
           });
 
           const foreignCredential = await runtime.issueForeignNorthCredential();
           await withRealTrioNorthMcpClient({ endpoint: runtime.endpoint,
             certificateSha256: runtime.certificateSha256, credential: foreignCredential }, async (foreign) => {
-            const denied = await foreign.toolCall({
+            const denied = await callToolOutcome(foreign, {
               name: "conformance.fixture.mutation_probe_verify", arguments: {},
               requestId: `wp12-verification-foreign-${binding}`,
             });
-            expect(denied.content).toMatchObject({ state: "failed", executorReached: false,
+            expect(denied).toMatchObject({ state: "failed", executorReached: false,
               error: { code: "recovery_blocked", detailCode: "verification_owner_or_hold_missing" } });
           });
 
@@ -1860,14 +1860,14 @@ async function callConfirmedTool(
   readonly preview: Record<string, unknown>;
   readonly commit: Record<string, unknown>;
 }>> {
-  const preview = await client.toolCall({ name, arguments: args, requestId });
-  expect(preview.content).toMatchObject({ state: "confirmation_required" });
-  const confirmation = object(preview.content.confirmation);
+  const preview = await callToolOutcome(client, { name, arguments: args, requestId });
+  expect(preview).toMatchObject({ state: "confirmation_required" });
+  const confirmation = object(preview.confirmation);
   if (typeof confirmation?.confirmToken !== "string" ||
       typeof confirmation.originatingPreviewInvocationId !== "string") {
     throw new Error("mutation-probe confirmation response is malformed");
   }
-  const commit = await client.toolCall({
+  const commit = await callToolOutcome(client, {
     name,
     arguments: Object.freeze({
       ...args,
@@ -1876,7 +1876,30 @@ async function callConfirmedTool(
     }),
     requestId: `${requestId}-commit`,
   });
-  return Object.freeze({ preview: preview.content, commit: commit.content });
+  return Object.freeze({ preview, commit });
+}
+
+async function callToolOutcome(
+  client: RealTrioNorthMcpClient,
+  input: { readonly name: string; readonly arguments: Readonly<Record<string, unknown>>; readonly requestId: string },
+): Promise<Record<string, unknown>> {
+  const call = await client.request({
+    jsonrpc: "2.0",
+    id: input.requestId,
+    method: "tools/call",
+    params: { name: input.name, arguments: input.arguments },
+  });
+  const envelope = object(call.response);
+  const result = object(envelope?.result);
+  const structured = object(result?.structuredContent);
+  if (structured !== null) return structured;
+  const content = Array.isArray(result?.content) ? result.content : [];
+  const item = content.length === 1 ? object(content[0]) : null;
+  if (item?.type === "text" && typeof item.text === "string") {
+    const parsed = object(JSON.parse(item.text) as unknown);
+    if (parsed !== null) return parsed;
+  }
+  throw new Error(`real trio tool outcome lacks structured content [isError=${String(result?.isError)}]`);
 }
 
 function fixtureMethodCount(evidence: Record<string, unknown>, method: string): number {
