@@ -12561,7 +12561,10 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         const journal: GatewayVerifiedBridgeJournalEvidence | null = journals.length === 0
           ? null
           : {
-              kind: "known_terminal", rsid: record.rsid, sessionBindingId: record.sessionBindingId,
+              kind: journals.some((journal) => journal.state === "indeterminate")
+                ? "indeterminate" as const
+                : "known_terminal" as const,
+              rsid: record.rsid, sessionBindingId: record.sessionBindingId,
               envelopeDigest: pending.envelopeDigest, journalRecords: journals, batchTerminal: null,
               durableJournalVersion: record.sessionVersion, recordedAtMs: this.#clock(),
             };
@@ -12711,7 +12714,10 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
           ? { result: structuredClone(envelope.payload) as BatchResult, resultDigest: makeParamsDigest(envelope.payload as unknown as JsonValue) }
           : null;
         const journal: GatewayVerifiedBridgeJournalEvidence | null = journals.length === 0 ? null : {
-          kind: "known_terminal", rsid: record.rsid, sessionBindingId: record.sessionBindingId,
+          kind: journals.some((journal) => journal.state === "indeterminate")
+            ? "indeterminate" as const
+            : "known_terminal" as const,
+          rsid: record.rsid, sessionBindingId: record.sessionBindingId,
           envelopeDigest: record.pending!.envelopeDigest, journalRecords: journals, batchTerminal,
           durableJournalVersion: record.sessionVersion, recordedAtMs: this.#clock(),
         };

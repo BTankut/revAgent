@@ -8,6 +8,7 @@ import {
 import {
   createReceivedJournalRecord,
   dataEnvelopeImmutableDigest,
+  makeMutationHoldId,
   makeParamsDigest,
   RBP_MAX_DECODED_CHUNK_BYTES,
   RBP_MAX_INLINE_RESULT_BYTES,
@@ -236,6 +237,35 @@ function terminal(
         response_bytes: 1,
         framing: "length-prefixed",
       },
+    },
+  };
+}
+
+function indeterminateTerminal(
+  rsid: string,
+  invocationId: string,
+  seq: number,
+  ack: number,
+  holdId: string,
+): Extract<RbpEnvelope, { type: "error" }> {
+  return {
+    v: 1,
+    type: "error",
+    id: id(),
+    rsid,
+    seq,
+    ack,
+    ts: new Date().toISOString(),
+    payload: {
+      invocation_id: invocationId,
+      retryable: false,
+      fault_class: "journal_indeterminate",
+      outcome: "indeterminate",
+      verification_required: true,
+      verification_hold_id: holdId,
+      mutation_scope: { kind: "session" },
+      replayed: false,
+      message: "mutation outcome requires verification",
     },
   };
 }
@@ -3389,15 +3419,24 @@ describe("GW-12 production RBP ingress", () => {
       );
       expect(beforeCommit).toStrictEqual({ ok: true, value: { kind: "not_durable_yet" } });
 
+      const holdId = makeMutationHoldId(
+        registered.payload.rsid,
+        { kind: "session" },
+        [invocation.context.idempotencyKey],
+      );
       await binding.send(
-        terminal(
+        indeterminateTerminal(
           registered.payload.rsid,
           invocation.context.invocationId,
           1,
           dispatched.seq - 1,
+          holdId,
         ),
       );
-      await expect(pending).resolves.toMatchObject({ state: "completed" });
+      await expect(pending).resolves.toMatchObject({
+        state: "failed",
+        error: { code: "journal_indeterminate" },
+      });
 
       const ackBelow = await restartable.store.transact(
         { tenantId: "tenant-gw12" },
@@ -3454,7 +3493,7 @@ describe("GW-12 production RBP ingress", () => {
               cumulativeAck: dispatched.seq,
               envelopeDigest,
             },
-            journal: { kind: "known_terminal" },
+            journal: { kind: "indeterminate" },
           },
         },
       });
