@@ -1641,10 +1641,32 @@ describe("GW-12 production RBP ingress", () => {
       type: "error",
       payload: { fault_class: "protocol", message: "RBP protocol error" },
     });
+    expect(client.messages[1]?.id).not.toBe("malformed");
     expect(client.messages.filter((message) => message.type === "error")).toHaveLength(1);
     await expect(channel.send(JSON.stringify({ late: true }))).rejects.toThrow(
       "normal egress is closed",
     );
+
+    const correlated = await openRawWss(server.port);
+    correlated.socket.send(JSON.stringify(hello()));
+    await vi.waitFor(() => expect(correlated.messages[0]?.type).toBe("hello_ack"));
+    const targetId = id();
+    correlated.socket.send(JSON.stringify({
+      v: 1,
+      type: "partial",
+      id: targetId,
+      ts: new Date().toISOString(),
+      rsid: `rs_${"a".repeat(24)}`,
+      seq: 1,
+      ack: 0,
+      payload: { kind: "chunk", invocation_id: "missing-required-fields" },
+    }));
+    await correlated.closed;
+    expect(correlated.messages[1]).toMatchObject({
+      type: "error",
+      id: targetId,
+      payload: { fault_class: "protocol", message: "RBP protocol error" },
+    });
   });
 
   it("observes a normal send callback failure without putting its detail on the wire", async () => {
