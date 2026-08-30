@@ -14,6 +14,10 @@ if ([string]::IsNullOrWhiteSpace($RepoRoot)) {
     $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 }
 $RepoRoot = [IO.Path]::GetFullPath($RepoRoot)
+. (Join-Path $RepoRoot 'scripts\test-desktop-launcher-evidence.ps1') -RepoRoot $RepoRoot -LibraryOnly
+$fixtureExpectedHostSha256 = '9305492a80f2ef82f8ceae9ac2ec3fb1dc5b6f686f46555253c385a2034a49f7'
+$fixtureExpectedModuleSha256 = 'b21d81ae3ad015b82535ce449454b89ad5cc2fc1d8c9cd0a47820c4a5d6293cc'
+$fixtureExpectedGuiSha256 = '2d92fc06fd192789420d6ec630d35548a835762e823c3a27998e9e0d35b4e2b2'
 
 function Assert-True {
     param([bool]$Condition, [string]$Message)
@@ -37,6 +41,22 @@ $applySentinel = Join-Path $fixtureRoot 'mock-elevated-apply.json'
 $guiNominalLogRoot = Join-Path $fixtureRoot 'gui-nominal-logs'
 $fixtureModule = $null
 $cleanInput = $null
+$script:CleanGuiCaseSequence = 0
+
+function New-CleanGuiFixtureCase {
+    param([Parameter(Mandatory=$true)][string]$ConsumerPath)
+    $script:CleanGuiCaseSequence++
+    $root=Join-Path $fixtureRoot ('clean-host-gui-{0}' -f $script:CleanGuiCaseSequence);[void][IO.Directory]::CreateDirectory($root);Protect-FixtureRoot -Path $root
+    $bundle=Join-Path $root 'trusted-bundle';$logs=Join-Path $root 'logs';[void][IO.Directory]::CreateDirectory($bundle);[void][IO.Directory]::CreateDirectory($logs)
+    Copy-RevAgentTrustedFixtureFile $guiTestHost (Join-Path $bundle (Split-Path -Leaf $guiTestHost)) $fixtureExpectedHostSha256;Copy-RevAgentTrustedFixtureFile (Join-Path $RepoRoot 'scripts\RevAgent.TestFixtureAuthority.psm1') (Join-Path $bundle 'RevAgent.TestFixtureAuthority.psm1') $fixtureExpectedModuleSha256
+    return [pscustomobject]@{Root=$root;Logs=$logs;Host=(Join-Path $bundle (Split-Path -Leaf $guiTestHost));Consumer=$ConsumerPath}
+}
+function Invoke-CleanGuiFixture {
+    param([Parameter(Mandatory=$true)]$Case,[hashtable]$HostArguments=@{})
+    $args=@{LogDirectory=[string]$Case.Logs};foreach($key in $HostArguments.Keys){$args[$key]=$HostArguments[$key]}
+    $result=@(Invoke-CleanFixtureHost -Operation Gui -ConsumerPath ([string]$Case.Consumer) -FixtureRoot ([string]$Case.Root) -HostArguments $args -SelectedHostPath ([string]$Case.Host) -ExpectedHostLiteralSha256 $fixtureExpectedHostSha256 -ExpectedModuleLiteralSha256 $fixtureExpectedModuleSha256 -ExpectedConsumerLiteralSha256 $fixtureExpectedGuiSha256)
+    return $result[-1]
+}
 
 [void][IO.Directory]::CreateDirectory($packageSource)
 [void][IO.Directory]::CreateDirectory((Split-Path -Parent $packagePath))
@@ -217,23 +237,14 @@ $evidence = [ordered]@{
     $installedState = Get-Content -Raw -LiteralPath $installedStatePath | ConvertFrom-Json
     Assert-True ([bool]$installedState.sourceAuthentication.independentlyAuthenticated) 'Supervised isolated manual apply did not preserve independently authenticated bootstrap state.'
 
-    Write-Host 'Execute protected GUI pre-window chain in a fresh Windows PowerShell 5.1 child'
+    Write-Host 'Execute protected GUI pre-window chain in a fresh exact PowerShell 7 child'
     $protectedGui = Join-Path $bootstrapRoot 'Install-revAgent-Updater-GUI.ps1'
     $protectedState = Join-Path $bootstrapRoot 'bootstrap-state.json'
-    $guiOutput = @(& $windowsPowerShell `
-            -NoLogo `
-            -NoProfile `
-            -NonInteractive `
-            -ExecutionPolicy Bypass `
-            -File $guiTestHost `
-            -GuiScriptPath $protectedGui `
-            -FixtureRoot $fixtureRoot `
-            -LogDirectory $guiNominalLogRoot `
-            -ChannelManifestPath $channelPath `
-            -BootstrapStatePath $protectedState `
-            -PreWindowBootstrapSmokeTest 2>&1 | ForEach-Object { [string]$_ })
-    $guiExitCode = $LASTEXITCODE
-    Assert-True ($guiExitCode -eq 0) "Clean-install GUI pre-window PS5 child failed. output=$($guiOutput -join ' | ')"
+    $nominalGuiCase=New-CleanGuiFixtureCase -ConsumerPath $protectedGui
+    $guiNominalLogRoot=[string]$nominalGuiCase.Logs
+    $nominalGuiResult=Invoke-CleanGuiFixture -Case $nominalGuiCase -HostArguments @{ChannelManifestPath=$channelPath;BootstrapStatePath=$protectedState;PreWindowBootstrapSmokeTest=$true}
+    $guiOutput=@($nominalGuiResult.stdout,$nominalGuiResult.stderr);$guiExitCode=$nominalGuiResult.exitCode
+    Assert-True ($guiExitCode -eq 0) "Clean-install GUI pre-window PowerShell 7 child failed. output=$($guiOutput -join ' | ')"
     $jsonLine = @($guiOutput | Where-Object { $_.TrimStart().StartsWith('{') } | Select-Object -Last 1)
     Assert-True ($jsonLine.Count -eq 1) "Clean-install GUI pre-window child did not return JSON evidence. output=$($guiOutput -join ' | ')"
     $guiResult = $jsonLine[0] | ConvertFrom-Json
@@ -243,26 +254,14 @@ $evidence = [ordered]@{
     }
 
     Write-Host 'Execute protected GUI startup-failure logging in the owned fixture root'
-    $guiFailureLogRoot = Join-Path $fixtureRoot 'gui-startup-logs'
-    [void][IO.Directory]::CreateDirectory($guiFailureLogRoot)
+    $failureGuiCase=New-CleanGuiFixtureCase -ConsumerPath $protectedGui
+    $guiFailureLogRoot=[string]$failureGuiCase.Logs
     $guiFailureMarker = 'clean-install-gui-startup-' + [Guid]::NewGuid().ToString('N')
     $previousErrorActionPreference = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
-        $guiFailureOutput = @(& $windowsPowerShell `
-                -NoLogo `
-                -NoProfile `
-                -NonInteractive `
-                -ExecutionPolicy Bypass `
-                -File $guiTestHost `
-                -GuiScriptPath $protectedGui `
-                -FixtureRoot $fixtureRoot `
-                -LogDirectory $guiFailureLogRoot `
-                -ChannelManifestPath $channelPath `
-                -BootstrapStatePath $protectedState `
-                -PreWindowBootstrapSmokeTest `
-                -TestStartupFailureMessage $guiFailureMarker 2>&1 | ForEach-Object { [string]$_ })
-        $guiFailureExitCode = $LASTEXITCODE
+        $failureGuiResult=Invoke-CleanGuiFixture -Case $failureGuiCase -HostArguments @{ChannelManifestPath=$channelPath;BootstrapStatePath=$protectedState;PreWindowBootstrapSmokeTest=$true;TestStartupFailureMessage=$guiFailureMarker}
+        $guiFailureOutput=@($failureGuiResult.stdout,$failureGuiResult.stderr);$guiFailureExitCode=$failureGuiResult.exitCode
     }
     finally { $ErrorActionPreference = $previousErrorActionPreference }
     $guiFailureLogs = @(Get-ChildItem -LiteralPath $guiFailureLogRoot -Filter 'gui-startup-*.log' -File)

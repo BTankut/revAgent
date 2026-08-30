@@ -3,6 +3,12 @@ param([string]$RepoRoot = "")
 
 $ErrorActionPreference = "Stop"
 if ([string]::IsNullOrWhiteSpace($RepoRoot)) { $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path }
+$RepoRoot = [IO.Path]::GetFullPath($RepoRoot)
+. (Join-Path $RepoRoot 'scripts\test-desktop-launcher-evidence.ps1') -RepoRoot $RepoRoot -LibraryOnly
+Set-StrictMode -Off
+$fixtureExpectedHostSha256 = '9305492a80f2ef82f8ceae9ac2ec3fb1dc5b6f686f46555253c385a2034a49f7'
+$fixtureExpectedModuleSha256 = 'b21d81ae3ad015b82535ce449454b89ad5cc2fc1d8c9cd0a47820c4a5d6293cc'
+$fixtureExpectedGuiSha256 = '2d92fc06fd192789420d6ec630d35548a835762e823c3a27998e9e0d35b4e2b2'
 function Assert-True([bool]$Condition, [string]$Message) { if (-not $Condition) { throw $Message } }
 
 function Invoke-ExpectBootstrapFailure {
@@ -45,6 +51,23 @@ $evidenceTarget = Join-Path $temp "evidence-target"
 $trustedKeys = Join-Path $temp "fixture-release-trusted-keys.json"
 $productionBootstrapSource = Join-Path $RepoRoot "installer\nas\Start-revAgent-Update.ps1"
 $guiTestHost = Join-Path $RepoRoot 'scripts\Invoke-RevAgentUpdaterGuiTestHost.ps1'
+$script:LocalGuiCaseSequence = 0
+function New-LocalGuiFixtureCase {
+    param([string]$ConsumerPath = '')
+    $script:LocalGuiCaseSequence++
+    $root = Join-Path $temp ('clean-gui-case-{0}' -f $script:LocalGuiCaseSequence)
+    New-Item -ItemType Directory -Path $root -Force | Out-Null;Protect-FixtureRoot -Path $root
+    $bundle = Join-Path $root 'trusted-bundle';$logs = Join-Path $root 'logs';New-Item -ItemType Directory -Path $bundle, $logs -Force | Out-Null
+    Copy-RevAgentTrustedFixtureFile $guiTestHost (Join-Path $bundle (Split-Path -Leaf $guiTestHost)) $fixtureExpectedHostSha256;Copy-RevAgentTrustedFixtureFile (Join-Path $RepoRoot 'scripts\RevAgent.TestFixtureAuthority.psm1') (Join-Path $bundle 'RevAgent.TestFixtureAuthority.psm1') $fixtureExpectedModuleSha256
+    if ([string]::IsNullOrWhiteSpace($ConsumerPath)) { $ConsumerPath = Join-Path $RepoRoot 'installer\nas\Install-revAgent-Updater-GUI.ps1';Copy-RevAgentTrustedFixtureFile $ConsumerPath (Join-Path $bundle (Split-Path -Leaf $ConsumerPath)) $fixtureExpectedGuiSha256;$installTask=Join-Path (Split-Path -Parent $ConsumerPath) 'install-updater-task.ps1';Copy-RevAgentTrustedFixtureFile $installTask (Join-Path $bundle 'install-updater-task.ps1') ((Get-FileHash $installTask -Algorithm SHA256).Hash);$ConsumerPath = Join-Path $bundle (Split-Path -Leaf $ConsumerPath) }
+    return [pscustomobject]@{Root=$root;Logs=$logs;Host=(Join-Path $bundle (Split-Path -Leaf $guiTestHost));Consumer=$ConsumerPath}
+}
+function Invoke-LocalGuiFixture {
+    param([Parameter(Mandatory=$true)]$Case,[hashtable]$HostArguments=@{})
+    $args=@{LogDirectory=[string]$Case.Logs};foreach($key in $HostArguments.Keys){$args[$key]=$HostArguments[$key]}
+    $result=@(Invoke-CleanFixtureHost -Operation Gui -ConsumerPath ([string]$Case.Consumer) -FixtureRoot ([string]$Case.Root) -HostArguments $args -SelectedHostPath ([string]$Case.Host) -ExpectedHostLiteralSha256 $fixtureExpectedHostSha256 -ExpectedModuleLiteralSha256 $fixtureExpectedModuleSha256 -ExpectedConsumerLiteralSha256 $fixtureExpectedGuiSha256)
+    return $result[-1]
+}
 $keyFixtureRepo = Join-Path $temp 'synthetic-key-repo'
 $sources = [ordered]@{
     bootstrap = $productionBootstrapSource
@@ -122,14 +145,15 @@ try {
     Write-Host "Test GUI pre-window failure log and nonzero exit"
     $windowsPowerShell = Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe'
     $guiStartupMarker = 'gui-startup-fixture-' + [Guid]::NewGuid().ToString('N')
-    $guiLogDirectory = Join-Path $temp 'gui-startup-logs'
-    New-Item -ItemType Directory -Path $guiLogDirectory -Force | Out-Null
+    $failureCase = New-LocalGuiFixtureCase
+    $guiLogDirectory = [string]$failureCase.Logs
     $guiLogsBefore = @{}
     $previousErrorActionPreference = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
-        $guiFailureOutput = @(& $windowsPowerShell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $guiTestHost -GuiScriptPath (Join-Path $RepoRoot 'installer\nas\Install-revAgent-Updater-GUI.ps1') -FixtureRoot $temp -LogDirectory $guiLogDirectory -TestStartupFailureMessage $guiStartupMarker 2>&1 | ForEach-Object { [string]$_ })
-        $guiFailureExitCode = $LASTEXITCODE
+        $guiFailureResult = Invoke-LocalGuiFixture -Case $failureCase -HostArguments @{ TestStartupFailureMessage = $guiStartupMarker }
+        $guiFailureOutput = @($guiFailureResult.stdout, $guiFailureResult.stderr)
+        $guiFailureExitCode = $guiFailureResult.exitCode
     }
     finally { $ErrorActionPreference = $previousErrorActionPreference }
     $newGuiStartupLogs = @(Get-ChildItem -LiteralPath $guiLogDirectory -Filter 'gui-startup-*.log' -File | Where-Object { -not $guiLogsBefore.ContainsKey($_.FullName) })
@@ -259,31 +283,21 @@ $principal = [Security.Principal.WindowsPrincipal]::new($identity)
     Assert-True ($null -ne $state.files.permissions -and [string]::Equals([string]$state.files.permissions.relativePath, "lib\RevAgent.Permissions.psm1", [StringComparison]::OrdinalIgnoreCase)) "Protected bootstrap state does not bind the permissions sibling."
     Assert-True ((Test-Path -LiteralPath $protectedPermissionsPath -PathType Leaf) -and [string]::Equals((Get-FileHash -Algorithm SHA256 -LiteralPath $protectedPermissionsPath).Hash, [string]$hashes.permissions, [StringComparison]::OrdinalIgnoreCase)) "Protected permissions sibling is missing or does not match authenticated evidence."
 
-    Write-Host "Test valid protected GUI pre-window bootstrap chain in a fresh PS5 child"
+    Write-Host "Test valid protected GUI pre-window bootstrap chain in a fresh exact PowerShell 7 child"
     $fakeStableChannelPath = Join-Path $fakeRelease 'channels\stable.json'
     [IO.File]::WriteAllText($fakeStableChannelPath, '{"channel":"stable"}', [Text.UTF8Encoding]::new($false))
     $protectedGuiPath = Join-Path $bootstrapRoot 'Install-revAgent-Updater-GUI.ps1'
     $protectedStatePath = Join-Path $bootstrapRoot 'bootstrap-state.json'
-    $preWindowGuiLogRoot = Join-Path $temp 'gui-prewindow-nominal-logs'
-    New-Item -ItemType Directory -Path $preWindowGuiLogRoot -Force | Out-Null
-    $preWindowOutput = @(& $windowsPowerShell `
-            -NoLogo `
-            -NoProfile `
-            -NonInteractive `
-            -ExecutionPolicy Bypass `
-            -File $guiTestHost `
-            -GuiScriptPath $protectedGuiPath `
-            -FixtureRoot $temp `
-            -LogDirectory $preWindowGuiLogRoot `
-            -ChannelManifestPath $fakeStableChannelPath `
-            -BootstrapStatePath $protectedStatePath `
-            -PreWindowBootstrapSmokeTest 2>&1 | ForEach-Object { [string]$_ })
-    $preWindowExitCode = $LASTEXITCODE
-    Assert-True ($preWindowExitCode -eq 0) "Valid protected GUI pre-window PS5 child failed. output=$($preWindowOutput -join ' | ')"
+    $preWindowCase = New-LocalGuiFixtureCase -ConsumerPath $protectedGuiPath
+    $preWindowGuiLogRoot = [string]$preWindowCase.Logs
+    $preWindowResultHost = Invoke-LocalGuiFixture -Case $preWindowCase -HostArguments @{ ChannelManifestPath = $fakeStableChannelPath; BootstrapStatePath = $protectedStatePath; PreWindowBootstrapSmokeTest = $true }
+    $preWindowOutput = @($preWindowResultHost.stdout, $preWindowResultHost.stderr)
+    $preWindowExitCode = $preWindowResultHost.exitCode
+    Assert-True ($preWindowExitCode -eq 0) "Valid protected GUI pre-window PowerShell 7 child failed. output=$($preWindowOutput -join ' | ')"
     $preWindowJsonLine = @($preWindowOutput | Where-Object { $_.TrimStart().StartsWith('{') } | Select-Object -Last 1)
-    Assert-True ($preWindowJsonLine.Count -eq 1) "Valid protected GUI pre-window PS5 child did not return its smoke result. output=$($preWindowOutput -join ' | ')"
+    Assert-True ($preWindowJsonLine.Count -eq 1) "Valid protected GUI pre-window PowerShell 7 child did not return its smoke result. output=$($preWindowOutput -join ' | ')"
     $preWindowResult = $preWindowJsonLine[0] | ConvertFrom-Json
-    Assert-True ([bool]$preWindowResult.success -and [string]$preWindowResult.action -eq 'pre-window-bootstrap-smoke-test') "Valid protected GUI pre-window PS5 result was not successful."
+    Assert-True ([bool]$preWindowResult.success -and [string]$preWindowResult.action -eq 'pre-window-bootstrap-smoke-test') "Valid protected GUI pre-window PowerShell 7 result was not successful."
     Assert-True ([string]::Equals([IO.Path]::GetFullPath([string]$preWindowResult.bootstrapStatePath), [IO.Path]::GetFullPath($protectedStatePath), [StringComparison]::OrdinalIgnoreCase)) "GUI pre-window smoke did not parse the exact protected bootstrap state."
     foreach ($loadedPath in @($preWindowResult.sourceFreeMigrationModule, $preWindowResult.releaseSnapshotModule, $preWindowResult.trustedKeysPath)) {
         Assert-True ((Test-Path -LiteralPath ([string]$loadedPath) -PathType Leaf) -and [IO.Path]::GetFullPath([string]$loadedPath).StartsWith([IO.Path]::GetFullPath($bootstrapRoot).TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)) "GUI pre-window smoke loaded evidence outside the protected fixture bootstrap: $loadedPath"

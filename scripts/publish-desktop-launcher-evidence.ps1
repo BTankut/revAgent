@@ -34,6 +34,15 @@ param(
     [Parameter(DontShow = $true)]
     [object]$TestFixtureAuthority = $null,
 
+    [Parameter(DontShow = $true)]
+    [object]$TestFixtureModuleInfo = $null,
+
+    [Parameter(DontShow = $true)]
+    [object]$TestFixtureHostProvenance = $null,
+
+    [Parameter(DontShow = $true)]
+    [switch]$TestFixtureFailFirstLauncher,
+
     [switch]$Recurse,
 
     [string]$OutputPath = "",
@@ -76,6 +85,9 @@ else {
     $NowUtc = $NowUtc.ToUniversalTime()
 }
 $script:FixtureDiscoveryLease = $null
+$script:FixtureLauncherBatch = $null
+$script:ExpectedFixtureHostSha256 = '9305492a80f2ef82f8ceae9ac2ec3fb1dc5b6f686f46555253c385a2034a49f7'
+$script:ExpectedFixtureModuleSha256 = 'b21d81ae3ad015b82535ce449454b89ad5cc2fc1d8c9cd0a47820c4a5d6293cc'
 
 function Normalize-RevAgentMachineName {
     param([string]$Value)
@@ -128,11 +140,9 @@ function Read-RevAgentJsonFile {
             throw 'fixture_external_report_read_refused'
         }
         $relative = $fixturePath.Substring($fixtureReportsRoot.Length).TrimStart('\')
-        try { return $script:FixtureDiscoveryLease.ReadReport($relative) | ConvertFrom-Json }
-        catch {
-            if ($_.Exception.Message -match 'fixture_file_open_failed') { return $null }
-            throw
-        }
+        $fixtureReport = $script:FixtureDiscoveryLease.ReadReport($relative)
+        if ($null -eq $fixtureReport) { return $null }
+        return $fixtureReport | ConvertFrom-Json
     }
     if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) {
         return $null
@@ -294,7 +304,9 @@ function Get-RevAgentLauncherFiles {
     )
 
     if ($null -ne $script:FixtureDiscoveryLease) {
-        return @($script:FixtureDiscoveryLease.OpenLauncherFiles($Paths, [bool]$Recursive, [string[]]$candidateExtensions))
+        if ($null -ne $script:FixtureLauncherBatch) { throw 'fixture_launcher_batch_reuse_refused' }
+        $script:FixtureLauncherBatch = $script:FixtureDiscoveryLease.OpenLauncherFiles($Paths, [bool]$Recursive, [string[]]$candidateExtensions)
+        return @($script:FixtureLauncherBatch.Files)
     }
 
     $seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
@@ -410,8 +422,14 @@ function New-RevAgentLocalLauncherEvidence {
 
     $files = @(Get-RevAgentLauncherFiles -Paths $Paths -Recursive:$Recursive)
     $records = [System.Collections.Generic.List[object]]::new()
+    $fixtureFileIndex = 0
     foreach ($file in $files) {
         try {
+            if ($null -ne $script:FixtureDiscoveryLease -and $TestFixtureFailFirstLauncher -and $fixtureFileIndex -eq 0) {
+                $file.VerifyIdentity()
+                throw 'fixture_injected_first_file_failure'
+            }
+            $fixtureFileIndex++
             $read = Read-RevAgentLauncherText -File $file
             $text = [string]$read.text
             $isProductCandidate = Test-RevAgentTextContainsAny -Text $text -Patterns $productLauncherPatterns
@@ -636,27 +654,38 @@ function Publish-RevAgentEvidence {
 }
 
 function Get-RevAgentDesktopFixtureOwnership {
-    param([Parameter(Mandatory = $true)][object]$Authority)
+    param(
+        [Parameter(Mandatory = $true)][object]$Authority,
+        [Parameter(Mandatory = $true)][object]$ModuleInfo,
+        [Parameter(Mandatory = $true)][object]$HostProvenance
+    )
 
-    $expectedModulePath = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot 'RevAgent.TestFixtureAuthority.psm1'))
-    $modules = @(Get-Module -Name 'RevAgent.TestFixtureAuthority' | Where-Object {
-            $_.ModuleType -eq [Management.Automation.ModuleType]::Script -and
-            [string]::Equals([IO.Path]::GetFullPath([string]$_.Path), $expectedModulePath, [StringComparison]::OrdinalIgnoreCase)
-        })
-    if ($modules.Count -ne 1) { throw 'revagent_test_fixture_authority_provenance_refused' }
-    $module = $modules[0]
-    $ownership = $module.SessionState.PSVariable.GetValue('RevAgentFixtureOwnership')
-    $authorityType = $module.SessionState.PSVariable.GetValue('RevAgentFixtureAuthorityType')
+    if ($null -eq $ModuleInfo -or $null -eq $HostProvenance -or
+        $ModuleInfo -isnot [Management.Automation.PSModuleInfo] -or
+        $ModuleInfo.ModuleType -ne [Management.Automation.ModuleType]::Script -or
+        -not [string]::Equals([string]$ModuleInfo.Name, 'RevAgent.TestFixtureAuthority', [StringComparison]::Ordinal) -or
+        [IO.Path]::GetFileName([string]$ModuleInfo.Path) -ne 'RevAgent.TestFixtureAuthority.psm1') {
+        throw 'revagent_test_fixture_authority_provenance_refused'
+    }
+    $ownership = $ModuleInfo.SessionState.PSVariable.GetValue('RevAgentFixtureOwnership')
+    $authorityType = $ModuleInfo.SessionState.PSVariable.GetValue('RevAgentFixtureAuthorityType')
     $assemblyLocation = try { [string]$Authority.GetType().Assembly.Location } catch { '__unavailable__' }
+    $binding = [Reflection.BindingFlags]'Instance,NonPublic'
+    $ownershipNonce = if ($null -ne $ownership) { $ownership.GetType().GetField('nonce', $binding).GetValue($ownership) } else { $null }
+    $exactAuthorityType = $null -ne $authorityType -and [object]::ReferenceEquals($Authority.GetType(), $authorityType)
+    $authorityNonceValid = $exactAuthorityType -and $null -ne $ownershipNonce -and [bool]$Authority.GetType().GetMethod('OwnsNonce', $binding).Invoke($Authority, @($ownershipNonce))
+    $authorityProvenanceValid = $exactAuthorityType -and [bool]$Authority.GetType().GetMethod('MatchesProvenance', $binding).Invoke($Authority, @($ModuleInfo, $HostProvenance, 'DesktopLauncherDiscovery'))
     if ($null -eq $ownership -or $null -eq $authorityType -or -not $ownership.GetType().IsPublic -or -not $ownership.GetType().IsSealed -or
+        -not [object]::ReferenceEquals($ownership.ModuleInfo, $ModuleInfo) -or
         -not [object]::ReferenceEquals($Authority.GetType(), $authorityType) -or
         -not [object]::ReferenceEquals($Authority.GetType().Assembly, $ownership.ImplementationAssembly) -or
         -not [object]::ReferenceEquals($Authority.GetType().Module, $ownership.ImplementationModule) -or
         -not [object]::ReferenceEquals($ownership.AuthorityType, $authorityType) -or
         $ownership.ModuleVersionId -ne $Authority.GetType().Module.ModuleVersionId -or
-        -not [string]::Equals([string]$ownership.ModulePath, $expectedModulePath, [StringComparison]::OrdinalIgnoreCase) -or
-        -not [string]::Equals([string]$ownership.ModuleSha256, (Get-FileHash -Algorithm SHA256 -LiteralPath $expectedModulePath).Hash, [StringComparison]::OrdinalIgnoreCase) -or
-        [bool]$ownership.AssemblyIsDynamic -ne [bool]$Authority.GetType().Assembly.IsDynamic -or -not [string]::IsNullOrEmpty($assemblyLocation) -or -not [bool]$ownership.OwnsAuthority($Authority)) {
+        -not [string]::Equals([string]$ownership.ModuleSha256, $script:ExpectedFixtureModuleSha256, [StringComparison]::OrdinalIgnoreCase) -or
+        [bool]$ownership.AssemblyIsDynamic -ne [bool]$Authority.GetType().Assembly.IsDynamic -or -not [string]::IsNullOrEmpty($assemblyLocation) -or
+        -not [bool]$HostProvenance.VerifyConsumer($script:ExpectedFixtureHostSha256, $script:ExpectedFixtureModuleSha256, $ModuleInfo, 'Publisher') -or
+        -not $authorityNonceValid -or -not $authorityProvenanceValid) {
         throw 'revagent_test_fixture_authority_provenance_refused'
     }
     $sameTypes = @([AppDomain]::CurrentDomain.GetAssemblies() | ForEach-Object { $_.GetType($Authority.GetType().FullName, $false, $false) } | Where-Object { $null -ne $_ })
@@ -666,19 +695,18 @@ function Get-RevAgentDesktopFixtureOwnership {
 }
 
 $fixtureAuthority = $null
+try {
+$fixtureTupleCount = @(@($TestFixtureAuthority, $TestFixtureModuleInfo, $TestFixtureHostProvenance) | Where-Object { $null -ne $_ }).Count
+if ($fixtureTupleCount -ne 0 -and $fixtureTupleCount -ne 3) { throw 'revagent_test_fixture_authority_provenance_refused' }
 if ($null -ne $TestFixtureAuthority) {
-    [void](Get-RevAgentDesktopFixtureOwnership -Authority $TestFixtureAuthority)
+    [void](Get-RevAgentDesktopFixtureOwnership -Authority $TestFixtureAuthority -ModuleInfo $TestFixtureModuleInfo -HostProvenance $TestFixtureHostProvenance)
     $fixtureAuthority = $TestFixtureAuthority
     $script:FixtureDiscoveryLease = $fixtureAuthority.ConsumeDesktopLauncherDiscovery()
     if (-not [string]::IsNullOrWhiteSpace($ConfigPath)) { throw 'fixture_external_config_read_refused' }
     $authorityReportsRoot = [IO.Path]::GetFullPath([string]$script:FixtureDiscoveryLease.ReportsRoot).TrimEnd('\')
-    if (-not [string]::IsNullOrWhiteSpace($ReportsRoot) -and -not [string]::Equals([IO.Path]::GetFullPath($ReportsRoot).TrimEnd('\'), $authorityReportsRoot, [StringComparison]::OrdinalIgnoreCase)) {
-        throw 'fixture_reports_root_mismatch'
-    }
+    if (-not [string]::IsNullOrWhiteSpace($ReportsRoot) -and -not [string]::Equals([IO.Path]::GetFullPath($ReportsRoot).TrimEnd('\'), $authorityReportsRoot, [StringComparison]::OrdinalIgnoreCase)) { throw 'fixture_reports_root_mismatch' }
     $ReportsRoot = $authorityReportsRoot
 }
-
-try {
 $config = $null
 if (-not [string]::IsNullOrWhiteSpace($ConfigPath)) {
     if (-not (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) {
@@ -744,6 +772,7 @@ else {
 }
 }
 finally {
+    if ($null -ne $script:FixtureLauncherBatch) { $script:FixtureLauncherBatch.Dispose() }
     if ($null -ne $script:FixtureDiscoveryLease) { $script:FixtureDiscoveryLease.Dispose() }
     if ($null -ne $fixtureAuthority) { $fixtureAuthority.Dispose() }
 }

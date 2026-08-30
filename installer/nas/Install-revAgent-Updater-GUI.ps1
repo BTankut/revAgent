@@ -13,7 +13,9 @@ param(
     [Parameter(DontShow = $true)][switch]$PreWindowBootstrapSmokeTest,
     [Parameter(DontShow = $true)][switch]$SuppressStartupFailureDialogForTest,
     [Parameter(DontShow = $true)][string]$TestStartupFailureMessage = "",
-    [Parameter(DontShow = $true)][object]$TestFixtureAuthority = $null
+    [Parameter(DontShow = $true)][object]$TestFixtureAuthority = $null,
+    [Parameter(DontShow = $true)][object]$TestFixtureModuleInfo = $null,
+    [Parameter(DontShow = $true)][object]$TestFixtureHostProvenance = $null
 )
 
 if ("$($ExecutionContext.SessionState.LanguageMode)" -ne 'FullLanguage') {
@@ -25,30 +27,42 @@ if ("$($ExecutionContext.SessionState.LanguageMode)" -ne 'FullLanguage') {
 
 $ErrorActionPreference = "Stop"
 $script:GuiStartupCompleted = $false
+$script:ExpectedFixtureHostSha256 = '9305492a80f2ef82f8ceae9ac2ec3fb1dc5b6f686f46555253c385a2034a49f7'
+$script:ExpectedFixtureModuleSha256 = 'b21d81ae3ad015b82535ce449454b89ad5cc2fc1d8c9cd0a47820c4a5d6293cc'
 
 function Get-RevAgentTestFixtureOwnership {
-    param([Parameter(Mandatory = $true)][object]$Authority)
+    param(
+        [Parameter(Mandatory = $true)][object]$Authority,
+        [Parameter(Mandatory = $true)][object]$ModuleInfo,
+        [Parameter(Mandatory = $true)][object]$HostProvenance
+    )
 
-    $modules = @(Get-Module -Name 'RevAgent.TestFixtureAuthority' | Where-Object { $_.ModuleType -eq [Management.Automation.ModuleType]::Script })
-    if ($modules.Count -ne 1) { throw 'revagent_test_fixture_authority_provenance_refused' }
-    $module = $modules[0]
-    $modulePath = [IO.Path]::GetFullPath([string]$module.Path)
-    if ([IO.Path]::GetFileName($modulePath) -ne 'RevAgent.TestFixtureAuthority.psm1' -or
-        -not (Test-Path -LiteralPath (Join-Path (Split-Path -Parent $modulePath) 'Invoke-RevAgentUpdaterGuiTestHost.ps1') -PathType Leaf)) {
+    if ($null -eq $ModuleInfo -or $null -eq $HostProvenance -or
+        $ModuleInfo -isnot [Management.Automation.PSModuleInfo] -or
+        $ModuleInfo.ModuleType -ne [Management.Automation.ModuleType]::Script -or
+        -not [string]::Equals([string]$ModuleInfo.Name, 'RevAgent.TestFixtureAuthority', [StringComparison]::Ordinal) -or
+        [IO.Path]::GetFileName([string]$ModuleInfo.Path) -ne 'RevAgent.TestFixtureAuthority.psm1') {
         throw 'revagent_test_fixture_authority_provenance_refused'
     }
-    $ownership = $module.SessionState.PSVariable.GetValue('RevAgentFixtureOwnership')
-    $authorityType = $module.SessionState.PSVariable.GetValue('RevAgentFixtureAuthorityType')
+    $ownership = $ModuleInfo.SessionState.PSVariable.GetValue('RevAgentFixtureOwnership')
+    $authorityType = $ModuleInfo.SessionState.PSVariable.GetValue('RevAgentFixtureAuthorityType')
     $assemblyLocation = try { [string]$Authority.GetType().Assembly.Location } catch { '__unavailable__' }
+    $binding = [Reflection.BindingFlags]'Instance,NonPublic'
+    $ownershipNonce = if ($null -ne $ownership) { $ownership.GetType().GetField('nonce', $binding).GetValue($ownership) } else { $null }
+    $exactAuthorityType = $null -ne $authorityType -and [object]::ReferenceEquals($Authority.GetType(), $authorityType)
+    $authorityNonceValid = $exactAuthorityType -and $null -ne $ownershipNonce -and [bool]$Authority.GetType().GetMethod('OwnsNonce', $binding).Invoke($Authority, @($ownershipNonce))
+    $authorityProvenanceValid = $exactAuthorityType -and [bool]$Authority.GetType().GetMethod('MatchesProvenance', $binding).Invoke($Authority, @($ModuleInfo, $HostProvenance, 'GuiStartupFailureLog'))
     if ($null -eq $ownership -or $null -eq $authorityType -or -not $ownership.GetType().IsPublic -or -not $ownership.GetType().IsSealed -or
+        -not [object]::ReferenceEquals($ownership.ModuleInfo, $ModuleInfo) -or
         -not [object]::ReferenceEquals($Authority.GetType(), $authorityType) -or
         -not [object]::ReferenceEquals($Authority.GetType().Assembly, $ownership.ImplementationAssembly) -or
         -not [object]::ReferenceEquals($Authority.GetType().Module, $ownership.ImplementationModule) -or
         -not [object]::ReferenceEquals($ownership.AuthorityType, $authorityType) -or
         $ownership.ModuleVersionId -ne $Authority.GetType().Module.ModuleVersionId -or
-        -not [string]::Equals([string]$ownership.ModulePath, $modulePath, [StringComparison]::OrdinalIgnoreCase) -or
-        -not [string]::Equals([string]$ownership.ModuleSha256, (Get-FileHash -Algorithm SHA256 -LiteralPath $modulePath).Hash, [StringComparison]::OrdinalIgnoreCase) -or
-        [bool]$ownership.AssemblyIsDynamic -ne [bool]$Authority.GetType().Assembly.IsDynamic -or -not [string]::IsNullOrEmpty($assemblyLocation) -or -not [bool]$ownership.OwnsAuthority($Authority)) {
+        -not [string]::Equals([string]$ownership.ModuleSha256, $script:ExpectedFixtureModuleSha256, [StringComparison]::OrdinalIgnoreCase) -or
+        [bool]$ownership.AssemblyIsDynamic -ne [bool]$Authority.GetType().Assembly.IsDynamic -or -not [string]::IsNullOrEmpty($assemblyLocation) -or
+        -not [bool]$HostProvenance.VerifyConsumer($script:ExpectedFixtureHostSha256, $script:ExpectedFixtureModuleSha256, $ModuleInfo, 'Gui') -or
+        -not $authorityNonceValid -or -not $authorityProvenanceValid) {
         throw 'revagent_test_fixture_authority_provenance_refused'
     }
     $sameTypes = @([AppDomain]::CurrentDomain.GetAssemblies() | ForEach-Object { $_.GetType($Authority.GetType().FullName, $false, $false) } | Where-Object { $null -ne $_ })
@@ -68,7 +82,7 @@ function Write-RevAgentGuiStartupFailure {
             if (-not ($SmokeTest -or $PreWindowBootstrapSmokeTest -or $SuppressStartupFailureDialogForTest -or -not [string]::IsNullOrWhiteSpace($TestStartupFailureMessage))) {
                 throw 'Test fixture authority is accepted only by explicit smoke/test modes.'
             }
-            [void](Get-RevAgentTestFixtureOwnership -Authority $TestFixtureAuthority)
+            [void](Get-RevAgentTestFixtureOwnership -Authority $TestFixtureAuthority -ModuleInfo $TestFixtureModuleInfo -HostProvenance $TestFixtureHostProvenance)
             $fixtureLease = $TestFixtureAuthority.ConsumeGuiStartupFailureLog()
         }
         else {
@@ -83,7 +97,8 @@ function Write-RevAgentGuiStartupFailure {
         [void]$lines.Add('languageMode=' + [string]$ExecutionContext.SessionState.LanguageMode)
         [void]$lines.Add('psVersion=' + [string]$PSVersionTable.PSVersion)
         [void]$lines.Add('psEdition=' + [string]$PSVersionTable.PSEdition)
-        [void]$lines.Add('clrVersion=' + [string]$PSVersionTable.CLRVersion)
+        $clrVersion = if ($PSVersionTable.ContainsKey('CLRVersion')) { [string]$PSVersionTable.CLRVersion } else { [string][Environment]::Version }
+        [void]$lines.Add('clrVersion=' + $clrVersion)
         [void]$lines.Add('error=' + [string]$ErrorRecord)
         [void]$lines.Add('category=' + [string]$ErrorRecord.CategoryInfo)
         [void]$lines.Add('position=' + [string]$ErrorRecord.InvocationInfo.PositionMessage)
@@ -131,11 +146,17 @@ function Write-RevAgentGuiStartupFailure {
 
 $fixtureAuthorityPreflightError = ''
 try {
+    $fixtureTupleCount = @(@($TestFixtureAuthority, $TestFixtureModuleInfo, $TestFixtureHostProvenance) | Where-Object { $null -ne $_ }).Count
+    if ($fixtureTupleCount -ne 0 -and $fixtureTupleCount -ne 3) {
+        $fixtureAuthorityPreflightError = 'revagent_test_fixture_authority_provenance_refused'
+    }
     if ($null -ne $TestFixtureAuthority) {
         if (-not ($SmokeTest -or $PreWindowBootstrapSmokeTest -or $SuppressStartupFailureDialogForTest -or -not [string]::IsNullOrWhiteSpace($TestStartupFailureMessage))) {
             $fixtureAuthorityPreflightError = 'revagent_test_fixture_authority_mode_refused'
         }
-        else { [void](Get-RevAgentTestFixtureOwnership -Authority $TestFixtureAuthority) }
+        elseif ([string]::IsNullOrWhiteSpace($fixtureAuthorityPreflightError)) {
+            [void](Get-RevAgentTestFixtureOwnership -Authority $TestFixtureAuthority -ModuleInfo $TestFixtureModuleInfo -HostProvenance $TestFixtureHostProvenance)
+        }
     }
     elseif (-not [string]::IsNullOrWhiteSpace($TestStartupFailureMessage)) {
         $fixtureAuthorityPreflightError = 'revagent_test_fixture_authority_required'
