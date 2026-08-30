@@ -217,9 +217,10 @@ try {
         $env:USERPROFILE = $profileRoot
         $profileCredential = Join-Path $cloudflaredProfileRoot "$tunnelId.json"
         Set-Content -LiteralPath $profileCredential -Value '{"AccountTag":"redacted","TunnelSecret":"redacted-from-profile"}' -Encoding ASCII
+        $missingLegacyCredential = Join-Path $tempRoot "missing-legacy-credential\$tunnelId.json"
         @(
             "tunnel: $tunnelId",
-            "credentials-file: C:\ProgramData\DPE\RevitMCP\cloudflared\$tunnelId.json",
+            "credentials-file: $missingLegacyCredential",
             "ingress:",
             "  - hostname: dashboard.revagent.app",
             "    service: http://127.0.0.1:8765",
@@ -231,11 +232,11 @@ try {
             -LegacyTunnelRoot $legacyTunnelRoot `
             -SkipScheduledTasks `
             -NoHealthCheck | ConvertFrom-Json
-        Assert-Equal $profileCredentialResult.credentialFileName "$tunnelId.json" "Tunnel installer must discover default user-profile Cloudflare credentials when legacy config points to a stale ProgramData path."
+        Assert-Equal $profileCredentialResult.credentialFileName "$tunnelId.json" "Tunnel installer must discover default user-profile Cloudflare credentials when the fixture legacy credential is deliberately missing."
         Assert-True (Test-Path -LiteralPath (Join-Path $installedDashboardRoot "tunnel\config\$tunnelId.json") -PathType Leaf) "Tunnel installer must copy discovered user-profile credentials into the add-on config root."
         $profileCredentialConfig = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $installedDashboardRoot "tunnel\config\config.yml")
         Assert-True ($profileCredentialConfig -match [regex]::Escape((Join-Path $installedDashboardRoot "tunnel\config\$tunnelId.json"))) "Tunnel installer must rewrite stale credentials-file paths to the discovered add-on-local credential path."
-        Assert-True ($profileCredentialConfig -notmatch 'C:\\ProgramData\\DPE\\RevitMCP\\cloudflared') "Tunnel installer must not preserve stale legacy credential paths when user-profile credentials are discovered."
+        Assert-True ($profileCredentialConfig -notmatch [regex]::Escape($missingLegacyCredential)) "Tunnel installer must not preserve the deliberately missing fixture credential path when user-profile credentials are discovered."
     }
     finally {
         $env:USERPROFILE = $previousUserProfile
