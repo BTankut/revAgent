@@ -37,14 +37,19 @@ internal sealed partial class RbpConnectionCoordinator
         ConnectionCycleContext context,
         RbpJournalRecoveryPlan recovery)
     {
+        CurrentOperationResult<IReadOnlyList<RbpLocalSessionSnapshot>> catalog =
+            await TryRunCurrentOperationAsync(
+                    context,
+                    () => _catalog.ReadAsync(context.Token))
+                .ConfigureAwait(false);
+        if (!catalog.Started) return;
         IReadOnlyList<RbpLocalSessionSnapshot> locals =
-            ValidateCatalogSnapshot(
-                await _catalog.ReadAsync(context.Token)
-                    .ConfigureAwait(false));
+            ValidateCatalogSnapshot(catalog.Value);
         var localByKey = locals.ToDictionary(
             item => item.LocalSessionKey,
             StringComparer.Ordinal);
         await RehydrateRegistrationCleanupSuppressionsAsync(
+                context,
                 recovery.PendingUnregister,
                 context.Token)
             .ConfigureAwait(false);
@@ -78,9 +83,10 @@ internal sealed partial class RbpConnectionCoordinator
         bool hasResume = recovery.ResumeCandidates.Count > 0;
         if (hasResume)
         {
-            AdvanceConnection(
-                new RbpConnectionEvent(
-                    RbpConnectionEventType.BeginResume));
+            if (!TryCommitCurrent(context, () => AdvanceConnection(
+                    new RbpConnectionEvent(
+                        RbpConnectionEventType.BeginResume))))
+                return;
         }
 
         var claimedLocalKeys = new HashSet<string>(StringComparer.Ordinal);
@@ -146,6 +152,7 @@ internal sealed partial class RbpConnectionCoordinator
             {
                 RegistrationPreflight preflight =
                     await AssessRegistrationPreflightAsync(
+                            context,
                             local,
                             registrationAssessments <
                                 MaximumRegistrationAssessmentsPerPass,
@@ -169,19 +176,23 @@ internal sealed partial class RbpConnectionCoordinator
 
         if (hasResume)
         {
-            AdvanceConnection(
+            _ = TryCommitCurrent(context, () => AdvanceConnection(
                 new RbpConnectionEvent(
-                    RbpConnectionEventType.ResumeComplete));
+                    RbpConnectionEventType.ResumeComplete)));
         }
     }
 
     private async Task ReconcileCurrentCatalogAsync(
         ConnectionCycleContext context)
     {
+        CurrentOperationResult<IReadOnlyList<RbpLocalSessionSnapshot>> catalog =
+            await TryRunCurrentOperationAsync(
+                    context,
+                    () => _catalog.ReadAsync(context.Token))
+                .ConfigureAwait(false);
+        if (!catalog.Started) return;
         IReadOnlyList<RbpLocalSessionSnapshot> locals =
-            ValidateCatalogSnapshot(
-                await _catalog.ReadAsync(context.Token)
-                    .ConfigureAwait(false));
+            ValidateCatalogSnapshot(catalog.Value);
         var localByKey = locals.ToDictionary(
             item => item.LocalSessionKey,
             StringComparer.Ordinal);
@@ -211,7 +222,10 @@ internal sealed partial class RbpConnectionCoordinator
                 continue;
             }
 
-            context.RefreshBoundSession(session.Stored.Rsid, current);
+            if (!TryCommitCurrent(context, () =>
+                    context.RefreshBoundSession(
+                        session.Stored.Rsid, current)))
+                return;
         }
 
         var activeLocalKeys = new HashSet<string>(
@@ -225,6 +239,7 @@ internal sealed partial class RbpConnectionCoordinator
             {
                 RegistrationPreflight preflight =
                     await AssessRegistrationPreflightAsync(
+                            context,
                             local,
                             registrationAssessments <
                                 MaximumRegistrationAssessmentsPerPass,
@@ -260,36 +275,62 @@ internal sealed partial class RbpConnectionCoordinator
 
         try
         {
-            RbpResumeControl payload = await CreateResumePayloadAsync(
-                    context,
-                    candidate,
-                    local)
-                .ConfigureAwait(false);
+            CurrentOperationResult<RbpResumeControl> payloadRead =
+                await TryRunCurrentOperationAsync(
+                        context,
+                        () => CreateResumePayloadAsync(
+                            context, candidate, local))
+                    .ConfigureAwait(false);
+            if (!payloadRead.Started)
+                throw new RbpCoordinatorException(
+                    RbpCoordinatorErrorCode.SessionAuthorityConflict,
+                    "Resume proof preparation lost current authority.");
+            RbpResumeControl payload = payloadRead.Value;
             // The control envelope is deliberately composed once, before the
             // pending flight is installed.  No data sequence/outbox allocation
             // occurs here, and a same-cycle wait can only retain these exact
             // bytes; a new connection always re-enters CreateResumePayloadAsync
             // and obtains a new fresh read/proof.
             RbpEnvelope resume = CreateControlEnvelope("session_resume", payload.Payload);
-            Task<RbpEnvelope> response = context.BeginResume(candidate.Session.Rsid);
-            await context.Cycle.SendAsync(
-                    resume,
-                    context.Token)
-                .ConfigureAwait(false);
+            Task<RbpEnvelope>? response = null;
+            if (!TryCommitCurrent(context, () =>
+                    response = context.BeginResume(candidate.Session.Rsid)))
+                throw new RbpCoordinatorException(
+                    RbpCoordinatorErrorCode.SessionAuthorityConflict,
+                    "The resume attempt lost current connection authority.");
+            CurrentOperationResult<bool> resumeSent =
+                await TryRunCurrentOperationAsync(
+                        context,
+                        () => context.Cycle.SendAsync(resume, context.Token))
+                    .ConfigureAwait(false);
+            if (!resumeSent.Started)
+                throw new RbpCoordinatorException(
+                    RbpCoordinatorErrorCode.SessionAuthorityConflict,
+                    "The resume send lost current connection authority.");
             RbpResumeAck parsed = ParseResumeAck(
                 await WaitForLifecycleControlAsync(
-                        response,
+                        response!,
                         _cycleFactory.BindingKind,
                         "session_resume",
                         context.Token)
                     .ConfigureAwait(false),
                 candidate.Session.Rsid);
-            RbpRecoveryTerminalPlan? terminal = await _journal
-                .ApplyRecoveryTerminalAcknowledgementAsync(
-                    parsed.Rsid, parsed.LastReceivedSequence,
-                    gatewayDeliveryReceiptRecorded: true,
-                    sourceReleaseEligible: true, context.Token)
-                .ConfigureAwait(false);
+            CurrentOperationResult<RbpRecoveryTerminalPlan?> terminalApplied =
+                await TryRunCurrentOperationAsync(
+                        context,
+                        () => _journal.ApplyRecoveryTerminalAcknowledgementAsync(
+                            parsed.Rsid,
+                            parsed.LastReceivedSequence,
+                            gatewayDeliveryReceiptRecorded: true,
+                            sourceReleaseEligible: true,
+                            context.Token))
+                    .ConfigureAwait(false);
+            if (!terminalApplied.Started)
+                throw new RbpCoordinatorException(
+                    RbpCoordinatorErrorCode.SessionAuthorityConflict,
+                    "Recovery terminal resume acknowledgement lost current " +
+                    "authority.");
+            RbpRecoveryTerminalPlan? terminal = terminalApplied.Value;
             if (terminal?.State == "tombstoned")
             {
                 throw new RbpCoordinatorException(
@@ -298,42 +339,79 @@ internal sealed partial class RbpConnectionCoordinator
             }
             if (terminal?.State == "confirmed")
             {
-                ObserveRecoveryTerminalAcknowledgement(context, terminal);
-                ReleaseRecoveryTerminalClaims(context, parsed.Rsid,
-                    terminal.RecoveryInvocationId, parsed.LastReceivedSequence);
+                CurrentOperationResult<bool> terminalObserved =
+                    await TryRunCurrentOperationAsync(
+                            context,
+                            () =>
+                            {
+                                ObserveRecoveryTerminalAcknowledgement(
+                                    context, terminal);
+                                ReleaseRecoveryTerminalClaims(
+                                    context, parsed.Rsid,
+                                    terminal.RecoveryInvocationId,
+                                    parsed.LastReceivedSequence);
+                                return Task.FromResult(true);
+                            })
+                        .ConfigureAwait(false);
+                if (!terminalObserved.Started)
+                    throw new RbpCoordinatorException(
+                        RbpCoordinatorErrorCode.SessionAuthorityConflict,
+                        "Recovery terminal acknowledgement lost current " +
+                        "connection authority.");
             }
-            RbpResumeAcknowledgementResult applied =
-                await _journal.ApplyResumeAcknowledgementAsync(
-                        parsed.Rsid,
-                        parsed.LastReceivedSequence,
-                        parsed.ResumeExpiresAt,
-                        context.Token)
+            CurrentOperationResult<RbpResumeAcknowledgementResult> resumeApplied =
+                await TryRunCurrentOperationAsync(
+                        context,
+                        () => _journal.ApplyResumeAcknowledgementAsync(
+                            parsed.Rsid,
+                            parsed.LastReceivedSequence,
+                            parsed.ResumeExpiresAt,
+                            context.Token))
                     .ConfigureAwait(false);
-            if (!IsCurrentContext(context))
-            {
+            if (!resumeApplied.Started)
                 throw new RbpCoordinatorException(
                     RbpCoordinatorErrorCode.SessionAuthorityConflict,
-                    "The resume connection generation changed before route publication.");
-            }
-            if (payload.RouteAuthorityCheckpoint is { } checkpoint)
-            {
-                MarkRouteAuthorityCheckpoint(context, parsed.Rsid, checkpoint);
-            }
+                    "Resume acknowledgement lost current authority.");
+            RbpResumeAcknowledgementResult applied = resumeApplied.Value;
             lifecycle = AdvanceSession(
                 lifecycle,
                 new RbpSessionEvent(
                     RbpSessionEventType.Resumed,
                     Rsid: parsed.Rsid));
-            context.AddBoundSession(
-                new BoundSession(local, applied.Session, lifecycle));
-            BindRegisteredRoute(context, parsed.Rsid, local, lifecycle);
-            context.QueueRetransmit(applied.Retransmit);
-
-            context.AcknowledgeResumeApplied(candidate.Session.Rsid);
+            bool routeBound = TryBindRegisteredRoute(
+                context, parsed.Rsid, local, lifecycle);
+            if (!routeBound || !TryCommitCurrent(context, () =>
+                {
+                    if (payload.RouteAuthorityCheckpoint is { } checkpoint)
+                        MarkRouteAuthorityCheckpoint(
+                            context, parsed.Rsid, checkpoint);
+                    context.AddBoundSession(
+                        new BoundSession(local, applied.Session, lifecycle));
+                    context.QueueRetransmit(applied.Retransmit);
+                    context.AcknowledgeResumeApplied(
+                        candidate.Session.Rsid);
+                }))
+            {
+                if (routeBound) RevokeBoundRoute(context, parsed.Rsid);
+                throw new RbpCoordinatorException(
+                    RbpCoordinatorErrorCode.SessionAuthorityConflict,
+                    "The resume connection generation changed before route publication.");
+            }
             StartDocContextWatch(context, parsed.Rsid, local);
-            ObserveReconnectWatchReadiness(context, applied.Session,
-                payload.RouteAuthorityCheckpoint,
-                watcherStarted: _docContextWatcher?.IsWatching(parsed.Rsid) == true);
+            _ = await TryRunCurrentOperationAsync(
+                    context,
+                    () =>
+                    {
+                        ObserveReconnectWatchReadiness(
+                            context,
+                            applied.Session,
+                            payload.RouteAuthorityCheckpoint,
+                            watcherStarted:
+                                _docContextWatcher?.IsWatching(parsed.Rsid) ==
+                                true);
+                        return Task.FromResult(true);
+                    })
+                .ConfigureAwait(false);
         }
         catch (Exception exception)
         {
@@ -353,7 +431,7 @@ internal sealed partial class RbpConnectionCoordinator
         RbpResumeCandidate candidate,
         RbpLocalSessionSnapshot local)
     {
-        if (!IsCurrentContext(context))
+        if (!TryCommitCurrent(context, () => { }))
         {
             throw new RbpCoordinatorException(
                 RbpCoordinatorErrorCode.SessionAuthorityConflict,
@@ -361,8 +439,8 @@ internal sealed partial class RbpConnectionCoordinator
         }
 
         bool protectedRecovery = await HasActiveProtectedRecoveryAsync(
-                candidate.Session.Rsid,
-                context.Token)
+                context,
+                candidate.Session.Rsid)
             .ConfigureAwait(false);
         bool proofGranted = context.GrantedConnectionCapabilities.Contains(
             RbpHelloProfile.RouteRebindProofCapability,
@@ -382,13 +460,24 @@ internal sealed partial class RbpConnectionCoordinator
                 ("last_rx_seq", candidate.LastJournaledReceivedSequence)), null);
         }
 
-        RbpFreshDocumentContext? fresh = _docContextWatcher is null
-            ? null
-            : await _docContextWatcher.ReadFreshResumeProofContextAsync(
-                    candidate.Session.Rsid,
-                    context.Token)
-                .ConfigureAwait(false);
-        if (!IsCurrentContext(context))
+        RbpFreshDocumentContext? fresh = null;
+        if (_docContextWatcher is not null)
+        {
+            CurrentOperationResult<RbpFreshDocumentContext?> freshRead =
+                await TryRunCurrentOperationAsync(
+                        context,
+                        () => _docContextWatcher
+                            .ReadFreshResumeProofContextAsync(
+                                candidate.Session.Rsid,
+                                context.Token))
+                    .ConfigureAwait(false);
+            if (!freshRead.Started)
+                throw new RbpCoordinatorException(
+                    RbpCoordinatorErrorCode.SessionAuthorityConflict,
+                    "The resume route proof read lost current authority.");
+            fresh = freshRead.Value;
+        }
+        if (!TryCommitCurrent(context, () => { }))
         {
             throw new RbpCoordinatorException(
                 RbpCoordinatorErrorCode.SessionAuthorityConflict,
@@ -425,21 +514,30 @@ internal sealed partial class RbpConnectionCoordinator
     }
 
     private async Task<bool> HasActiveProtectedRecoveryAsync(
-        string rsid,
-        CancellationToken token)
+        ConnectionCycleContext context,
+        string rsid)
     {
-        IReadOnlyList<RbpRecoveryCarrierReservation> carriers = await _journal
-            .ListActiveRecoveryCarrierReservationsAsync(token)
-            .ConfigureAwait(false);
+        CurrentOperationResult<IReadOnlyList<RbpRecoveryCarrierReservation>>
+            carrierRead = await TryRunCurrentOperationAsync(
+                context,
+                () => _journal.ListActiveRecoveryCarrierReservationsAsync(
+                    context.Token)).ConfigureAwait(false);
+        if (!carrierRead.Started) return false;
+        IReadOnlyList<RbpRecoveryCarrierReservation> carriers =
+            carrierRead.Value;
         if (carriers.Any(item => string.Equals(
                 item.Rsid, rsid, StringComparison.Ordinal)))
         {
             return true;
         }
 
-        IReadOnlyList<RbpRecoveryTerminalPlan> terminals = await _journal
-            .ListActiveRecoveryTerminalPlansAsync(token)
-            .ConfigureAwait(false);
+        CurrentOperationResult<IReadOnlyList<RbpRecoveryTerminalPlan>>
+            terminalRead = await TryRunCurrentOperationAsync(
+                context,
+                () => _journal.ListActiveRecoveryTerminalPlansAsync(
+                    context.Token)).ConfigureAwait(false);
+        if (!terminalRead.Started) return false;
+        IReadOnlyList<RbpRecoveryTerminalPlan> terminals = terminalRead.Value;
         return terminals.Any(item => string.Equals(
             item.Rsid, rsid, StringComparison.Ordinal));
     }
@@ -491,19 +589,30 @@ internal sealed partial class RbpConnectionCoordinator
             lifecycle,
             new RbpSessionEvent(RbpSessionEventType.RegisterRequested));
 
-        Task<RbpEnvelope> response = context.BeginRegistration(
-            local.LocalSessionKey);
+        Task<RbpEnvelope>? response = null;
+        if (!TryCommitCurrent(context, () =>
+                response = context.BeginRegistration(local.LocalSessionKey)))
+            throw new RbpCoordinatorException(
+                RbpCoordinatorErrorCode.SessionAuthorityConflict,
+                "The registration attempt lost current connection authority.");
         try
         {
-            await context.Cycle.SendAsync(
-                    CreateControlEnvelope(
-                        "session_register",
-                        local.RegistrationPayload),
-                    context.Token)
-                .ConfigureAwait(false);
+            CurrentOperationResult<bool> registrationSent =
+                await TryRunCurrentOperationAsync(
+                        context,
+                        () => context.Cycle.SendAsync(
+                            CreateControlEnvelope(
+                                "session_register",
+                                local.RegistrationPayload),
+                            context.Token))
+                    .ConfigureAwait(false);
+            if (!registrationSent.Started)
+                throw new RbpCoordinatorException(
+                    RbpCoordinatorErrorCode.SessionAuthorityConflict,
+                    "The registration send lost current connection authority.");
             RbpSessionRegistered parsed = ParseSessionRegistered(
                 await WaitForLifecycleControlAsync(
-                        response,
+                        response!,
                         _cycleFactory.BindingKind,
                         "session_register",
                         context.Token)
@@ -513,8 +622,10 @@ internal sealed partial class RbpConnectionCoordinator
             ValidateGrantedSessionCapabilities(
                 local.RegistrationPayload,
                 parsed.GrantedCapabilities);
-            RbpRegistrationCommitResult committed =
-                await _journal.PersistRegistrationAfterAcknowledgementAsync(
+            CurrentOperationResult<RbpRegistrationCommitResult>
+                registrationCommitted = await TryRunCurrentOperationAsync(
+                    context,
+                    () => _journal.PersistRegistrationAfterAcknowledgementAsync(
                         new RbpSessionRegistration(
                             parsed.Rsid,
                             local.LocalSessionKey,
@@ -523,16 +634,13 @@ internal sealed partial class RbpConnectionCoordinator
                             parsed.ResumeExpiresAt,
                             parsed.GrantedCapabilities),
                         preflight,
-                        context.Token)
-                    .ConfigureAwait(false);
-            if (!IsCurrentContext(context))
-            {
+                        context.Token)).ConfigureAwait(false);
+            if (!registrationCommitted.Started)
                 throw new RbpCoordinatorException(
                     RbpCoordinatorErrorCode.SessionAuthorityConflict,
-                    "The registration connection generation changed before " +
-                    "the local disposition was applied.");
-            }
-
+                    "Registration acknowledgement lost current authority.");
+            RbpRegistrationCommitResult committed =
+                registrationCommitted.Value;
             if (committed.Disposition ==
                 RbpLocalRegistrationDisposition.CleanupPending)
             {
@@ -542,16 +650,22 @@ internal sealed partial class RbpConnectionCoordinator
                         RbpCoordinatorErrorCode.SessionAuthorityConflict,
                         "A cleanup-pending registration omitted its durable " +
                         "receipt.");
-                MarkRegistrationCleanupPending(
-                    receipt.Session.LocalSessionKey,
-                    receipt.Session.RegistrationDigest,
-                    receipt.SafetyDecisionDigest);
-                context.InstallCleanupReceivePermit(
-                    receipt,
-                    registrationAcknowledgedAt);
-                context.AcknowledgeRegistrationDeferred(
-                    local.LocalSessionKey);
-                context.EndRegistration(local.LocalSessionKey);
+                if (!TryCommitCurrent(context, () =>
+                    {
+                        MarkRegistrationCleanupPending(
+                            receipt.Session.LocalSessionKey,
+                            receipt.Session.RegistrationDigest,
+                            receipt.SafetyDecisionDigest);
+                        context.InstallCleanupReceivePermit(
+                            receipt,
+                            registrationAcknowledgedAt);
+                        context.AcknowledgeRegistrationDeferred(
+                            local.LocalSessionKey);
+                        context.EndRegistration(local.LocalSessionKey);
+                    }))
+                    throw new RbpCoordinatorException(
+                        RbpCoordinatorErrorCode.SessionAuthorityConflict,
+                        "Cleanup-pending registration lost current authority.");
                 await SendUnregisterAsync(context, receipt.Tombstone)
                     .ConfigureAwait(false);
                 return;
@@ -573,11 +687,21 @@ internal sealed partial class RbpConnectionCoordinator
                 new RbpSessionEvent(
                     RbpSessionEventType.Registered,
                     Rsid: parsed.Rsid));
-            context.AddBoundSession(
-                new BoundSession(local, stored, lifecycle));
-            BindRegisteredRoute(context, parsed.Rsid, local, lifecycle);
-            context.AcknowledgeRegistrationApplied(
-                local.LocalSessionKey);
+            bool routeBound = TryBindRegisteredRoute(
+                context, parsed.Rsid, local, lifecycle);
+            if (!routeBound || !TryCommitCurrent(context, () =>
+                {
+                    context.AddBoundSession(
+                        new BoundSession(local, stored, lifecycle));
+                    context.AcknowledgeRegistrationApplied(
+                        local.LocalSessionKey);
+                }))
+            {
+                if (routeBound) RevokeBoundRoute(context, parsed.Rsid);
+                throw new RbpCoordinatorException(
+                    RbpCoordinatorErrorCode.SessionRouteBindingFailed,
+                    "The registered RBP session lost current route authority.");
+            }
             StartDocContextWatch(context, parsed.Rsid, local);
         }
         catch (Exception exception)
@@ -595,6 +719,7 @@ internal sealed partial class RbpConnectionCoordinator
 
     private async Task<RegistrationPreflight>
         AssessRegistrationPreflightAsync(
+            ConnectionCycleContext context,
             RbpLocalSessionSnapshot local,
             bool assessmentAllowed,
             CancellationToken cancellationToken)
@@ -638,62 +763,80 @@ internal sealed partial class RbpConnectionCoordinator
             }
         }
 
-        RbpRegistrationSafetyAssessment assessment =
-            await _journal.AssessRegistrationSafetyAsync(
-                    local.LocalSessionKey,
-                    registrationDigest,
-                    cancellationToken)
+        CurrentOperationResult<RbpRegistrationSafetyAssessment> assessed =
+            await TryRunCurrentOperationAsync(
+                    context,
+                    () => _journal.AssessRegistrationSafetyAsync(
+                        local.LocalSessionKey,
+                        registrationDigest,
+                        cancellationToken))
                 .ConfigureAwait(false);
+        if (!assessed.Started) return new RegistrationPreflight(false, null);
+        RbpRegistrationSafetyAssessment assessment = assessed.Value;
         RequireExactRegistrationAssessment(
             assessment,
             local.LocalSessionKey,
             registrationDigest);
-        lock (_sync)
+        RegistrationPreflight? committed = null;
+        if (!TryCommitCurrent(context, () =>
         {
-            if (assessment.Disposition ==
-                RbpRegistrationSafetyDisposition.Eligible)
+            lock (_sync)
             {
-                _ = _deferredRegistrations.Remove(
-                    local.LocalSessionKey);
-                return new RegistrationPreflight(true, assessment);
-            }
+                if (assessment.Disposition ==
+                    RbpRegistrationSafetyDisposition.Eligible)
+                {
+                    _ = _deferredRegistrations.Remove(
+                        local.LocalSessionKey);
+                    committed = new RegistrationPreflight(true, assessment);
+                    return;
+                }
 
-            if (!_deferredRegistrations.ContainsKey(
-                    local.LocalSessionKey) &&
-                _deferredRegistrations.Count >=
-                    MaximumDeferredRegistrations)
-            {
-                return new RegistrationPreflight(true, null);
-            }
+                if (!_deferredRegistrations.ContainsKey(
+                        local.LocalSessionKey) &&
+                    _deferredRegistrations.Count >=
+                        MaximumDeferredRegistrations)
+                {
+                    committed = new RegistrationPreflight(true, null);
+                    return;
+                }
 
-            _deferredRegistrations[local.LocalSessionKey] =
-                new DeferredRegistration(
-                    registrationDigest,
-                    assessment.SafetyDecisionDigest,
-                    DeferredRegistrationDisposition.Deferred,
-                    now);
-            return new RegistrationPreflight(true, null);
-        }
+                _deferredRegistrations[local.LocalSessionKey] =
+                    new DeferredRegistration(
+                        registrationDigest,
+                        assessment.SafetyDecisionDigest,
+                        DeferredRegistrationDisposition.Deferred,
+                        now);
+                committed = new RegistrationPreflight(true, null);
+            }
+        }))
+            return new RegistrationPreflight(false, null);
+        return committed ?? new RegistrationPreflight(false, null);
     }
 
     private async Task RehydrateRegistrationCleanupSuppressionsAsync(
+        ConnectionCycleContext context,
         IReadOnlyList<RbpUnregisterTombstone> tombstones,
         CancellationToken cancellationToken)
     {
         foreach (RbpUnregisterTombstone tombstone in tombstones)
         {
-            RbpStoredSession session =
-                await _journal.GetStoredSessionAsync(
-                        tombstone.Rsid,
-                        cancellationToken)
-                    .ConfigureAwait(false) ??
+            CurrentOperationResult<RbpStoredSession?> stored =
+                await TryRunCurrentOperationAsync(
+                        context,
+                        () => _journal.GetStoredSessionAsync(
+                            tombstone.Rsid, cancellationToken))
+                    .ConfigureAwait(false);
+            if (!stored.Started) return;
+            RbpStoredSession session = stored.Value ??
                 throw new RbpJournalException(
                     RbpJournalErrorCode.IntegrityCheckFailed,
                     "A pending unregister tombstone has no stored session.");
-            MarkRegistrationCleanupPending(
-                session.LocalSessionKey,
-                session.RegistrationDigest,
-                CleanupSuppressionDigest(session, tombstone));
+            if (!TryCommitCurrent(context, () =>
+                    MarkRegistrationCleanupPending(
+                        session.LocalSessionKey,
+                        session.RegistrationDigest,
+                        CleanupSuppressionDigest(session, tombstone))))
+                return;
         }
     }
 
@@ -806,7 +949,7 @@ internal sealed partial class RbpConnectionCoordinator
                     Phase = tombstone.Phase.ToString(),
                 }));
 
-    private void BindRegisteredRoute(
+    private bool TryBindRegisteredRoute(
         ConnectionCycleContext context,
         string rsid,
         RbpLocalSessionSnapshot local,
@@ -816,19 +959,12 @@ internal sealed partial class RbpConnectionCoordinator
             _options.SessionRouteBindingAuthority;
         if (authority is null)
         {
-            return;
+            return lifecycle.Phase == RbpSessionPhase.Registered;
         }
 
-        if (!IsCurrentContext(context) ||
-            lifecycle.Phase != RbpSessionPhase.Registered ||
-            !authority.TryBindRegisteredSession(
-                rsid, local.LocalSessionKey, context.Generation))
-        {
-            throw new RbpCoordinatorException(
-                RbpCoordinatorErrorCode.SessionRouteBindingFailed,
-                "The registered RBP session could not be bound to its " +
-                "attested local add-in session.");
-        }
+        return lifecycle.Phase == RbpSessionPhase.Registered &&
+            authority.TryBindRegisteredSession(
+                rsid, local.LocalSessionKey, context.Generation);
     }
 
     private async Task RevokeBoundSessionAsync(
@@ -837,18 +973,24 @@ internal sealed partial class RbpConnectionCoordinator
         RbpSessionUnregisterReason reason)
     {
         RevokeBoundRoute(context, session.Stored.Rsid);
-        RbpUnregisterTombstone tombstone =
-            await _journal.RecordUnregisterIntentAsync(
-                    session.Stored.Rsid,
-                    reason,
-                    context.Token)
+        CurrentOperationResult<RbpUnregisterTombstone> intent =
+            await TryRunCurrentOperationAsync(
+                    context,
+                    () => _journal.RecordUnregisterIntentAsync(
+                        session.Stored.Rsid, reason, context.Token))
                 .ConfigureAwait(false);
-        MarkRegistrationCleanupPending(
-            session.Stored.LocalSessionKey,
-            session.Stored.RegistrationDigest,
-            CleanupSuppressionDigest(session.Stored, tombstone));
-        context.RevokeBoundSession(session.Stored.Rsid, reason);
-        StopDocContextWatch(session.Stored.Rsid);
+        if (!intent.Started) return;
+        RbpUnregisterTombstone tombstone = intent.Value;
+        if (!TryCommitCurrent(context, () =>
+            {
+                MarkRegistrationCleanupPending(
+                    session.Stored.LocalSessionKey,
+                    session.Stored.RegistrationDigest,
+                    CleanupSuppressionDigest(session.Stored, tombstone));
+                context.RevokeBoundSession(session.Stored.Rsid, reason);
+            }))
+            return;
+        StopDocContextWatch(context, session.Stored.Rsid);
         await SendUnregisterAsync(context, tombstone).ConfigureAwait(false);
     }
 
@@ -907,25 +1049,31 @@ internal sealed partial class RbpConnectionCoordinator
         RbpSessionUnregisterReason reason)
     {
         RevokeBoundRoute(context, rsid);
-        RbpUnregisterTombstone tombstone =
-            await _journal.RecordUnregisterIntentAsync(
-                    rsid,
-                    reason,
-                    context.Token)
+        CurrentOperationResult<RbpUnregisterTombstone> intent =
+            await TryRunCurrentOperationAsync(
+                    context,
+                    () => _journal.RecordUnregisterIntentAsync(
+                        rsid, reason, context.Token))
                 .ConfigureAwait(false);
-        RbpStoredSession stored =
-            await _journal.GetStoredSessionAsync(
-                    rsid,
-                    context.Token)
-                .ConfigureAwait(false) ??
+        if (!intent.Started) return;
+        RbpUnregisterTombstone tombstone = intent.Value;
+        CurrentOperationResult<RbpStoredSession?> storedRead =
+            await TryRunCurrentOperationAsync(
+                    context,
+                    () => _journal.GetStoredSessionAsync(rsid, context.Token))
+                .ConfigureAwait(false);
+        if (!storedRead.Started) return;
+        RbpStoredSession stored = storedRead.Value ??
             throw new RbpJournalException(
                 RbpJournalErrorCode.IntegrityCheckFailed,
                 "A newly recorded unregister tombstone has no stored session.");
-        MarkRegistrationCleanupPending(
-            stored.LocalSessionKey,
-            stored.RegistrationDigest,
-            CleanupSuppressionDigest(stored, tombstone));
-        StopDocContextWatch(rsid);
+        if (!TryCommitCurrent(context, () =>
+                MarkRegistrationCleanupPending(
+                    stored.LocalSessionKey,
+                    stored.RegistrationDigest,
+                    CleanupSuppressionDigest(stored, tombstone))))
+            return;
+        StopDocContextWatch(context, rsid);
         await SendUnregisterAsync(context, tombstone).ConfigureAwait(false);
     }
 
@@ -943,6 +1091,9 @@ internal sealed partial class RbpConnectionCoordinator
 
     private void FenceRouteAuthorityEpoch(long epoch) =>
         _options.SessionRouteBindingAuthority?.FenceConnectionEpoch(epoch);
+
+    private void DenyRouteAuthorityEpoch(long epoch) =>
+        _options.SessionRouteBindingAuthority?.DenyConnectionEpoch(epoch);
 
     private void RevokeBoundRoute(ConnectionCycleContext context, string rsid) =>
         _options.SessionRouteBindingAuthority?.RevokeBoundSession(
@@ -962,11 +1113,15 @@ internal sealed partial class RbpConnectionCoordinator
             (
                 "reason",
                 RbpJournalSerialization.ReasonToWire(tombstone.Reason)));
-        await context.Cycle.SendAsync(
-                CreateControlEnvelope("session_unregister", payload),
-                context.Token)
+        CurrentOperationResult<bool> sent = await TryRunCurrentOperationAsync(
+                context,
+                () => context.Cycle.SendAsync(
+                    CreateControlEnvelope("session_unregister", payload),
+                    context.Token))
             .ConfigureAwait(false);
-        context.MarkUnregisterSent(tombstone.Rsid);
+        if (!sent.Started) return;
+        _ = TryCommitCurrent(context, () =>
+            context.MarkUnregisterSent(tombstone.Rsid));
     }
 
 }

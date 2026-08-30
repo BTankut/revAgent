@@ -46,7 +46,7 @@ public sealed class RbpCorrelatedVerificationFlowTests
             command.Parameters.AddWithValue("$key", Rsid + "/" + Second);
             receivedCorrelation = (string?)command.ExecuteScalar();
         };
-        RbpInvocationAnswer answer = await dispatcher.DispatchAsync(read, CancellationToken.None);
+        RbpInvocationAnswer answer = await DispatchVerificationAsync(dispatcher, fixture, read);
         Assert.NotNull(receivedCorrelation);
         Assert.Equal(JsonValueKind.Null, Json(receivedCorrelation!).GetProperty("terminal").ValueKind);
         RbpStoredInvocation stored = (await store.GetInvocationAsync(Rsid + "/" + Second))!;
@@ -67,7 +67,7 @@ public sealed class RbpCorrelatedVerificationFlowTests
             Assert.Equal(Second, hold.VerificationInvocationId);
         }
         Assert.Equal(2, fixture.Transport.Calls);
-        _ = await dispatcher.DispatchAsync(read, CancellationToken.None);
+        _ = await DispatchVerificationAsync(dispatcher, fixture, read);
         Assert.Equal(2, fixture.Transport.Calls);
         RbpInvocationAnswer blocked = await dispatcher.DispatchAsync(Request(true, Third), CancellationToken.None);
         Assert.Equal("journal_indeterminate", blocked.Payload.GetProperty("fault_class").GetString());
@@ -84,7 +84,8 @@ public sealed class RbpCorrelatedVerificationFlowTests
         string holdId = (await dispatcher.DispatchAsync(Request(true), CancellationToken.None)).Payload.GetProperty("verification_hold_id").GetString()!;
         fixture.Transport.SetResponse("{\"success\":true}");
         _ = await dispatcher.DispatchAsync(Request(false, Second), CancellationToken.None);
-        RbpInvocationAnswer refused = await dispatcher.DispatchAsync(VerificationRequest(Second, holdId), CancellationToken.None);
+        RbpInvocationAnswer refused = await DispatchVerificationAsync(
+            dispatcher, fixture, VerificationRequest(Second, holdId));
         Assert.Equal("protocol", refused.Payload.GetProperty("fault_class").GetString());
         Assert.Equal(2, fixture.Transport.Calls);
         Assert.Equal(RbpHoldState.Active, (await store.GetHoldAsync(Rsid, holdId))!.State);
@@ -118,8 +119,9 @@ public sealed class RbpCorrelatedVerificationFlowTests
         await using RbpJournalStore store = await OpenForRoute(directory, fixture);
         var dispatcher = new RbpInvocationDispatcher(store, fixture.Channel, new RbpInFlightGate());
 
-        RbpInvocationAnswer missing = await dispatcher.DispatchAsync(
-            VerificationRequest(Second, "vh:" + new string('a', 64)), CancellationToken.None);
+        RbpInvocationAnswer missing = await DispatchVerificationAsync(
+            dispatcher, fixture,
+            VerificationRequest(Second, "vh:" + new string('a', 64)));
         Assert.Equal("protocol", missing.Payload.GetProperty("fault_class").GetString());
 
         const string foreignRsid = "rs-foreign";
@@ -131,8 +133,8 @@ public sealed class RbpCorrelatedVerificationFlowTests
         await store.MarkInvocationExecutingAsync(origin.IdempotencyKey);
         string foreignHold = (await store.AdmitInvocationAsync(origin)).VerificationHoldId!;
 
-        RbpInvocationAnswer foreign = await dispatcher.DispatchAsync(
-            VerificationRequest(Third, foreignHold), CancellationToken.None);
+        RbpInvocationAnswer foreign = await DispatchVerificationAsync(
+            dispatcher, fixture, VerificationRequest(Third, foreignHold));
         Assert.Equal("protocol", foreign.Payload.GetProperty("fault_class").GetString());
         Assert.Null(await store.GetInvocationAsync(Rsid + "/" + Third));
         Assert.Equal(0, fixture.Transport.Calls);
@@ -149,7 +151,8 @@ public sealed class RbpCorrelatedVerificationFlowTests
         fixture.Transport.SetResponse("{\"success\":true}");
         fixture.RebindToFreshSlot();
 
-        _ = await dispatcher.DispatchAsync(VerificationRequest(Second, firstHold), CancellationToken.None);
+        _ = await DispatchVerificationAsync(
+            dispatcher, fixture, VerificationRequest(Second, firstHold));
         await AssertIneligibleAsync(store, firstHold, Second);
 
         fixture.Transport.SetResponse("{}", -32603);
@@ -160,9 +163,9 @@ public sealed class RbpCorrelatedVerificationFlowTests
         fixture.Transport.SetResponse("{\"success\":true}");
         var stripped = new EvidenceTransformChannel(fixture.Channel, outcome => outcome with { ProcessAttestation = null });
         var strippedDispatcher = new RbpInvocationDispatcher(store, stripped, new RbpInFlightGate());
-        _ = await strippedDispatcher.DispatchAsync(
-            VerificationRequest(Fourth, secondHold, "{\"kind\":\"document\",\"document_id\":\"doc-2\"}"),
-            CancellationToken.None);
+        _ = await DispatchVerificationAsync(
+            strippedDispatcher, fixture,
+            VerificationRequest(Fourth, secondHold, "{\"kind\":\"document\",\"document_id\":\"doc-2\"}"));
         await AssertIneligibleAsync(store, secondHold, Fourth);
     }
 
@@ -178,7 +181,8 @@ public sealed class RbpCorrelatedVerificationFlowTests
         fixture.Transport.BeforeReturn = () => store.RecordUnregisterIntentAsync(
             Rsid, RbpSessionUnregisterReason.OperatorRequested).GetAwaiter().GetResult();
 
-        _ = await dispatcher.DispatchAsync(VerificationRequest(Second, holdId), CancellationToken.None);
+        _ = await DispatchVerificationAsync(
+            dispatcher, fixture, VerificationRequest(Second, holdId));
         await AssertIneligibleAsync(store, holdId, Second);
         await store.DisposeAsync();
 
@@ -196,18 +200,21 @@ public sealed class RbpCorrelatedVerificationFlowTests
         var dispatcher = new RbpInvocationDispatcher(store, fixture.Channel, new RbpInFlightGate());
         string holdId = (await dispatcher.DispatchAsync(Request(true), CancellationToken.None)).Payload.GetProperty("verification_hold_id").GetString()!;
         fixture.Transport.SetResponse("{\"success\":true}");
-        _ = await dispatcher.DispatchAsync(VerificationRequest(Second, holdId), CancellationToken.None);
+        _ = await DispatchVerificationAsync(
+            dispatcher, fixture, VerificationRequest(Second, holdId));
         RbpVerificationHold first = (await store.GetHoldAsync(Rsid, holdId))!;
 
-        _ = await dispatcher.DispatchAsync(VerificationRequest(Third, holdId), CancellationToken.None);
+        _ = await DispatchVerificationAsync(
+            dispatcher, fixture, VerificationRequest(Third, holdId));
         RbpVerificationHold after = (await store.GetHoldAsync(Rsid, holdId))!;
         Assert.Equal(first.VerificationInvocationId, after.VerificationInvocationId);
         Assert.Equal(first.EvidenceDigest, after.EvidenceDigest);
         Assert.False(Json((await store.GetInvocationAsync(Rsid + "/" + Third))!.VerificationCorrelationJson!)
             .GetProperty("terminal").GetProperty("eligible").GetBoolean());
 
-        RbpInvocationAnswer mismatch = await dispatcher.DispatchAsync(
-            VerificationRequest(Second, "vh:" + new string('c', 64)), CancellationToken.None);
+        RbpInvocationAnswer mismatch = await DispatchVerificationAsync(
+            dispatcher, fixture,
+            VerificationRequest(Second, "vh:" + new string('c', 64)));
         Assert.Equal("protocol", mismatch.Payload.GetProperty("fault_class").GetString());
         Assert.Equal(3, fixture.Transport.Calls);
     }
@@ -221,22 +228,24 @@ public sealed class RbpCorrelatedVerificationFlowTests
         var dispatcher = new RbpInvocationDispatcher(store, fixture.Channel, new RbpInFlightGate());
         string holdId = (await dispatcher.DispatchAsync(Request(true), CancellationToken.None)).Payload.GetProperty("verification_hold_id").GetString()!;
         fixture.Transport.SetResponse("{\"success\":true}");
-        _ = await dispatcher.DispatchAsync(VerificationRequest(Second, holdId), CancellationToken.None);
+        _ = await DispatchVerificationAsync(
+            dispatcher, fixture, VerificationRequest(Second, holdId));
         RbpVerificationHold candidate = (await store.GetHoldAsync(Rsid, holdId))!;
         await store.DisposeAsync();
 
         await using RbpJournalStore reopened = RbpJournalStore.Open(directory.JournalPath,
             new TestResumeTokenProtector(), RbpJournalTestData.Options());
         var reopenedDispatcher = new RbpInvocationDispatcher(reopened, fixture.Channel, new RbpInFlightGate());
-        _ = await reopenedDispatcher.DispatchAsync(VerificationRequest(Second, holdId), CancellationToken.None);
+        _ = await DispatchVerificationAsync(
+            reopenedDispatcher, fixture, VerificationRequest(Second, holdId));
         Assert.Equal(2, fixture.Transport.Calls);
         _ = await reopenedDispatcher.DispatchAsync(
             ClearanceRequest(Fourth, holdId, candidate.VerificationInvocationId!, candidate.EvidenceDigest!),
             CancellationToken.None);
         Assert.Equal(RbpHoldState.Cleared, (await reopened.GetHoldAsync(Rsid, holdId))!.State);
 
-        RbpInvocationAnswer refused = await reopenedDispatcher.DispatchAsync(
-            VerificationRequest(Fifth, holdId), CancellationToken.None);
+        RbpInvocationAnswer refused = await DispatchVerificationAsync(
+            reopenedDispatcher, fixture, VerificationRequest(Fifth, holdId));
         Assert.Equal("protocol", refused.Payload.GetProperty("fault_class").GetString());
         Assert.Null(await reopened.GetInvocationAsync(Rsid + "/" + Fifth));
     }
@@ -250,7 +259,8 @@ public sealed class RbpCorrelatedVerificationFlowTests
         var dispatcher = new RbpInvocationDispatcher(store, fixture.Channel, new RbpInFlightGate());
         string holdId = (await dispatcher.DispatchAsync(Request(true), CancellationToken.None)).Payload.GetProperty("verification_hold_id").GetString()!;
         fixture.Transport.SetResponse("{\"success\":true}");
-        _ = await dispatcher.DispatchAsync(VerificationRequest(Second, holdId), CancellationToken.None);
+        _ = await DispatchVerificationAsync(
+            dispatcher, fixture, VerificationRequest(Second, holdId));
         RbpStoredInvocation stored = (await store.GetInvocationAsync(Rsid + "/" + Second))!;
         JsonElement correlation = Json(stored.VerificationCorrelationJson!);
         JsonElement terminal = correlation.GetProperty("terminal");
@@ -278,7 +288,8 @@ public sealed class RbpCorrelatedVerificationFlowTests
             Assert.Equal(1, command.ExecuteNonQuery());
         }
 
-        RbpInvocationAnswer replay = await dispatcher.DispatchAsync(VerificationRequest(Second, holdId), CancellationToken.None);
+        RbpInvocationAnswer replay = await DispatchVerificationAsync(
+            dispatcher, fixture, VerificationRequest(Second, holdId));
         Assert.Equal("protocol", replay.Payload.GetProperty("fault_class").GetString());
         Assert.Equal(2, fixture.Transport.Calls);
     }
@@ -293,7 +304,10 @@ public sealed class RbpCorrelatedVerificationFlowTests
         string holdId = (await dispatcher.DispatchAsync(Request(true), CancellationToken.None)).Payload.GetProperty("verification_hold_id").GetString()!;
         RbpInvokeRequest verification = VerificationRequest(Second, holdId);
         RbpInvocationIdentity identity = verification.ToIdentity();
-        _ = await store.AdmitInvocationAsync(identity, verification: verification.Verification);
+        _ = await store.AdmitInvocationAsync(
+            identity,
+            verification: verification.Verification,
+            invocationAuthority: fixture.InvocationAuthority);
         await store.MarkInvocationExecutingAsync(identity.IdempotencyKey);
         byte[] raw = System.Text.Encoding.UTF8.GetBytes($"{{\"jsonrpc\":\"2.0\",\"id\":\"{Second}\",\"result\":{{\"resultContractVersion\":2,\"success\":true}}}}");
         string digest = "sha256:" + Convert.ToHexString(SHA256.HashData(raw)).ToLowerInvariant();
@@ -338,8 +352,9 @@ public sealed class RbpCorrelatedVerificationFlowTests
 
         fixture.Transport.SetResponse("{\"success\":true,\"observed\":\"group-postcondition-context\"}");
         var dispatcher = new RbpInvocationDispatcher(store, fixture.Channel, new RbpInFlightGate());
-        _ = await dispatcher.DispatchAsync(
-            VerificationRequest(Third, holdId, DocumentScope), CancellationToken.None);
+        _ = await DispatchVerificationAsync(
+            dispatcher, fixture,
+            VerificationRequest(Third, holdId, DocumentScope));
         RbpVerificationHold candidate = (await store.GetHoldAsync(Rsid, holdId))!;
         Assert.Equal(RbpHoldState.EvidenceRecorded, candidate.State);
         Assert.Equal(Third, candidate.VerificationInvocationId);
@@ -435,8 +450,8 @@ public sealed class RbpCorrelatedVerificationFlowTests
         }
         fixture.Transport.SetResponse("{\"success\":true}");
 
-        RbpInvocationAnswer refused = await dispatcher.DispatchAsync(
-            VerificationRequest(Second, holdId), CancellationToken.None);
+        RbpInvocationAnswer refused = await DispatchVerificationAsync(
+            dispatcher, fixture, VerificationRequest(Second, holdId));
 
         if (accepted)
         {
@@ -487,13 +502,14 @@ public sealed class RbpCorrelatedVerificationFlowTests
         RbpInvokeRequest read = VerificationRequest(Second, holdId);
         if (afterCommit)
         {
-            _ = await dispatcher.DispatchAsync(read, CancellationToken.None);
+            _ = await DispatchVerificationAsync(dispatcher, fixture, read);
             Assert.Equal(RbpInvocationState.Completed, (await store.GetInvocationAsync(Rsid + "/" + Second))!.State);
             Assert.Equal(RbpHoldState.EvidenceRecorded, (await store.GetHoldAsync(Rsid, holdId))!.State);
         }
         else
         {
-            await Assert.ThrowsAsync<IOException>(() => dispatcher.DispatchAsync(read, CancellationToken.None));
+            await Assert.ThrowsAsync<IOException>(() =>
+                DispatchVerificationAsync(dispatcher, fixture, read));
             Assert.Equal(RbpInvocationState.Executing, (await store.GetInvocationAsync(Rsid + "/" + Second))!.State);
             Assert.Equal(RbpHoldState.Active, (await store.GetHoldAsync(Rsid, holdId))!.State);
             Assert.True(RbpDispatchDecisionQuarantine.For(fixture.Channel).IsBlocked(Rsid));
@@ -506,7 +522,52 @@ public sealed class RbpCorrelatedVerificationFlowTests
     {
         RbpJournalStore store = RbpJournalStore.Open(directory.JournalPath, new TestResumeTokenProtector(), RbpJournalTestData.Options(faultInjector: fault));
         await store.PersistRegisteredSessionAsync(RbpJournalTestData.Registration(localSessionKey: fixture.Route.Handle!.LocalSessionKey));
+        await store.ActivateConnectionGenerationAsync(1);
+        RbpStoredSession session = (await store.GetStoredSessionAsync(Rsid))!;
+        fixture.InvocationAuthority = new RbpInvocationAuthoritySnapshot(
+            Rsid,
+            "0197a3c2-0000-7000-8000-0000000000e1",
+            ConnectionGeneration: 1,
+            RouteEpoch: 1,
+            RbpInvocationAuthoritySnapshot.CapabilitiesDigest(
+                Array.Empty<string>()),
+            session.LocalSessionKey,
+            session.RegistrationDigest,
+            RbpInvocationAuthoritySnapshot.CapabilitiesDigest(
+                session.GrantedCapabilities));
         return store;
+    }
+
+    internal static async Task<RbpInvocationAnswer> DispatchVerificationAsync(
+        RbpInvocationDispatcher dispatcher,
+        RoutedFixture fixture,
+        RbpInvokeRequest request)
+    {
+        IRbpInvocationClaim claim = dispatcher.TryClaim(
+                request.Rsid,
+                fixture.InvocationAuthority ?? throw new InvalidOperationException(
+                    "The routed fixture has no connection authority.")) ??
+            throw new InvalidOperationException("The verification claim was refused.");
+        using (claim)
+        {
+            JsonElement payload = JsonSerializer.SerializeToElement(new
+            {
+                invocation_id = request.InvocationId,
+                method = request.Method,
+                @params = request.Parameters,
+                timeout_ms = (long)request.Timeout.TotalMilliseconds,
+                mutating = request.Mutating,
+                mutation_scope = request.MutationScope,
+                policy = request.Policy,
+                verification = request.Verification,
+                recovery_clearances = request.RecoveryClearances,
+            });
+            return await dispatcher.DispatchClaimedAsync(
+                claim,
+                payload,
+                Array.Empty<string>(),
+                CancellationToken.None);
+        }
     }
 
     private static async Task AssertIneligibleAsync(RbpJournalStore store, string holdId, string invocationId)

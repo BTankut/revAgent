@@ -248,6 +248,7 @@ internal sealed class RbpDocContextWatcher
         TimeSpan.FromSeconds(10);
 
     private readonly object _sync = new();
+    private long _registryVersion;
     private readonly IRbpInvocationChannel _channel;
     private readonly IRbpFreshResumeProofContextReader? _freshResumeProofReader;
     private readonly IRbpCoordinatorClock _clock;
@@ -257,6 +258,8 @@ internal sealed class RbpDocContextWatcher
     private readonly Dictionary<string, EmittedContext> _emitted =
         new(StringComparer.Ordinal);
     private readonly Dictionary<string, WatchLoop> _loops =
+        new(StringComparer.Ordinal);
+    private readonly Dictionary<string, WatchIdentity> _loopIdentities =
         new(StringComparer.Ordinal);
 
     internal RbpDocContextWatcher(
@@ -330,25 +333,32 @@ internal sealed class RbpDocContextWatcher
         ArgumentNullException.ThrowIfNull(local);
         ArgumentNullException.ThrowIfNull(emitAsync);
 
-        WatchLoop? replaced;
-        WatchLoop? started = null;
-        lock (_sync)
-        {
-            _ = _loops.Remove(rsid, out replaced);
-            if (AdvertisesCachedDocumentContext(local))
-            {
-                started = new WatchLoop(
-                    CancellationTokenSource.CreateLinkedTokenSource(
-                        cycleToken));
-                _loops.Add(rsid, started);
-            }
-        }
+        PreparedWatch prepared = PrepareWatch(
+            rsid, local, emitAsync, cycleToken, attemptGeneration: 0);
+        WatchCommitReceipt? committed = prepared.Commit();
+        if (committed is null) prepared.Abort();
+        else if (committed.TryReserveStart()) committed.Launch();
+    }
 
-        replaced?.Stop();
-        Observe(RbpDocumentContextObservation.Create(
-            "probe", started is null ? "capability_absent" : "started", rsid));
-        started?.Start(
-            RunWatchAsync(rsid, emitAsync, started, started.Token));
+    internal PreparedWatch PrepareWatch(
+        string rsid,
+        RbpLocalSessionSnapshot local,
+        RbpDocContextEmit emitAsync,
+        CancellationToken cycleToken,
+        long attemptGeneration = 0)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(rsid);
+        ArgumentNullException.ThrowIfNull(local);
+        ArgumentNullException.ThrowIfNull(emitAsync);
+        long version;
+        lock (_sync) version = _registryVersion;
+        WatchLoop? candidate = AdvertisesCachedDocumentContext(local)
+            ? new WatchLoop(CancellationTokenSource.CreateLinkedTokenSource(
+                cycleToken))
+            : null;
+        return new PreparedWatch(
+            this, rsid, local.LocalSessionKey, attemptGeneration,
+            emitAsync, candidate, version);
     }
 
     /// <summary>Read-only lifecycle probe for coordinator observation only.</summary>
@@ -407,10 +417,159 @@ internal sealed class RbpDocContextWatcher
         lock (_sync)
         {
             _ = _loops.Remove(rsid, out loop);
+            _ = _loopIdentities.Remove(rsid);
             _ = _emitted.Remove(rsid);
+            _registryVersion++;
         }
 
         loop?.Stop();
+    }
+
+    internal sealed class PreparedWatch
+    {
+        private readonly RbpDocContextWatcher _owner;
+        private readonly string _rsid;
+        private readonly WatchIdentity _identity;
+        private readonly RbpDocContextEmit _emit;
+        private WatchLoop? _candidate;
+        private readonly long _version;
+        private int _state;
+
+        internal PreparedWatch(
+            RbpDocContextWatcher owner,
+            string rsid,
+            string localIncarnation,
+            long attemptGeneration,
+            RbpDocContextEmit emit,
+            WatchLoop? candidate,
+            long version)
+        {
+            _owner = owner;
+            _rsid = rsid;
+            _identity = new WatchIdentity(
+                localIncarnation, attemptGeneration);
+            _emit = emit;
+            _candidate = candidate;
+            _version = version;
+        }
+
+        internal WatchCommitReceipt? Commit()
+        {
+            if (Interlocked.CompareExchange(ref _state, 1, 0) != 0)
+                return null;
+            WatchLoop? replaced = null;
+            bool stale;
+            lock (_owner._sync)
+            {
+                stale = _owner._registryVersion != _version;
+                if (!stale)
+                {
+                    _owner._loops.Remove(_rsid, out replaced);
+                    _owner._loopIdentities.Remove(_rsid);
+                    if (_candidate is not null)
+                    {
+                        _owner._loops.Add(_rsid, _candidate);
+                        _owner._loopIdentities.Add(_rsid, _identity);
+                    }
+                    _owner._registryVersion++;
+                }
+            }
+            if (stale)
+            {
+                Interlocked.Exchange(ref _state, 2);
+                Interlocked.Exchange(ref _candidate, null)?.Stop();
+                return null;
+            }
+            return new WatchCommitReceipt(
+                _owner, _rsid, _identity, _emit, _candidate, replaced);
+        }
+
+        internal void Abort()
+        {
+            if (Interlocked.Exchange(ref _state, 2) == 2) return;
+            Interlocked.Exchange(ref _candidate, null)?.Stop();
+        }
+    }
+
+    internal sealed class WatchCommitReceipt(
+        RbpDocContextWatcher owner,
+        string rsid,
+        WatchIdentity identity,
+        RbpDocContextEmit emit,
+        WatchLoop? candidate,
+        WatchLoop? replaced)
+    {
+        private int _state;
+        internal bool TryReserveStart() =>
+            Interlocked.CompareExchange(ref _state, 1, 0) == 0;
+
+        internal void Launch()
+        {
+            if (Interlocked.CompareExchange(ref _state, 3, 1) != 1) return;
+            Task replacedStop = replaced?.Stop() ?? Task.CompletedTask;
+            if (candidate is null)
+            {
+                owner.Observe(RbpDocumentContextObservation.Create(
+                    "probe", "capability_absent", rsid));
+                return;
+            }
+            candidate.Start(async () =>
+            {
+                await replacedStop.ConfigureAwait(false);
+                candidate.Token.ThrowIfCancellationRequested();
+                bool current;
+                lock (owner._sync)
+                    current = owner._loops.TryGetValue(
+                                  rsid, out WatchLoop? loop) &&
+                              ReferenceEquals(loop, candidate) &&
+                              owner._loopIdentities.TryGetValue(
+                                  rsid, out WatchIdentity? currentIdentity) &&
+                              currentIdentity == identity;
+                owner.Observe(RbpDocumentContextObservation.Create(
+                    "probe", current ? "started" : "aborted", rsid));
+                if (!current)
+                {
+                    Interlocked.Exchange(ref _state, 2);
+                    return;
+                }
+                await owner.RunWatchAsync(
+                        rsid, emit, candidate, candidate.Token)
+                    .ConfigureAwait(false);
+            });
+        }
+
+        internal Task Abort()
+        {
+            int observed;
+            do
+            {
+                observed = Volatile.Read(ref _state);
+                if (observed is 2 or 3) break;
+            }
+            while (Interlocked.CompareExchange(ref _state, 2, observed) !=
+                   observed);
+            if (observed == 2)
+                return Task.WhenAll(
+                    candidate?.Completion ?? Task.CompletedTask,
+                    replaced?.Completion ?? Task.CompletedTask);
+            lock (owner._sync)
+            {
+                if (candidate is not null &&
+                    owner._loops.TryGetValue(rsid, out WatchLoop? current) &&
+                    ReferenceEquals(current, candidate) &&
+                    owner._loopIdentities.TryGetValue(
+                        rsid, out WatchIdentity? currentIdentity) &&
+                    currentIdentity == identity)
+                {
+                    owner._loops.Remove(rsid);
+                    owner._loopIdentities.Remove(rsid);
+                    owner._registryVersion++;
+                }
+            }
+            Task candidateStop = candidate?.Stop() ?? Task.CompletedTask;
+            Task replacedStop = replaced?.Stop() ?? Task.CompletedTask;
+            return Task.WhenAll(candidateStop, replacedStop);
+        }
     }
 
     private async Task RunWatchAsync(
@@ -421,6 +580,7 @@ internal sealed class RbpDocContextWatcher
     {
         try
         {
+            token.ThrowIfCancellationRequested();
             Task signalled = loop.WaitForSignalAsync(token);
             await PollOnceAsync(rsid, emitAsync, token).ConfigureAwait(false);
             while (true)
@@ -478,10 +638,15 @@ internal sealed class RbpDocContextWatcher
         {
             snapshotRead = await ReadSnapshotAsync(rsid, token)
                 .ConfigureAwait(false);
+            token.ThrowIfCancellationRequested();
         }
         catch (OperationCanceledException)
         {
             throw;
+        }
+        catch (Exception) when (token.IsCancellationRequested)
+        {
+            throw new OperationCanceledException(token);
         }
         catch (Exception)
         {
@@ -545,6 +710,7 @@ internal sealed class RbpDocContextWatcher
         {
             payload = document.RootElement.Clone();
         }
+        token.ThrowIfCancellationRequested();
         ObservePayload("snapshot", "ready", rsid, payload, snapshot);
 
         bool emitted;
@@ -562,6 +728,10 @@ internal sealed class RbpDocContextWatcher
         catch (OperationCanceledException)
         {
             throw;
+        }
+        catch (Exception) when (token.IsCancellationRequested)
+        {
+            throw new OperationCanceledException(token);
         }
         catch (Exception)
         {
@@ -685,13 +855,21 @@ internal sealed class RbpDocContextWatcher
         string Normalized,
         string? CacheIncarnationDigest);
 
-    private sealed class WatchLoop
+    internal sealed record WatchIdentity(
+        string LocalIncarnation,
+        long AttemptGeneration);
+
+    internal sealed class WatchLoop
     {
         private readonly object _sync = new();
         private readonly CancellationTokenSource _cancellation;
         private readonly SemaphoreSlim _signal = new(0, 1);
         private TaskCompletionSource<RbpImmediatePollOutcome>? _waiter;
         private Task _loop = Task.CompletedTask;
+        private int _stopped;
+        private int _startState;
+        private readonly TaskCompletionSource<Task> _loopPublished = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
 
         internal WatchLoop(CancellationTokenSource cancellation)
         {
@@ -699,6 +877,7 @@ internal sealed class RbpDocContextWatcher
         }
 
         internal CancellationToken Token => _cancellation.Token;
+        internal Task Completion => _loopPublished.Task.Unwrap();
 
         internal bool Signal()
         {
@@ -742,9 +921,29 @@ internal sealed class RbpDocContextWatcher
         internal Task WaitForSignalAsync(CancellationToken token) =>
             _signal.WaitAsync(token);
 
-        internal void Start(Task loop)
+        internal void Start(Func<Task> start)
         {
-            _loop = loop;
+            ArgumentNullException.ThrowIfNull(start);
+            if (Interlocked.CompareExchange(ref _startState, 1, 0) != 0)
+                return;
+            if (Volatile.Read(ref _stopped) != 0)
+            {
+                _loopPublished.TrySetResult(Task.CompletedTask);
+                return;
+            }
+            Task loop;
+            try
+            {
+                loop = start() ?? Task.FromException(
+                    new InvalidOperationException(
+                        "The watcher start returned no task."));
+            }
+            catch (Exception exception)
+            {
+                loop = Task.FromException(exception);
+            }
+            Volatile.Write(ref _loop, loop);
+            _loopPublished.TrySetResult(loop);
             _ = loop.ContinueWith(
                 completed => _ = completed.Exception,
                 CancellationToken.None,
@@ -753,23 +952,33 @@ internal sealed class RbpDocContextWatcher
                 TaskScheduler.Default);
         }
 
-        internal void Stop()
+        internal Task Stop()
         {
+            if (Interlocked.Exchange(ref _stopped, 1) != 0)
+                return Completion;
+            lock (_sync)
+            {
+                _waiter?.TrySetResult(RbpImmediatePollOutcome.Cancelled);
+                _waiter = null;
+            }
+            if (Interlocked.CompareExchange(ref _startState, 2, 0) == 0)
+                _loopPublished.TrySetResult(Task.CompletedTask);
             try
             {
                 _cancellation.Cancel();
-                CancelPending();
             }
             catch (ObjectDisposedException)
             {
                 // Already stopped.
             }
 
-            _ = _loop.ContinueWith(
+            Task completion = Completion;
+            _ = completion.ContinueWith(
                 _ => { _signal.Dispose(); _cancellation.Dispose(); },
                 CancellationToken.None,
                 TaskContinuationOptions.ExecuteSynchronously,
                 TaskScheduler.Default);
+            return completion;
         }
     }
 }

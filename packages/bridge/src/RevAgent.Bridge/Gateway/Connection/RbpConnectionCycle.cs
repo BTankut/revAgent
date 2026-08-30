@@ -10,10 +10,132 @@ internal interface IRbpConnectionCycle : IAsyncDisposable
         RbpEnvelope envelope,
         CancellationToken cancellationToken = default);
 
+    RbpPreparedSend PrepareSend(
+        RbpEnvelope envelope,
+        CancellationToken cancellationToken = default) =>
+        new(this, envelope, cancellationToken);
+
     Task<RbpEnvelope> ReceiveAsync(
         CancellationToken cancellationToken = default);
 
     Task CloseAsync(CancellationToken cancellationToken = default);
+}
+
+/// <summary>
+/// Side-effect-free, single-use reservation for one connection send. Exact
+/// no-start proof exists only when cancellation wins before <see cref="TryStart"/>.
+/// </summary>
+internal sealed class RbpPreparedSend
+{
+    private readonly IRbpConnectionCycle _cycle;
+    private readonly RbpEnvelope _envelope;
+    private readonly CancellationToken _cancellationToken;
+    private readonly TaskCompletionSource _settlement = new(
+        TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly TaskCompletionSource<Task?> _hotPublished = new(
+        TaskCreationOptions.RunContinuationsAsynchronously);
+    private Task? _hotTask;
+    private int _state;
+
+    internal RbpPreparedSend(
+        IRbpConnectionCycle cycle,
+        RbpEnvelope envelope,
+        CancellationToken cancellationToken)
+    {
+        _cycle = cycle ?? throw new ArgumentNullException(nameof(cycle));
+        ArgumentNullException.ThrowIfNull(envelope);
+        _envelope = envelope with
+        {
+            Payload = envelope.Payload.Clone(),
+            Hello = envelope.Hello is { } hello
+                ? hello with
+                {
+                    Capabilities = Array.AsReadOnly(
+                        hello.Capabilities.ToArray()),
+                    AddinVersions = Array.AsReadOnly(
+                        hello.AddinVersions.ToArray()),
+                    Machine = hello.Machine with { },
+                }
+                : null,
+            HelloAck = envelope.HelloAck is { } helloAck
+                ? helloAck with
+                {
+                    GrantedCapabilities = Array.AsReadOnly(
+                        helloAck.GrantedCapabilities.ToArray()),
+                    Limits = helloAck.Limits with { },
+                    Manifest = helloAck.Manifest with { },
+                }
+                : null,
+            AdditionalProperties = RbpEnvelope.FreezeAdditionalProperties(
+                envelope.AdditionalProperties.ToDictionary(
+                    pair => pair.Key,
+                    pair => pair.Value.Clone(),
+                    StringComparer.Ordinal)),
+        };
+        _cancellationToken = cancellationToken;
+    }
+
+    internal bool TryCancelBeforeStart()
+    {
+        if (Interlocked.CompareExchange(ref _state, 2, 0) != 0)
+            return false;
+        _hotPublished.TrySetResult(null);
+        _settlement.TrySetCanceled(_cancellationToken);
+        return true;
+    }
+
+    internal bool TryStart(out Task? task)
+    {
+        if (Interlocked.CompareExchange(ref _state, 1, 0) != 0)
+        {
+            task = Volatile.Read(ref _state) == 1
+                ? Volatile.Read(ref _hotTask) ?? _settlement.Task
+                : null;
+            return false;
+        }
+
+        try
+        {
+            Task hot = _cycle.SendAsync(_envelope, _cancellationToken);
+            if (hot is null)
+                throw new InvalidOperationException(
+                    "The connection send returned no operation task.");
+            Volatile.Write(ref _hotTask, hot);
+            _hotPublished.TrySetResult(hot);
+            CompleteSettlement(hot);
+            task = hot;
+            return true;
+        }
+        catch (Exception exception)
+        {
+            _hotPublished.TrySetResult(null);
+            _settlement.TrySetException(exception);
+        }
+        task = _settlement.Task;
+        return true;
+    }
+
+    internal Task? StartedTask => Volatile.Read(ref _state) == 0
+        ? null
+        : Volatile.Read(ref _hotTask) ?? _settlement.Task;
+    internal Task<Task?> HotTaskPublished => _hotPublished.Task;
+    internal bool IsCancelledBeforeStart => Volatile.Read(ref _state) == 2;
+
+    private void CompleteSettlement(Task hot) =>
+        _ = hot.ContinueWith(
+            completed =>
+            {
+                if (completed.IsCanceled)
+                    _settlement.TrySetCanceled();
+                else if (completed.IsFaulted)
+                    _settlement.TrySetException(
+                        completed.Exception!.InnerExceptions);
+                else
+                    _settlement.TrySetResult();
+            },
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
 }
 
 internal interface IRbpConnectionCycleFactory

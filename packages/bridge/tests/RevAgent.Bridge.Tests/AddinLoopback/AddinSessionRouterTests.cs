@@ -447,29 +447,14 @@ public sealed class AddinSessionRouterTests
                         8080,
                         1301,
                         addinVersion: "2026.07.26.1")));
-        AddinSessionRouter.LifecycleChange change =
-            Assert.Single(replacement.Changes);
-        AddinSessionRouter.SessionRoute current =
+        Assert.Empty(replacement.Changes);
+        AddinSessionRouter.SessionRoute retained =
             Assert.Single(replacement.AvailableSessions);
-
-        Assert.Equal(
-            AddinSessionRouter.LifecycleChangeKind.Replaced,
-            change.Kind);
-        Assert.Same(original.Handle, change.Previous!.Handle);
-        Assert.Same(current.Handle, change.Current!.Handle);
-        Assert.Equal(
-            original.Handle.Generation + 1,
-            current.Handle.Generation);
-        Assert.Equal(
-            LocalSessionKey(8080, 1300),
-            original.Handle.LocalSessionKey);
-        Assert.Equal(
-            LocalSessionKey(8080, 1301),
-            current.Handle.LocalSessionKey);
+        Assert.Same(original.Handle, retained.Handle);
 
         Task<AddinSessionRouter.InvocationLease> whileOriginalRuns =
             router.InvokeAsync(
-                current.Handle,
+                original.Handle,
                 Call("replacement-overlap"));
         Assert.True(whileOriginalRuns.IsCompleted);
         AddinSessionRouter.RouteException overlap =
@@ -486,13 +471,22 @@ public sealed class AddinSessionRouterTests
         AddinSessionRouter.RouteException beforeOriginalTerminal =
             await Assert.ThrowsAsync<AddinSessionRouter.RouteException>(
                 () => router.InvokeAsync(
-                    current.Handle,
+                    original.Handle,
                     Call("replacement-before-durable-terminal")));
         Assert.Equal(
             AddinSessionRouter.RouteFailureKind.InvocationInFlight,
             beforeOriginalTerminal.Kind);
 
         originalLease.ReleaseAfterDurableDecision();
+        AddinSessionRouter.ReconciliationResult applied = ReconcileFresh(
+            router,
+            Snapshot(Session(8080, 1301, addinVersion: "2026.07.26.1")));
+        AddinSessionRouter.LifecycleChange change = Assert.Single(applied.Changes);
+        AddinSessionRouter.SessionRoute current =
+            Assert.Single(applied.AvailableSessions);
+        Assert.Equal(AddinSessionRouter.LifecycleChangeKind.Replaced, change.Kind);
+        Assert.Same(original.Handle, change.Previous!.Handle);
+        Assert.Equal(original.Handle.Generation + 1, current.Handle.Generation);
         Assert.True(
             (await InvokeAndCompleteAsync(
                 router,

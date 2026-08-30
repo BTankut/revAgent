@@ -586,6 +586,8 @@ public sealed class RbpBatchJournalTests
         _ = await store.PersistRegisteredSessionAsync(
             RbpJournalTestData.Registration(
                 localSessionKey: fixture.Route.Handle!.LocalSessionKey));
+        await RbpJournalStoreProductionEvidence.BindInvocationAuthorityAsync(
+            store, fixture);
         string holdId = await RbpBatchTestData.InstallActiveHoldAsync(
             store,
             RbpBatchTestData.DocumentOneScope,
@@ -645,6 +647,8 @@ public sealed class RbpBatchJournalTests
         _ = await store.PersistRegisteredSessionAsync(
             RbpJournalTestData.Registration(
                 localSessionKey: fixture.Route.Handle!.LocalSessionKey));
+        await RbpJournalStoreProductionEvidence.BindInvocationAuthorityAsync(
+            store, fixture);
 
         // These are deliberately non-conflicting document scopes. The
         // legacy barrier correctly refuses a fresh session-scoped origin
@@ -882,9 +886,11 @@ public sealed class RbpBatchJournalTests
             store,
             fixture.Channel,
             new RbpInFlightGate());
-        RbpInvocationAnswer verification = await dispatcher.DispatchAsync(
-            VerificationReadRequest(holdId, scopeJcs),
-            CancellationToken.None);
+        RbpInvocationAnswer verification = await
+            RbpCorrelatedVerificationFlowTests.DispatchVerificationAsync(
+                dispatcher,
+                fixture,
+                VerificationReadRequest(holdId, scopeJcs));
 
         Assert.Equal("result", verification.Type);
         RbpVerificationHold hold =

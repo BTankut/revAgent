@@ -11,6 +11,60 @@ namespace RevAgent.Bridge.Tests.Gateway.Storage;
 
 public sealed class RbpJournalStoreApplicationErrorSafetyTests
 {
+    [Fact]
+    public async Task OperationAdmittedBeforePoisonCannotEnterTheStoreAfterPoison()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        await using RbpJournalStore store = await Open(directory);
+        using var entered = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+
+        Task<int> holding = Task.Run(() => store.ReadAsync(_ =>
+            {
+                entered.Set();
+                release.Wait();
+                return 1;
+            }));
+        try
+        {
+            Assert.True(entered.Wait(TimeSpan.FromSeconds(2)));
+            Task<int> admittedBeforePoison = store.ReadAsync(_ => 2);
+
+            store.PoisonProcessAuthority();
+            release.Set();
+
+            Assert.Equal(1, await holding);
+            RbpJournalException denied = await Assert.ThrowsAsync<
+                RbpJournalException>(() => admittedBeforePoison);
+            Assert.Equal(RbpJournalErrorCode.StoreClosed, denied.ErrorCode);
+        }
+        finally
+        {
+            release.Set();
+        }
+    }
+
+    [Fact]
+    public async Task ConnectionGenerationDeactivateIsSignedIdempotentAndMonotonic()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        await using RbpJournalStore store = await Open(directory);
+
+        Assert.Equal(1, await store.ActivateConnectionGenerationAsync(1));
+        Assert.Equal(1, await store.DeactivateConnectionGenerationAsync(
+            1, CancellationToken.None));
+        Assert.Equal(1, await store.DeactivateConnectionGenerationAsync(
+            1, CancellationToken.None));
+        await Assert.ThrowsAsync<RbpJournalException>(() =>
+            store.ActivateConnectionGenerationAsync(1));
+        Assert.Equal(2, await store.ActivateConnectionGenerationAsync(2));
+        await Assert.ThrowsAsync<RbpJournalException>(() =>
+            store.DeactivateConnectionGenerationAsync(
+                1, CancellationToken.None));
+        await Assert.ThrowsAsync<RbpJournalException>(() =>
+            store.ActivateConnectionGenerationAsync(3));
+    }
+
     [Theory]
     [InlineData("repeated", false)]
     [InlineData("distinct", false)]
@@ -854,12 +908,14 @@ internal static class RbpJournalStoreProductionEvidence
             store,
             fixture.Channel,
             new RbpInFlightGate());
-        RbpInvocationAnswer answer = await dispatcher.DispatchAsync(
+        RbpInvocationAnswer answer = await
+            RbpCorrelatedVerificationFlowTests.DispatchVerificationAsync(
+            dispatcher,
+            fixture,
             VerificationReadRequest(
                 holdId,
                 scopeJcs,
-                verificationInvocationId),
-            CancellationToken.None);
+                verificationInvocationId));
 
         Assert.Equal("result", answer.Type);
         RbpVerificationHold hold = Assert.IsType<RbpVerificationHold>(
@@ -874,14 +930,37 @@ internal static class RbpJournalStoreProductionEvidence
             Conclusive: true);
     }
 
-    internal static Task RegisterRoutedSessionAsync(
+    internal static async Task RegisterRoutedSessionAsync(
         RbpJournalStore store,
         RbpApplicationErrorSafetyTests.RoutedFixture fixture,
-        int expiresInHours = 24) =>
-        store.PersistRegisteredSessionAsync(
+        int expiresInHours = 24)
+    {
+        await store.PersistRegisteredSessionAsync(
             RbpJournalTestData.Registration(
                 localSessionKey: fixture.Route.Handle!.LocalSessionKey,
                 expiresInHours: expiresInHours));
+        await BindInvocationAuthorityAsync(store, fixture);
+    }
+
+    internal static async Task BindInvocationAuthorityAsync(
+        RbpJournalStore store,
+        RbpApplicationErrorSafetyTests.RoutedFixture fixture)
+    {
+        await store.ActivateConnectionGenerationAsync(1);
+        RbpStoredSession session = (await store.GetStoredSessionAsync(
+            "rs-test"))!;
+        fixture.InvocationAuthority = new RbpInvocationAuthoritySnapshot(
+            "rs-test",
+            "0197a3c2-0000-7000-8000-0000000000e2",
+            1,
+            1,
+            RbpInvocationAuthoritySnapshot.CapabilitiesDigest(
+                Array.Empty<string>()),
+            session.LocalSessionKey,
+            session.RegistrationDigest,
+            RbpInvocationAuthoritySnapshot.CapabilitiesDigest(
+                session.GrantedCapabilities));
+    }
 
     private static RbpInvokeRequest VerificationReadRequest(
         string holdId,

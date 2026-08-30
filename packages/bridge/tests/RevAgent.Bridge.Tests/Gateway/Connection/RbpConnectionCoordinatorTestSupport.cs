@@ -493,6 +493,7 @@ public sealed partial class RbpConnectionCoordinatorTests
             CancellationToken, Task>? _sendBehavior;
         private readonly Action? _onCloseStarted;
         private int _closeCount;
+        private int _disposeCount;
 
         internal FakeConnectionCycle(
             Func<RbpEnvelope, RbpEnvelope?> responder,
@@ -528,6 +529,7 @@ public sealed partial class RbpConnectionCoordinatorTests
         internal ConcurrentQueue<RbpEnvelope> Sent { get; } = new();
 
         internal int CloseCount => Volatile.Read(ref _closeCount);
+        internal int DisposeCount => Volatile.Read(ref _disposeCount);
 
         internal Action<RbpEnvelope>? AfterResponse { get; set; }
 
@@ -577,6 +579,7 @@ public sealed partial class RbpConnectionCoordinatorTests
 
         public ValueTask DisposeAsync()
         {
+            Interlocked.Increment(ref _disposeCount);
             if (_hangCloseAndDispose)
             {
                 return new ValueTask(
@@ -733,6 +736,13 @@ public sealed partial class RbpConnectionCoordinatorTests
 
         public IRbpInvocationClaim? TryClaim(string rsid) =>
             _gate.TryEnter(rsid) ? new GateClaim(_gate, rsid) : null;
+
+        public IRbpInvocationClaim? TryClaim(
+            string rsid,
+            RbpInvocationAuthoritySnapshot authority) =>
+            _gate.TryEnter(rsid)
+                ? new GateClaim(_gate, rsid, authority)
+                : null;
 
         public RbpInvocationAnswer RejectConcurrent(string invocationId)
         {

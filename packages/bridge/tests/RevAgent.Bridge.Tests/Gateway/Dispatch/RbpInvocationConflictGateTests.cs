@@ -179,14 +179,17 @@ public sealed class RbpInvocationConflictGateTests
     public async Task ACorrelatedReadOnlyVerificationIsAdmitted()
     {
         using var directory = new RbpJournalTestDirectory();
-        await using RbpJournalStore store = await OpenAsync(directory);
+        var fixture = new RbpApplicationErrorSafetyTests.RoutedFixture(
+            "{}", -32603);
+        await using RbpJournalStore store = await OpenAsync(directory, fixture);
         string holdId = await InstallActiveHoldAsync(store, DocumentOneScope);
 
         var channel = new CountingChannel();
-        RbpInvocationAnswer answer =
-            await Dispatcher(store, channel).DispatchAsync(
-                VerificationReadRequest(holdId),
-                CancellationToken.None);
+        RbpInvocationAnswer answer = await
+            RbpCorrelatedVerificationFlowTests.DispatchVerificationAsync(
+                Dispatcher(store, channel),
+                fixture,
+                VerificationReadRequest(holdId));
 
         Assert.Equal("result", answer.Type);
         Assert.Equal(1, channel.Calls);
@@ -343,6 +346,9 @@ public sealed class RbpInvocationConflictGateTests
                 localSessionKey: fixture is null
                     ? "port:8080:pid:1234"
                     : fixture.Route.Handle!.LocalSessionKey));
+        if (fixture is not null)
+            await RbpJournalStoreProductionEvidence
+                .BindInvocationAuthorityAsync(store, fixture);
         return store;
     }
 
@@ -352,10 +358,11 @@ public sealed class RbpInvocationConflictGateTests
         string holdId)
     {
         fixture.Transport.SetResponse("""{"success":true}""", null);
-        RbpInvocationAnswer verification =
-            await Dispatcher(store, fixture.Channel).DispatchAsync(
-                VerificationReadRequest(holdId),
-                CancellationToken.None);
+        RbpInvocationAnswer verification = await
+            RbpCorrelatedVerificationFlowTests.DispatchVerificationAsync(
+                Dispatcher(store, fixture.Channel),
+                fixture,
+                VerificationReadRequest(holdId));
 
         Assert.Equal("result", verification.Type);
         RbpVerificationHold hold =

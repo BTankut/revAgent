@@ -541,6 +541,9 @@ public sealed class RbpVerificationHoldDerivationTests
                 localSessionKey: fixture is null
                     ? "port:8080:pid:1234"
                     : fixture.Route.Handle!.LocalSessionKey));
+        if (fixture is not null)
+            await RbpJournalStoreProductionEvidence
+                .BindInvocationAuthorityAsync(store, fixture);
         return store;
     }
 
@@ -554,9 +557,9 @@ public sealed class RbpVerificationHoldDerivationTests
             store,
             fixture.Channel,
             new RbpInFlightGate());
-        RbpInvocationAnswer verification = await dispatcher.DispatchAsync(
-            VerificationReadRequest(holdId),
-            CancellationToken.None);
+        RbpInvocationAnswer verification = await
+            RbpCorrelatedVerificationFlowTests.DispatchVerificationAsync(
+                dispatcher, fixture, VerificationReadRequest(holdId));
 
         Assert.Equal("result", verification.Type);
         RbpVerificationHold hold =

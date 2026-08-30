@@ -166,6 +166,129 @@ public sealed partial class RbpConnectionCoordinatorTests
     }
 
     [Fact]
+    public async Task StopWinningBlockedRegistrationSendPreventsLateAckBinding()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        var clock = new ManualCoordinatorClock();
+        await using RbpJournalStore store = OpenStore(directory, clock);
+        var responder = new ScriptedGatewayResponder(clock);
+        var catalog = new MutableSessionCatalog(LocalSession(8080, 1000));
+        var entered = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var cycle = new FakeConnectionCycle(
+            _ => null,
+            leaveInboundOpenAfterClose: true,
+            sendBehavior: async (current, envelope, _) =>
+            {
+                if (envelope.Type == "session_register" &&
+                    envelope.Payload.GetProperty("port").GetInt32() == 8081)
+                {
+                    entered.TrySetResult();
+                    await release.Task.ConfigureAwait(false);
+                }
+                RbpEnvelope? response = responder.Respond(envelope);
+                if (response is not null) current.Deliver(response);
+            });
+        var factory = new InProcessBindingFactory(
+            RbpConnectionBindingKind.Wss, cycle);
+        RbpConnectionCoordinator coordinator = CoordinatorForBinding(
+            factory, store, catalog, clock, new StubInvocationDispatcher());
+        using var stop = new CancellationTokenSource();
+        Task run = coordinator.RunAsync(stop.Token);
+        Task<RbpCoordinatorTeardownResult>? teardown = null;
+        try
+        {
+            await EventuallyAsync(() =>
+                coordinator.GetSnapshot().ActiveRsids.SequenceEqual(
+                    new[] { "rs-8080" }));
+            catalog.Replace(
+                LocalSession(8080, 1000),
+                LocalSession(8081, 1001));
+            clock.Advance(TimeSpan.FromSeconds(15));
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+            teardown = coordinator.RequestStopTeardown();
+            stop.Cancel();
+        }
+        finally
+        {
+            release.TrySetResult();
+            stop.Cancel();
+        }
+
+        Assert.NotNull(teardown);
+        RbpCoordinatorTeardownResult result = await teardown.WaitAsync(
+            TimeSpan.FromSeconds(2));
+        Assert.Equal(
+            RbpCoordinatorTeardownDisposition.NormalStopped,
+            result.Disposition);
+        await run.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.Null(await store.GetStoredSessionAsync("rs-8081"));
+        Assert.Empty(coordinator.GetSnapshot().ActiveRsids);
+        Assert.Equal(1, factory.OpenCount);
+        Assert.Equal(1, cycle.CloseCount);
+        Assert.Equal(1, cycle.DisposeCount);
+    }
+
+    [Fact]
+    public async Task StopWinningBlockedResumeJournalCommitPreventsLateRouteBind()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        var clock = new ManualCoordinatorClock();
+        var faults = new BlockingJournalFaultInjector();
+        await using RbpJournalStore store = OpenStore(directory, clock, faults);
+        RbpLocalSessionSnapshot local = LocalSession(8080, 1000);
+        _ = await store.PersistRegisteredSessionAsync(
+            Registration(local, "rs-8080"));
+        var responder = new ScriptedGatewayResponder(clock);
+        var cycle = new FakeConnectionCycle(responder.Respond);
+        var factory = new FakeConnectionCycleFactory(cycle);
+        var coordinator = Coordinator(
+            factory,
+            store,
+            new MutableSessionCatalog(local),
+            clock);
+        using var stop = new CancellationTokenSource();
+        faults.Arm(RbpJournalFaultPoint.BeforeCommit);
+        Task run = coordinator.RunAsync(stop.Token);
+        Task<RbpCoordinatorTeardownResult>? teardown = null;
+        try
+        {
+            await faults.Entered.WaitAsync(TimeSpan.FromSeconds(2));
+            Assert.Contains(cycle.Sent, item => item.Type == "session_resume");
+            Assert.Empty(coordinator.GetSnapshot().ActiveRsids);
+
+            teardown = coordinator.RequestStopTeardown();
+            stop.Cancel();
+        }
+        finally
+        {
+            faults.Release();
+            stop.Cancel();
+        }
+
+        Assert.NotNull(teardown);
+        RbpCoordinatorTeardownResult result = await teardown.WaitAsync(
+            TimeSpan.FromSeconds(2));
+        Assert.Equal(
+            RbpCoordinatorTeardownDisposition.EmergencyMustExit,
+            result.Disposition);
+        RbpCoordinatorException failure =
+            await Assert.ThrowsAsync<RbpCoordinatorException>(
+                () => run.WaitAsync(TimeSpan.FromSeconds(2)));
+        Assert.Equal(
+            RbpCoordinatorErrorCode.NonDrainingConnectionAuthority,
+            failure.ErrorCode);
+        Assert.Empty(coordinator.GetSnapshot().ActiveRsids);
+        Assert.DoesNotContain(cycle.Sent, item => item.Type == "session_register");
+        Assert.Equal(1, factory.OpenCount);
+        Assert.Equal(1, cycle.CloseCount);
+        Assert.Equal(0, cycle.DisposeCount);
+    }
+
+    [Fact]
     public async Task PostCommitReadbackRequiresJointCleanupSessionAndTombstone()
     {
         using var directory = new RbpJournalTestDirectory();
@@ -332,8 +455,8 @@ public sealed partial class RbpConnectionCoordinatorTests
         Assert.Empty(dispatcher.Dispatched);
         Assert.Null(await store.GetInvocationAsync("rs-8081/" + Id(837)));
 
-        stop.Cancel();
-        await run.WaitAsync(TimeSpan.FromSeconds(2));
+        await StopAfterAssertedConnectionFailureAsync(
+            coordinator, stop, run, () => second.CloseCount > 0);
     }
 
     [Theory]
@@ -401,6 +524,7 @@ public sealed partial class RbpConnectionCoordinatorTests
 
         harness.Cycle.Deliver(invalid);
         await EventuallyAsync(() => harness.Cycle.CloseCount > 0);
+        harness.AllowExpectedPresteadyMustExitOnDispose();
 
         Assert.Empty(harness.Dispatcher.Dispatched);
         Assert.Null(await harness.Store.GetBatchAsync(
@@ -460,6 +584,7 @@ public sealed partial class RbpConnectionCoordinatorTests
 
         harness.Cycle.Deliver(conflicting);
         await EventuallyAsync(() => harness.Cycle.CloseCount > 0);
+        harness.AllowExpectedPresteadyMustExitOnDispose();
         Assert.Empty(harness.Dispatcher.Dispatched);
         Assert.Null(await harness.Store.GetInvocationAsync(
             "rs-8081/" + invocationId));
@@ -486,6 +611,7 @@ public sealed partial class RbpConnectionCoordinatorTests
 
         harness.Cycle.Deliver(original);
         await EventuallyAsync(() => harness.Cycle.CloseCount > 0);
+        harness.AllowExpectedPresteadyMustExitOnDispose();
         Assert.Empty(harness.Dispatcher.Dispatched);
     }
 
@@ -504,6 +630,7 @@ public sealed partial class RbpConnectionCoordinatorTests
         harness.Clock.Advance(TimeSpan.FromSeconds(60));
         harness.Cycle.Deliver(original);
         await EventuallyAsync(() => harness.Cycle.CloseCount > 0);
+        harness.AllowExpectedPresteadyMustExitOnDispose();
         Assert.Empty(harness.Dispatcher.Dispatched);
     }
 
@@ -525,6 +652,7 @@ public sealed partial class RbpConnectionCoordinatorTests
                 await harness.Store.GetStoredSessionAsync("rs-8081") is null);
         harness.Cycle.Deliver(original);
         await EventuallyAsync(() => harness.Cycle.CloseCount > 0);
+        harness.AllowExpectedPresteadyMustExitOnDispose();
         Assert.Empty(harness.Dispatcher.Dispatched);
     }
 
@@ -568,8 +696,8 @@ public sealed partial class RbpConnectionCoordinatorTests
         await EventuallyAsync(() => cycle.CloseCount > 0);
         Assert.Empty(dispatcher.Dispatched);
         Assert.Null(await store.GetInvocationAsync("rs-8081/" + Id(902)));
-        stop.Cancel();
-        await run.WaitAsync(TimeSpan.FromSeconds(2));
+        await StopAfterAssertedConnectionFailureAsync(
+            coordinator, stop, run, () => cycle.CloseCount > 0);
     }
 
     [Fact]
@@ -1210,27 +1338,70 @@ public sealed partial class RbpConnectionCoordinatorTests
             RbpConnectionCoordinator coordinator,
             RbpLocalSessionSnapshot local)
     {
+        var cycle = new FakeConnectionCycle(_ => null);
+        Type contextType = typeof(RbpConnectionCoordinator).GetNestedType(
+            "ConnectionCycleContext",
+            BindingFlags.NonPublic) ??
+            throw new InvalidOperationException("Context type missing.");
+        ConstructorInfo constructor = Assert.Single(
+            contextType.GetConstructors(
+                BindingFlags.Instance | BindingFlags.NonPublic));
+        object context = constructor.Invoke(new object[]
+        {
+            coordinator,
+            cycle,
+            1L,
+            Array.Empty<string>(),
+            CancellationToken.None,
+        });
+        FieldInfo active = typeof(RbpConnectionCoordinator).GetField(
+            "_active", BindingFlags.Instance | BindingFlags.NonPublic) ??
+            throw new InvalidOperationException("Active context field missing.");
+        FieldInfo generation = typeof(RbpConnectionCoordinator).GetField(
+            "_connectionGeneration",
+            BindingFlags.Instance | BindingFlags.NonPublic) ??
+            throw new InvalidOperationException("Generation field missing.");
+        FieldInfo stopState = typeof(RbpConnectionCoordinator).GetField(
+            "_attemptStopState",
+            BindingFlags.Instance | BindingFlags.NonPublic) ??
+            throw new InvalidOperationException("Attempt state field missing.");
+        active.SetValue(coordinator, context);
+        generation.SetValue(coordinator, 1L);
+        stopState.SetValue(coordinator, 2);
         MethodInfo method = typeof(RbpConnectionCoordinator).GetMethod(
             "AssessRegistrationPreflightAsync",
             BindingFlags.Instance | BindingFlags.NonPublic) ??
             throw new InvalidOperationException(
                 "Registration preflight method missing.");
-        object pending = method.Invoke(
-            coordinator,
-            new object[] { local, true, CancellationToken.None }) ??
-            throw new InvalidOperationException(
-                "Registration preflight task missing.");
-        var task = Assert.IsAssignableFrom<Task>(pending);
-        await task;
-        object result = pending.GetType().GetProperty("Result")?.GetValue(
-            pending) ?? throw new InvalidOperationException(
-                "Registration preflight result missing.");
-        Type resultType = result.GetType();
-        bool performed = (bool)(resultType.GetProperty(
-            "AssessmentPerformed")?.GetValue(result) ?? false);
-        bool eligible = resultType.GetProperty(
-            "EligibleAssessment")?.GetValue(result) is not null;
-        return (performed, eligible);
+        try
+        {
+            object pending = method.Invoke(
+                coordinator,
+                new object[]
+                {
+                    context,
+                    local,
+                    true,
+                    CancellationToken.None,
+                }) ?? throw new InvalidOperationException(
+                    "Registration preflight task missing.");
+            var task = Assert.IsAssignableFrom<Task>(pending);
+            await task;
+            object result = pending.GetType().GetProperty("Result")?.GetValue(
+                pending) ?? throw new InvalidOperationException(
+                    "Registration preflight result missing.");
+            Type resultType = result.GetType();
+            bool performed = (bool)(resultType.GetProperty(
+                "AssessmentPerformed")?.GetValue(result) ?? false);
+            bool eligible = resultType.GetProperty(
+                "EligibleAssessment")?.GetValue(result) is not null;
+            return (performed, eligible);
+        }
+        finally
+        {
+            active.SetValue(coordinator, null);
+            ((IDisposable)context).Dispose();
+        }
     }
 
     private static int DeferredRegistrationCount(
@@ -1349,6 +1520,7 @@ public sealed partial class RbpConnectionCoordinatorTests
         }
 
         public RbpConnectionBindingKind BindingKind { get; }
+        internal int OpenCount => Volatile.Read(ref _opened);
 
         public Task<IRbpConnectionCycle> OpenAsync(
             Uri endpoint,
@@ -1403,17 +1575,34 @@ public sealed partial class RbpConnectionCoordinatorTests
         internal CancellationTokenSource Stop { get; }
         internal Task Run { get; }
         internal TaskCompletionSource UnregisterRelease { get; }
+        private int _allowExpectedPresteadyMustExit;
+
+        internal void AllowExpectedPresteadyMustExitOnDispose() =>
+            Interlocked.Exchange(ref _allowExpectedPresteadyMustExit, 1);
 
         public async ValueTask DisposeAsync()
         {
             UnregisterRelease.TrySetResult();
+            Task<RbpCoordinatorTeardownResult> teardown =
+                Coordinator.RequestStopTeardown();
             Stop.Cancel();
             try
             {
+                _ = await teardown.WaitAsync(TimeSpan.FromSeconds(2));
                 await Run.WaitAsync(TimeSpan.FromSeconds(2));
             }
             catch (OperationCanceledException)
             {
+            }
+            catch (RbpCoordinatorException exception) when (
+                Volatile.Read(ref _allowExpectedPresteadyMustExit) != 0 &&
+                exception.ErrorCode ==
+                RbpCoordinatorErrorCode.NonDrainingConnectionAuthority)
+            {
+                // These exact cases already asserted the protocol/cleanup
+                // close. Their synthetic one-cycle factory can be cancelled
+                // during the replacement attempt's PreSteady window; V11
+                // requires that cleanup-only race to publish must-exit.
             }
             finally
             {

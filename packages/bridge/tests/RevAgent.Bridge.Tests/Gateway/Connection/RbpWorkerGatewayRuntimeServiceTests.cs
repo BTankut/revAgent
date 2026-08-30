@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Reflection;
 using System.Text.Json;
 using Microsoft.Extensions.Hosting;
 using Newtonsoft.Json.Linq;
@@ -54,7 +55,7 @@ public sealed partial class RbpConnectionCoordinatorTests
                         routes),
                     clock,
                     new FixedRandomSource(0)));
-        await using var runtime = new WorkerGatewayRuntime(coordinator);
+        var runtime = new WorkerGatewayRuntime(coordinator);
         var lifetime = new RuntimeLifetime();
         var exitState = new WorkerExitState();
         var service = new WorkerGatewayRuntimeService(
@@ -257,6 +258,57 @@ public sealed partial class RbpConnectionCoordinatorTests
     }
 
     [Fact]
+    public async Task DisposeWaitingOnRunRechecksMustExitBeforeRuntimeDispose()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        var clock = new ManualCoordinatorClock();
+        await using RbpJournalStore store = OpenStore(directory, clock);
+        var responder = new ScriptedGatewayResponder(clock);
+        var cycle = new FakeConnectionCycle(
+            responder.Respond,
+            hangCloseAndDispose: true);
+        var coordinator = Coordinator(
+            new FakeConnectionCycleFactory(cycle),
+            store,
+            new MutableSessionCatalog(),
+            clock,
+            closeTimeout: TimeSpan.FromMilliseconds(40));
+        var runtime = new WorkerGatewayRuntime(coordinator);
+        var lifetime = new RuntimeLifetime();
+        var exitState = new WorkerExitState();
+        var service = new WorkerGatewayRuntimeService(
+            () => runtime,
+            lifetime,
+            new RuntimeLog(),
+            exitState);
+
+        await service.StartAsync(CancellationToken.None);
+        Task? dispose = null;
+        try
+        {
+            await EventuallyAsync(
+                () => coordinator.GetSnapshot().HasActiveConnection);
+
+            dispose = service.DisposeAsync().AsTask();
+            await dispose.WaitAsync(TimeSpan.FromSeconds(2));
+
+            Assert.Equal(1, exitState.ExitCode);
+            Assert.True(lifetime.StopRequested);
+            Assert.Equal(0, RuntimeDisposed(runtime));
+            Assert.Equal(1, cycle.CloseCount);
+            Assert.Equal(0, cycle.DisposeCount);
+        }
+        finally
+        {
+            if (dispose is not null)
+            {
+                try { await dispose.WaitAsync(TimeSpan.FromSeconds(2)); }
+                catch { }
+            }
+        }
+    }
+
+    [Fact]
     public async Task WorkerRuntimeStopCompletesWithinTheSupervisorBudget()
     {
         using var directory = new RbpJournalTestDirectory();
@@ -455,8 +507,7 @@ public sealed partial class RbpConnectionCoordinatorTests
         Assert.Equal(0, fixture.Routes.SuccessfulPublications);
         Assert.Equal(0, fixture.Routes.ActiveRouteCount);
         Assert.Null(fixture.Routes.Resolve("rs-8080"));
-        fixture.Stop();
-        await fixture.Run.WaitAsync(TimeSpan.FromSeconds(5));
+        await fixture.StopAfterAssertedFailureAsync();
     }
 
     [Fact]
@@ -477,8 +528,7 @@ public sealed partial class RbpConnectionCoordinatorTests
         Assert.Equal(0, fixture.Routes.ActiveRouteCount);
         Assert.True(fixture.Routes.FenceCount >= 1);
         Assert.Null(fixture.Routes.Resolve("rs-8080"));
-        fixture.Stop();
-        await fixture.Run.WaitAsync(TimeSpan.FromSeconds(5));
+        await fixture.StopAfterAssertedFailureAsync();
     }
 
     [Fact]
@@ -500,8 +550,7 @@ public sealed partial class RbpConnectionCoordinatorTests
         Assert.Equal(0, fixture.Routes.BindAttempts);
         Assert.Equal(0, fixture.Routes.SuccessfulPublications);
         Assert.Null(fixture.Routes.Resolve("rs-8080"));
-        fixture.Stop();
-        await fixture.Run.WaitAsync(TimeSpan.FromSeconds(5));
+        await fixture.StopAfterAssertedFailureAsync();
         Assert.Null(fixture.Routes.Resolve("rs-8080"));
     }
 
@@ -534,8 +583,7 @@ public sealed partial class RbpConnectionCoordinatorTests
         await EventuallyAsync(() => fixture.Cycle.CloseCount > 0);
         Assert.Empty(fixture.Routes.Bound);
         Assert.Null(fixture.Routes.Resolve("rs-8080"));
-        fixture.Stop();
-        await fixture.Run.WaitAsync(TimeSpan.FromSeconds(5));
+        await fixture.StopAfterAssertedFailureAsync();
         Assert.True(fixture.Routes.FenceCount > fenceBaseline);
         Assert.Equal(fenceOrdinal, fixture.TeardownOrder.FirstFenceOrdinal);
         Assert.Equal(
@@ -579,8 +627,7 @@ public sealed partial class RbpConnectionCoordinatorTests
         await EventuallyAsync(() => !fixture.Routes.IsBound("rs-8080"));
         Assert.Empty(fixture.Routes.Bound);
         Assert.Null(fixture.Routes.Resolve("rs-8080"));
-        fixture.Stop();
-        await fixture.Run.WaitAsync(TimeSpan.FromSeconds(5));
+        await fixture.StopAfterAssertedFailureAsync();
     }
 
     [Fact]
@@ -615,8 +662,8 @@ public sealed partial class RbpConnectionCoordinatorTests
         Assert.Equal(0, routes.SuccessfulPublications);
         Assert.Empty(routes.Bound);
         Assert.Null(routes.Resolve("rs-8080"));
-        stop.Cancel();
-        await run.WaitAsync(TimeSpan.FromSeconds(5));
+        await StopAfterAssertedConnectionFailureAsync(
+            coordinator, stop, run, () => cycle.CloseCount > 0);
     }
 
     [Fact]
@@ -733,7 +780,10 @@ public sealed partial class RbpConnectionCoordinatorTests
         }
         finally
         {
+            Task<RbpCoordinatorTeardownResult> teardown =
+                coordinator.RequestStopTeardown();
             stop.Cancel();
+            _ = await teardown.WaitAsync(TimeSpan.FromSeconds(5));
             await run.WaitAsync(TimeSpan.FromSeconds(5));
         }
         Assert.Null(catalog.Resolve("rs-8080"));
@@ -781,8 +831,8 @@ public sealed partial class RbpConnectionCoordinatorTests
         }
         finally
         {
-            stop.Cancel();
-            await run.WaitAsync(TimeSpan.FromSeconds(5));
+            await StopAfterAssertedConnectionFailureAsync(
+                coordinator, stop, run, () => cycle.CloseCount > 0);
         }
     }
 
@@ -802,8 +852,7 @@ public sealed partial class RbpConnectionCoordinatorTests
         Assert.Equal(0, fixture.Routes.SuccessfulPublications);
         Assert.Equal(0, fixture.Routes.ActiveRouteCount);
         Assert.Null(fixture.Routes.Resolve("rs-8080"));
-        fixture.Stop();
-        await fixture.Run.WaitAsync(TimeSpan.FromSeconds(5));
+        await fixture.StopAfterAssertedFailureAsync();
         Assert.Null(fixture.Routes.Resolve("rs-8080"));
     }
 
@@ -1369,7 +1418,7 @@ public sealed partial class RbpConnectionCoordinatorTests
     }
 
     [Fact]
-    public async Task WorkerCatalogFreshProofReadRejectsInFlightHandleReplacement()
+    public async Task WorkerCatalogFreshProofReadDefersInFlightHandleReplacement()
     {
         string? durableKey = null;
         string addinVersion = "2026.07.22.0";
@@ -1400,12 +1449,13 @@ public sealed partial class RbpConnectionCoordinatorTests
         _ = Assert.Single(await catalog.ReadAsync());
         release.TrySetResult();
 
-        Assert.Null(await read);
+        Assert.NotNull(await read);
+        _ = Assert.Single(await catalog.ReadAsync());
         Assert.Null(catalog.Resolve("rs-replace"));
     }
 
     [Fact]
-    public async Task WorkerCatalogFreshProofReadRejectsInFlightAttestationDrift()
+    public async Task WorkerCatalogFreshProofReadDefersInFlightAttestationDrift()
     {
         string? durableKey = null;
         string image = @"C:\Program Files\Autodesk\Revit 2026\Revit.exe";
@@ -1437,12 +1487,13 @@ public sealed partial class RbpConnectionCoordinatorTests
         _ = Assert.Single(await catalog.ReadAsync());
         release.TrySetResult();
 
-        Assert.Null(await read);
+        Assert.NotNull(await read);
+        _ = Assert.Single(await catalog.ReadAsync());
         Assert.Null(catalog.Resolve("rs-attestation"));
     }
 
     [Fact]
-    public async Task CoordinatorCancellationDuringScopedFreshReadIsCleanAndFencesRoute()
+    public async Task CoordinatorCancellationDuringScopedFreshReadMustExitAndFencesRoute()
     {
         using var directory = new RbpJournalTestDirectory();
         var clock = new ManualCoordinatorClock();
@@ -1488,16 +1539,25 @@ public sealed partial class RbpConnectionCoordinatorTests
                 clock, new FixedRandomSource(0)));
         using var stop = new CancellationTokenSource();
         Task run = coordinator.RunAsync(stop.Token);
-        await entered.Task.WaitAsync(TimeSpan.FromSeconds(2));
-        stop.Cancel();
-        release.TrySetResult();
-        await run.WaitAsync(TimeSpan.FromSeconds(5));
+        try
+        {
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            stop.Cancel();
+        }
+        finally
+        {
+            release.TrySetResult();
+            stop.Cancel();
+        }
+        RbpCoordinatorException failure =
+            await Assert.ThrowsAsync<RbpCoordinatorException>(
+                () => run.WaitAsync(TimeSpan.FromSeconds(5)));
 
+        Assert.Equal(
+            RbpCoordinatorErrorCode.NonDrainingConnectionAuthority,
+            failure.ErrorCode);
         Assert.Equal(RbpConnectionPhase.Shutdown,
             coordinator.GetSnapshot().Lifecycle.Phase);
-        Assert.Null(catalog.Resolve("rs-8080"));
-        Assert.True(catalog.BeginConnectionEpoch(2));
-        Assert.NotNull(await catalog.ReadAsync("rs-8080", CancellationToken.None));
         Assert.Null(catalog.Resolve("rs-8080"));
     }
 
@@ -1657,6 +1717,13 @@ public sealed partial class RbpConnectionCoordinatorTests
         Assert.True(catalog.BeginConnectionEpoch(2));
         Assert.True(catalog.TryBindRegisteredSession(
             "rs-bind", active.LocalSessionKey, 2));
+        Assert.NotNull(catalog.Resolve("rs-bind"));
+        catalog.DenyConnectionEpoch(2);
+        Assert.Null(catalog.Resolve("rs-bind"));
+        Assert.False(catalog.TryBindRegisteredSession(
+            "rs-bind", active.LocalSessionKey, 2));
+        Assert.False(catalog.BeginConnectionEpoch(2));
+        Assert.True(catalog.BeginConnectionEpoch(3));
     }
 
     [Fact]
@@ -2034,7 +2101,8 @@ public sealed partial class RbpConnectionCoordinatorTests
             FakeConnectionCycle cycle,
             RecordingRouteAuthority routes,
             ConcurrentQueue<RbpLifecycleTimeoutObservation> timeouts,
-            TeardownOrderProbe teardownOrder)
+            TeardownOrderProbe teardownOrder,
+            RbpConnectionCoordinator coordinator)
         {
             _directory = directory;
             _store = store;
@@ -2043,6 +2111,7 @@ public sealed partial class RbpConnectionCoordinatorTests
             Routes = routes;
             Timeouts = timeouts;
             TeardownOrder = teardownOrder;
+            Coordinator = coordinator;
         }
 
         internal ManualCoordinatorClock Clock { get; }
@@ -2050,6 +2119,7 @@ public sealed partial class RbpConnectionCoordinatorTests
         internal RecordingRouteAuthority Routes { get; }
         internal ConcurrentQueue<RbpLifecycleTimeoutObservation> Timeouts { get; }
         internal TeardownOrderProbe TeardownOrder { get; }
+        internal RbpConnectionCoordinator Coordinator { get; }
         internal Task Run { get; private set; } = Task.CompletedTask;
 
         internal static async Task<ResumeRouteFixture> CreateAsync(
@@ -2091,12 +2161,34 @@ public sealed partial class RbpConnectionCoordinatorTests
                         }));
             var fixture = new ResumeRouteFixture(
                 directory, store, clock, cycle, routes, timeouts,
-                teardownOrder);
+                teardownOrder, coordinator);
             fixture.Run = coordinator.RunAsync(fixture._stop.Token);
             return fixture;
         }
 
-        internal void Stop() => _stop.Cancel();
+        internal async Task StopAfterAssertedFailureAsync()
+        {
+            Task<RbpCoordinatorTeardownResult> teardown =
+                Coordinator.RequestStopTeardown();
+            _stop.Cancel();
+            RbpCoordinatorTeardownResult result = await teardown
+                .WaitAsync(TimeSpan.FromSeconds(5));
+            try
+            {
+                await Run.WaitAsync(TimeSpan.FromSeconds(5));
+            }
+            catch (RbpCoordinatorException exception) when (
+                exception.ErrorCode ==
+                    RbpCoordinatorErrorCode.NonDrainingConnectionAuthority &&
+                (result.Disposition ==
+                    RbpCoordinatorTeardownDisposition.EmergencyMustExit ||
+                 Cycle.CloseCount > 0))
+            {
+                // The test already asserted the exact resume/lifecycle fault.
+                // A one-cycle fixture stopped during its replacement
+                // PreSteady attempt must preserve V11 must-exit semantics.
+            }
+        }
 
         public void Dispose()
         {
@@ -2313,4 +2405,40 @@ public sealed partial class RbpConnectionCoordinatorTests
 
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
+
+    private static async Task StopAfterAssertedConnectionFailureAsync(
+        RbpConnectionCoordinator coordinator,
+        CancellationTokenSource stop,
+        Task run,
+        Func<bool> failureWasAsserted)
+    {
+        Task<RbpCoordinatorTeardownResult> teardown =
+            coordinator.RequestStopTeardown();
+        stop.Cancel();
+        RbpCoordinatorTeardownResult result = await teardown
+            .WaitAsync(TimeSpan.FromSeconds(5));
+        try
+        {
+            await run.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+        catch (RbpCoordinatorException exception) when (
+            failureWasAsserted() &&
+            exception.ErrorCode ==
+                RbpCoordinatorErrorCode.NonDrainingConnectionAuthority &&
+            (result.Disposition ==
+                RbpCoordinatorTeardownDisposition.EmergencyMustExit ||
+             AttemptStopState(coordinator) == 4))
+        {
+            // The owning test already proved the exact route/lifecycle fault;
+            // cancellation racing its synthetic replacement PreSteady attempt
+            // must retain the V11 must-exit primary.
+        }
+    }
+
+    private static int RuntimeDisposed(WorkerGatewayRuntime runtime) =>
+        (int)(typeof(WorkerGatewayRuntime).GetField(
+                  "_disposed",
+                  BindingFlags.Instance | BindingFlags.NonPublic)?
+              .GetValue(runtime) ??
+          throw new MissingFieldException("WorkerGatewayRuntime._disposed"));
 }

@@ -1,5 +1,8 @@
 using System.Net;
+using System.Net.Sockets;
 using System.Net.WebSockets;
+using System.Security.Cryptography;
+using System.Text;
 using RevAgent.Bridge.Gateway.Connection;
 using RevAgent.Bridge.Gateway.Protocol;
 
@@ -303,6 +306,90 @@ public sealed class WssGatewayBindingStubTests
         Assert.True(exception.RetryPaused);
     }
 
+    [Fact]
+    public async Task CancelledCloseThenDisposeKeepsOneAbortReasonAndCloseOwner()
+    {
+        await using GatewayStubProcess stub =
+            await GatewayStubProcess.StartAsync();
+        var client = new RbpGatewayHandshakeClient(
+            new FixedEnrollmentProvider(Credential("test-device-token")),
+            new WssGatewayBinding(new ExactCertificateSocketFactory(stub)));
+        RbpGatewayHandshake handshake =
+            await client.ConnectAsync(stub.WebSocketUri, Profile());
+        using var cancelled = new CancellationTokenSource();
+        cancelled.Cancel();
+        Task<byte[]> receive = handshake.Connection.ReceiveTextAsync();
+        await Task.Delay(20);
+
+        Task close = handshake.Connection.CloseAsync(cancelled.Token);
+        Assert.Same(close, handshake.Connection.CloseAsync());
+        Exception receiveFailure = Assert.IsAssignableFrom<Exception>(
+            await Record.ExceptionAsync(() => receive));
+        Assert.True(receiveFailure is OperationCanceledException or
+            RbpGatewayTransportException);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => close);
+        Exception reason = Assert.IsAssignableFrom<OperationCanceledException>(
+            handshake.Connection.AbortReason);
+
+        Task dispose = handshake.Connection.DisposeAsync().AsTask();
+        Assert.Same(close, dispose);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => dispose);
+        Assert.Same(reason, handshake.Connection.AbortReason);
+        Assert.Same(close, handshake.Connection.CloseAsync());
+    }
+
+    [Fact]
+    public async Task OperationProtocolAbortPublishesOwnerBeforeLaterClose()
+    {
+        await using RawBinaryWebSocketPeer peer =
+            await RawBinaryWebSocketPeer.OpenAsync();
+        RbpGatewayConnection connection = peer.Connection;
+
+        Task<byte[]> receive = connection.ReceiveTextAsync();
+        await peer.SendBinaryAsync(0x7f);
+        RbpGatewayTransportException failure =
+            await Assert.ThrowsAsync<RbpGatewayTransportException>(
+                () => receive.WaitAsync(TimeSpan.FromSeconds(2)));
+        Task abortOwner = connection.CloseAsync();
+
+        Assert.Equal(RbpGatewayFailureKind.Protocol, failure.Kind);
+        Assert.Same(failure, connection.AbortReason);
+        Assert.Same(abortOwner, connection.CloseAsync());
+        await abortOwner.WaitAsync(TimeSpan.FromSeconds(2));
+        Task dispose = connection.DisposeAsync().AsTask();
+        Assert.Same(abortOwner, dispose);
+        await dispose;
+    }
+
+    [Fact]
+    public async Task DirectDisposeThenCloseNeverCreatesASecondAbortReason()
+    {
+        await using GatewayStubProcess stub =
+            await GatewayStubProcess.StartAsync();
+        var client = new RbpGatewayHandshakeClient(
+            new FixedEnrollmentProvider(Credential("test-device-token")),
+            new WssGatewayBinding(new ExactCertificateSocketFactory(stub)));
+        await using RbpGatewayHandshake handshake =
+            await client.ConnectAsync(stub.WebSocketUri, Profile());
+
+        Task<byte[]> receive = handshake.Connection.ReceiveTextAsync();
+        await Task.Delay(20);
+        Task dispose = handshake.Connection.DisposeAsync().AsTask();
+        Assert.Same(dispose, handshake.Connection.CloseAsync());
+        Exception receiveFailure = Assert.IsAssignableFrom<Exception>(
+            await Record.ExceptionAsync(() => receive));
+        Assert.True(receiveFailure is OperationCanceledException or
+            RbpGatewayTransportException);
+        await dispose;
+        Exception reason = Assert.IsType<ObjectDisposedException>(
+            handshake.Connection.AbortReason);
+        Assert.Same(dispose, handshake.Connection.DisposeAsync().AsTask());
+        Assert.Same(dispose, handshake.Connection.CloseAsync());
+
+        Assert.Same(reason, handshake.Connection.AbortReason);
+    }
+
     private static RbpDeviceCredential Credential(string token) =>
         new(
             "device-01",
@@ -353,6 +440,104 @@ public sealed class WssGatewayBindingStubTests
                 (_, certificate, _, _) =>
                     _stub.TrustsExactCertificate(certificate);
             return socket;
+        }
+    }
+
+    private sealed class RawBinaryWebSocketPeer : IAsyncDisposable
+    {
+        private readonly TcpClient _server;
+        private readonly NetworkStream _stream;
+
+        private RawBinaryWebSocketPeer(
+            TcpClient server,
+            NetworkStream stream,
+            RbpGatewayConnection connection)
+        {
+            _server = server;
+            _stream = stream;
+            Connection = connection;
+        }
+
+        internal RbpGatewayConnection Connection { get; }
+
+        internal static async Task<RawBinaryWebSocketPeer> OpenAsync()
+        {
+            var listener = new TcpListener(IPAddress.Loopback, 0);
+            listener.Start();
+            try
+            {
+                int port = ((IPEndPoint)listener.LocalEndpoint).Port;
+                var socket = new ClientWebSocket();
+                socket.Options.Proxy = new WebProxy();
+                Task connect = socket.ConnectAsync(
+                    new Uri($"ws://127.0.0.1:{port}/"),
+                    CancellationToken.None);
+                TcpClient server = await listener.AcceptTcpClientAsync()
+                    .WaitAsync(TimeSpan.FromSeconds(2));
+                NetworkStream stream = server.GetStream();
+                string headers = await ReadHeadersAsync(stream);
+                string key = headers.Split("\r\n", StringSplitOptions.None)
+                    .Select(line => line.Split(':', 2))
+                    .Where(parts => parts.Length == 2 && string.Equals(
+                        parts[0], "Sec-WebSocket-Key",
+                        StringComparison.OrdinalIgnoreCase))
+                    .Select(parts => parts[1].Trim())
+                    .Single();
+                string accept = Convert.ToBase64String(SHA1.HashData(
+                    Encoding.ASCII.GetBytes(
+                        key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11")));
+                byte[] response = Encoding.ASCII.GetBytes(
+                    "HTTP/1.1 101 Switching Protocols\r\n" +
+                    "Upgrade: websocket\r\n" +
+                    "Connection: Upgrade\r\n" +
+                    $"Sec-WebSocket-Accept: {accept}\r\n\r\n");
+                await stream.WriteAsync(response);
+                await stream.FlushAsync();
+                await connect.WaitAsync(TimeSpan.FromSeconds(2));
+                return new RawBinaryWebSocketPeer(
+                    server, stream, new RbpGatewayConnection(socket));
+            }
+            finally
+            {
+                listener.Stop();
+            }
+        }
+
+        internal async Task SendBinaryAsync(byte value)
+        {
+            byte[] frame = [0x82, 0x01, value];
+            await _stream.WriteAsync(frame);
+            await _stream.FlushAsync();
+        }
+
+        private static async Task<string> ReadHeadersAsync(
+            NetworkStream stream)
+        {
+            var bytes = new List<byte>();
+            var buffer = new byte[1];
+            while (bytes.Count < 16 * 1024)
+            {
+                int read = await stream.ReadAsync(buffer)
+                    .AsTask()
+                    .WaitAsync(TimeSpan.FromSeconds(2));
+                if (read == 0) break;
+                bytes.Add(buffer[0]);
+                int count = bytes.Count;
+                if (count >= 4 && bytes[count - 4] == '\r' &&
+                    bytes[count - 3] == '\n' && bytes[count - 2] == '\r' &&
+                    bytes[count - 1] == '\n')
+                    return Encoding.ASCII.GetString(bytes.ToArray());
+            }
+            throw new InvalidDataException(
+                "The scripted WebSocket handshake headers were incomplete.");
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            try { await Connection.DisposeAsync(); }
+            catch { }
+            _stream.Dispose();
+            _server.Dispose();
         }
     }
 }

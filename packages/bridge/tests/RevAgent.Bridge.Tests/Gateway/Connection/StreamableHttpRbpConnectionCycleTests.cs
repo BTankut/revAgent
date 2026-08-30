@@ -7,6 +7,134 @@ namespace RevAgent.Bridge.Tests.Gateway.Connection;
 
 public sealed class StreamableHttpRbpConnectionCycleTests
 {
+    [Fact]
+    public async Task CloseIsRetainedAndDisposeDoesNotReclose()
+    {
+        await using var harness = new HttpFallbackHarness();
+        IRbpConnectionCycle cycle = await harness.OpenAsync();
+
+        Task first = cycle.CloseAsync();
+        Task repeated = cycle.CloseAsync();
+
+        Assert.Same(first, repeated);
+        await first;
+        int requestCount = harness.Handler.Requests.Count;
+        await cycle.DisposeAsync();
+        await cycle.DisposeAsync();
+        Assert.Equal(requestCount, harness.Handler.Requests.Count);
+    }
+
+    [Fact]
+    public async Task TerminateThenCloseReturnsTheExactRetainedLifetimeOwner()
+    {
+        await using var harness = new HttpFallbackHarness();
+        var cycle = Assert.IsType<StreamableHttpRbpConnectionCycle>(
+            await harness.OpenAsync());
+        harness.Events.WriteUtf8("event: wrong\ndata: {}\n\n");
+
+        RbpGatewayTransportException failure =
+            await Assert.ThrowsAsync<RbpGatewayTransportException>(
+                () => cycle.ReceiveAsync());
+        Task first = cycle.CloseAsync();
+        Task repeated = cycle.CloseAsync();
+
+        Assert.Equal(RbpGatewayFailureKind.Protocol, failure.Kind);
+        Assert.Equal("Terminate", cycle.LifetimeEndReason);
+        Assert.Same(first, repeated);
+        await first.WaitAsync(TimeSpan.FromSeconds(2));
+        await cycle.DisposeAsync();
+        Assert.Same(first, cycle.CloseAsync());
+    }
+
+    [Fact]
+    public async Task CloseWinnerRetainsItsOwnerWhenLatePostTerminates()
+    {
+        var entered = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var harness = new HttpFallbackHarness(async _ =>
+        {
+            entered.TrySetResult();
+            await release.Task.ConfigureAwait(false);
+            return new HttpResponseMessage(HttpStatusCode.BadGateway);
+        });
+        var cycle = Assert.IsType<StreamableHttpRbpConnectionCycle>(
+            await harness.OpenAsync());
+
+        Task send = cycle.SendAsync(Heartbeat());
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        Task close = cycle.CloseAsync();
+        try
+        {
+            Assert.Equal("Close", cycle.LifetimeEndReason);
+        }
+        finally
+        {
+            release.TrySetResult();
+        }
+
+        await Assert.ThrowsAsync<RbpGatewayTransportException>(() => send);
+        await close.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.Equal("Close", cycle.LifetimeEndReason);
+        Assert.Same(close, cycle.CloseAsync());
+        await cycle.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task AdmittedPostResumingAfterTerminateSeesExactFirstFailure()
+    {
+        var entered = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var harness = new HttpFallbackHarness(async _ =>
+        {
+            entered.TrySetResult();
+            await release.Task.ConfigureAwait(false);
+            return new HttpResponseMessage(HttpStatusCode.BadGateway);
+        });
+        await using IRbpConnectionCycle cycle = await harness.OpenAsync();
+        Task first = cycle.SendAsync(Data("rs-terminal-owner", 1));
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        Task second = cycle.SendAsync(Data("rs-terminal-owner", 2));
+        try
+        {
+            await Task.Delay(20);
+        }
+        finally
+        {
+            release.TrySetResult();
+        }
+
+        RbpGatewayTransportException firstFailure =
+            await Assert.ThrowsAsync<RbpGatewayTransportException>(() => first);
+        RbpGatewayTransportException secondFailure =
+            await Assert.ThrowsAsync<RbpGatewayTransportException>(() => second);
+        Assert.Same(firstFailure, secondFailure);
+        Assert.Equal(RbpGatewayFailureKind.Network, firstFailure.Kind);
+    }
+
+    [Fact]
+    public async Task PreCancelledCloseStillEndsSseBeforeReturningItsFault()
+    {
+        await using var harness = new HttpFallbackHarness();
+        var cycle = Assert.IsType<StreamableHttpRbpConnectionCycle>(
+            await harness.OpenAsync());
+        using var cancelled = new CancellationTokenSource();
+        cancelled.Cancel();
+
+        Task close = cycle.CloseAsync(cancelled.Token);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => close);
+
+        Assert.Equal("Close", cycle.LifetimeEndReason);
+        Assert.Throws<InvalidOperationException>(
+            () => harness.Events.WriteUtf8("data: late\n\n"));
+        Assert.Same(close, cycle.CloseAsync());
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => cycle.DisposeAsync().AsTask());
+    }
+
     private const string ConnectionId = "conn-test";
 
     [Fact]

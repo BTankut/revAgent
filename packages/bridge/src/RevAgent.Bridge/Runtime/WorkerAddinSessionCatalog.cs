@@ -99,6 +99,7 @@ internal sealed class WorkerAddinSessionCatalog :
         new(StringComparer.Ordinal);
     private long _activeRouteEpoch;
     private long _highestRouteEpoch;
+    private long _highestDeniedRouteEpoch;
 
     internal WorkerAddinSessionCatalog(
         AddinDiscovery discovery,
@@ -193,23 +194,36 @@ internal sealed class WorkerAddinSessionCatalog :
             return null;
         }
 
+        long denied = Volatile.Read(ref _highestDeniedRouteEpoch);
+        AddinSessionRouter.SessionHandle? resolved = null;
+        long resolvedEpoch = 0;
+
         lock (_routeSync)
         {
             if (_routesByRsid.TryGetValue(rsid, out BoundRoute? route) &&
                 route.Epoch == _activeRouteEpoch &&
+                route.Epoch > denied &&
+                route.Epoch > Volatile.Read(ref _highestDeniedRouteEpoch) &&
                 _handlesByLocalKey.TryGetValue(
                     route.LocalSessionKey,
                     out AddinSessionRouter.SessionHandle? current) &&
                 SameHandle(route.Handle, current))
             {
-                return route.Handle;
+                resolved = route.Handle;
+                resolvedEpoch = route.Epoch;
             }
-
-            // Never fall back from a formerly attested route to a key lookup.
-            // A vanished/replaced handle fences this rsid until the lifecycle
-            // registration path publishes a new authoritative route.
-            _ = _routesByRsid.Remove(rsid);
+            else
+            {
+                // Never fall back from a formerly attested route to a key lookup.
+                // A vanished/replaced handle fences this rsid until the lifecycle
+                // registration path publishes a new authoritative route.
+                _ = _routesByRsid.Remove(rsid);
+            }
         }
+
+        if (resolved is not null && resolvedEpoch >
+            Volatile.Read(ref _highestDeniedRouteEpoch))
+            return resolved;
 
         // Unknown or superseded binding. Returning null is the fail-closed
         // answer: a resolver miss is pure lookup and can never construct a
@@ -228,6 +242,8 @@ internal sealed class WorkerAddinSessionCatalog :
         CancellationToken cancellationToken)
     {
         if (string.IsNullOrEmpty(rsid) || rsid.Length > 256) return null;
+        if (Volatile.Read(ref _highestDeniedRouteEpoch) >=
+            Volatile.Read(ref _activeRouteEpoch)) return null;
 
         try
         {
@@ -242,7 +258,10 @@ internal sealed class WorkerAddinSessionCatalog :
                 // A pre-resume route is authority corruption, not an
                 // alternate way to obtain this proof. Refuse rather than
                 // inheriting a stale connection's dispatch capability.
-                if (_activeRouteEpoch <= 0 || _routesByRsid.ContainsKey(rsid))
+                if (_activeRouteEpoch <= 0 ||
+                    _activeRouteEpoch <=
+                        Volatile.Read(ref _highestDeniedRouteEpoch) ||
+                    _routesByRsid.ContainsKey(rsid))
                 {
                     return null;
                 }
@@ -295,6 +314,7 @@ internal sealed class WorkerAddinSessionCatalog :
                 lock (_routeSync)
                 {
                     if (_activeRouteEpoch != epoch ||
+                        epoch <= Volatile.Read(ref _highestDeniedRouteEpoch) ||
                         _routesByRsid.ContainsKey(rsid) ||
                         !_handlesByLocalKey.TryGetValue(localKey, out var current) ||
                         !SameHandle(handle, current) ||
@@ -305,6 +325,9 @@ internal sealed class WorkerAddinSessionCatalog :
                         return null;
                     }
                 }
+
+                if (epoch <= Volatile.Read(ref _highestDeniedRouteEpoch))
+                    return null;
 
                 string normalized = DocumentContextMapper.NormalizeForComparison(
                     response.Context);
@@ -336,12 +359,29 @@ internal sealed class WorkerAddinSessionCatalog :
         if (epoch <= 0) return false;
         lock (_routeSync)
         {
-            if (epoch <= _highestRouteEpoch) return false;
+            if (epoch <= _highestRouteEpoch ||
+                epoch <= Volatile.Read(ref _highestDeniedRouteEpoch))
+                return false;
             _highestRouteEpoch = epoch;
             _activeRouteEpoch = epoch;
             _routesByRsid.Clear();
             _revokedRsidsInEpoch.Clear();
             return true;
+        }
+    }
+
+    public void DenyConnectionEpoch(long epoch)
+    {
+        if (epoch <= 0) return;
+        long observed = Volatile.Read(ref _highestDeniedRouteEpoch);
+        while (observed < epoch)
+        {
+            long prior = Interlocked.CompareExchange(
+                ref _highestDeniedRouteEpoch,
+                epoch,
+                observed);
+            if (prior == observed) return;
+            observed = prior;
         }
     }
 
@@ -368,9 +408,11 @@ internal sealed class WorkerAddinSessionCatalog :
             return false;
         }
 
+        if (epoch <= Volatile.Read(ref _highestDeniedRouteEpoch)) return false;
         lock (_routeSync)
         {
             if (_activeRouteEpoch != epoch ||
+                epoch <= Volatile.Read(ref _highestDeniedRouteEpoch) ||
                 _revokedRsidsInEpoch.Contains(rsid)) return false;
             if (!_handlesByLocalKey.TryGetValue(
                     localSessionKey,
@@ -391,6 +433,11 @@ internal sealed class WorkerAddinSessionCatalog :
             _routesByRsid.Add(
                 rsid,
                 new BoundRoute(localSessionKey, current, epoch));
+            if (epoch <= Volatile.Read(ref _highestDeniedRouteEpoch))
+            {
+                _routesByRsid.Remove(rsid);
+                return false;
+            }
             return true;
         }
     }

@@ -53,6 +53,8 @@ internal sealed partial class RbpConnectionCoordinator
     {
         lock (_sync)
         {
+            if (_attemptStopState != 1)
+                throw NonDrainingConnectionAuthority();
             if (_connectionGeneration >=
                 RbpSequenceReducer.MaximumSafeSequence)
             {
@@ -69,7 +71,7 @@ internal sealed partial class RbpConnectionCoordinator
     {
         lock (_sync)
         {
-            if (_active is not null)
+            if (_attemptStopState != 1 || _active is not null)
             {
                 throw new RbpCoordinatorException(
                     RbpCoordinatorErrorCode.SessionAuthorityConflict,
@@ -97,6 +99,33 @@ internal sealed partial class RbpConnectionCoordinator
         {
             return ReferenceEquals(_active, context) &&
                    _connectionGeneration == context.Generation;
+        }
+    }
+
+    private bool TryCommitCurrent(
+        ConnectionCycleContext context,
+        Action mutation)
+    {
+        ArgumentNullException.ThrowIfNull(mutation);
+        lock (_sync)
+        {
+            if (!ReferenceEquals(_active, context) ||
+                _connectionGeneration != context.Generation ||
+                Volatile.Read(ref _attemptStopState) is 3 or 4 or 5)
+                return false;
+            mutation();
+            return true;
+        }
+    }
+
+    private bool TryCommitAttempt(Action mutation)
+    {
+        ArgumentNullException.ThrowIfNull(mutation);
+        lock (_sync)
+        {
+            if (_attemptStopState is not (1 or 2)) return false;
+            mutation();
+            return true;
         }
     }
 

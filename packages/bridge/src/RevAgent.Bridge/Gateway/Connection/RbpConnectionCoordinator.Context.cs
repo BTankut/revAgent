@@ -125,6 +125,40 @@ internal sealed partial class RbpConnectionCoordinator
         public override DateTimeOffset GetUtcNow() => _clock.UtcNow;
     }
 
+    private sealed record CurrentOperationResult<T>(bool Started, T Value);
+
+    private async Task<CurrentOperationResult<T>> TryRunCurrentOperationAsync<T>(
+        ConnectionCycleContext context,
+        Func<Task<T>> start)
+    {
+        ConnectionCycleContext.PreparedCurrentOperation<T> prepared =
+            context.PrepareCurrentOperation(start);
+        bool published = false;
+        bool reserved = false;
+        bool current = TryCommitCurrent(context, () =>
+        {
+            published = context.CommitPreparedCurrentOperation(prepared);
+            if (published) reserved = prepared.TryReserveStart();
+        });
+        if (!current || !published || !reserved)
+        {
+            prepared.Abort();
+            return new CurrentOperationResult<T>(false, default!);
+        }
+        if (!prepared.Launch())
+            return new CurrentOperationResult<T>(false, default!);
+        return new CurrentOperationResult<T>(
+            true, await prepared.Task.ConfigureAwait(false));
+    }
+
+    private Task<CurrentOperationResult<bool>> TryRunCurrentOperationAsync(
+        ConnectionCycleContext context,
+        Func<Task> start) => TryRunCurrentOperationAsync(context, async () =>
+        {
+            await start().ConfigureAwait(false);
+            return true;
+        });
+
     private sealed class ConnectionCycleContext : IDisposable
     {
         private readonly object _sync = new();
@@ -149,6 +183,18 @@ internal sealed partial class RbpConnectionCoordinator
         private Task? _receiveTask;
         private Task? _heartbeatTask;
         private readonly List<Task> _invocations = new();
+        private readonly HashSet<PreparedInvocationWork>
+            _preparedInvocations = new();
+        private readonly HashSet<IPreparedCurrentOperation>
+            _preparedOperations = new();
+        private readonly Dictionary<string, Task> _watcherTasks =
+            new(StringComparer.Ordinal);
+        private PreparedInvocationSend? _preparedInvocationSend;
+        private readonly Dictionary<string,
+            RbpDocContextWatcher.WatchCommitReceipt> _preparedWatches =
+            new(StringComparer.Ordinal);
+        private readonly HashSet<string> _watchReservations =
+            new(StringComparer.Ordinal);
         private long _steadyStartedMilliseconds = -1;
         private Exception? _terminalFailure;
         private int _disposed;
@@ -252,7 +298,13 @@ internal sealed partial class RbpConnectionCoordinator
             throw new InvalidOperationException(
                 "The heartbeat loop has not started.");
 
-        internal void StartReceiveLoop()
+        internal PreparedOwnedLoop PrepareReceiveLoop() =>
+            new(this, () => _owner.ReceiveLoopAsync(this));
+
+        internal PreparedOwnedLoop PrepareHeartbeatLoop() =>
+            new(this, RunHeartbeatLoopAsync);
+
+        internal bool CommitReceiveLoop(PreparedOwnedLoop prepared)
         {
             lock (_sync)
             {
@@ -262,12 +314,12 @@ internal sealed partial class RbpConnectionCoordinator
                         "The receive loop already started.");
                 }
 
-                _receiveTask = Own(
-                    _owner.ReceiveLoopAsync(this));
+                _receiveTask = prepared.Task;
+                return true;
             }
         }
 
-        internal void StartHeartbeatLoop()
+        internal bool CommitHeartbeatLoop(PreparedOwnedLoop prepared)
         {
             lock (_sync)
             {
@@ -277,8 +329,47 @@ internal sealed partial class RbpConnectionCoordinator
                         "The heartbeat loop already started.");
                 }
 
-                _heartbeatTask = Own(
-                    RunHeartbeatLoopAsync());
+                _heartbeatTask = prepared.Task;
+                return true;
+            }
+        }
+
+        internal sealed class PreparedOwnedLoop
+        {
+            private readonly ConnectionCycleContext _owner;
+            private readonly Func<Task> _start;
+            private readonly TaskCompletionSource _release = new(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            private int _state;
+
+            internal PreparedOwnedLoop(
+                ConnectionCycleContext owner,
+                Func<Task> start)
+            {
+                _owner = owner;
+                _start = start;
+                Task = RunAsync();
+            }
+
+            internal Task Task { get; }
+
+            internal void Start()
+            {
+                if (Interlocked.CompareExchange(ref _state, 1, 0) == 0)
+                    _release.TrySetResult();
+            }
+
+            internal void Abort()
+            {
+                if (Interlocked.CompareExchange(ref _state, 2, 0) == 0)
+                    _release.TrySetCanceled(_owner.Token);
+            }
+
+            private async Task RunAsync()
+            {
+                await _release.Task.ConfigureAwait(false);
+                _owner.Token.ThrowIfCancellationRequested();
+                await _owner.Own(_start()).ConfigureAwait(false);
             }
         }
 
@@ -563,6 +654,31 @@ internal sealed partial class RbpConnectionCoordinator
                            rsid,
                            out BoundSession? session) &&
                        session.Lifecycle.DispatchAllowed;
+            }
+        }
+
+        internal RbpInvocationAuthoritySnapshot? TryCreateInvocationAuthority(
+            string rsid)
+        {
+            lock (_sync)
+            {
+                if (!_sessions.TryGetValue(rsid, out BoundSession? session) ||
+                    !session.Lifecycle.DispatchAllowed)
+                {
+                    return null;
+                }
+
+                return new RbpInvocationAuthoritySnapshot(
+                    rsid,
+                    Cycle.Acknowledgement.ConnectionId,
+                    Generation,
+                    RouteEpoch: Generation,
+                    RbpInvocationAuthoritySnapshot.CapabilitiesDigest(
+                        GrantedConnectionCapabilities),
+                    session.Stored.LocalSessionKey,
+                    session.Stored.RegistrationDigest,
+                    RbpInvocationAuthoritySnapshot.CapabilitiesDigest(
+                        session.Stored.GrantedCapabilities));
             }
         }
 
@@ -1132,42 +1248,394 @@ internal sealed partial class RbpConnectionCoordinator
         /// invoke that arrived <em>second</em> is the one rejected. Claiming
         /// inside the task would make that a scheduling accident.
         /// </remarks>
-        internal void StartInvocation(RbpDataEnvelopeSnapshot envelope)
+        internal PreparedInvocationWork CreatePreparedInvocation(
+            RbpDataEnvelopeSnapshot envelope,
+            RbpInvocationAuthoritySnapshot authority,
+            bool batch)
         {
-            IRbpInvocationClaim? claim =
-                _owner._invocationDispatcher.TryClaim(envelope.Rsid);
-            _owner.InvocationStarted();
+            ArgumentNullException.ThrowIfNull(authority);
+            PreparedInvocationWork work = new(
+                this,
+                () =>
+                {
+                    IRbpInvocationClaim? claim = null;
+                    try
+                    {
+                        claim = _owner._invocationDispatcher.TryClaim(
+                            envelope.Rsid, authority);
+                        return _owner.RunJournaledInvocationWorkAsync(
+                            this, envelope, claim, batch);
+                    }
+                    catch
+                    {
+                        claim?.Dispose();
+                        throw;
+                    }
+                },
+                CompleteInvocation);
+            work.Authority = authority;
+            return work;
+        }
+
+        internal bool CommitPreparedInvocation(PreparedInvocationWork work)
+        {
+            ArgumentNullException.ThrowIfNull(work);
+            if (!ReferenceEquals(work.Owner, this)) return false;
             lock (_sync)
             {
+                RbpInvocationAuthoritySnapshot? current =
+                    TryCreateInvocationAuthority(work.Authority.Rsid);
+                if (current != work.Authority || !work.TryCommit())
+                    return false;
+                _owner.InvocationStarted();
                 _invocations.RemoveAll(task => task.IsCompleted);
-                _invocations.Add(
-                    claim is null
-                        ? _owner.RunConcurrentRejectionAsync(this, envelope)
-                        : _owner.RunInvocationAsync(this, claim, envelope));
+                _preparedInvocations.RemoveWhere(
+                    prepared => prepared.Task.IsCompleted);
+                _invocations.Add(work.Task);
+                _preparedInvocations.Add(work);
+            }
+            _ = work.Task.ContinueWith(
+                _ =>
+                {
+                    lock (_sync) _preparedInvocations.Remove(work);
+                },
+                CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+            return true;
+        }
+
+        internal bool TryReservePreparedInvocationStart(
+            PreparedInvocationWork work)
+        {
+            ArgumentNullException.ThrowIfNull(work);
+            lock (_sync)
+            {
+                RbpInvocationAuthoritySnapshot? current =
+                    TryCreateInvocationAuthority(work.Authority.Rsid);
+                return current == work.Authority && work.TryReserveStart();
             }
         }
 
-        /// <summary>
-        /// Claims the same Section 10.1 window an invoke claims — one in-flight
-        /// dispatch per session regardless of carrier — and runs the batch as a
-        /// detached, cycle-scoped task.
-        /// </summary>
-        internal void StartBatch(RbpDataEnvelopeSnapshot envelope)
+        internal void AbortPreparedInvocations()
         {
-            IRbpInvocationClaim? claim =
-                _owner._invocationDispatcher.TryClaim(envelope.Rsid);
-            _owner.InvocationStarted();
+            PreparedInvocationWork[] prepared;
+            lock (_sync) prepared = _preparedInvocations.ToArray();
+            foreach (PreparedInvocationWork work in prepared) work.Abort();
+        }
+
+        internal PreparedCurrentOperation<T> PrepareCurrentOperation<T>(
+            Func<Task<T>> start) => new(this, start);
+
+        internal bool CommitPreparedCurrentOperation<T>(
+            PreparedCurrentOperation<T> operation)
+        {
+            ArgumentNullException.ThrowIfNull(operation);
+            if (!ReferenceEquals(operation.Owner, this)) return false;
             lock (_sync)
             {
-                _invocations.RemoveAll(task => task.IsCompleted);
-                _invocations.Add(
-                    claim is null
-                        ? _owner.RunBatchConcurrentRejectionAsync(this, envelope)
-                        : _owner.RunBatchAsync(this, claim, envelope));
+                _preparedOperations.RemoveWhere(
+                    prepared => prepared.Task.IsCompleted);
+                if (!_preparedOperations.Add(operation)) return false;
+            }
+            _ = operation.Task.ContinueWith(
+                _ =>
+                {
+                    lock (_sync) _preparedOperations.Remove(operation);
+                },
+                CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+            return true;
+        }
+
+        internal void AbortPreparedCurrentOperations()
+        {
+            IPreparedCurrentOperation[] prepared;
+            lock (_sync) prepared = _preparedOperations.ToArray();
+            foreach (IPreparedCurrentOperation operation in prepared)
+                operation.Abort();
+        }
+
+        internal sealed class PreparedInvocationWork
+        {
+            private readonly ConnectionCycleContext _owner;
+            private readonly Func<Task> _start;
+            private readonly Action _abort;
+            private readonly TaskCompletionSource<Task> _hotTask = new(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            private int _state;
+            private int _committed;
+            private int _launchState;
+
+            internal PreparedInvocationWork(
+                ConnectionCycleContext owner,
+                Func<Task> start,
+                Action abort)
+            {
+                _owner = owner;
+                _start = start;
+                _abort = abort;
+                Task = RunAsync();
+            }
+
+            internal Task Task { get; }
+            internal ConnectionCycleContext Owner => _owner;
+            internal RbpInvocationAuthoritySnapshot Authority { get; set; } =
+                null!;
+
+            internal bool TryCommit() =>
+                Interlocked.CompareExchange(ref _committed, 1, 0) == 0;
+
+            internal bool TryReserveStart() =>
+                Interlocked.CompareExchange(ref _state, 1, 0) == 0;
+
+            internal bool Launch()
+            {
+                if (Volatile.Read(ref _state) != 1 ||
+                    Interlocked.CompareExchange(ref _launchState, 1, 0) != 0)
+                    return false;
+                try
+                {
+                    Task hot = _start() ?? throw new InvalidOperationException(
+                        "Prepared invocation start returned no task.");
+                    _hotTask.TrySetResult(hot);
+                }
+                catch (Exception exception)
+                {
+                    if (Volatile.Read(ref _committed) != 0) _abort();
+                    _hotTask.TrySetException(exception);
+                }
+                return true;
+            }
+
+            internal bool Abort()
+            {
+                if (Interlocked.CompareExchange(ref _state, 2, 0) != 0)
+                    return false;
+                try
+                {
+                    if (Volatile.Read(ref _committed) != 0) _abort();
+                }
+                finally { _hotTask.TrySetCanceled(); }
+                return true;
+            }
+
+            internal bool IsAborted => Volatile.Read(ref _state) == 2;
+
+            private async Task RunAsync()
+            {
+                Task hot = await _hotTask.Task.ConfigureAwait(false);
+                await hot.ConfigureAwait(false);
+            }
+        }
+
+        private interface IPreparedCurrentOperation
+        {
+            Task Task { get; }
+            bool Abort();
+        }
+
+        internal sealed class PreparedCurrentOperation<T> :
+            IPreparedCurrentOperation
+        {
+            private readonly Func<Task<T>> _start;
+            private readonly TaskCompletionSource<Task<T>> _hotTask = new(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            private int _state;
+            private int _launchState;
+
+            internal PreparedCurrentOperation(
+                ConnectionCycleContext owner,
+                Func<Task<T>> start)
+            {
+                Owner = owner;
+                _start = start ?? throw new ArgumentNullException(nameof(start));
+                Task = RunAsync();
+            }
+
+            internal ConnectionCycleContext Owner { get; }
+            internal Task<T> Task { get; }
+            Task IPreparedCurrentOperation.Task => Task;
+
+            internal bool TryReserveStart() =>
+                Interlocked.CompareExchange(ref _state, 1, 0) == 0;
+
+            internal bool Launch()
+            {
+                if (Volatile.Read(ref _state) != 1 ||
+                    Interlocked.CompareExchange(ref _launchState, 1, 0) != 0)
+                    return false;
+                try
+                {
+                    Task<T> hot = _start() ?? throw new InvalidOperationException(
+                        "Prepared current operation returned no task.");
+                    _hotTask.TrySetResult(hot);
+                }
+                catch (Exception exception)
+                {
+                    _hotTask.TrySetException(exception);
+                }
+                return true;
+            }
+
+            public bool Abort()
+            {
+                if (Interlocked.CompareExchange(ref _state, 2, 0) != 0)
+                    return false;
+                _hotTask.TrySetCanceled();
+                return true;
+            }
+
+            private async Task<T> RunAsync()
+            {
+                Task<T> hot = await _hotTask.Task.ConfigureAwait(false);
+                return await hot.ConfigureAwait(false);
             }
         }
 
         internal void CompleteInvocation() => _owner.InvocationCompleted();
+
+        internal bool TryPublishPreparedInvocationSend(
+            RbpPreparedSend prepared,
+            long sequence,
+            string? outerDigest)
+        {
+            lock (_sync)
+            {
+                if (_preparedInvocationSend is not null) return false;
+                _preparedInvocationSend = new PreparedInvocationSend(
+                    prepared, Generation, sequence, outerDigest);
+                return true;
+            }
+        }
+
+        internal PreparedInvocationCancellation?
+            GetAndCancelPreparedInvocationSend()
+        {
+            lock (_sync)
+            {
+                if (_preparedInvocationSend is not { } current) return null;
+                bool cancelled = current.Prepared.TryCancelBeforeStart() ||
+                    current.Prepared.IsCancelledBeforeStart;
+                return new PreparedInvocationCancellation(
+                    current.Prepared,
+                    cancelled,
+                    current.OuterDigest is not null);
+            }
+        }
+
+        internal bool TryReservePreparedWatch(string rsid)
+        {
+            lock (_sync)
+            {
+                if (_watchReservations.Contains(rsid) ||
+                    (_watcherTasks.TryGetValue(
+                        rsid, out Task? stopping) && !stopping.IsCompleted))
+                    return false;
+                return _watchReservations.Add(rsid);
+            }
+        }
+
+        internal bool CommitPreparedWatchReservation(
+            string rsid,
+            RbpDocContextWatcher.WatchCommitReceipt receipt,
+            out RbpDocContextWatcher.WatchCommitReceipt? replaced)
+        {
+            lock (_sync)
+            {
+                if (!_watchReservations.Remove(rsid))
+                {
+                    replaced = null;
+                    return false;
+                }
+                _preparedWatches.Remove(rsid, out replaced);
+                _preparedWatches.Add(rsid, receipt);
+                return true;
+            }
+        }
+
+        internal void AbortPreparedWatchReservation(string rsid)
+        {
+            lock (_sync) _watchReservations.Remove(rsid);
+        }
+
+        internal void AbortPreparedWatches()
+        {
+            KeyValuePair<string,
+                RbpDocContextWatcher.WatchCommitReceipt>[] receipts;
+            lock (_sync)
+            {
+                receipts = _preparedWatches.ToArray();
+                _preparedWatches.Clear();
+                _watchReservations.Clear();
+            }
+            foreach ((string rsid,
+                RbpDocContextWatcher.WatchCommitReceipt receipt) in receipts)
+            {
+                Task stopped = receipt.Abort();
+                RetainWatcherTask(rsid, stopped);
+            }
+        }
+
+        internal void RemovePreparedWatch(string rsid)
+        {
+            RbpDocContextWatcher.WatchCommitReceipt? receipt;
+            lock (_sync) _preparedWatches.Remove(rsid, out receipt);
+            AbortPreparedWatchReservation(rsid);
+            if (receipt is null) return;
+            Task stopped = receipt.Abort();
+            RetainWatcherTask(rsid, stopped);
+        }
+
+        internal void RetainWatcherTask(string rsid, Task task)
+        {
+            lock (_sync)
+            {
+                foreach (string completed in _watcherTasks
+                    .Where(pair => pair.Value.IsCompleted)
+                    .Select(pair => pair.Key)
+                    .ToArray())
+                    _watcherTasks.Remove(completed);
+                if (_watcherTasks.TryGetValue(
+                        rsid, out Task? existing) && !existing.IsCompleted)
+                {
+                    Task combined = Task.WhenAll(existing, task);
+                    ObserveLateFault(combined);
+                    _watcherTasks[rsid] = combined;
+                    return;
+                }
+                _watcherTasks[rsid] = task;
+            }
+        }
+
+        internal bool CompletePreparedInvocationSend(
+            RbpPreparedSend prepared)
+        {
+            lock (_sync)
+            {
+                if (_preparedInvocationSend is not { } current ||
+                    !ReferenceEquals(current.Prepared, prepared))
+                    return false;
+                _preparedInvocationSend = null;
+                return true;
+            }
+        }
+
+        private sealed record PreparedInvocationSend(
+            RbpPreparedSend Prepared,
+            long AttemptGeneration,
+            long Sequence,
+            string? OuterDigest);
+
+        internal sealed record PreparedInvocationCancellation(
+            RbpPreparedSend Prepared,
+            bool CancelledBeforeStart,
+            bool BoundReplayMarker)
+        {
+            internal bool StrandedBoundMarker =>
+                CancelledBeforeStart && BoundReplayMarker;
+        }
 
         /// <summary>
         /// Waits for in-flight invocations to reach a durable decision, within
@@ -1182,7 +1650,8 @@ internal sealed partial class RbpConnectionCoordinator
         /// persisted before the dispatcher returns, so a redelivery replays it
         /// under Section 12.2 rule 1.
         /// </remarks>
-        internal async Task<bool> DrainInvocationsAsync(TimeSpan budget)
+        internal async Task<bool> DrainInvocationsAsync(
+            ConnectionTeardownDeadline teardownDeadline)
         {
             Task[] pending;
             lock (_sync)
@@ -1197,13 +1666,18 @@ internal sealed partial class RbpConnectionCoordinator
                 return true;
             }
 
+            if (teardownDeadline.Remaining == TimeSpan.Zero)
+                return false;
             Task all = Task.WhenAll(pending);
-            Task finished = await Task
-                .WhenAny(all, Task.Delay(budget))
-                .ConfigureAwait(false);
-            if (!ReferenceEquals(finished, all))
+            try
             {
-                ObserveLateFault(all);
+                await all.WaitAsync(teardownDeadline.Token)
+                    .ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+                when (teardownDeadline.Token.IsCancellationRequested)
+            {
+                if (!all.IsCompleted) ObserveLateFault(all);
                 return false;
             }
 
@@ -1222,19 +1696,19 @@ internal sealed partial class RbpConnectionCoordinator
                 TaskContinuationOptions.ExecuteSynchronously,
                 TaskScheduler.Default);
 
-        internal async Task<bool> AwaitOwnedTasksAsync(TimeSpan timeout)
+        internal async Task<bool> AwaitOwnedTasksAsync(
+            ConnectionTeardownDeadline teardownDeadline)
         {
-            if (timeout <= TimeSpan.Zero)
-            {
-                throw new ArgumentOutOfRangeException(nameof(timeout));
-            }
-
             Task[] tasks;
             lock (_sync)
             {
                 tasks = new[] { _receiveTask, _heartbeatTask }
                     .Where(task => task is not null)
                     .Cast<Task>()
+                    .Concat(_watcherTasks.Values)
+                    .Concat(_preparedOperations
+                        .Select(operation => operation.Task)
+                        .Where(task => !task.IsCompleted))
                     .ToArray();
             }
 
@@ -1243,20 +1717,20 @@ internal sealed partial class RbpConnectionCoordinator
                 return true;
             }
 
+            if (teardownDeadline.Remaining == TimeSpan.Zero)
+                return false;
             Task all = Task.WhenAll(tasks);
-            Task completed = await Task.WhenAny(
-                    all,
-                    Task.Delay(timeout))
-                .ConfigureAwait(false);
-            if (!ReferenceEquals(completed, all))
+            try
+            {
+                await all.WaitAsync(teardownDeadline.Token)
+                    .ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+                when (teardownDeadline.Token.IsCancellationRequested &&
+                    !all.IsCompleted)
             {
                 ObserveLateFault(all);
                 return false;
-            }
-
-            try
-            {
-                await all.ConfigureAwait(false);
             }
             catch (OperationCanceledException)
                 when (Token.IsCancellationRequested)
@@ -1265,7 +1739,8 @@ internal sealed partial class RbpConnectionCoordinator
             catch
             {
                 // The owning run path already observed the first terminal
-                // task. Awaiting here prevents orphaned task exceptions.
+                // task. The aggregate is settled and its exception observed.
+                _ = all.Exception;
             }
 
             return true;

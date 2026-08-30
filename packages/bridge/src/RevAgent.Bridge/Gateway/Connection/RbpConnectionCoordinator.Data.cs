@@ -21,20 +21,25 @@ internal sealed partial class RbpConnectionCoordinator
                 RbpEnvelope envelope =
                     await context.Cycle.ReceiveAsync(context.Token)
                         .ConfigureAwait(false);
-                if (!IsCurrentContext(context))
-                {
-                    return;
-                }
-
                 switch (envelope.Scope)
                 {
                     case RbpEnvelopeScope.Control:
-                        await HandleControlEnvelopeAsync(context, envelope)
-                            .ConfigureAwait(false);
+                        CurrentOperationResult<bool> control =
+                            await TryRunCurrentOperationAsync(
+                                    context,
+                                    () => HandleControlEnvelopeAsync(
+                                        context, envelope))
+                                .ConfigureAwait(false);
+                        if (!control.Started) return;
                         break;
                     case RbpEnvelopeScope.Data:
-                        await HandleDataEnvelopeAsync(context, envelope)
-                            .ConfigureAwait(false);
+                        CurrentOperationResult<bool> data =
+                            await TryRunCurrentOperationAsync(
+                                    context,
+                                    () => HandleDataEnvelopeAsync(
+                                        context, envelope))
+                                .ConfigureAwait(false);
+                        if (!data.Started) return;
                         break;
                     default:
                         throw new RbpCoordinatorException(
@@ -113,6 +118,11 @@ internal sealed partial class RbpConnectionCoordinator
             envelope.Acknowledgement,
             envelope.Timestamp,
             envelope.Version ?? 1);
+        bool invocation = string.Equals(
+            snapshot.Type, "invoke", StringComparison.Ordinal);
+        bool batch = string.Equals(
+            snapshot.Type, "invoke_batch", StringComparison.Ordinal);
+        RbpInvocationAuthoritySnapshot? inboundAuthority = null;
         if (!context.IsDispatchAllowed(rsid))
         {
             long observedAt = _clock.MonotonicMilliseconds;
@@ -160,9 +170,32 @@ internal sealed partial class RbpConnectionCoordinator
                 "the current connection.");
         }
 
-        RbpInboundDataResult accepted =
-            await _journal.AcceptInboundDataAsync(snapshot, context.Token)
-                .ConfigureAwait(false);
+        ConnectionCycleContext.PreparedCurrentOperation<RbpInboundDataResult>
+            accept = context.PrepareCurrentOperation(() =>
+                _journal.AcceptInboundDataAsync(snapshot, context.Token));
+        bool acceptPublished = false;
+        bool acceptReserved = false;
+        bool acceptCurrent = TryCommitCurrent(context, () =>
+        {
+            if (invocation || batch)
+            {
+                inboundAuthority =
+                    context.TryCreateInvocationAuthority(snapshot.Rsid);
+                if (inboundAuthority is null) return;
+            }
+            acceptPublished = context.CommitPreparedCurrentOperation(accept);
+            if (acceptPublished) acceptReserved = accept.TryReserveStart();
+        });
+        if (!acceptCurrent || !acceptPublished || !acceptReserved)
+        {
+            accept.Abort();
+            if (context.Token.IsCancellationRequested) return;
+            throw new RbpCoordinatorException(
+                RbpCoordinatorErrorCode.SessionAuthorityConflict,
+                "Inbound invocation has no exact current session authority.");
+        }
+        if (!accept.Launch()) throw NonDrainingConnectionAuthority();
+        RbpInboundDataResult accepted = await accept.Task.ConfigureAwait(false);
         if (accepted.Kind is RbpInboundDataKind.Gap or
             RbpInboundDataKind.ProtocolFault)
         {
@@ -185,33 +218,65 @@ internal sealed partial class RbpConnectionCoordinator
                 // Exact fixture-only duplicate after the deliberate post-commit
                 // close. The dispatcher still performs normal journal replay;
                 // this is never a second add-in dispatch.
-                context.StartInvocation(snapshot);
+                ConnectionCycleContext.PreparedInvocationWork? duplicate =
+                    PrepareInvocationForLaunch(
+                        context, snapshot, inboundAuthority!, batch: false);
+                if (duplicate is not null && !duplicate.Launch())
+                    throw NonDrainingConnectionAuthority();
             }
             return;
         }
 
-        await JournalAcceptedInboundAsync(snapshot, context.Token)
-            .ConfigureAwait(false);
+        if (invocation || batch)
+        {
+            ConnectionCycleContext.PreparedInvocationWork? prepared =
+                PrepareInvocationForLaunch(
+                    context, snapshot, inboundAuthority!, batch);
+            if (prepared is null)
+            {
+                if (context.Token.IsCancellationRequested) return;
+                throw new RbpCoordinatorException(
+                    RbpCoordinatorErrorCode.SessionAuthorityConflict,
+                    "The accepted invocation lost same-attempt session " +
+                    "authority before journal handoff ownership.");
+            }
+            if (!prepared.Launch()) throw NonDrainingConnectionAuthority();
+            return;
+        }
 
-        if (string.Equals(snapshot.Type, "invoke", StringComparison.Ordinal))
+        _ = await TryRunCurrentOperationAsync(
+                context,
+                () => JournalAcceptedInboundAsync(snapshot, context.Token))
+            .ConfigureAwait(false);
+    }
+
+    private ConnectionCycleContext.PreparedInvocationWork?
+        PrepareInvocationForLaunch(
+        ConnectionCycleContext context,
+        RbpDataEnvelopeSnapshot envelope,
+        RbpInvocationAuthoritySnapshot authority,
+        bool batch)
+    {
+        ConnectionCycleContext.PreparedInvocationWork prepared =
+            context.CreatePreparedInvocation(envelope, authority, batch);
+        bool published = false;
+        bool current = TryCommitCurrent(context, () =>
+            published = context.CommitPreparedInvocation(prepared));
+        if (!current || !published)
         {
-            // Synchronous: claims the Section 10.1 window in arrival order and
-            // starts a detached task. The receive loop must never await the
-            // add-in, or a Section 16 cancel could not be read until the
-            // invocation it cancels had already finished.
-            context.StartInvocation(snapshot);
+            prepared.Abort();
+            return null;
         }
-        else if (string.Equals(
-                     snapshot.Type,
-                     "invoke_batch",
-                     StringComparison.Ordinal))
+
+        bool reserved = false;
+        if (!TryCommitCurrent(context, () => reserved =
+                context.TryReservePreparedInvocationStart(prepared)) ||
+            !reserved)
         {
-            // Same discipline as invoke. Before this branch existed a batch
-            // envelope was journaled and acknowledged here and then dropped:
-            // the Gateway's Section 10.1 window stayed occupied forever while
-            // the bridge held no record that anything was owed.
-            context.StartBatch(snapshot);
+            prepared.Abort();
+            return null;
         }
+        return prepared;
     }
 
     private static string ValidateCleanupDiscardShape(
@@ -287,20 +352,26 @@ internal sealed partial class RbpConnectionCoordinator
     private async Task FlushPendingRetransmitAsync(
         ConnectionCycleContext context)
     {
-        await context.OutboundGate.WaitAsync(context.Token)
-            .ConfigureAwait(false);
+        CurrentOperationResult<bool> gate =
+            await TryRunCurrentOperationAsync(
+                    context,
+                    async () => await context.OutboundGate
+                        .WaitAsync(context.Token).ConfigureAwait(false))
+                .ConfigureAwait(false);
+        if (!gate.Started) return;
         try
         {
             foreach (RbpDataEnvelopeSnapshot retransmit in
                      context.GetPendingRetransmit())
             {
-                await context.Cycle.SendAsync(
+                await SendCurrentPreparedAsync(
+                        context,
                         CreateDataEnvelope(retransmit),
-                        context.Token)
+                        retransmit.Rsid)
                     .ConfigureAwait(false);
             }
 
-            context.ClearPendingRetransmit();
+            _ = TryCommitCurrent(context, context.ClearPendingRetransmit);
         }
         finally
         {
@@ -329,8 +400,18 @@ internal sealed partial class RbpConnectionCoordinator
             }
 
             priorTick = currentTick;
-            await ReconcileCurrentCatalogAsync(context).ConfigureAwait(false);
-            await SendHeartbeatAsync(context).ConfigureAwait(false);
+            CurrentOperationResult<bool> reconciled =
+                await TryRunCurrentOperationAsync(
+                        context,
+                        () => ReconcileCurrentCatalogAsync(context))
+                    .ConfigureAwait(false);
+            if (!reconciled.Started) return;
+            CurrentOperationResult<bool> heartbeat =
+                await TryRunCurrentOperationAsync(
+                        context,
+                        () => SendHeartbeatAsync(context))
+                    .ConfigureAwait(false);
+            if (!heartbeat.Started) return;
         }
     }
 
@@ -342,11 +423,14 @@ internal sealed partial class RbpConnectionCoordinator
             .Select(item => item.Stored.Rsid)
             .Order(StringComparer.Ordinal)
             .ToArray();
-        IReadOnlyList<RbpSessionAcknowledgement> acknowledgements =
-            await _journal.LoadJournaledAcknowledgementsAsync(
-                    activeRsids,
-                    context.Token)
+        CurrentOperationResult<IReadOnlyList<RbpSessionAcknowledgement>> loaded =
+            await TryRunCurrentOperationAsync(
+                    context,
+                    () => _journal.LoadJournaledAcknowledgementsAsync(
+                        activeRsids, context.Token))
                 .ConfigureAwait(false);
+        if (!loaded.Started) return;
+        IReadOnlyList<RbpSessionAcknowledgement> acknowledgements = loaded.Value;
         IReadOnlyList<string> tombstones =
             context.GetSentUnregisterRsids();
         var fence = new RbpHeartbeatFence(
@@ -364,17 +448,30 @@ internal sealed partial class RbpConnectionCoordinator
             Task deadline = _clock.DelayAsync(
                 _options.EffectiveHeartbeatAcknowledgementTimeout,
                 deadlineCancellation.Token);
-            HeartbeatFlight flight =
-                context.InstallHeartbeatFlight(fence, deadline);
+            HeartbeatFlight? flight = null;
+            if (!TryCommitCurrent(context, () =>
+                    flight = context.InstallHeartbeatFlight(fence, deadline)) ||
+                flight is null)
+                return;
 
             Task send;
             Exception? sendFailure = null;
             bool sendCompleted = false;
             try
             {
-                send = context.Cycle.SendAsync(
-                    CreateControlEnvelope("heartbeat", payload),
-                    context.Token);
+                CurrentOperationResult<Task> started =
+                    await TryRunCurrentOperationAsync(
+                            context,
+                            () => Task.FromResult(context.Cycle.SendAsync(
+                                CreateControlEnvelope("heartbeat", payload),
+                                context.Token)))
+                        .ConfigureAwait(false);
+                if (!started.Started)
+                {
+                    _ = context.TryRollbackHeartbeatFlight(flight);
+                    return;
+                }
+                send = started.Value;
             }
             catch (Exception exception)
             {
@@ -527,13 +624,10 @@ internal sealed partial class RbpConnectionCoordinator
         ConnectionCycleContext context,
         RbpEnvelope envelope)
     {
-        if (!IsCurrentContext(context))
-        {
+        HeartbeatFlight? flight = null;
+        if (!TryCommitCurrent(context, () =>
+                flight = context.ConsumeAndObserveHeartbeatFlight()))
             return;
-        }
-
-        HeartbeatFlight? flight =
-            context.ConsumeAndObserveHeartbeatFlight();
         if (flight is null)
         {
             throw new RbpCoordinatorException(
@@ -560,57 +654,103 @@ internal sealed partial class RbpConnectionCoordinator
             {
                 Acknowledgements = acknowledgements,
             };
-            RbpHeartbeatFenceResult applied =
-                await _journal.ApplyHeartbeatFenceAcknowledgementAsync(
-                        fence,
-                        context.Token)
+            CurrentOperationResult<RbpHeartbeatFenceResult> fenceApplied =
+                await TryRunCurrentOperationAsync(
+                        context,
+                        () => _journal.ApplyHeartbeatFenceAcknowledgementAsync(
+                            fence, context.Token))
                     .ConfigureAwait(false);
-            foreach (RbpSessionAcknowledgement acknowledgement in acknowledgements)
-            {
-                _ = _omittedOriginObservation.TryConsumeDurableAcknowledgement(
-                    acknowledgement.Rsid, acknowledgement.Sequence);
-            }
-            ObserveDocumentContextAcknowledgements(acknowledgements);
-            IReadOnlyList<RbpReleasedCarrier> releasedCarriers =
-                await _journal.ApplyCarrierPlanAcknowledgementsAsync(
-                        acknowledgements,
-                        context.Token)
+            if (!fenceApplied.Started) return;
+            RbpHeartbeatFenceResult applied = fenceApplied.Value;
+            CurrentOperationResult<bool> observations =
+                await TryRunCurrentOperationAsync(
+                        context,
+                        () =>
+                        {
+                            foreach (RbpSessionAcknowledgement acknowledgement in
+                                     acknowledgements)
+                            {
+                                _ = _omittedOriginObservation
+                                    .TryConsumeDurableAcknowledgement(
+                                        acknowledgement.Rsid,
+                                        acknowledgement.Sequence);
+                            }
+                            ObserveDocumentContextAcknowledgements(
+                                acknowledgements);
+                            return Task.FromResult(true);
+                        })
                     .ConfigureAwait(false);
+            if (!observations.Started) return;
+            CurrentOperationResult<IReadOnlyList<RbpReleasedCarrier>> releases =
+                await TryRunCurrentOperationAsync(
+                        context,
+                        () => _journal.ApplyCarrierPlanAcknowledgementsAsync(
+                            acknowledgements, context.Token))
+                    .ConfigureAwait(false);
+            if (!releases.Started) return;
+            IReadOnlyList<RbpReleasedCarrier> releasedCarriers = releases.Value;
             if (releasedCarriers.Count > 0)
             {
                 // The journal release is the authority. The producer owns the
                 // spool and independently rechecks its terminal fence before
                 // deleting any bytes; it is never called on send.
-                await CompleteCarrierSpoolReleasesAsync(
-                        releasedCarriers,
-                        context.Token)
-                    .ConfigureAwait(false);
+                CurrentOperationResult<bool> spoolReleased =
+                    await TryRunCurrentOperationAsync(
+                            context,
+                            () => CompleteCarrierSpoolReleasesAsync(
+                                releasedCarriers, context.Token))
+                        .ConfigureAwait(false);
+                if (!spoolReleased.Started) return;
             }
             foreach (string rsid in applied.ConfirmedUnregisterRsids)
             {
-                RbpStoredSession? cleanupSession =
-                    await _journal.GetStoredSessionAsync(
-                            rsid,
-                            context.Token)
+                CurrentOperationResult<RbpStoredSession?> cleanupRead =
+                    await TryRunCurrentOperationAsync(
+                            context,
+                            () => _journal.GetStoredSessionAsync(
+                                rsid, context.Token))
                         .ConfigureAwait(false);
-                context.MarkUnregisterConfirmed(rsid);
-                _ = await _journal.CompleteConfirmedUnregisterAsync(
-                        rsid,
-                        context.Token)
-                    .ConfigureAwait(false);
+                if (!cleanupRead.Started) return;
+                RbpStoredSession? cleanupSession = cleanupRead.Value;
+                if (!TryCommitCurrent(context, () =>
+                        context.MarkUnregisterConfirmed(rsid)))
+                    return;
+                CurrentOperationResult<bool> cleanupCompleted =
+                    await TryRunCurrentOperationAsync(
+                            context,
+                            async () =>
+                            {
+                                _ = await _journal
+                                    .CompleteConfirmedUnregisterAsync(
+                                        rsid, context.Token)
+                                    .ConfigureAwait(false);
+                            })
+                        .ConfigureAwait(false);
+                if (!cleanupCompleted.Started) return;
                 if (cleanupSession is not null)
                 {
-                    MarkRegistrationCleanupCompleted(
-                        cleanupSession.LocalSessionKey);
+                    if (!TryCommitCurrent(context, () =>
+                            MarkRegistrationCleanupCompleted(
+                                cleanupSession.LocalSessionKey)))
+                        return;
                 }
             }
 
-            await ScheduleActiveRecoveryCarriersAsync(context)
-                .ConfigureAwait(false);
-            await ScheduleActiveRecoveryTerminalsAsync(context)
-                .ConfigureAwait(false);
+            CurrentOperationResult<bool> carriers =
+                await TryRunCurrentOperationAsync(
+                        context,
+                        () => ScheduleActiveRecoveryCarriersAsync(context))
+                    .ConfigureAwait(false);
+            if (!carriers.Started) return;
+            CurrentOperationResult<bool> terminals =
+                await TryRunCurrentOperationAsync(
+                        context,
+                        () => ScheduleActiveRecoveryTerminalsAsync(context))
+                    .ConfigureAwait(false);
+            if (!terminals.Started) return;
 
-            context.CompleteHeartbeatFlight(flight);
+            _ = TryCommitCurrent(context, () =>
+                context.CompleteHeartbeatFlight(flight));
         }
         catch (Exception exception)
         {
@@ -695,41 +835,34 @@ internal sealed partial class RbpConnectionCoordinator
         }
     }
 
-    private async Task TryRecordShutdownUnregistersAsync(
-        ConnectionCycleContext context)
+    private async Task<bool> TryRecordShutdownUnregistersAsync(
+        ConnectionCycleContext context,
+        ConnectionTeardownDeadline teardownDeadline)
     {
-        using var timeout = new CancellationTokenSource(
-            _options.EffectiveCloseTimeout);
         foreach (BoundSession session in context.GetBoundSessions())
         {
+            if (teardownDeadline.Remaining == TimeSpan.Zero)
+                return false;
             try
             {
                 RbpUnregisterTombstone tombstone =
                     await _journal.RecordUnregisterIntentAsync(
                             session.Stored.Rsid,
                             RbpSessionUnregisterReason.BridgeShutdown,
-                            timeout.Token)
+                            teardownDeadline.Token)
                         .ConfigureAwait(false);
                 context.RevokeBoundSession(
                     session.Stored.Rsid,
                     RbpSessionUnregisterReason.BridgeShutdown);
-                await context.Cycle.SendAsync(
-                        CreateControlEnvelope(
-                            "session_unregister",
-                            JsonObject(
-                                ("rsid", tombstone.Rsid),
-                                ("reason", "bridge_shutdown"))),
-                        timeout.Token)
-                    .ConfigureAwait(false);
             }
             catch (Exception exception)
                 when (exception is OperationCanceledException or
-                      RbpGatewayTransportException or
                       RbpJournalException)
             {
-                return;
+                return false;
             }
         }
+        return true;
     }
 
 }

@@ -61,6 +61,8 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
     private readonly RbpArtifactCarrierProducer? _carrierProducer;
     private readonly RbpConformanceOmittedOriginObservation _omittedOriginObservation;
     private readonly AsyncLocal<IReadOnlyList<string>?> _connectionCapabilities = new();
+    private readonly AsyncLocal<RbpInvocationAuthoritySnapshot?>
+        _invocationAuthority = new();
 
     internal RbpInvocationDispatcher(
         RbpJournalStore journal,
@@ -260,6 +262,14 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
              clearances.Count != 0 || request.Method == DispatchPayloadRecoveryMethod))
             return (null, ProtocolFault(request, "Verification requires an ordinary non-mutating add-in read without clearances."));
 
+        RbpInvocationAuthoritySnapshot? authority = _invocationAuthority.Value;
+        if (authority is not null &&
+            !string.Equals(authority.Rsid, request.Rsid,
+                StringComparison.Ordinal))
+            return (null, ProtocolFault(
+                request,
+                "The invocation authority names a different RBP session."));
+
         if (clearances.Count == 0)
         {
             // Durability step 1. Section 12.2 rule 5 (a changed digest,
@@ -270,7 +280,11 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
             {
                 return (
                     await _journal
-                        .AdmitInvocationAsync(identity, cancellationToken, request.Verification)
+                        .AdmitInvocationAsync(
+                            identity,
+                            cancellationToken,
+                            request.Verification,
+                            authority)
                         .ConfigureAwait(false),
                     null);
             }
@@ -354,6 +368,20 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
     public IRbpInvocationClaim? TryClaim(string rsid) =>
         _inFlightGate.TryEnter(rsid) ? new GateClaim(_inFlightGate, rsid) : null;
 
+    public IRbpInvocationClaim? TryClaim(
+        string rsid,
+        RbpInvocationAuthoritySnapshot authority)
+    {
+        ArgumentNullException.ThrowIfNull(authority);
+        if (!string.Equals(rsid, authority.Rsid, StringComparison.Ordinal))
+            throw new ArgumentException(
+                "The invocation authority must name the claimed RBP session.",
+                nameof(authority));
+        return _inFlightGate.TryEnter(rsid)
+            ? new GateClaim(_inFlightGate, rsid, authority)
+            : null;
+    }
+
     public RbpInvocationAnswer RejectConcurrent(string invocationId) =>
         RbpInvocationAnswer.Error(
             RbpInvocationPayloads.KnownError(
@@ -382,9 +410,26 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
         ArgumentNullException.ThrowIfNull(claim);
         ArgumentNullException.ThrowIfNull(grantedConnectionCapabilities);
         IReadOnlyList<string>? prior = _connectionCapabilities.Value;
+        RbpInvocationAuthoritySnapshot? priorAuthority =
+            _invocationAuthority.Value;
         _connectionCapabilities.Value = grantedConnectionCapabilities;
+        _invocationAuthority.Value = claim.Authority;
         try
         {
+            if (claim.Authority is { } authority &&
+                !string.Equals(
+                    authority.ConnectionCapabilitiesDigest,
+                    RbpInvocationAuthoritySnapshot.CapabilitiesDigest(
+                        grantedConnectionCapabilities),
+                    StringComparison.Ordinal))
+            {
+                return RbpInvocationAnswer.Error(
+                    RbpInvocationPayloads.KnownError(
+                        ReadInvocationId(invokePayload),
+                        "protocol",
+                        false,
+                        "The claimed connection capability authority changed before dispatch."));
+            }
 
             RbpInvokeRequest request;
             try
@@ -408,6 +453,7 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
         finally
         {
             _connectionCapabilities.Value = prior;
+            _invocationAuthority.Value = priorAuthority;
         }
     }
 

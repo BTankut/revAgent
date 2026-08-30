@@ -105,8 +105,18 @@ public sealed partial class RbpConnectionCoordinatorTests
 
         Task run = coordinator.RunAsync(stop.Token);
         await EventuallyAsync(() => factory.OpenCount == 1);
+        await EventuallyAsync(
+            () => coordinator.GetSnapshot().HasActiveConnection &&
+                  clock.HasOutstandingDelayDueIn(TimeSpan.FromSeconds(15)));
         clock.Advance(TimeSpan.FromSeconds(65));
 
+        await EventuallyAsync(() => first.CloseCount > 0);
+        if (factory.OpenCount < 2)
+        {
+            await EventuallyAsync(() => clock.HasOutstandingDelayDueIn(
+                TimeSpan.FromSeconds(1)));
+            clock.Advance(TimeSpan.FromSeconds(1));
+        }
         await EventuallyAsync(() => factory.OpenCount == 2);
         Assert.True(first.CloseCount > 0);
         Assert.DoesNotContain(
@@ -114,6 +124,7 @@ public sealed partial class RbpConnectionCoordinatorTests
             item => item.Type == "heartbeat");
         Assert.Equal(2, coordinator.GetSnapshot().ConnectionGeneration);
 
+        await EventuallyAsync(() => coordinator.GetSnapshot().HasActiveConnection);
         stop.Cancel();
         await run.WaitAsync(TimeSpan.FromSeconds(2));
     }
@@ -211,9 +222,16 @@ public sealed partial class RbpConnectionCoordinatorTests
             () => coordinator.GetSnapshot().HasActiveConnection);
         var stopwatch = Stopwatch.StartNew();
         stop.Cancel();
-        await run.WaitAsync(TimeSpan.FromSeconds(1));
+        RbpCoordinatorException failure = await Assert.ThrowsAsync<
+            RbpCoordinatorException>(() =>
+            run.WaitAsync(TimeSpan.FromSeconds(1)));
 
         Assert.True(stopwatch.Elapsed < TimeSpan.FromSeconds(1));
+        Assert.Equal(
+            RbpCoordinatorErrorCode.NonDrainingConnectionAuthority,
+            failure.ErrorCode);
+        Assert.Equal(1, cycle.CloseCount);
+        Assert.Equal(0, cycle.DisposeCount);
         Assert.Equal(
             0,
             coordinator.GetSnapshot().OwnedBackgroundTaskCount);

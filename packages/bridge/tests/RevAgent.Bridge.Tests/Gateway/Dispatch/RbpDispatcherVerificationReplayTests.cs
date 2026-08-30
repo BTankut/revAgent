@@ -39,15 +39,15 @@ public sealed class RbpDispatcherVerificationReplayTests
             "0197a3c2-0000-7000-8000-0000000000e1",
             holdId);
 
-        RbpInvocationAnswer first = await dispatcher.DispatchAsync(
-            request,
-            CancellationToken.None);
+        RbpInvocationAnswer first = await
+            RbpCorrelatedVerificationFlowTests.DispatchVerificationAsync(
+                dispatcher, fixture, request);
         string exactRawDigest = "sha256:" + Convert.ToHexString(
             SHA256.HashData(fixture.Transport.LastBytes)).ToLowerInvariant();
         int callsAfterFirstDelivery = fixture.Transport.Calls;
-        RbpInvocationAnswer replay = await dispatcher.DispatchAsync(
-            request,
-            CancellationToken.None);
+        RbpInvocationAnswer replay = await
+            RbpCorrelatedVerificationFlowTests.DispatchVerificationAsync(
+                dispatcher, fixture, request);
 
         // The add-in is not called again for the replay.
         Assert.Equal(2, callsAfterFirstDelivery);

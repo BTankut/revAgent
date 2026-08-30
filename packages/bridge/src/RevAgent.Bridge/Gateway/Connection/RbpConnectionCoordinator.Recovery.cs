@@ -23,11 +23,14 @@ internal sealed partial class RbpConnectionCoordinator
         // alone is not a truthful resend discriminator.
         bool restartResend = reservation.SendStartedAtMilliseconds is not null;
 
-        RbpRecoveryCarrierReservation started = await _journal
-            .MarkRecoveryCarrierSendStartedAsync(
-                reservation.RecoveryInvocationId,
-                context.Token)
-            .ConfigureAwait(false);
+        CurrentOperationResult<RbpRecoveryCarrierReservation> startMarked =
+            await TryRunCurrentOperationAsync(
+                    context,
+                    () => _journal.MarkRecoveryCarrierSendStartedAsync(
+                        reservation.RecoveryInvocationId, context.Token))
+                .ConfigureAwait(false);
+        if (!startMarked.Started) return;
+        RbpRecoveryCarrierReservation started = startMarked.Value;
         if (started.Phase != RbpRecoveryCarrierPhase.SendStarted ||
             !string.Equals(started.Rsid, reservation.Rsid,
                 StringComparison.Ordinal)) return;
@@ -37,17 +40,28 @@ internal sealed partial class RbpConnectionCoordinator
             started.RecoveryInvocationId,
             started.CurrentReservedSequence,
             started.PlanVersion);
-        if (!TryAcquireRecoveryCarrierClaim(claim)) return;
+        bool claimAcquired = false;
+        if (!TryCommitCurrent(context, () =>
+            {
+                if (context.IsDispatchAllowed(started.Rsid))
+                    claimAcquired = TryAcquireRecoveryCarrierClaim(claim);
+            }) || !claimAcquired)
+            return;
         bool retainClaim = false;
         try
         {
 
-            RbpRecoveryCarrierMaterializedFrame? materialized =
-                await _recoveryCarrierMaterializer.MaterializeCurrentAsync(
-                        started.RecoveryInvocationId,
-                        started.Rsid,
-                        context.Token)
+            CurrentOperationResult<RbpRecoveryCarrierMaterializedFrame?> frame =
+                await TryRunCurrentOperationAsync(
+                        context,
+                        () => _recoveryCarrierMaterializer
+                            .MaterializeCurrentAsync(
+                                started.RecoveryInvocationId,
+                                started.Rsid,
+                                context.Token))
                     .ConfigureAwait(false);
+            if (!frame.Started) return;
+            RbpRecoveryCarrierMaterializedFrame? materialized = frame.Value;
             if (materialized is null ||
                 materialized.ReservedSequence != started.CurrentReservedSequence ||
                 materialized.PlanVersion != started.PlanVersion) return;
@@ -71,38 +85,74 @@ internal sealed partial class RbpConnectionCoordinator
             {
                 string outerDigest = "sha256:" + Convert.ToHexString(
                     SHA256.HashData(outerBytes)).ToLowerInvariant();
-                ObserveRecoveryCarrier(context,
-                    RbpRecoveryCarrierObservationPhase.Materialized, started,
-                    outerDigest);
-                bool confirmed = await _journal
-                    .ConfirmRecoveryCarrierMaterializationAsync(
-                        started.RecoveryInvocationId,
-                        started.Rsid,
-                        started.PlanVersion,
-                        materialized.ReservedSequence,
-                        materialized.PayloadDigest,
-                        outerDigest,
-                        context.Token)
-                    .ConfigureAwait(false);
+                CurrentOperationResult<bool> materializedObserved =
+                    await TryRunCurrentOperationAsync(
+                            context,
+                            () =>
+                            {
+                                ObserveRecoveryCarrier(
+                                    context,
+                                    RbpRecoveryCarrierObservationPhase
+                                        .Materialized,
+                                    started,
+                                    outerDigest);
+                                return Task.FromResult(true);
+                            })
+                        .ConfigureAwait(false);
+                if (!materializedObserved.Started) return;
+                CurrentOperationResult<bool> confirmation =
+                    await TryRunCurrentOperationAsync(
+                            context,
+                            () => _journal
+                                .ConfirmRecoveryCarrierMaterializationAsync(
+                                    started.RecoveryInvocationId,
+                                    started.Rsid,
+                                    started.PlanVersion,
+                                    materialized.ReservedSequence,
+                                    materialized.PayloadDigest,
+                                    outerDigest,
+                                    context.Token))
+                        .ConfigureAwait(false);
+                if (!confirmation.Started) return;
+                bool confirmed = confirmation.Value;
                 if (!confirmed || !context.IsDispatchAllowed(started.Rsid)) return;
                 // Test-only crash seam.  Production composition leaves this
                 // null.  Once final confirmation succeeded, retain the claim
                 // until this cycle closes even if the seam aborts before any
                 // socket byte can be emitted.
-                retainClaim = true;
-                ObserveRecoveryCarrier(context,
-                    restartResend
-                        ? RbpRecoveryCarrierObservationPhase.RestartResend
-                        : RbpRecoveryCarrierObservationPhase.Write, started,
-                    outerDigest);
+                CurrentOperationResult<bool> writeObserved =
+                    await TryRunCurrentOperationAsync(
+                            context,
+                            () =>
+                            {
+                                retainClaim = true;
+                                ObserveRecoveryCarrier(
+                                    context,
+                                    restartResend
+                                        ? RbpRecoveryCarrierObservationPhase
+                                            .RestartResend
+                                        : RbpRecoveryCarrierObservationPhase
+                                            .Write,
+                                    started,
+                                    outerDigest);
+                                return Task.FromResult(true);
+                            })
+                        .ConfigureAwait(false);
+                if (!writeObserved.Started) return;
                 if (_beforeRecoveryCarrierWrite is { } beforeWrite)
                 {
-                    await beforeWrite(context.Token).ConfigureAwait(false);
+                    CurrentOperationResult<bool> callback =
+                        await TryRunCurrentOperationAsync(
+                                context,
+                                () => beforeWrite(context.Token))
+                            .ConfigureAwait(false);
+                    if (!callback.Started) return;
                 }
 
                 // The only recovery-carrier socket write.  Do not route through
                 // QueueOutboundDataAsync, generic outbox/spool, or diagnostics.
-                await context.Cycle.SendAsync(envelope, context.Token)
+                await SendCurrentPreparedAsync(
+                        context, envelope, started.Rsid)
                     .ConfigureAwait(false);
             }
             finally
@@ -132,16 +182,29 @@ internal sealed partial class RbpConnectionCoordinator
         {
             if (TryDropGatedRecoveryCarrierAcknowledgement(
                     context, acknowledgement, out _)) continue;
-            RbpRecoveryCarrierReservation? applied = await _journal
-                .ApplyRecoveryCarrierFenceAcknowledgementAsync(
-                    acknowledgement.Rsid,
-                    acknowledgement.Sequence,
-                    context.Token)
-                .ConfigureAwait(false);
+            CurrentOperationResult<RbpRecoveryCarrierReservation?> appliedResult =
+                await TryRunCurrentOperationAsync(
+                        context,
+                        () => _journal
+                            .ApplyRecoveryCarrierFenceAcknowledgementAsync(
+                                acknowledgement.Rsid,
+                                acknowledgement.Sequence,
+                                context.Token))
+                    .ConfigureAwait(false);
+            if (!appliedResult.Started) return;
+            RbpRecoveryCarrierReservation? applied = appliedResult.Value;
             if (applied?.Phase == RbpRecoveryCarrierPhase.Tombstoned)
             {
-                ReleaseRecoveryCarrierClaims(context, acknowledgement.Rsid,
-                    applied.RecoveryInvocationId, long.MaxValue);
+                _ = await TryRunCurrentOperationAsync(
+                        context,
+                        () =>
+                        {
+                            ReleaseRecoveryCarrierClaims(
+                                context, acknowledgement.Rsid,
+                                applied.RecoveryInvocationId, long.MaxValue);
+                            return Task.FromResult(true);
+                        })
+                    .ConfigureAwait(false);
                 // The journal has durably blocked this RSID.  Abort the
                 // transport before generic acknowledgement can advance across
                 // the fault; normal reconnect lifecycle owns its close path.
@@ -155,10 +218,22 @@ internal sealed partial class RbpConnectionCoordinator
                  acknowledgement.Sequence == applied.CurrentReservedSequence);
             if (carrierReceiptApplied && applied is not null)
             {
-                ObserveRecoveryCarrierAcknowledgement(context, applied,
-                    acknowledgement.Sequence);
-                ReleaseRecoveryCarrierClaims(context, acknowledgement.Rsid,
-                    applied.RecoveryInvocationId, acknowledgement.Sequence);
+                CurrentOperationResult<bool> receiptObserved =
+                    await TryRunCurrentOperationAsync(
+                            context,
+                            () =>
+                            {
+                                ObserveRecoveryCarrierAcknowledgement(
+                                    context, applied,
+                                    acknowledgement.Sequence);
+                                ReleaseRecoveryCarrierClaims(
+                                    context, acknowledgement.Rsid,
+                                    applied.RecoveryInvocationId,
+                                    acknowledgement.Sequence);
+                                return Task.FromResult(true);
+                            })
+                        .ConfigureAwait(false);
+                if (!receiptObserved.Started) return;
             }
             if (applied?.Phase == RbpRecoveryCarrierPhase.Completed &&
                 acknowledgement.Sequence == applied.CurrentReservedSequence)
@@ -166,10 +241,15 @@ internal sealed partial class RbpConnectionCoordinator
                 // The final partial receipt opens exactly one v9 terminal
                 // plan. Reservation is idempotent, so a duplicate heartbeat
                 // cannot allocate a second terminal sequence.
-                _ = await _journal.ReserveRecoveryTerminalAsync(
-                        applied.RecoveryInvocationId, applied.Rsid,
-                        context.Token)
-                    .ConfigureAwait(false);
+                CurrentOperationResult<RbpRecoveryTerminalPlan> reserved =
+                    await TryRunCurrentOperationAsync(
+                            context,
+                            () => _journal.ReserveRecoveryTerminalAsync(
+                                applied.RecoveryInvocationId,
+                                applied.Rsid,
+                                context.Token))
+                        .ConfigureAwait(false);
+                if (!reserved.Started) return;
             }
         }
     }
@@ -196,25 +276,51 @@ internal sealed partial class RbpConnectionCoordinator
             // A heartbeat acknowledgement is the Gateway delivery receipt for
             // this direct, no-outbox terminal frame. No replay/admin surface
             // can supply either of these authority facts.
-            RbpRecoveryTerminalPlan? applied = await _journal
-                .ApplyRecoveryTerminalAcknowledgementAsync(
-                    acknowledgement.Rsid, acknowledgement.Sequence,
-                    gatewayDeliveryReceiptRecorded: true,
-                    sourceReleaseEligible: true, context.Token)
-                .ConfigureAwait(false);
+            CurrentOperationResult<RbpRecoveryTerminalPlan?> appliedResult =
+                await TryRunCurrentOperationAsync(
+                        context,
+                        () => _journal.ApplyRecoveryTerminalAcknowledgementAsync(
+                            acknowledgement.Rsid,
+                            acknowledgement.Sequence,
+                            gatewayDeliveryReceiptRecorded: true,
+                            sourceReleaseEligible: true,
+                            context.Token))
+                    .ConfigureAwait(false);
+            if (!appliedResult.Started) return;
+            RbpRecoveryTerminalPlan? applied = appliedResult.Value;
             if (applied?.State == "tombstoned")
             {
-                ReleaseRecoveryTerminalClaims(context, acknowledgement.Rsid,
-                    applied.RecoveryInvocationId, long.MaxValue);
+                _ = await TryRunCurrentOperationAsync(
+                        context,
+                        () =>
+                        {
+                            ReleaseRecoveryTerminalClaims(
+                                context, acknowledgement.Rsid,
+                                applied.RecoveryInvocationId, long.MaxValue);
+                            return Task.FromResult(true);
+                        })
+                    .ConfigureAwait(false);
                 throw new RbpCoordinatorException(
                     RbpCoordinatorErrorCode.UnexpectedControl,
                     "Recovery terminal acknowledgement violated its durable fence.");
             }
             if (applied?.State == "confirmed")
             {
-                ObserveRecoveryTerminalAcknowledgement(context, applied);
-                ReleaseRecoveryTerminalClaims(context, acknowledgement.Rsid,
-                    applied.RecoveryInvocationId, acknowledgement.Sequence);
+                CurrentOperationResult<bool> terminalObserved =
+                    await TryRunCurrentOperationAsync(
+                            context,
+                            () =>
+                            {
+                                ObserveRecoveryTerminalAcknowledgement(
+                                    context, applied);
+                                ReleaseRecoveryTerminalClaims(
+                                    context, acknowledgement.Rsid,
+                                    applied.RecoveryInvocationId,
+                                    acknowledgement.Sequence);
+                                return Task.FromResult(true);
+                            })
+                        .ConfigureAwait(false);
+                if (!terminalObserved.Started) return;
             }
         }
     }
@@ -222,20 +328,34 @@ internal sealed partial class RbpConnectionCoordinator
     private async Task ScheduleActiveRecoveryCarriersAsync(
         ConnectionCycleContext context)
     {
-        IReadOnlyList<RbpRecoveryCarrierReservation> active = await _journal
-            .ListActiveRecoveryCarrierReservationsAsync(context.Token)
-            .ConfigureAwait(false);
+        CurrentOperationResult<IReadOnlyList<RbpRecoveryCarrierReservation>>
+            listed = await TryRunCurrentOperationAsync(
+                context,
+                () => _journal.ListActiveRecoveryCarrierReservationsAsync(
+                    context.Token)).ConfigureAwait(false);
+        if (!listed.Started) return;
+        IReadOnlyList<RbpRecoveryCarrierReservation> active = listed.Value;
         foreach (RbpRecoveryCarrierReservation reservation in active
                      .OrderBy(value => value.Rsid, StringComparer.Ordinal)
                      .ThenBy(value => value.CurrentReservedSequence))
         {
             if (!context.IsDispatchAllowed(reservation.Rsid)) continue;
-            await context.OutboundGate.WaitAsync(context.Token)
-                .ConfigureAwait(false);
+            CurrentOperationResult<bool> gate =
+                await TryRunCurrentOperationAsync(
+                        context,
+                        async () => await context.OutboundGate
+                            .WaitAsync(context.Token).ConfigureAwait(false))
+                    .ConfigureAwait(false);
+            if (!gate.Started) return;
             try
             {
-                await SendRecoveryCarrierAsync(context, reservation)
-                    .ConfigureAwait(false);
+                CurrentOperationResult<bool> sent =
+                    await TryRunCurrentOperationAsync(
+                            context,
+                            () => SendRecoveryCarrierAsync(
+                                context, reservation))
+                        .ConfigureAwait(false);
+                if (!sent.Started) return;
             }
             finally
             {
@@ -247,20 +367,34 @@ internal sealed partial class RbpConnectionCoordinator
     private async Task ScheduleActiveRecoveryTerminalsAsync(
         ConnectionCycleContext context)
     {
-        IReadOnlyList<RbpRecoveryTerminalPlan> active = await _journal
-            .ListActiveRecoveryTerminalPlansAsync(context.Token)
-            .ConfigureAwait(false);
+        CurrentOperationResult<IReadOnlyList<RbpRecoveryTerminalPlan>> listed =
+            await TryRunCurrentOperationAsync(
+                    context,
+                    () => _journal.ListActiveRecoveryTerminalPlansAsync(
+                        context.Token))
+                .ConfigureAwait(false);
+        if (!listed.Started) return;
+        IReadOnlyList<RbpRecoveryTerminalPlan> active = listed.Value;
         foreach (RbpRecoveryTerminalPlan plan in active
                      .OrderBy(value => value.Rsid, StringComparer.Ordinal)
                      .ThenBy(value => value.FinalSequence))
         {
             if (!context.IsDispatchAllowed(plan.Rsid)) continue;
-            await context.OutboundGate.WaitAsync(context.Token)
-                .ConfigureAwait(false);
+            CurrentOperationResult<bool> gate =
+                await TryRunCurrentOperationAsync(
+                        context,
+                        async () => await context.OutboundGate
+                            .WaitAsync(context.Token).ConfigureAwait(false))
+                    .ConfigureAwait(false);
+            if (!gate.Started) return;
             try
             {
-                await SendRecoveryTerminalAsync(context, plan)
-                    .ConfigureAwait(false);
+                CurrentOperationResult<bool> sent =
+                    await TryRunCurrentOperationAsync(
+                            context,
+                            () => SendRecoveryTerminalAsync(context, plan))
+                        .ConfigureAwait(false);
+                if (!sent.Started) return;
             }
             finally
             {
@@ -276,13 +410,24 @@ internal sealed partial class RbpConnectionCoordinator
         if (!context.IsDispatchAllowed(plan.Rsid)) return;
         var claim = new RecoveryTerminalCycleKey(context,
             plan.RecoveryInvocationId, plan.FinalSequence, plan.PlanVersion);
-        if (!TryAcquireRecoveryTerminalClaim(claim)) return;
+        bool claimAcquired = false;
+        if (!TryCommitCurrent(context, () =>
+            {
+                if (context.IsDispatchAllowed(plan.Rsid))
+                    claimAcquired = TryAcquireRecoveryTerminalClaim(claim);
+            }) || !claimAcquired)
+            return;
         bool retainClaim = false;
         try
         {
-            RbpRecoveryTerminalMaterializedFrame? materialized = await
-                _recoveryCarrierMaterializer.MaterializeTerminalAsync(
-                    plan, context.Token).ConfigureAwait(false);
+            CurrentOperationResult<RbpRecoveryTerminalMaterializedFrame?> frame =
+                await TryRunCurrentOperationAsync(
+                        context,
+                        () => _recoveryCarrierMaterializer
+                            .MaterializeTerminalAsync(plan, context.Token))
+                    .ConfigureAwait(false);
+            if (!frame.Started) return;
+            RbpRecoveryTerminalMaterializedFrame? materialized = frame.Value;
             if (materialized is null ||
                 materialized.ReservedSequence != plan.FinalSequence ||
                 materialized.PlanVersion != plan.PlanVersion ||
@@ -309,49 +454,111 @@ internal sealed partial class RbpConnectionCoordinator
                 // second replay authority beside the v9 terminal commitment.
                 string outerDigest = "sha256:" + Convert.ToHexString(
                     SHA256.HashData(outerBytes)).ToLowerInvariant();
-                ObserveRecoveryCarrier(context,
-                    RbpRecoveryCarrierObservationPhase.Materialized,
-                    plan.RecoveryInvocationId, plan.Rsid, plan.FinalSequence,
-                    plan.TerminalDigest);
+                CurrentOperationResult<bool> materializedObserved =
+                    await TryRunCurrentOperationAsync(
+                            context,
+                            () =>
+                            {
+                                ObserveRecoveryCarrier(
+                                    context,
+                                    RbpRecoveryCarrierObservationPhase
+                                        .Materialized,
+                                    plan.RecoveryInvocationId,
+                                    plan.Rsid,
+                                    plan.FinalSequence,
+                                    plan.TerminalDigest);
+                                return Task.FromResult(true);
+                            })
+                        .ConfigureAwait(false);
+                if (!materializedObserved.Started) return;
+                CurrentOperationResult<bool> confirmed =
+                    await TryRunCurrentOperationAsync(
+                            context,
+                            () => _journal
+                                .ConfirmRecoveryTerminalMaterializationAsync(
+                                    plan.RecoveryInvocationId,
+                                    plan.Rsid,
+                                    materialized.PlanVersion,
+                                    materialized.ReservedSequence,
+                                    materialized.PayloadCommitment,
+                                    context.Token))
+                        .ConfigureAwait(false);
                 if (!string.Equals(Rfc8785Json.Sha256Digest(
                         materialized.Answer.Payload), plan.TerminalDigest,
                         StringComparison.Ordinal) ||
                     string.IsNullOrEmpty(outerDigest) ||
-                    !await _journal.ConfirmRecoveryTerminalMaterializationAsync(
-                        plan.RecoveryInvocationId, plan.Rsid,
-                        materialized.PlanVersion,
-                        materialized.ReservedSequence,
-                        materialized.PayloadCommitment, context.Token)
-                        .ConfigureAwait(false) ||
+                    !confirmed.Started || !confirmed.Value ||
                     !context.IsDispatchAllowed(plan.Rsid)) return;
 
-                retainClaim = true;
-                bool restartResend = !TryMarkRecoveryTerminalDelivery(
-                    plan.Rsid, plan.RecoveryInvocationId, plan.FinalSequence);
-                ObserveRecoveryCarrier(context,
-                    restartResend
-                        ? RbpRecoveryCarrierObservationPhase.RestartResend
-                        : RbpRecoveryCarrierObservationPhase.Write,
-                    plan.RecoveryInvocationId, plan.Rsid, plan.FinalSequence,
-                    plan.TerminalDigest);
+                bool restartResend = false;
+                CurrentOperationResult<bool> deliveryMarked =
+                    await TryRunCurrentOperationAsync(
+                            context,
+                            () =>
+                            {
+                                retainClaim = true;
+                                restartResend =
+                                    !TryMarkRecoveryTerminalDelivery(
+                                        plan.Rsid,
+                                        plan.RecoveryInvocationId,
+                                        plan.FinalSequence);
+                                ObserveRecoveryCarrier(
+                                    context,
+                                    restartResend
+                                        ? RbpRecoveryCarrierObservationPhase
+                                            .RestartResend
+                                        : RbpRecoveryCarrierObservationPhase
+                                            .Write,
+                                    plan.RecoveryInvocationId,
+                                    plan.Rsid,
+                                    plan.FinalSequence,
+                                    plan.TerminalDigest);
+                                return Task.FromResult(true);
+                            })
+                        .ConfigureAwait(false);
+                if (!deliveryMarked.Started) return;
                 if (_beforeRecoveryTerminalWrite is { } beforeTerminalWrite)
                 {
-                    await beforeTerminalWrite(context.Token).ConfigureAwait(false);
+                    CurrentOperationResult<bool> callback =
+                        await TryRunCurrentOperationAsync(
+                                context,
+                                () => beforeTerminalWrite(context.Token))
+                            .ConfigureAwait(false);
+                    if (!callback.Started) return;
                 }
                 RecoveryCarrierAckGateKey? ackGate =
                     _afterRecoveryCarrierWriteBeforeAck is null ? null :
                     new RecoveryCarrierAckGateKey(context, plan.Rsid,
                         plan.RecoveryInvocationId, plan.FinalSequence,
                         plan.AcknowledgementBaseline);
-                if (ackGate is not null) InstallRecoveryCarrierAckGate(ackGate);
+                if (ackGate is not null)
+                {
+                    CurrentOperationResult<bool> gateInstalled =
+                        await TryRunCurrentOperationAsync(
+                                context,
+                                () =>
+                                {
+                                    InstallRecoveryCarrierAckGate(ackGate);
+                                    return Task.FromResult(true);
+                                })
+                            .ConfigureAwait(false);
+                    if (!gateInstalled.Started) return;
+                }
                 bool postWriteCallbackReturned = false;
                 try
                 {
-                    await context.Cycle.SendAsync(envelope, context.Token)
+                    bool sent = await SendCurrentPreparedAsync(
+                            context, envelope, plan.Rsid)
                         .ConfigureAwait(false);
+                    if (!sent) return;
                     if (_afterRecoveryCarrierWriteBeforeAck is { } afterWrite)
                     {
-                        await afterWrite(context.Token).ConfigureAwait(false);
+                        CurrentOperationResult<bool> callback =
+                            await TryRunCurrentOperationAsync(
+                                    context,
+                                    () => afterWrite(context.Token))
+                                .ConfigureAwait(false);
+                        if (!callback.Started) return;
                         postWriteCallbackReturned = true;
                     }
                 }

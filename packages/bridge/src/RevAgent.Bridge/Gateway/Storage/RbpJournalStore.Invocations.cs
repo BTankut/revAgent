@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Data.Sqlite;
+using RevAgent.Bridge.AddinLoopback;
 using RevAgent.Bridge.Gateway.Dispatch;
 using RevAgent.Contracts.AddinLoopback;
 using RevAgent.Bridge.Gateway.Protocol;
@@ -975,7 +976,8 @@ internal sealed partial class RbpJournalStore
     internal Task<RbpInvocationAdmissionResult> AdmitInvocationAsync(
         RbpInvocationIdentity identity,
         CancellationToken cancellationToken = default,
-        JsonElement verification = default)
+        JsonElement verification = default,
+        RbpInvocationAuthoritySnapshot? invocationAuthority = null)
     {
         ArgumentNullException.ThrowIfNull(identity);
         ValidateInvocationIdentity(identity);
@@ -1003,7 +1005,21 @@ internal sealed partial class RbpJournalStore
                         throw LegacyAdmissionFault("legacy_outcome_unverified");
                     InstallLegacyHoldPlans(context, safety.NewHoldPlans, now);
                 }
-                return AdmitInvocation(context, identity, now, verification);
+                RbpVerificationAdmissionAuthority? admissionAuthority =
+                    verification.ValueKind is JsonValueKind.Null or
+                        JsonValueKind.Undefined ||
+                    invocationAuthority is null
+                        ? null
+                        : RequireCurrentInvocationAuthority(
+                            context,
+                            identity,
+                            invocationAuthority);
+                return AdmitInvocation(
+                    context,
+                    identity,
+                    now,
+                    verification,
+                    admissionAuthority);
             },
             cancellationToken);
     }
@@ -1019,9 +1035,15 @@ internal sealed partial class RbpJournalStore
         RbpJournalWriteContext context,
         RbpInvocationIdentity identity,
         long now,
-        JsonElement verification = default)
+        JsonElement verification = default,
+        RbpVerificationAdmissionAuthority? admissionAuthority = null)
     {
-        string? requestedCorrelation = BuildVerificationCorrelation(identity, verification, terminal: null);
+        string? requestedCorrelation = BuildVerificationCorrelation(
+            identity,
+            verification,
+            terminal: null,
+            admissionAuthority,
+            routeAuthority: null);
         RbpStoredInvocation? existing =
             ReadInvocation(context, identity.IdempotencyKey);
         if (identity.Mutating && identity.BatchId is null && existing is null)
@@ -1652,8 +1674,79 @@ internal sealed partial class RbpJournalStore
 
     private const int MaximumVerificationCorrelationBytes = 32_768;
 
+    private sealed record RbpVerificationAdmissionAuthority(
+        string Rsid,
+        string ConnectionId,
+        long ConnectionGeneration,
+        long RouteEpoch,
+        string ConnectionCapabilitiesDigest,
+        string LocalSessionKey,
+        string RegistrationDigest,
+        string SessionCapabilitiesDigest);
+
+    private RbpVerificationAdmissionAuthority RequireCurrentInvocationAuthority(
+        RbpJournalWriteContext context,
+        RbpInvocationIdentity identity,
+        RbpInvocationAuthoritySnapshot? authority)
+    {
+        if (authority is null ||
+            !string.Equals(authority.Rsid, identity.Rsid,
+                StringComparison.Ordinal) ||
+            authority.ConnectionId is not { Length: > 0 and <= 128 } ||
+            authority.ConnectionGeneration <= 0 ||
+            authority.RouteEpoch != authority.ConnectionGeneration ||
+            !IsActiveConnectionGeneration(
+                authority.ConnectionGeneration) ||
+            !RbpJournalSerialization.IsSha256Digest(
+                authority.ConnectionCapabilitiesDigest) ||
+            !RbpJournalSerialization.IsSha256Digest(
+                authority.RegistrationDigest) ||
+            !RbpJournalSerialization.IsSha256Digest(
+                authority.SessionCapabilitiesDigest) ||
+            !HasCurrentSessionAuthority(context, identity.Rsid))
+        {
+            throw ClearanceFault(
+                "verification admission lacks exact current connection authority");
+        }
+
+        RbpStoredSession session = ReadStoredSession(context, identity.Rsid) ??
+            throw ClearanceFault(
+                "verification admission lacks a current session binding");
+        if (!string.Equals(
+                session.LocalSessionKey,
+                authority.LocalSessionKey,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                session.RegistrationDigest,
+                authority.RegistrationDigest,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                RbpInvocationAuthoritySnapshot.CapabilitiesDigest(
+                    session.GrantedCapabilities),
+                authority.SessionCapabilitiesDigest,
+                StringComparison.Ordinal))
+        {
+            throw ClearanceFault(
+                "verification admission session binding changed");
+        }
+
+        return new RbpVerificationAdmissionAuthority(
+            authority.Rsid,
+            authority.ConnectionId,
+            authority.ConnectionGeneration,
+            authority.RouteEpoch,
+            authority.ConnectionCapabilitiesDigest,
+            authority.LocalSessionKey,
+            authority.RegistrationDigest,
+            authority.SessionCapabilitiesDigest);
+    }
+
     private static string? BuildVerificationCorrelation(
-        RbpInvocationIdentity identity, JsonElement verification, object? terminal)
+        RbpInvocationIdentity identity,
+        JsonElement verification,
+        object? terminal,
+        RbpVerificationAdmissionAuthority? admissionAuthority = null,
+        RbpRouteAuthoritySnapshot? routeAuthority = null)
     {
         if (verification.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined) return null;
         if (identity.Mutating || identity.MutationScopeJcs is not null || identity.BatchId is not null ||
@@ -1670,14 +1763,56 @@ internal sealed partial class RbpJournalStore
             throw ClearanceFault("verification violates the frozen correlation shape");
         string scopeJcs = Rfc8785Json.Canonicalize(scope);
         _ = ReadScopeShape(scopeJcs);
-        string correlation = Rfc8785Json.Canonicalize(JsonSerializer.SerializeToElement(new
-        {
-            schema = "bridge.verification-correlation/v1",
-            rsid = identity.Rsid,
-            invocation_id = identity.InvocationId,
-            verification,
-            terminal,
-        }));
+        object value = admissionAuthority is null
+            ? new
+            {
+                schema = "bridge.verification-correlation/v1",
+                rsid = identity.Rsid,
+                invocation_id = identity.InvocationId,
+                verification,
+                terminal,
+            }
+            : new
+            {
+                schema = "bridge.verification-correlation/v2",
+                rsid = identity.Rsid,
+                invocation_id = identity.InvocationId,
+                verification,
+                authority = new
+                {
+                    schema = "bridge.verification-authority/v1",
+                    admission = new
+                    {
+                        rsid = admissionAuthority.Rsid,
+                        connection_id = admissionAuthority.ConnectionId,
+                        connection_generation =
+                            admissionAuthority.ConnectionGeneration,
+                        route_epoch = admissionAuthority.RouteEpoch,
+                        connection_capabilities_digest =
+                            admissionAuthority.ConnectionCapabilitiesDigest,
+                        local_session_key = admissionAuthority.LocalSessionKey,
+                        registration_digest =
+                            admissionAuthority.RegistrationDigest,
+                        session_capabilities_digest =
+                            admissionAuthority.SessionCapabilitiesDigest,
+                    },
+                    route = routeAuthority is null
+                        ? null
+                        : new
+                        {
+                            local_session_key = routeAuthority.LocalSessionKey,
+                            handle_generation =
+                                routeAuthority.HandleGeneration,
+                            registration_signature_digest =
+                                routeAuthority.RegistrationSignatureDigest,
+                            process_attestation_digest =
+                                routeAuthority.ProcessAttestationDigest,
+                        },
+                },
+                terminal,
+            };
+        string correlation = Rfc8785Json.Canonicalize(
+            JsonSerializer.SerializeToElement(value));
         if (Encoding.UTF8.GetByteCount(correlation) > MaximumVerificationCorrelationBytes)
             throw ClearanceFault("verification correlation exceeds its byte budget");
         return correlation;
@@ -1692,9 +1827,8 @@ internal sealed partial class RbpJournalStore
         try
         {
             JsonElement root = document.RootElement;
-            if (root.ValueKind != JsonValueKind.Object || root.EnumerateObject().Count() != 5 ||
+            if (root.ValueKind != JsonValueKind.Object ||
                 !root.TryGetProperty("schema", out JsonElement schema) || schema.ValueKind != JsonValueKind.String ||
-                schema.GetString() != "bridge.verification-correlation/v1" ||
                 !root.TryGetProperty("rsid", out JsonElement rsid) || rsid.ValueKind != JsonValueKind.String ||
                 rsid.GetString() != row.Identity.Rsid ||
                 !root.TryGetProperty("invocation_id", out JsonElement invocation) ||
@@ -1704,8 +1838,67 @@ internal sealed partial class RbpJournalStore
                 !root.TryGetProperty("terminal", out JsonElement terminal) ||
                 Rfc8785Json.Canonicalize(root) != json)
                 throw ClearanceFault("verification correlation is malformed or mismatched");
-            _ = BuildVerificationCorrelation(row.Identity, verification, terminal: null);
+            string? schemaName = schema.GetString();
+            if (schemaName == "bridge.verification-correlation/v1")
+            {
+                if (root.EnumerateObject().Count() != 5 ||
+                    root.TryGetProperty("authority", out _))
+                    throw ClearanceFault(
+                        "verification v1 correlation is not closed");
+                _ = BuildVerificationCorrelation(
+                    row.Identity,
+                    verification,
+                    terminal: null);
+            }
+            else if (schemaName == "bridge.verification-correlation/v2")
+            {
+                if (root.EnumerateObject().Count() != 6 ||
+                    !root.TryGetProperty("authority", out JsonElement authority))
+                    throw ClearanceFault(
+                        "verification v2 correlation lacks authority");
+                ValidateVerificationAuthority(authority);
+                RbpVerificationAdmissionAuthority admission =
+                    ReadVerificationAdmissionAuthority(
+                        authority.GetProperty("admission"));
+                if (!string.Equals(
+                        admission.Rsid,
+                        row.Identity.Rsid,
+                        StringComparison.Ordinal))
+                    throw ClearanceFault(
+                        "verification authority RSID is mismatched");
+            }
+            else
+            {
+                throw ClearanceFault("verification correlation schema is unsupported");
+            }
             RequireVerificationTerminalShape(terminal);
+            if (schemaName == "bridge.verification-correlation/v1" &&
+                terminal.ValueKind == JsonValueKind.Object &&
+                terminal.GetProperty("eligible").ValueKind ==
+                    JsonValueKind.True)
+            {
+                JsonElement normalized = JsonSerializer.SerializeToElement(new
+                {
+                    schema = schemaName,
+                    rsid = row.Identity.Rsid,
+                    invocation_id = row.Identity.InvocationId,
+                    verification,
+                    terminal = new
+                    {
+                        status = terminal.GetProperty("status").GetString(),
+                        raw_response_digest = terminal
+                            .GetProperty("raw_response_digest")
+                            .ValueKind == JsonValueKind.Null
+                                ? null
+                                : terminal.GetProperty("raw_response_digest")
+                                    .GetString(),
+                        eligible = false,
+                    },
+                });
+                document.Dispose();
+                return JsonDocument.Parse(
+                    Rfc8785Json.Canonicalize(normalized));
+            }
             return document;
         }
         catch { document.Dispose(); throw; }
@@ -1717,10 +1910,115 @@ internal sealed partial class RbpJournalStore
         if (row.VerificationCorrelationJson is null || requested is null)
             throw ClearanceFault("verification presence changed under the same invocation id");
         using JsonDocument stored = ReadVerificationCorrelation(row);
-        string? immutable = BuildVerificationCorrelation(row.Identity, stored.RootElement.GetProperty("verification"), terminal: null);
+        JsonElement root = stored.RootElement;
+        string? immutable;
+        if (root.GetProperty("schema").GetString() ==
+            "bridge.verification-correlation/v1")
+        {
+            immutable = BuildVerificationCorrelation(
+                row.Identity,
+                root.GetProperty("verification"),
+                terminal: null);
+        }
+        else
+        {
+            RbpVerificationAdmissionAuthority admission =
+                ReadVerificationAdmissionAuthority(
+                    root.GetProperty("authority").GetProperty("admission"));
+            immutable = BuildVerificationCorrelation(
+                row.Identity,
+                root.GetProperty("verification"),
+                terminal: null,
+                admission,
+                routeAuthority: null);
+        }
         if (!string.Equals(immutable, requested, StringComparison.Ordinal))
             throw ClearanceFault("verification binding changed under the same invocation id");
     }
+
+    private static void ValidateVerificationAuthority(JsonElement authority)
+    {
+        if (authority.ValueKind != JsonValueKind.Object ||
+            authority.EnumerateObject().Count() != 3 ||
+            !authority.TryGetProperty("schema", out JsonElement schema) ||
+            schema.ValueKind != JsonValueKind.String ||
+            schema.GetString() != "bridge.verification-authority/v1" ||
+            !authority.TryGetProperty("admission", out JsonElement admission) ||
+            !authority.TryGetProperty("route", out JsonElement route))
+            throw ClearanceFault("verification authority is malformed");
+        _ = ReadVerificationAdmissionAuthority(admission);
+        if (route.ValueKind == JsonValueKind.Null) return;
+        _ = ReadRouteAuthority(route);
+    }
+
+    private static RbpVerificationAdmissionAuthority
+        ReadVerificationAdmissionAuthority(JsonElement admission)
+    {
+        if (admission.ValueKind != JsonValueKind.Object ||
+            admission.EnumerateObject().Count() != 8 ||
+            !TryString(admission, "rsid", out string? rsid) ||
+            !TryString(admission, "connection_id", out string? connectionId) ||
+            !TryInt64(admission, "connection_generation", out long generation) ||
+            !TryInt64(admission, "route_epoch", out long epoch) ||
+            generation <= 0 || epoch != generation ||
+            !TryDigest(admission, "connection_capabilities_digest",
+                out string? connectionCapabilities) ||
+            !TryString(admission, "local_session_key", out string? localKey) ||
+            !TryDigest(admission, "registration_digest",
+                out string? registration) ||
+            !TryDigest(admission, "session_capabilities_digest",
+                out string? sessionCapabilities))
+            throw ClearanceFault("verification admission authority is malformed");
+        return new RbpVerificationAdmissionAuthority(
+            rsid!, connectionId!, generation, epoch, connectionCapabilities!,
+            localKey!, registration!, sessionCapabilities!);
+    }
+
+    private static RbpRouteAuthoritySnapshot ReadRouteAuthority(
+        JsonElement route)
+    {
+        if (route.ValueKind != JsonValueKind.Object ||
+            route.EnumerateObject().Count() != 4 ||
+            !TryString(route, "local_session_key", out string? localKey) ||
+            !TryInt64(route, "handle_generation", out long generation) ||
+            generation <= 0 ||
+            !TryDigest(route, "registration_signature_digest",
+                out string? registration) ||
+            !TryDigest(route, "process_attestation_digest",
+                out string? attestation))
+            throw ClearanceFault("verification route authority is malformed");
+        return new RbpRouteAuthoritySnapshot(
+            localKey!, generation, registration!, attestation!);
+    }
+
+    private static bool TryString(
+        JsonElement value,
+        string name,
+        out string? result)
+    {
+        result = null;
+        return value.TryGetProperty(name, out JsonElement property) &&
+            property.ValueKind == JsonValueKind.String &&
+            (result = property.GetString()) is { Length: > 0 };
+    }
+
+    private static bool TryInt64(
+        JsonElement value,
+        string name,
+        out long result)
+    {
+        result = 0;
+        return value.TryGetProperty(name, out JsonElement property) &&
+            property.ValueKind == JsonValueKind.Number &&
+            property.TryGetInt64(out result);
+    }
+
+    private static bool TryDigest(
+        JsonElement value,
+        string name,
+        out string? result) =>
+        TryString(value, name, out result) &&
+        RbpJournalSerialization.IsSha256Digest(result);
 
     private static void RequireVerificationTerminalShape(JsonElement terminal)
     {
@@ -1794,6 +2092,15 @@ internal sealed partial class RbpJournalStore
         if (correlation.RootElement.GetProperty("terminal").ValueKind != JsonValueKind.Null)
             throw ClearanceFault("verification terminal facts are immutable");
         JsonElement verification = correlation.RootElement.GetProperty("verification");
+        bool authorityV2 = correlation.RootElement.GetProperty("schema")
+            .GetString() == "bridge.verification-correlation/v2";
+        RbpVerificationAdmissionAuthority? admissionAuthority = authorityV2
+            ? ReadVerificationAdmissionAuthority(
+                correlation.RootElement.GetProperty("authority")
+                    .GetProperty("admission"))
+            : null;
+        RbpRouteAuthoritySnapshot? routeAuthority =
+            response?.RouteAuthority;
         RbpVerificationHold hold = RequireVerificationHold(context, before.Identity, verification);
         string? rawDigest = null;
         bool eligible = false;
@@ -1804,10 +2111,43 @@ internal sealed partial class RbpJournalStore
                 AddinJsonRpcResponse parsed = AddinJsonRpcCodec.ParseResponse(response.RawResponsePayload, before.Identity.InvocationId);
                 rawDigest = RawResponseDigest(response.RawResponsePayload);
                 using JsonDocument raw = JsonDocument.Parse(response.RawResponsePayload);
-                eligible = HasCurrentSessionAuthority(context, before.Identity.Rsid) &&
+                RbpStoredSession? session =
+                    ReadStoredSession(context, before.Identity.Rsid);
+                bool sessionMatches = admissionAuthority is not null &&
+                    session is not null &&
+                    string.Equals(
+                        session.LocalSessionKey,
+                        admissionAuthority.LocalSessionKey,
+                        StringComparison.Ordinal) &&
+                    string.Equals(
+                        session.RegistrationDigest,
+                        admissionAuthority.RegistrationDigest,
+                        StringComparison.Ordinal) &&
+                    string.Equals(
+                        RbpInvocationAuthoritySnapshot.CapabilitiesDigest(
+                            session.GrantedCapabilities),
+                        admissionAuthority.SessionCapabilitiesDigest,
+                        StringComparison.Ordinal);
+                bool routeMatches = admissionAuthority is not null &&
+                    routeAuthority is not null &&
+                    string.Equals(
+                        routeAuthority.LocalSessionKey,
+                        admissionAuthority.LocalSessionKey,
+                        StringComparison.Ordinal) &&
+                    response?.ProcessAttestation is { } attestation &&
+                    string.Equals(
+                        AddinSessionRouter.ProcessAttestationDigest(attestation),
+                        routeAuthority.ProcessAttestationDigest,
+                        StringComparison.Ordinal);
+                eligible = authorityV2 &&
+                    IsActiveConnectionGeneration(
+                        admissionAuthority!.ConnectionGeneration) &&
+                    admissionAuthority.RouteEpoch ==
+                        admissionAuthority.ConnectionGeneration &&
+                    HasCurrentSessionAuthority(context, before.Identity.Rsid) &&
+                    sessionMatches && routeMatches &&
                     response is { ProcessAttestation: not null, RouteFailure: false } &&
-                    ReadStoredSession(context, before.Identity.Rsid) is { } session &&
-                    string.Equals(session.LocalSessionKey, response.RouteLocalSessionKey, StringComparison.Ordinal) &&
+                    string.Equals(session!.LocalSessionKey, response.RouteLocalSessionKey, StringComparison.Ordinal) &&
                     hold.State == RbpHoldState.Active &&
                     terminal.State == RbpInvocationState.Completed && response.Kind == RbpAddinOutcomeKind.Completed &&
                     parsed.Error is null && raw.RootElement.TryGetProperty("result", out JsonElement result) &&
@@ -1819,12 +2159,17 @@ internal sealed partial class RbpJournalStore
             catch (Exception exception) when (exception is AddinJsonRpcProtocolException or StrictJsonException or JsonException)
             { rawDigest = null; }
         }
-        string completed = BuildVerificationCorrelation(before.Identity, verification, new
-        {
-            status = ToStorageState(terminal.State),
-            raw_response_digest = rawDigest,
-            eligible,
-        })!;
+        string completed = BuildVerificationCorrelation(
+            before.Identity,
+            verification,
+            new
+            {
+                status = ToStorageState(terminal.State),
+                raw_response_digest = rawDigest,
+                eligible,
+            },
+            admissionAuthority,
+            authorityV2 ? routeAuthority : null)!;
         using SqliteCommand update = context.CreateCommand(
             "UPDATE rbp_invocations SET verification_correlation_json=$completed WHERE idempotency_key=$key AND verification_correlation_json=$before;");
         update.Parameters.AddWithValue("$completed", completed);

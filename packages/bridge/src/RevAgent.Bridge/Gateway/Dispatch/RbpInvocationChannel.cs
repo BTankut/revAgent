@@ -59,7 +59,11 @@ internal sealed record RbpAddinOutcome(
     // This is an internal, already post-response-verified attestation from
     // AddinTcpTransport. It is never serialized or exposed to a caller.
     AddinProcessAttestation? ProcessAttestation = null,
-    string? RouteLocalSessionKey = null)
+    string? RouteLocalSessionKey = null,
+    // Closed Bridge-owned incarnation evidence captured by the router's
+    // durable-decision lease. It is internal journal input, never a wire or
+    // caller-supplied authority.
+    RbpRouteAuthoritySnapshot? RouteAuthority = null)
 {
     internal RbpAddinOutcome ConservativeClassification() =>
         Kind == RbpAddinOutcomeKind.KnownNotDispatched &&
@@ -67,6 +71,28 @@ internal sealed record RbpAddinOutcome(
             ? this with { Kind = RbpAddinOutcomeKind.PossiblyDispatched }
             : this;
 }
+
+/// <summary>
+/// Exact Bridge-owned route facts for one current RBP-to-add-in binding.
+/// </summary>
+/// <remarks>
+/// <para>
+/// Handle generation plus the registration-signature and attestation digests
+/// identify the exact router slot incarnation without exposing registration or
+/// process material outside the local Bridge journal.
+/// </para>
+/// <para>
+/// Gateway-authenticated principal, seat, actor and effective MCP-session
+/// authority are intentionally absent: RBP/1 does not carry those facts to the
+/// Bridge, so their current-binding negatives remain Gateway conformance
+/// obligations rather than invented Bridge evidence.
+/// </para>
+/// </remarks>
+internal sealed record RbpRouteAuthoritySnapshot(
+    string LocalSessionKey,
+    long HandleGeneration,
+    string RegistrationSignatureDigest,
+    string ProcessAttestationDigest);
 
 /// <summary>
 /// Shared by single/batch owners using the same channel. A failed persistence
@@ -181,12 +207,17 @@ internal interface IRbpInFlightGate
 /// <summary>
 /// Holds the Section 10.1 window for one session until disposed.
 /// </summary>
-internal sealed class GateClaim(IRbpInFlightGate gate, string rsid)
+internal sealed class GateClaim(
+    IRbpInFlightGate gate,
+    string rsid,
+    RbpInvocationAuthoritySnapshot? authority = null)
     : IRbpInvocationClaim
 {
     private int _released;
 
     public string Rsid { get; } = rsid;
+
+    public RbpInvocationAuthoritySnapshot? Authority { get; } = authority;
 
     public void Dispose()
     {
