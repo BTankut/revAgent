@@ -1094,6 +1094,20 @@ function assertReceiptIntegrity(
   tenantId?: string,
 ): void {
   const derived = deriveEnvelope(pending.envelope, pending.envelope.rsid);
+  const optionalReceiptFields = [
+    receipt.invocationId,
+    receipt.correlationId,
+    receipt.proofDigest,
+    receipt.routeSnapshotDigest,
+    receipt.egressEpoch,
+    receipt.leaseTicket,
+    receipt.intent,
+  ];
+  const optionalReceiptFieldCount = optionalReceiptFields.filter(
+    (value) => value !== undefined,
+  ).length;
+  const fullReceipt = optionalReceiptFieldCount === optionalReceiptFields.length;
+  const reconstructedReceipt = optionalReceiptFieldCount === 0;
   if (
     receipt.source !== "durable_rbp_sequence" ||
     receipt.receiptVersion !== 1 ||
@@ -1102,12 +1116,13 @@ function assertReceiptIntegrity(
     receipt.sessionBindingId !== pending.sessionBindingId ||
     receipt.acceptedConnectionId !== pending.preparedConnectionId ||
     receipt.authorizedSessionVersion !== pending.authorizedSessionVersion ||
-    receipt.invocationId !== derived.correlationId ||
-    receipt.correlationId !== derived.correlationId ||
-    receipt.intent !== "dispatch" ||
     receipt.gatewaySequence !== pending.gatewaySequence ||
     receipt.envelopeDigest !== pending.envelopeDigest ||
-    receipt.cumulativeAck < pending.gatewaySequence
+    !Number.isSafeInteger(receipt.cumulativeAck) ||
+    receipt.cumulativeAck < pending.gatewaySequence ||
+    receipt.durableSequenceVersion !== pending.authorizedSessionVersion ||
+    !Number.isSafeInteger(receipt.acceptedAtMs) || receipt.acceptedAtMs < 0 ||
+    (!fullReceipt && !reconstructedReceipt)
   ) {
     throw new TypeError(
       "Bridge cumulative ACK is not bound to the pending dispatch",
@@ -1118,8 +1133,24 @@ function assertReceiptIntegrity(
   }
   assertBoundedString(receipt.tenantId, "accepted tenantId", 512);
   assertBoundedString(receipt.acceptedConnectionId, "acceptedConnectionId");
-  assertBoundedString(receipt.invocationId, "accepted invocationId");
-  assertBoundedString(receipt.correlationId, "accepted correlationId");
+  assertSafePositiveInteger(
+    receipt.authorizedSessionVersion,
+    "accepted authorizedSessionVersion",
+  );
+  assertSafePositiveInteger(receipt.gatewaySequence, "gatewaySequence");
+  assertSafeNonNegativeInteger(receipt.cumulativeAck, "cumulativeAck");
+  assertSafePositiveInteger(
+    receipt.durableSequenceVersion,
+    "durableSequenceVersion",
+  );
+  assertSafeNonNegativeInteger(receipt.acceptedAtMs, "acceptedAtMs");
+  if (reconstructedReceipt) return;
+  if (receipt.invocationId !== derived.correlationId ||
+      receipt.correlationId !== derived.correlationId || receipt.intent !== "dispatch") {
+    throw new TypeError("Bridge cumulative ACK full receipt identity is invalid");
+  }
+  assertBoundedString(receipt.invocationId!, "accepted invocationId");
+  assertBoundedString(receipt.correlationId!, "accepted correlationId");
   if (
     typeof receipt.proofDigest !== "string" ||
     typeof receipt.routeSnapshotDigest !== "string" ||

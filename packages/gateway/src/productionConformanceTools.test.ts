@@ -2,7 +2,12 @@ import { describe, expect, it } from "vitest";
 import { z } from "zod";
 
 import { buildConfirmationPreviewProjection } from "./confirmation.js";
-import { productionConformanceCatalog, PRODUCTION_CONFORMANCE_TOOL_RECORDS } from "./productionConformanceTools.js";
+import {
+  MUTATION_PROBE_CONFORMANCE_TOOL_RECORDS,
+  MUTATION_PROBE_TOOL_NAMES,
+  productionConformanceCatalog,
+  PRODUCTION_CONFORMANCE_TOOL_RECORDS,
+} from "./productionConformanceTools.js";
 import { GatewayToolRegistry, M2_BOOTSTRAP_TOOL_RECORDS } from "./registry.js";
 
 describe("WP-12 production-conformance tools", () => {
@@ -89,5 +94,40 @@ describe("WP-12 production-conformance tools", () => {
           });
       expect(projection).toMatchObject({ ok: true, previewExecutorMethod: "get_ui_state", previewArgs: {} });
     }
+  });
+
+  it("keeps mutation-probe tools strict-empty and profile-only", () => {
+    const defaultRegistry = new GatewayToolRegistry([
+      ...M2_BOOTSTRAP_TOOL_RECORDS,
+      ...PRODUCTION_CONFORMANCE_TOOL_RECORDS,
+    ]);
+    const profileRegistry = new GatewayToolRegistry([
+      ...M2_BOOTSTRAP_TOOL_RECORDS,
+      ...PRODUCTION_CONFORMANCE_TOOL_RECORDS,
+      ...MUTATION_PROBE_CONFORMANCE_TOOL_RECORDS,
+    ]);
+    for (const tool of MUTATION_PROBE_CONFORMANCE_TOOL_RECORDS) {
+      expect(defaultRegistry.get(tool.name)).toBeUndefined();
+      const schema = z.object(profileRegistry.require(tool.name).inputSchema).strict();
+      expect(schema.safeParse({}).success).toBe(true);
+      expect(schema.safeParse({ expected: true }).success).toBe(false);
+    }
+    for (const name of [MUTATION_PROBE_TOOL_NAMES.origin, MUTATION_PROBE_TOOL_NAMES.next]) {
+      expect(buildConfirmationPreviewProjection(profileRegistry.require(name), {})).toMatchObject({
+        ok: true,
+        previewExecutorMethod: "get_ui_state",
+        previewArgs: {},
+        commitArgs: {},
+      });
+    }
+    expect(productionConformanceCatalog(
+      profileRegistry.require("core.ui.state"),
+      profileRegistry.require("core.dispatch.payload_recovery"),
+      MUTATION_PROBE_CONFORMANCE_TOOL_RECORDS,
+    ).map((entry) => entry.name)).toEqual(expect.arrayContaining([
+      MUTATION_PROBE_TOOL_NAMES.origin,
+      MUTATION_PROBE_TOOL_NAMES.verify,
+      MUTATION_PROBE_TOOL_NAMES.next,
+    ]));
   });
 });

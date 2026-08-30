@@ -24,12 +24,13 @@ import {
 } from "./authContext.js";
 import {
   GatewayDispatcher,
+  retryMutationProbeOriginReconcile,
   type GatewayDispatcherOptions,
   type GatewayExecutor,
   type GatewayExecutorOutcome,
   type GatewayExecutorRequest,
 } from "./dispatch.js";
-import { GatewayRbpFault } from "./bridgeSession.js";
+import { GatewayRbpFault, type GatewayBridgeSessionAuthority } from "./bridgeSession.js";
 import {
   GATEWAY_CONFIRMATION_AUDIT_NAMESPACE,
   GatewayConfirmationAuthority,
@@ -55,6 +56,14 @@ import {
   type GatewayVerifiedBridgeJournalEvidence,
 } from "./recoveryAuthority.js";
 import { GatewayToolRegistry, type GatewayToolRecord } from "./registry.js";
+import {
+  bindMutationProbeVerificationWorkflow,
+  createMutationProbeVerificationWorkflow,
+} from "./productionConformanceVerification.js";
+import {
+  MUTATION_PROBE_CONFORMANCE_TOOL_RECORDS,
+  PRODUCTION_CONFORMANCE_TOOL_RECORDS,
+} from "./productionConformanceTools.js";
 import {
   createCapturingEventSink,
   createReadOnlyRecoveryAuthorityFixture,
@@ -623,6 +632,7 @@ interface ConfirmationDispatchHarness {
   readonly durable: RestartableTestStore;
   readonly eventSink: CapturingEventSink;
   readonly executor: RecoveryExecutorHarness;
+  readonly recoveryAuthority: GatewayRecoveryAuthority;
   readonly mintedInvocationIds: () => readonly string[];
   readonly previewRequests: () => readonly GatewayExecutorRequest[];
   setNow(value: number): void;
@@ -634,6 +644,7 @@ async function createConfirmationDispatchHarness(
     readonly eventSink?: CapturingEventSink;
     readonly idBase?: number;
     readonly openStore?: boolean;
+    readonly record?: GatewayToolRecord;
   } = {},
 ): Promise<ConfirmationDispatchHarness> {
   const durable = input.durable ?? createRestartableTestStore();
@@ -669,7 +680,7 @@ async function createConfirmationDispatchHarness(
     recoveryAuthority: recovery.authority,
     confirmationAuthority,
     executor: executor.executor,
-    record: confirmRecord,
+    record: input.record ?? confirmRecord,
     idBase: input.idBase,
     ...(input.eventSink === undefined ? {} : { eventSink: input.eventSink }),
   });
@@ -680,6 +691,7 @@ async function createConfirmationDispatchHarness(
     durable,
     eventSink: dispatch.eventSink,
     executor,
+    recoveryAuthority: recovery.authority,
     mintedInvocationIds: dispatch.mintedInvocationIds,
     previewRequests: () => [...previewRequests],
     setNow(value) {
@@ -896,6 +908,83 @@ function deferred<T>() {
 }
 
 describe("GatewayDispatcher fail-closed boundaries", () => {
+  it("retries only the exact origin journal-before-ACK race without another send and times out closed", async () => {
+    const mismatch = { kind: "protocol_fault" as const,
+      reason: "bridge_evidence_dispatch_evidence_mismatch" };
+    let sends = 1;
+    let reads = 0;
+    let validations = 0;
+    let clock = 0;
+    const recovered = await retryMutationProbeOriginReconcile({
+      initial: mismatch,
+      now: () => clock,
+      delay: async (milliseconds) => { clock += milliseconds; },
+      revalidateCurrentOwner: async () => { validations += 1; return true; },
+      reconcile: async () => {
+        reads += 1;
+        return reads === 1 ? mismatch : {
+          kind: "indeterminate_recorded" as const,
+          installedHoldIds: ["vh:test"],
+          clearedHoldIds: [],
+        };
+      },
+    });
+    expect(recovered).toMatchObject({ kind: "indeterminate_recorded" });
+    expect({ sends, reads, validations }).toEqual({ sends: 1, reads: 2, validations: 2 });
+
+    reads = 0;
+    validations = 0;
+    clock = 0;
+    const timedOut = await retryMutationProbeOriginReconcile({
+      initial: mismatch,
+      now: () => clock,
+      delay: async () => { clock = 5_001; },
+      revalidateCurrentOwner: async () => { validations += 1; return true; },
+      reconcile: async () => { reads += 1; return mismatch; },
+    });
+    expect(timedOut).toEqual(mismatch);
+    expect({ sends, reads, validations }).toEqual({ sends: 1, reads: 0, validations: 0 });
+
+    const foreignFault = { kind: "protocol_fault" as const, reason: "journal_binding_mismatch" };
+    expect(await retryMutationProbeOriginReconcile({
+      initial: foreignFault,
+      reconcile: async () => { reads += 1; return mismatch; },
+      revalidateCurrentOwner: async () => true,
+    })).toEqual(foreignFault);
+    expect(reads).toBe(0);
+  });
+
+  it("rejects a branded verification workflow bound to a different recovery authority", () => {
+    const durable = createRestartableTestStore();
+    const evidence = new DispatchBridgeEvidence();
+    const bridge = Object.assign(evidence, { store: durable.store }) as unknown as GatewayBridgeSessionAuthority;
+    const workflow = createMutationProbeVerificationWorkflow({
+      protocolStore: durable.store,
+      bridgeAuthority: bridge,
+      runId: "dispatch-graph",
+    });
+    const ownerRecovery = new GatewayRecoveryAuthority(durable.store, {
+      bridgeEvidence: evidence,
+      evidenceDecision: workflow.evidenceDecision,
+    });
+    bindMutationProbeVerificationWorkflow({ workflow, protocolStore: durable.store,
+      bridgeAuthority: bridge, recoveryAuthority: ownerRecovery });
+    const substitutedRecovery = new GatewayRecoveryAuthority(durable.store, {
+      bridgeEvidence: evidence,
+      evidenceDecision: workflow.evidenceDecision,
+    });
+    expect(() => new GatewayDispatcher(
+      new GatewayToolRegistry([autoRecord]),
+      [{ binding: "bridge", async execute() { return { state: "completed", result: {} }; } }],
+      {
+        eventSink: createCapturingEventSink(),
+        eventSource: { component: "gateway-test", version: "1", instance: "dispatch" },
+        recoveryAuthority: substitutedRecovery,
+        mutationProbeVerification: workflow,
+      },
+    )).toThrow(/factory branded/u);
+  });
+
   it("validates direct dispatch arguments against the registry Zod shape", async () => {
     const harness = createDispatcher({
       execute: async () => ({ state: "completed", result: { ok: true } }),
@@ -2257,6 +2346,94 @@ describe("GatewayDispatcher fail-closed boundaries", () => {
 });
 
 describe("GW-8 durable confirmation round trip", () => {
+  it("routes mutation-probe preview as an auto read while retaining confirm audit authority", async () => {
+    const record = MUTATION_PROBE_CONFORMANCE_TOOL_RECORDS[0]!;
+    const harness = await createConfirmationDispatchHarness({ record });
+    const outcome = await harness.dispatcher.dispatch(
+      dispatchInput({}, { toolName: record.name }),
+    );
+    expect(outcome).toMatchObject({ ok: true, state: "confirmation_required" });
+    expect(harness.previewRequests()).toHaveLength(1);
+    expect(harness.previewRequests()[0]).toMatchObject({
+      executorMethod: "get_ui_state",
+      policyClass: "auto",
+      mutationScopePolicy: "none",
+      args: {},
+      context: {
+        toolName: record.name,
+        policyClass: "auto",
+        policyDecision: "auto",
+        mutating: false,
+        mutationScope: null,
+        confirmationId: null,
+      },
+    });
+  });
+
+  it("runs closed C28/C29 previews as auto reads and denies commits at an active hold with zero mutation calls", async () => {
+    const c28 = PRODUCTION_CONFORMANCE_TOOL_RECORDS.find((record) =>
+      record.name === "conformance.fixture.c28_mutation")!;
+    const c29 = PRODUCTION_CONFORMANCE_TOOL_RECORDS.find((record) =>
+      record.name === "conformance.fixture.c29_atomic_batch")!;
+    const c29Params = {
+      viewName: "revAgent_QA_WP12_fixture",
+      exactName: true,
+      mode: "commit",
+      confirmDelete: true,
+    } as const;
+    const cases = [
+      { record: c28, args: { vector: "O1-C28", fixtureOnly: true } },
+      { record: c29, args: {
+        batchContractVersion: 1,
+        batchId: uuid7(810_000),
+        batchDigest: `sha256:${"a".repeat(64)}`,
+        atomic: true,
+        rollbackPolicy: "rollback_on_non_success",
+        maxAggregateResultBytes: 1_024,
+        steps: [{ index: 0, invocationId: uuid7(810_001), method: "delete_review_view",
+          params: c29Params, paramsDigest: makeParamsDigest(c29Params), effect: "model_transaction" }],
+      } },
+    ] as const;
+    for (const candidate of cases) {
+      const harness = await createConfirmationDispatchHarness({ record: candidate.record });
+      const holdId = await installSessionHold({
+        authority: harness.recoveryAuthority,
+        bridgeEvidence: harness.bridgeEvidence,
+      });
+      const preview = await harness.dispatcher.dispatch(
+        dispatchInput(candidate.args, { toolName: candidate.record.name }),
+      );
+      expect(preview).toMatchObject({ ok: true, state: "confirmation_required" });
+      if (!preview.ok || preview.state !== "confirmation_required") {
+        throw new Error("expected conformance confirmation preview");
+      }
+      expect(harness.previewRequests()).toHaveLength(1);
+      expect(harness.previewRequests()[0]).toMatchObject({
+        executorMethod: "get_ui_state",
+        policyClass: "auto",
+        mutationScopePolicy: "none",
+        args: {},
+        context: { policyClass: "auto", policyDecision: "auto", mutating: false, mutationScope: null },
+      });
+      const commit = await harness.dispatcher.dispatch(dispatchInput(candidate.args, {
+        toolName: candidate.record.name,
+        confirmation: {
+          confirmToken: preview.confirmation.confirmToken,
+          originatingPreviewInvocationId: preview.confirmation.originatingPreviewInvocationId,
+        },
+      }));
+      expect(commit).toMatchObject({ ok: false, executorReached: false,
+        error: { code: "recovery_blocked", detailCode: "mutation_hold" } });
+      expect(harness.executor.prepareCount()).toBe(0);
+      expect(harness.executor.sentDispatches()).toEqual([]);
+      expect(harness.executor.plainExecutionCount()).toBe(0);
+      expect(harness.eventSink.captured().at(-1)?.payload).toMatchObject({
+        recovery_hold_ids: [holdId],
+        executor_reached: false,
+      });
+    }
+  });
+
   async function preview(
     harness: ConfirmationDispatchHarness,
     args: Readonly<Record<string, unknown>> = { value: "ready" },

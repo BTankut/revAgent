@@ -122,6 +122,19 @@ export function buildConfirmationPreviewProjection(
     });
   }
 
+  if (
+    tool.name === "conformance.fixture.mutation_probe_origin" ||
+    tool.name === "conformance.fixture.mutation_probe_next"
+  ) {
+    return Object.freeze({
+      ok: true as const,
+      previewArgs: Object.freeze({}),
+      previewExecutorMethod: "get_ui_state",
+      commitArgs: Object.freeze({}),
+      commitArgsDigest: digestArgs(Object.freeze({})),
+    });
+  }
+
   if (tool.executorMethod === "send_code_to_revit") {
     if (tool.name === "conformance.fixture.c28_mutation") {
       return Object.freeze({

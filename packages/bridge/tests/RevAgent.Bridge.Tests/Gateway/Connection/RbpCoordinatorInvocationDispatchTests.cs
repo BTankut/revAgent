@@ -78,6 +78,34 @@ public sealed partial class RbpConnectionCoordinatorTests
     }
 
     [Fact]
+    public void TerminalAcknowledgementRequiresOneExactNonStaleFrontier()
+    {
+        const string rsid = "rs-terminal-ack";
+        var exact = new RbpSessionAcknowledgement(rsid, 2);
+        Assert.Same(
+            exact,
+            RbpConnectionCoordinator.RequireTerminalAcknowledgement(
+                new[] { exact }, rsid, inboundSequence: 2));
+
+        IReadOnlyList<IReadOnlyList<RbpSessionAcknowledgement>?> invalid =
+            new IReadOnlyList<RbpSessionAcknowledgement>?[]
+            {
+                null,
+                Array.Empty<RbpSessionAcknowledgement>(),
+                new[] { exact, exact },
+                new[] { new RbpSessionAcknowledgement("rs-foreign", 2) },
+                new[] { new RbpSessionAcknowledgement(rsid, 1) },
+            };
+        foreach (IReadOnlyList<RbpSessionAcknowledgement>? candidate in invalid)
+        {
+            RbpCoordinatorException failure = Assert.Throws<RbpCoordinatorException>(
+                () => RbpConnectionCoordinator.RequireTerminalAcknowledgement(
+                    candidate, rsid, inboundSequence: 2));
+            Assert.Equal(RbpCoordinatorErrorCode.SequenceFault, failure.ErrorCode);
+        }
+    }
+
+    [Fact]
     public void ExactAckWinningBeforeExposureIsIdempotentConsumedSuccess()
     {
         const string rsid = "rs-c39-ack-race";
@@ -277,10 +305,11 @@ public sealed partial class RbpConnectionCoordinatorTests
             Assert.Equal(1, Volatile.Read(ref consumed));
             Assert.Equal("Consumed", ReplayMarkerState(fixture.Observation));
             Assert.Equal(1, dispatcher.DispatchCalls);
-            _ = Assert.Single(cycle.Sent, envelope =>
+            RbpEnvelope terminal = Assert.Single(cycle.Sent, envelope =>
                 envelope.Type == "result" &&
                 envelope.Payload.GetProperty("invocation_id").GetString() ==
                     fixture.InvocationId);
+            Assert.Equal(1, terminal.Acknowledgement);
         }
         finally
         {
@@ -383,6 +412,70 @@ public sealed partial class RbpConnectionCoordinatorTests
                 try { await run.WaitAsync(TimeSpan.FromSeconds(2)); }
                 catch { }
             }
+        }
+    }
+
+    [Fact]
+    public async Task SequentialSameSessionTerminalsCarryJournaledAckOneThenTwo()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        var clock = new ManualCoordinatorClock();
+        await using RbpJournalStore store = OpenStore(directory, clock);
+        var responder = new ScriptedGatewayResponder(clock);
+        var cycle = new FakeConnectionCycle(responder.Respond);
+        var dispatcher = new SequentialTerminalDispatcher();
+        var coordinator = Coordinator(
+            new FakeConnectionCycleFactory(cycle),
+            store,
+            new MutableSessionCatalog(LocalSession(8080, 1000)),
+            clock,
+            new RecordingInboundJournal(),
+            invocationDispatcher: dispatcher);
+        using var stop = new CancellationTokenSource();
+        Task run = coordinator.RunAsync(stop.Token);
+        try
+        {
+            await EventuallyAsync(
+                () => coordinator.GetSnapshot().ActiveRsids.Count == 1);
+
+            string firstId = Id(920);
+            cycle.Deliver(DataEnvelope(
+                "invoke", Id(921), "rs-8080", 1,
+                Json($$"""{"invocation_id":"{{firstId}}"}""")));
+            RbpEnvelope first = await EventuallySentAsync(
+                cycle,
+                envelope => envelope.Type == "result" &&
+                    envelope.Payload.GetProperty("invocation_id").GetString() ==
+                        firstId);
+            Assert.Equal(1, first.Acknowledgement);
+            await EventuallyAsync(
+                () => coordinator.GetSnapshot().ActiveInvocationCount == 0);
+
+            string secondId = Id(922);
+            cycle.Deliver(DataEnvelope(
+                    "invoke", Id(923), "rs-8080", 2,
+                    Json($$"""{"invocation_id":"{{secondId}}"}"""))
+                with { Acknowledgement = 1 });
+            await EventuallyAsync(() => dispatcher.DispatchCalls == 2);
+            RbpReceiveFrontier secondFrontier =
+                await store.GetReceiveFrontierAsync("rs-8080");
+            Assert.Equal(2, secondFrontier.LastJournaledSequence);
+            RbpEnvelope second = await EventuallySentAsync(
+                cycle,
+                envelope => envelope.Payload.ValueKind == JsonValueKind.Object &&
+                    envelope.Payload.TryGetProperty(
+                        "invocation_id", out JsonElement candidate) &&
+                    candidate.GetString() == secondId);
+            Assert.Equal("result", second.Type);
+            Assert.Equal(2, second.Acknowledgement);
+            Assert.Equal(2, dispatcher.DispatchCalls);
+            await EventuallyAsync(
+                () => coordinator.GetSnapshot().ActiveInvocationCount == 0);
+        }
+        finally
+        {
+            stop.Cancel();
+            await run.WaitAsync(TimeSpan.FromSeconds(5));
         }
     }
 
@@ -640,6 +733,7 @@ public sealed partial class RbpConnectionCoordinatorTests
         Assert.Equal(
             "known",
             error.Payload.GetProperty("outcome").GetString());
+        Assert.Equal(1, error.Acknowledgement);
 
         // The connection survived: it is still bound and still sequencing.
         Assert.Single(coordinator.GetSnapshot().ActiveRsids);
@@ -746,6 +840,73 @@ public sealed partial class RbpConnectionCoordinatorTests
         JsonElement Payload,
         RbpConformanceOmittedOriginObservation Observation,
         RbpConformanceOmittedOriginReplay Replay);
+
+    private sealed class SequentialTerminalDispatcher : IRbpInvocationDispatcher
+    {
+        private int _dispatchCalls;
+        internal int DispatchCalls => Volatile.Read(ref _dispatchCalls);
+
+        public IRbpInvocationClaim? TryClaim(string rsid) =>
+            throw new InvalidOperationException(
+                "Integrated dispatch must use exact authority.");
+
+        public IRbpInvocationClaim? TryClaim(
+            string rsid,
+            RbpInvocationAuthoritySnapshot authority) =>
+            new SequentialClaim(rsid, authority);
+
+        public Task<RbpInvocationAnswer> DispatchClaimedAsync(
+            IRbpInvocationClaim claim,
+            JsonElement invokePayload,
+            IReadOnlyList<string> grantedConnectionCapabilities,
+            CancellationToken cancellationToken)
+        {
+            _ = claim;
+            _ = grantedConnectionCapabilities;
+            cancellationToken.ThrowIfCancellationRequested();
+            string invocationId = invokePayload
+                .GetProperty("invocation_id").GetString()!;
+            _ = Interlocked.Increment(ref _dispatchCalls);
+            RbpInvocationAnswer answer = RbpInvocationAnswer.Result(Json($$"""
+                    {
+                      "kind":"invocation",
+                      "invocation_id":"{{invocationId}}",
+                      "status":"completed",
+                      "result":{},
+                      "replayed":false,
+                      "payload_omitted":false,
+                      "late_after_indeterminate":false,
+                      "metrics":{"execute_ms":1,"request_bytes":1,
+                        "response_bytes":1,"framing":"length-prefixed"}
+                    }
+                    """));
+            return Task.FromResult(answer);
+        }
+
+        public RbpInvocationAnswer RejectConcurrent(string invocationId) =>
+            RbpInvocationAnswer.Error(Json($$"""
+                {
+                  "invocation_id":"{{invocationId}}",
+                  "retryable":false,
+                  "fault_class":"protocol",
+                  "outcome":"known",
+                  "verification_required":false,
+                  "message":"already in flight"
+                }
+                """));
+
+        private sealed class SequentialClaim(
+            string rsid,
+            RbpInvocationAuthoritySnapshot authority) : IRbpInvocationClaim
+        {
+            public string Rsid { get; } = rsid;
+            public RbpInvocationAuthoritySnapshot? Authority { get; } =
+                authority;
+            public void Dispose()
+            {
+            }
+        }
+    }
 
     private sealed class OmittedReplayDispatcher(
         RbpConformanceOmittedOriginReplay replay,

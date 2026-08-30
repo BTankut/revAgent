@@ -8,6 +8,7 @@ import {
 import {
   createReceivedJournalRecord,
   dataEnvelopeImmutableDigest,
+  makeMutationHoldId,
   makeParamsDigest,
   RBP_MAX_DECODED_CHUNK_BYTES,
   RBP_MAX_INLINE_RESULT_BYTES,
@@ -236,6 +237,35 @@ function terminal(
         response_bytes: 1,
         framing: "length-prefixed",
       },
+    },
+  };
+}
+
+function indeterminateTerminal(
+  rsid: string,
+  invocationId: string,
+  seq: number,
+  ack: number,
+  holdId: string,
+): Extract<RbpEnvelope, { type: "error" }> {
+  return {
+    v: 1,
+    type: "error",
+    id: id(),
+    rsid,
+    seq,
+    ack,
+    ts: new Date().toISOString(),
+    payload: {
+      invocation_id: invocationId,
+      retryable: false,
+      fault_class: "journal_indeterminate",
+      outcome: "indeterminate",
+      verification_required: true,
+      verification_hold_id: holdId,
+      mutation_scope: { kind: "session" },
+      replayed: false,
+      message: "mutation outcome requires verification",
     },
   };
 }
@@ -3389,20 +3419,66 @@ describe("GW-12 production RBP ingress", () => {
       );
       expect(beforeCommit).toStrictEqual({ ok: true, value: { kind: "not_durable_yet" } });
 
+      const holdId = makeMutationHoldId(
+        registered.payload.rsid,
+        { kind: "session" },
+        [invocation.context.idempotencyKey],
+      );
       await binding.send(
-        terminal(
+        indeterminateTerminal(
           registered.payload.rsid,
           invocation.context.invocationId,
           1,
-          dispatched.seq,
+          dispatched.seq - 1,
+          holdId,
         ),
       );
-      await expect(pending).resolves.toMatchObject({ state: "completed" });
+      await expect(pending).resolves.toMatchObject({
+        state: "failed",
+        error: { code: "journal_indeterminate" },
+      });
 
-      const lookup = await restartable.store.transact(
+      const ackBelow = await restartable.store.transact(
         { tenantId: "tenant-gw12" },
         async (tx) => authority.inspectDispatch(tx, expected),
       );
+      expect(ackBelow).toStrictEqual({
+        ok: true,
+        value: { kind: "protocol_fault", reason: "dispatch_evidence_mismatch" },
+      });
+
+      await binding.send({
+        v: 1,
+        type: "doc_context_update",
+        id: id(),
+        rsid: registered.payload.rsid,
+        seq: 2,
+        ack: dispatched.seq,
+        ts: new Date().toISOString(),
+        payload: {
+          documents: [{
+            document_id: "late-ack-document",
+            title: "Late ACK document",
+            path_digest: null,
+            is_workshared: false,
+            is_active: true,
+          }],
+          active_document: "late-ack-document",
+          active_view: null,
+        },
+      } satisfies RbpEnvelope);
+
+      let lookup = await restartable.store.transact(
+          { tenantId: "tenant-gw12" },
+          async (tx) => authority.inspectDispatch(tx, expected),
+        );
+      await vi.waitFor(async () => {
+        lookup = await restartable.store.transact(
+          { tenantId: "tenant-gw12" },
+          async (tx) => authority.inspectDispatch(tx, expected),
+        );
+        expect(lookup).toMatchObject({ ok: true, value: { kind: "found" } });
+      });
       expect(lookup).toMatchObject({
         ok: true,
         value: {
@@ -3413,16 +3489,21 @@ describe("GW-12 production RBP ingress", () => {
               rsid: registered.payload.rsid,
               sessionBindingId: draft.sessionBindingId,
               acceptedConnectionId: binding.connectionId,
-              invocationId: invocation.context.invocationId,
-              correlationId: invocation.context.invocationId,
               gatewaySequence: dispatched.seq,
               cumulativeAck: dispatched.seq,
               envelopeDigest,
             },
-            journal: { kind: "known_terminal" },
+            journal: { kind: "indeterminate" },
           },
         },
       });
+      const reconstructedAcceptance = (
+        lookup as { readonly value: { readonly observation: { readonly acceptance: Record<string, unknown> } } }
+      ).value.observation.acceptance;
+      for (const absent of ["invocationId", "correlationId", "proofDigest", "routeSnapshotDigest",
+        "egressEpoch", "leaseTicket", "intent"] as const) {
+        expect(reconstructedAcceptance).not.toHaveProperty(absent);
+      }
       const crossBinding = await restartable.store.transact(
         { tenantId: "tenant-gw12" },
         async (tx) => authority.inspectDispatch(tx, { ...expected, sessionBindingId: id() }),
@@ -3439,6 +3520,20 @@ describe("GW-12 production RBP ingress", () => {
         }),
       );
       expect(forgedSequence).toStrictEqual({
+        ok: true,
+        value: { kind: "protocol_fault", reason: "dispatch_evidence_mismatch" },
+      });
+      const corruptJournalBinding = await restartable.store.transact(
+        { tenantId: "tenant-gw12" },
+        async (tx) => authority.inspectDispatch(tx, {
+          ...expected,
+          invocationBindings: [{
+            ...expected.invocationBindings[0]!,
+            bindingDigest: `sha256:${"f".repeat(64)}`,
+          }],
+        }),
+      );
+      expect(corruptJournalBinding).toStrictEqual({
         ok: true,
         value: { kind: "protocol_fault", reason: "dispatch_evidence_mismatch" },
       });

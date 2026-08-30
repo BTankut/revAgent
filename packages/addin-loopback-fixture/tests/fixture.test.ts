@@ -255,6 +255,52 @@ describe("add-in loopback fixture listener", () => {
     expect(fixture.getExecutionCount(secondId)).toBe(1);
   });
 
+  it("owns one mutation-probe cell and reports actual routed state", async () => {
+    const { fixture, address } = await started();
+    const socket = await connected(address);
+    const originId = uuid7(40);
+    const verifyId = uuid7(41);
+    const nextId = uuid7(42);
+
+    const origin = await writeAndRead(
+      socket,
+      request(originId, "fixture_commit_then_throw", {}),
+    );
+    expect(origin.result).toMatchObject({
+      state: "failed",
+      error: { code: "command_failure" },
+    });
+
+    const read = await writeAndRead(
+      socket,
+      request(verifyId, "fixture_read_mutation_probe", {}),
+    );
+    expect(read.result).toMatchObject({
+      schema: "revagent.fixture-mutation-probe/v1",
+      present: true,
+      complete: true,
+      originInvocationId: originId,
+      value: 1,
+      originWriteCount: 1,
+      nextWriteCount: 0,
+    });
+
+    const next = await writeAndRead(
+      socket,
+      request(nextId, "fixture_complete_mutation_probe", {}),
+    );
+    expect(next.result).toMatchObject({ value: 2, originWriteCount: 1, nextWriteCount: 1 });
+    expect(fixture.getMethodExecutionCount("fixture_commit_then_throw")).toBe(1);
+    expect(fixture.getMethodExecutionCount("fixture_read_mutation_probe")).toBe(1);
+    expect(fixture.getMethodExecutionCount("fixture_complete_mutation_probe")).toBe(1);
+    const rawRead = fixture.snapshotEvidence().observations.find((observation) =>
+      observation.method === "fixture_read_mutation_probe" && observation.phase === "response_sent");
+    expect(rawRead).toMatchObject({
+      executionOrdinal: expect.any(Number),
+      detail: expect.stringMatching(/^mutation_probe_raw_response:sha256:[0-9a-f]{64}$/u),
+    });
+  });
+
   it.each([
     ["zero", 0, -32700],
     ["max-plus-one", MIN_REQUEST_PAYLOAD_BYTES + 1, -32600],

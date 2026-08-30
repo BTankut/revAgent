@@ -99,7 +99,6 @@ function tokenDigest(value: string): `sha256:${string}` {
  */
 function syntacticRecoveryAcceptanceFixture(
   pending: GatewayRecoveryPendingDispatch,
-  durableSequenceVersion: number,
 ): GatewayBridgeCumulativeAckReceipt {
   const correlationId = pending.envelope.type === "invoke"
     ? pending.envelope.payload.invocation_id
@@ -131,7 +130,7 @@ function syntacticRecoveryAcceptanceFixture(
     gatewaySequence: pending.gatewaySequence,
     cumulativeAck: pending.gatewaySequence,
     envelopeDigest: pending.envelopeDigest,
-    durableSequenceVersion,
+    durableSequenceVersion: pending.authorizedSessionVersion,
     acceptedAtMs: pending.preparedAtMs,
   };
 }
@@ -3091,7 +3090,7 @@ describe("GatewayBridgeSessionAuthority durable unregister", () => {
       observations.set(prepared.dispatch.envelopeDigest, {
         kind: "found",
         observation: {
-          acceptance: syntacticRecoveryAcceptanceFixture(prepared.dispatch, 1),
+          acceptance: syntacticRecoveryAcceptanceFixture(prepared.dispatch),
           journal: {
             kind: "indeterminate",
             rsid: session.rsid,
@@ -3152,7 +3151,7 @@ describe("GatewayBridgeSessionAuthority durable unregister", () => {
     observations.set(verificationPrepared.dispatch.envelopeDigest, {
       kind: "found",
       observation: {
-        acceptance: syntacticRecoveryAcceptanceFixture(verificationPrepared.dispatch, 2),
+        acceptance: syntacticRecoveryAcceptanceFixture(verificationPrepared.dispatch),
         journal: {
           kind: "known_terminal",
           rsid: session.rsid,
@@ -3224,7 +3223,7 @@ describe("GatewayBridgeSessionAuthority durable unregister", () => {
     observations.set(clearancePrepared.dispatch.envelopeDigest, {
       kind: "found",
       observation: {
-        acceptance: syntacticRecoveryAcceptanceFixture(clearancePrepared.dispatch, 3),
+        acceptance: syntacticRecoveryAcceptanceFixture(clearancePrepared.dispatch),
         journal: {
           kind: "known_terminal",
           rsid: session.rsid,
@@ -3652,7 +3651,7 @@ describe("GatewayBridgeSessionAuthority durable unregister", () => {
         return {
           kind: "found" as const,
           observation: {
-            acceptance: syntacticRecoveryAcceptanceFixture(pending, 1),
+            acceptance: syntacticRecoveryAcceptanceFixture(pending),
             journal: {
               kind: "indeterminate" as const,
               rsid: session.rsid,
@@ -3855,7 +3854,7 @@ describe("GatewayBridgeSessionAuthority durable unregister", () => {
     observations.set(originPrepared.dispatch.envelopeDigest, {
       kind: "found",
       observation: {
-        acceptance: syntacticRecoveryAcceptanceFixture(originPrepared.dispatch, 1),
+        acceptance: syntacticRecoveryAcceptanceFixture(originPrepared.dispatch),
         journal: {
           kind: "indeterminate",
           rsid: session.rsid,
@@ -3915,7 +3914,7 @@ describe("GatewayBridgeSessionAuthority durable unregister", () => {
     observations.set(verificationPrepared.dispatch.envelopeDigest, {
       kind: "found",
       observation: {
-        acceptance: syntacticRecoveryAcceptanceFixture(verificationPrepared.dispatch, 2),
+        acceptance: syntacticRecoveryAcceptanceFixture(verificationPrepared.dispatch),
         journal: {
           kind: "known_terminal",
           rsid: session.rsid,

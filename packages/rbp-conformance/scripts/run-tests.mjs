@@ -20,11 +20,11 @@ if (!existsSync(vitestCli)) {
 
 const forwardedArguments = process.argv.slice(2);
 const shardCount = 5;
-// +11 files / +223 tests over the previous 62/397 for WP-12 retention and lifecycle coverage.
+// +0 files / +2 tests over the previous 73/620 for WP-12 verification-authority real-trio oracles.
 // The cardinality gate is deliberately coupled: adding a test file has to be a
 // visible edit here rather than something a shard silently absorbs.
 const expectedFiles = 73;
-const expectedTests = 620;
+const expectedTests = 622;
 const fullSuite = forwardedArguments.length === 0;
 const invocations = forwardedArguments.length > 0
   ? [["run", ...forwardedArguments]]
