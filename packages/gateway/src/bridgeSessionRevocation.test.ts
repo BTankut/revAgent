@@ -19,12 +19,15 @@ import {
 } from "./authContext.js";
 import type { GatewayExecutorRequest, GatewayJsonObject } from "./dispatch.js";
 import {
-  GATEWAY_RBP_SESSION_CUTOVER_V2_NAMESPACE,
-  GATEWAY_RBP_SESSION_V2_NAMESPACE,
   GATEWAY_RBP_UNREGISTER_NAMESPACE,
   GatewayBridgeSessionAuthority,
   type BridgeConnectionChannel,
 } from "./bridgeSession.js";
+import {
+  GATEWAY_RBP_SESSION_CUTOVER_V3_NAMESPACE,
+  GATEWAY_RBP_SESSION_V3_NAMESPACE,
+  GATEWAY_SESSION_HISTORY_PAGE_NAMESPACE,
+} from "./sessionHistoryStore.js";
 import { gatewayUuidV7 } from "./identifiers.js";
 import { createEffectiveMcpRequestScopeV1 } from "./invocationContext.js";
 import {
@@ -44,7 +47,11 @@ import type {
   StoreOutcome,
   StoreTransaction,
 } from "./store.js";
-import { createRestartableTestStore } from "./testAdapters.js";
+import { createMemoryObjectStore, createRestartableTestStore } from "./testAdapters.js";
+import {
+  GatewayServingOwnership,
+  bindBundledTestServingOwnership,
+} from "./gatewayServingOwnership.js";
 
 const TENANT_A = "tenant-revocation-a";
 const TENANT_B = "tenant-revocation-b";
@@ -111,6 +118,11 @@ function gatedStore(fixture: ReturnType<typeof createRestartableTestStore>): {
       return result;
     },
   };
+  bindBundledTestServingOwnership(store, new GatewayServingOwnership({
+    protocolStore: store,
+    privateObjectStore: createMemoryObjectStore(),
+    profile: "bundled_test",
+  }));
   return {
     store,
     holdAfterCommit(predicate) {
@@ -3106,6 +3118,11 @@ describe("WP-06 Gateway identity composition and active revocation", () => {
         return result;
       },
     };
+    bindBundledTestServingOwnership(store, new GatewayServingOwnership({
+      protocolStore: store,
+      privateObjectStore: createMemoryObjectStore(),
+      profile: "bundled_test",
+    }));
     const tenant: MutableIdentityTenant = {
       tenantId: TENANT_A,
       userId: USER_A,
@@ -3166,36 +3183,41 @@ describe("WP-06 Gateway identity composition and active revocation", () => {
     const snapshot = fixture.snapshot().records;
     const durable = snapshot.find(
       (row) =>
-        row.namespace === GATEWAY_RBP_SESSION_V2_NAMESPACE &&
+        row.namespace === GATEWAY_RBP_SESSION_V3_NAMESPACE &&
         row.key === session.registered.payload.rsid,
     );
     if (durable === undefined) {
       throw new Error("normalized terminal root is absent");
     }
     const root = durable.value as GatewayJsonObject;
-    const evidenceRef = (root.childRefs as GatewayJsonObject[]).find(
-      (ref) => ref.namespace === "gateway.rbp-session-evidence/v2",
+    const evidenceTree = (root.trees as GatewayJsonObject[]).find(
+      (tree) => tree.treeKind === "evidence",
     );
+    const evidenceRef = evidenceTree?.root as GatewayJsonObject | undefined;
     const evidence = snapshot.find(
       (row) =>
-        row.namespace === "gateway.rbp-session-evidence/v2" &&
+        row.namespace === GATEWAY_SESSION_HISTORY_PAGE_NAMESPACE &&
         row.key === evidenceRef?.key,
     );
     const marker = snapshot.find(
       (row) =>
-        row.namespace === GATEWAY_RBP_SESSION_CUTOVER_V2_NAMESPACE &&
+        row.namespace === GATEWAY_RBP_SESSION_CUTOVER_V3_NAMESPACE &&
         row.key === session.registered.payload.rsid,
     );
     if (evidenceRef === undefined || evidence === undefined || marker === undefined) {
       throw new Error("normalized terminal root, child, and marker proof is incomplete");
     }
     const evidenceValue = evidence.value as GatewayJsonObject;
+    const terminalEvidence = (evidenceValue.entries as GatewayJsonObject[]).find((entry) =>
+      (entry.value as GatewayJsonObject).terminalInvocationId === request.context.invocationId,
+    )?.value as GatewayJsonObject | undefined;
     const markerValue = marker.value as GatewayJsonObject;
     const digest = (value: JsonValue): `sha256:${string}` =>
       `sha256:${createHash("sha256").update(canonicalizeJson(value)).digest("hex")}`;
 
-    expect((root.sequence as GatewayJsonObject).pending).toBeNull();
-    expect(evidenceValue.entry).toMatchObject({
+    expect((root.trees as GatewayJsonObject[]).find((tree) => tree.treeKind === "pending"))
+      .toMatchObject({ root: null, entryCount: 0 });
+    expect(terminalEvidence).toMatchObject({
       terminalTruth: {
         state: "completed",
         resultDigest: makeParamsDigest({ retained: true }),
@@ -3205,20 +3227,18 @@ describe("WP-06 Gateway identity composition and active revocation", () => {
       terminalDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u),
       terminalCarrierDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u),
     });
-    expect(root.childRefs).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
+    expect(evidenceRef).toEqual(
+      expect.objectContaining({
           namespace: evidence.namespace,
           key: evidence.key,
           version: evidence.version,
           digest: digest(evidence.value as unknown as JsonValue),
         }),
-      ]),
     );
     expect(markerValue).toMatchObject({
       rootVersion: root.rootVersion,
       rootDigest: digest(root as JsonValue),
-      childrenDigest: digest(root.childRefs as JsonValue),
+      treesDigest: digest(root.trees as JsonValue),
     });
     await authority.close();
   });

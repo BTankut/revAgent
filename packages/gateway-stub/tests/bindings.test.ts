@@ -1622,10 +1622,11 @@ describe("opening and proxy fault controls", () => {
 
     const fault = nextRawMessage(socket);
     const closed = nextClose(socket);
+    const unsupportedFrameId = uuid7(214);
     socket.send(JSON.stringify({
       v: 1,
       type: "partial",
-      id: uuid7(214),
+      id: unsupportedFrameId,
       rsid,
       seq: 1,
       ack: 1,
@@ -1642,6 +1643,7 @@ describe("opening and proxy fault controls", () => {
     }));
     expect(await within(fault, "unsupported connection error")).toMatchObject({
       type: "error",
+      id: unsupportedFrameId,
       payload: {
         retryable: false,
         fault_class: "protocol",

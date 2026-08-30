@@ -1,3 +1,6 @@
+import { mkdirSync } from "node:fs";
+import path from "node:path";
+
 import {
   StrictJsonlProcess,
   StrictReadyProcess,
@@ -62,12 +65,29 @@ function command(input: RealTrioProcessCommand): ProcessCommandDescriptor {
 
 /** Owns READY, STOP, restart inputs, transcripts, and child exit observation. */
 export class RealTrioProcessHarness {
+  readonly #launchOrdinals = new Map<RealTrioProcessComponent, number>();
   public constructor(private readonly options: RealTrioProcessHarnessOptions) {}
+
+  #evidenceDirectory(componentId: RealTrioProcessComponent): string {
+    const ordinal = (this.#launchOrdinals.get(componentId) ?? 0) + 1;
+    this.#launchOrdinals.set(componentId, ordinal);
+    const directory = path.join(
+      this.options.evidenceDirectory,
+      `${componentId}-launch-${String(ordinal).padStart(4, "0")}`,
+    );
+    mkdirSync(directory, { recursive: false });
+    return directory;
+  }
 
   public async startReady(input: {
     readonly componentId: RealTrioProcessComponent;
     readonly command: RealTrioProcessCommand;
     readonly validateReadiness: (value: JsonObject) => void;
+    readonly preReadyBootstrap?: Readonly<{
+      readonly request: JsonObject;
+      readonly timeoutMs: number;
+      validateResponse(value: JsonObject): void;
+    }>;
   }): Promise<RealTrioReadyChild> {
     const child = await StrictReadyProcess.start({
       // Strict process primitives are shared mechanics only.  The cast keeps
@@ -76,7 +96,10 @@ export class RealTrioProcessHarness {
       command: command(input.command),
       absoluteWorkingDirectory: input.command.workingDirectory,
       useTestSignalProxy: true,
-      evidenceDirectory: this.options.evidenceDirectory,
+      evidenceDirectory: this.#evidenceDirectory(input.componentId),
+      ...(input.preReadyBootstrap === undefined
+        ? {}
+        : { preReadyBootstrap: input.preReadyBootstrap }),
       validateReadiness: input.validateReadiness,
     });
     return Object.freeze({
@@ -107,7 +130,7 @@ export class RealTrioProcessHarness {
       absoluteWorkingDirectory: input.command.workingDirectory,
       expectedReadinessFields: input.expectedReadinessFields,
       requiredActions: input.requiredActions,
-      evidenceDirectory: this.options.evidenceDirectory,
+      evidenceDirectory: this.#evidenceDirectory(input.componentId),
     });
     return Object.freeze({
       componentId: input.componentId,

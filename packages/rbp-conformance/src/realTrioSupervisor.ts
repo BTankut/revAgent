@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { Agent, request as httpsRequest } from "node:https";
+import path from "node:path";
 import type { TLSSocket } from "node:tls";
 
 import {
@@ -238,6 +239,8 @@ export interface RealTrioSessionReadiness {
   readonly grantedCapabilities: readonly string[];
   /** Full domain-separated digest of the exact persisted hello_ack grant order. */
   readonly connectionGrantOrderHash: `sha256:${string}`;
+  /** Full v3 root/marker/live-binding fingerprint used by poll and trace. */
+  readonly authorityFingerprint: `sha256:${string}`;
 }
 
 export interface RealTrioDocumentContextFailureState {
@@ -391,34 +394,26 @@ function boundedText(value: unknown, maximum: number): string | null {
 }
 
 function redactGatewayAudit(snapshot: JsonObject): JsonObject {
-  const rows = Array.isArray(snapshot.sessions) ? snapshot.sessions : [];
-  const namespaces = rows
-    .filter(isObject)
-    .map((row) => boundedText(row.namespace, 128))
-    .filter((value): value is string => value !== null)
-    .slice(0, MAX_REAL_TRIO_DIAGNOSTIC_RECORDS);
-  const sessions = rows
-    .filter(isObject)
-    .slice(0, MAX_REAL_TRIO_DIAGNOSTIC_RECORDS)
-    .map((row) => {
-      const value = isObject(row.value) ? row.value : {};
-      const binding = isObject(value.binding) ? value.binding : {};
-      const lifecycle = isObject(value.lifecycle) ? value.lifecycle : {};
-      const sessionLifecycle = isObject(lifecycle.sessionLifecycle)
-        ? lifecycle.sessionLifecycle
-        : {};
-      return {
-        binding: boundedText(binding.binding, 64) ?? "unknown",
-        lifecyclePhase: boundedText(sessionLifecycle.phase, 64) ?? "unknown",
-        dispatchAllowed: sessionLifecycle.dispatchAllowed === true,
-        localKeyPresent: boundedText(sessionLifecycle.localSessionKey, 512) !== null,
-        created: lifecycle.createdAtMs !== undefined,
-        updated: lifecycle.updatedAtMs !== undefined,
-      };
-    });
+  const audit = isObject(snapshot.sessionAudit) ? snapshot.sessionAudit : {};
+  const projection = isObject(audit.projection) ? audit.projection : null;
+  const readiness = projection !== null && isObject(projection.readiness)
+    ? projection.readiness
+    : {};
+  const candidateCount = Number.isSafeInteger(audit.candidateCount) && Number(audit.candidateCount) >= 0
+    ? Math.min(Number(audit.candidateCount), 2)
+    : 0;
+  const sessions = projection === null ? [] : [{
+    binding: boundedText(readiness.binding, 64) ?? "unknown",
+    lifecyclePhase: boundedText(readiness.phase, 64) ?? "unknown",
+    dispatchAllowed: readiness.dispatchAllowed === true,
+    localKeyPresent: boundedText(readiness.localSessionKey, 512) !== null,
+    rootDigestPresent: typeof projection.rootDigest === "string" && SHA256.test(projection.rootDigest),
+    treesDigestPresent: typeof projection.treesDigest === "string" && SHA256.test(projection.treesDigest),
+    retired: projection.retired === true,
+  }];
   return Object.freeze({
-    sessionCount: rows.length,
-    namespaces: [...namespaces],
+    sessionCount: candidateCount,
+    namespaces: projection === null ? [] : ["gateway.rbp-session/v3"],
     sessions,
   });
 }
@@ -772,7 +767,7 @@ export class RealTrioSessionReadinessPollError extends Error {
   public constructor(
     message: string,
     readonly audits: readonly JsonObject[],
-    /** The final public Gateway v2/audit observation at the bounded deadline. */
+    /** The final public Gateway v3/audit observation at the bounded deadline. */
     readonly lastGatewayAudit: JsonObject | null = audits.at(-1) ?? null,
     /** Real C# carrier stdout/stderr retained without reading its private state. */
     readonly bridgeReceiveTranscript: readonly ProcessTranscriptRecord[] = [],
@@ -812,6 +807,15 @@ function connectionGrantOrderHash(grants: readonly string[]): `sha256:${string}`
     .digest("hex")}`;
 }
 
+class RealTrioReadinessClassificationError extends Error {
+  public constructor(
+    readonly outcome: Exclude<RealTrioReadinessTrace["outcome"], "VALID">,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
 function traceReadinessSnapshot(
   snapshot: JsonObject,
   expectedBinding: PersistedRealTrioBinding,
@@ -819,34 +823,24 @@ function traceReadinessSnapshot(
   priorFingerprint: string | null,
 ): RealTrioReadinessTrace {
   const invalid = (outcome: Exclude<RealTrioReadinessTrace["outcome"], "VALID">, resetReason: "invalid" | "error" = "invalid"): RealTrioReadinessTrace => ({ outcome, fingerprint: null, rsidEqual: null, batchAtomicPresent: false, grantOrderHash: null, stableCount: 0, resetReason });
-  const rows = snapshot.sessions;
-  if (!Array.isArray(rows) || rows.length === 0) return invalid("NO_ROW");
-  if (rows.length !== 1) return invalid("MULTIPLE");
-  const row = rows[0];
-  if (!isObject(row) || row.namespace !== "gateway.rbp-session/v2" || !isObject(row.value) || row.value.schema !== "gateway.rbp-session/v2") return invalid("LEGACY");
-  const value = row.value;
-  if (typeof value.rsid !== "string" || !isObject(value.binding) || !isObject(value.lifecycle) || !isObject(value.lifecycle.sessionLifecycle)) return invalid("ERROR_TYPE", "error");
-  const binding = value.binding;
-  if (binding.binding !== expectedBinding) return invalid("INVALID_BINDING");
-  const lifecycle = value.lifecycle.sessionLifecycle;
-  if (typeof lifecycle.rsid !== "string" || lifecycle.rsid !== value.rsid) return invalid("RSID_MISMATCH");
-  if (!Array.isArray(binding.grantedCapabilities) || !binding.grantedCapabilities.every((item) => typeof item === "string")) return invalid("ERROR_TYPE", "error");
-  if (!isObject(value.lifecycle.connectionLifecycle) ||
-      !Array.isArray(value.lifecycle.connectionLifecycle.grantedCapabilities) ||
-      !value.lifecycle.connectionLifecycle.grantedCapabilities.every((item) => typeof item === "string")) {
-    return invalid("ERROR_TYPE", "error");
+  try {
+    const readiness = readRbpSessionV3Readiness(snapshot, expectedBinding);
+    const fingerprint = hashPrefix(readiness.authorityFingerprint);
+    const nextStable = fingerprint === priorFingerprint ? stableCount + 1 : 1;
+    return Object.freeze({
+      outcome: "VALID", fingerprint, rsidEqual: true,
+      batchAtomicPresent: readiness.grantedCapabilities.includes("batch_atomic"),
+      grantOrderHash: hashPrefix(readiness.connectionGrantOrderHash),
+      stableCount: nextStable,
+      resetReason: priorFingerprint === null || fingerprint === priorFingerprint
+        ? "initial"
+        : "fingerprint_changed",
+    });
+  } catch (error) {
+    return error instanceof RealTrioReadinessClassificationError
+      ? invalid(error.outcome)
+      : invalid("ERROR_TYPE", "error");
   }
-  const sessionGrants = binding.grantedCapabilities as string[];
-  const connectionGrants = value.lifecycle.connectionLifecycle.grantedCapabilities as string[];
-  const expectedGrants = expectedReadinessGrantDomains(expectedBinding);
-  if (!sessionGrants.includes("batch_atomic")) return invalid("MISSING_BATCH");
-  if (!connectionGrants.includes("route_rebind_proof_v1")) return invalid("MISSING_ROUTE_REBIND");
-  if (!hasExactGrantList(sessionGrants, expectedGrants.session)) return invalid("INVALID_SESSION_GRANTS");
-  if (!hasExactGrantList(connectionGrants, expectedGrants.connection)) return invalid("INVALID_CONNECTION_GRANTS");
-  if (typeof lifecycle.localSessionKey !== "string" || lifecycle.localSessionKey.length === 0 || lifecycle.phase !== "registered" || lifecycle.dispatchAllowed !== true) return invalid("INVALID_LIFECYCLE");
-  const fingerprint = hashPrefix(`${value.rsid}\u0000${lifecycle.localSessionKey}\u0000${sessionGrants.join("\u0001")}\u0000${connectionGrants.join("\u0001")}`);
-  const nextStable = fingerprint === priorFingerprint ? stableCount + 1 : 1;
-  return Object.freeze({ outcome: "VALID", fingerprint, rsidEqual: true, batchAtomicPresent: true, grantOrderHash: hashPrefix(`${sessionGrants.join("\u0001")}\u0000${connectionGrants.join("\u0001")}`), stableCount: nextStable, resetReason: priorFingerprint === null ? "initial" : fingerprint === priorFingerprint ? "initial" : "fingerprint_changed" });
 }
 
 /** Extracts the bounded, redacted real-process diagnostics through error wraps. */
@@ -1051,58 +1045,86 @@ function reconnectWatchObservations(value: JsonValue): readonly RealTrioReconnec
   return Object.freeze(rows);
 }
 
-/**
- * Reads only normalized v2 session rows from the conformance audit.  Older
- * top-level capability shapes are deliberately not tolerated: the durable
- * schema separates session grants in value.binding.grantedCapabilities from
- * hello_ack connection grants in value.lifecycle.connectionLifecycle.
- */
-export function readRbpSessionV2Readiness(
+/** Reads only the bounded, marker-authenticated v3 readiness projection. */
+export function readRbpSessionV3Readiness(
   snapshot: JsonObject,
   expectedBinding: PersistedRealTrioBinding,
 ): RealTrioSessionReadiness {
-  const rows = snapshot.sessions;
-  if (!Array.isArray(rows) || rows.length !== 1 || !isObject(rows[0])) {
-    throw new Error("real trio session audit lacks one normalized v2 session row");
+  const audit = snapshot.sessionAudit;
+  if (!isObject(audit)) throw new RealTrioReadinessClassificationError("LEGACY", "real trio audit is not v3");
+  if (audit.status === "no_candidate" && audit.candidateCount === 0) {
+    throw new RealTrioReadinessClassificationError("NO_ROW", "real trio v3 audit has no candidate");
   }
-  const row = rows[0];
-  if (row.namespace !== "gateway.rbp-session/v2" || !isObject(row.value)) {
-    throw new Error("real trio session audit contains a legacy or malformed session row");
+  if (audit.status === "multiple" || audit.candidateCount === 2) {
+    throw new RealTrioReadinessClassificationError("MULTIPLE", "real trio v3 audit has multiple candidates");
   }
-  const value = row.value;
-  if (value.schema !== "gateway.rbp-session/v2" || typeof value.rsid !== "string" || value.rsid.length === 0 ||
-      !isObject(value.binding) || !isObject(value.lifecycle) || !isObject(value.lifecycle.sessionLifecycle) ||
-      !isObject(value.lifecycle.connectionLifecycle)) {
-    throw new Error("real trio v2 session row is malformed");
+  if (audit.status !== "candidate" || audit.candidateCount !== 1 || !isObject(audit.projection)) {
+    throw new RealTrioReadinessClassificationError("INVALID_LIFECYCLE", "real trio v3 audit is not current");
   }
-  if (value.binding.binding !== expectedBinding || !Array.isArray(value.binding.grantedCapabilities) ||
-      !value.binding.grantedCapabilities.every((capability) => typeof capability === "string") ||
-      !Array.isArray(value.lifecycle.connectionLifecycle.grantedCapabilities) ||
-      !value.lifecycle.connectionLifecycle.grantedCapabilities.every((capability) => typeof capability === "string")) {
-    throw new Error("real trio v2 session binding or nested grants are invalid");
+  const projection = audit.projection;
+  if (projection.status !== "candidate" || projection.candidateCount !== 1 ||
+      projection.tenantId !== "conformance" || typeof projection.rsid !== "string" ||
+      projection.rsid.length === 0 || !Number.isSafeInteger(projection.rootVersion) ||
+      Number(projection.rootVersion) < 1 || typeof projection.rootDigest !== "string" ||
+      !SHA256.test(projection.rootDigest) || typeof projection.treesDigest !== "string" ||
+      !SHA256.test(projection.treesDigest) || projection.retired !== false || !isObject(projection.readiness)) {
+    throw new RealTrioReadinessClassificationError("ERROR_TYPE", "real trio v3 projection is malformed");
+  }
+  const readiness = projection.readiness;
+  if (readiness.binding !== expectedBinding) {
+    throw new RealTrioReadinessClassificationError("INVALID_BINDING", "real trio v3 binding is invalid");
+  }
+  if (typeof readiness.sessionBindingId !== "string" || readiness.sessionBindingId.length === 0 ||
+      !Number.isSafeInteger(readiness.sessionVersion) || Number(readiness.sessionVersion) < 1 ||
+      typeof readiness.connectionId !== "string" || readiness.connectionId.length === 0 ||
+      !Array.isArray(readiness.sessionGrantedCapabilities) ||
+      !readiness.sessionGrantedCapabilities.every((capability) => typeof capability === "string") ||
+      !Array.isArray(readiness.connectionGrantedCapabilities) ||
+      !readiness.connectionGrantedCapabilities.every((capability) => typeof capability === "string")) {
+    throw new RealTrioReadinessClassificationError("ERROR_TYPE", "real trio v3 readiness fields are malformed");
   }
   const expectedGrants = expectedReadinessGrantDomains(expectedBinding);
-  const sessionGrants = value.binding.grantedCapabilities as string[];
-  const connectionGrants = value.lifecycle.connectionLifecycle.grantedCapabilities as string[];
-  if (!hasExactGrantList(sessionGrants, expectedGrants.session) ||
-      !hasExactGrantList(connectionGrants, expectedGrants.connection)) {
-    throw new Error("real trio v2 session binding or nested grants are invalid");
+  const sessionGrants = readiness.sessionGrantedCapabilities as string[];
+  const connectionGrants = readiness.connectionGrantedCapabilities as string[];
+  if (!sessionGrants.includes("batch_atomic")) {
+    throw new RealTrioReadinessClassificationError("MISSING_BATCH", "real trio v3 session grant is incomplete");
   }
-  const lifecycle = value.lifecycle.sessionLifecycle;
-  const localSessionKey = lifecycle.localSessionKey;
-  if (typeof localSessionKey !== "string" || localSessionKey.length === 0 ||
-      typeof lifecycle.phase !== "string" || typeof lifecycle.dispatchAllowed !== "boolean" ||
-      typeof lifecycle.rsid !== "string") {
-    throw new Error("real trio v2 session row is malformed");
+  if (!connectionGrants.includes("route_rebind_proof_v1")) {
+    throw new RealTrioReadinessClassificationError("MISSING_ROUTE_REBIND", "real trio v3 connection grant is incomplete");
   }
-  if (lifecycle.phase !== "registered" || lifecycle.dispatchAllowed !== true || lifecycle.rsid !== value.rsid) {
-    throw new Error("real trio v2 session is not active with a local session key");
+  if (!hasExactGrantList(sessionGrants, expectedGrants.session)) {
+    throw new RealTrioReadinessClassificationError("INVALID_SESSION_GRANTS", "real trio v3 session grants are invalid");
   }
+  if (!hasExactGrantList(connectionGrants, expectedGrants.connection)) {
+    throw new RealTrioReadinessClassificationError("INVALID_CONNECTION_GRANTS", "real trio v3 connection grants are invalid");
+  }
+  if (typeof readiness.localSessionKey !== "string" || readiness.localSessionKey.length === 0 ||
+      readiness.phase !== "registered" || readiness.dispatchAllowed !== true) {
+    throw new RealTrioReadinessClassificationError("INVALID_LIFECYCLE", "real trio v3 session is not live");
+  }
+  if (readiness.liveDocumentRoute !== null && (!isObject(readiness.liveDocumentRoute) ||
+      typeof readiness.liveDocumentRoute.sessionDocumentId !== "string" ||
+      readiness.liveDocumentRoute.sessionDocumentId.length === 0)) {
+    throw new RealTrioReadinessClassificationError("ERROR_TYPE", "real trio v3 route projection is malformed");
+  }
+  const authorityFingerprint = `sha256:${createHash("sha256")
+    .update("revagent/rbp-conformance/real-trio/v3-readiness/v1\0")
+    .update(stableJson({
+      rsid: projection.rsid, rootVersion: projection.rootVersion,
+      rootDigest: projection.rootDigest, treesDigest: projection.treesDigest,
+      binding: expectedBinding, sessionBindingId: readiness.sessionBindingId,
+      sessionVersion: readiness.sessionVersion, connectionId: readiness.connectionId,
+      localSessionKey: readiness.localSessionKey,
+      liveDocumentRoute: readiness.liveDocumentRoute ?? null,
+      sessionGrants, connectionGrants,
+    }))
+    .digest("hex")}` as const;
   return Object.freeze({
-    rsid: value.rsid,
-    localSessionKey,
+    rsid: projection.rsid,
+    localSessionKey: readiness.localSessionKey,
     grantedCapabilities: Object.freeze([...sessionGrants]),
     connectionGrantOrderHash: connectionGrantOrderHash(connectionGrants),
+    authorityFingerprint,
   });
 }
 
@@ -1112,7 +1134,7 @@ export function readRbpSessionV2Readiness(
  * view from qualifying as smoke evidence; bounded retained audits explain a
  * timeout without reaching into the protocol store or database.
  */
-export async function pollRbpSessionV2Readiness(
+export async function pollRbpSessionV3Readiness(
   options: RbpSessionReadinessPollOptions,
 ): Promise<RealTrioSessionReadiness> {
   const timeoutMs = options.timeoutMs ?? 15_000;
@@ -1144,8 +1166,8 @@ export async function pollRbpSessionV2Readiness(
     if (trace.length === MAX_REAL_TRIO_READINESS_TRACE) trace.shift();
     trace.push(classified);
     try {
-      const current = readRbpSessionV2Readiness(snapshot, options.expectedBinding);
-      const fingerprint = stableJson(current);
+      const current = readRbpSessionV3Readiness(snapshot, options.expectedBinding);
+      const fingerprint = current.authorityFingerprint;
       identicalObservations = fingerprint === previous ? identicalObservations + 1 : 1;
       previous = fingerprint;
       if (identicalObservations >= 2) return current;
@@ -1317,9 +1339,40 @@ export async function startRealTrioSupervisor(input: RealTrioSupervisorLaunch): 
   assertDedicatedRealTrioProcessComponents(input);
   const harness = new RealTrioProcessHarness({ evidenceDirectory: input.evidenceDirectory });
   const bridgeExecutable = assertRealBridgeWorkerExecutable(input.bridgeWorker.executable);
+  const bootstrapNonce = createHash("sha256")
+    .update("revagent/real-trio/storage-bootstrap/v1\0")
+    .update(input.gateway.workingDirectory)
+    .update(JSON.stringify(input.gateway.args))
+    .digest("hex");
+  // Node exposes the script as argv[1]; the CLI validates only argv.slice(2).
+  const gatewayCliArguments = input.gateway.args.slice(1);
+  const rootIndex = gatewayCliArguments.indexOf("--root");
+  const gatewayRoot = rootIndex >= 0 ? gatewayCliArguments[rootIndex + 1] : undefined;
+  if (gatewayRoot === undefined) throw new Error("real trio Gateway command lacks a storage root");
+  const canonicalGatewayRoot = path.resolve(input.gateway.workingDirectory, gatewayRoot);
   const gateway = await harness.startReady({
     componentId: "gateway_production_conformance",
     command: input.gateway,
+    preReadyBootstrap: {
+      request: Object.freeze({
+        action: "bootstrap_storage_v1",
+        nonce: bootstrapNonce,
+        rootDigest: `sha256:${createHash("sha256").update(canonicalGatewayRoot).digest("hex")}`,
+        launchDigest: `sha256:${createHash("sha256").update(JSON.stringify(gatewayCliArguments)).digest("hex")}`,
+        generation: 1,
+      }),
+      timeoutMs: 30_000,
+      validateResponse(value) {
+        if (value.action !== "storage_owned_v1" || value.nonce !== bootstrapNonce ||
+            !Number.isSafeInteger(value.ownerEpoch) || Number(value.ownerEpoch) < 1 ||
+            typeof value.profileDigest !== "string" ||
+            !/^sha256:[0-9a-f]{64}$/u.test(value.profileDigest) ||
+            Object.keys(value).sort().join(",") !==
+              "action,nonce,ownerEpoch,profileDigest") {
+          throw new Error("Gateway pre-READY storage grant is invalid");
+        }
+      },
+    },
     validateReadiness(value) {
       for (const [key, expected] of Object.entries(input.gatewayExpected)) {
         if (JSON.stringify(value[key]) !== JSON.stringify(expected)) throw new Error(`Gateway readiness ${key} is not exact`);
@@ -1373,7 +1426,7 @@ export async function startRealTrioSupervisor(input: RealTrioSupervisorLaunch): 
         const documentContextJournal = new RealTrioDocumentContextCursorJournal();
         let sessionReadiness: RealTrioSessionReadiness;
         try {
-          sessionReadiness = await pollRbpSessionV2Readiness({
+          sessionReadiness = await pollRbpSessionV3Readiness({
             expectedBinding: persistedBindingForReadiness(binding),
             isBridgeExited: () => bridge.process.exitCode !== null,
             readSnapshot: async () => await publicGatewayControl(
@@ -1412,7 +1465,7 @@ export async function startRealTrioSupervisor(input: RealTrioSupervisorLaunch): 
             expectedReadinessFields: input.bridgeExpected,
             requiredActions: ["read_recovery_observations", "poll_document_context", "shutdown"],
           });
-          sessionReadiness = await pollRbpSessionV2Readiness({
+          sessionReadiness = await pollRbpSessionV3Readiness({
             expectedBinding: persistedBindingForReadiness(binding),
             isBridgeExited: () => bridge.process.exitCode !== null,
             readSnapshot: async () => await publicGatewayControl(

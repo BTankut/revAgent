@@ -917,13 +917,15 @@ describe("WP-12 real-trio fixture document route gate", () => {
   });
 
   it("refuses missing or mismatched public route evidence before north dispatch", () => {
-    expect(hasRealTrioLiveDocumentRoute({ sessions: [] })).toBe(false);
-    expect(hasRealTrioLiveDocumentRoute({ sessions: [{ value: {
-      lifecycle: { liveDocumentRoute: { sessionDocumentId: "different-document" } },
-    } }] })).toBe(false);
-    expect(hasRealTrioLiveDocumentRoute({ sessions: [{ value: {
-      lifecycle: { liveDocumentRoute: { sessionDocumentId: REAL_TRIO_FIXTURE_DOCUMENT_ID } },
-    } }] })).toBe(true);
+    const snapshot = (sessionDocumentId: string) => ({ sessionAudit: {
+      status: "candidate", candidateCount: 1,
+      projection: { readiness: { liveDocumentRoute: { sessionDocumentId } } },
+    } });
+    expect(hasRealTrioLiveDocumentRoute({ sessionAudit: {
+      status: "no_candidate", candidateCount: 0, projection: null,
+    } })).toBe(false);
+    expect(hasRealTrioLiveDocumentRoute(snapshot("different-document"))).toBe(false);
+    expect(hasRealTrioLiveDocumentRoute(snapshot(REAL_TRIO_FIXTURE_DOCUMENT_ID))).toBe(true);
   });
 
   it("keeps a durable ACK emitted during public route observation, but rejects an earlier ACK", () => {

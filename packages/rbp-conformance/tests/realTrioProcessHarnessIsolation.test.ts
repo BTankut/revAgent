@@ -35,6 +35,18 @@ describe("WP-12 real process harness isolation", () => {
     }
   });
 
+  it("forwards the exact pre-READY storage bootstrap without a surrogate owner", () => {
+    const target = readFileSync(path.join(sourceRoot, "realTrioProcessHarness.ts"), "utf8");
+    const supervisor = readFileSync(path.join(sourceRoot, "realTrioSupervisor.ts"), "utf8");
+    expect(target).toContain("preReadyBootstrap: input.preReadyBootstrap");
+    expect(target).toContain("#launchOrdinals");
+    expect(target).toContain("componentId}-launch-");
+    expect(supervisor).toContain('action: "bootstrap_storage_v1"');
+    expect(supervisor).toContain('value.action !== "storage_owned_v1"');
+    expect(supervisor).toContain("ownerEpoch");
+    expect(supervisor).toContain("profileDigest");
+  });
+
   it("requires the explicit real-trio entrypoint and preserves its binding", async () => {
     await expect(runRealTrioCli(["real-trio", "wss"], async (binding) => binding))
       .resolves.toEqual({ binding: "wss", result: "wss" });

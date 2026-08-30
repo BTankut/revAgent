@@ -1,11 +1,10 @@
 import { fork } from "node:child_process";
-import { createHash } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
-import { canonicalizeJson, type JsonValue } from "@revagent/protocol";
+import type { JsonValue } from "@revagent/protocol";
 
 import {
   coherentC39RecoveryAudit,
@@ -32,11 +31,18 @@ import {
   SqliteConformanceProtocolStore,
   createConformanceSupportingPorts,
 } from "./conformanceEphemeralAdapters.js";
+import {
+  buildSessionHistoryPagePlan,
+  GATEWAY_RBP_SESSION_CUTOVER_V3_NAMESPACE,
+  GATEWAY_RBP_SESSION_V3_NAMESPACE,
+  GATEWAY_SESSION_HISTORY_PAGE_NAMESPACE,
+  sessionCanonicalDigest,
+  type SessionHistoryEntry,
+  type SessionTreeKind,
+} from "./sessionHistoryStore.js";
 
 const epoch = "123e4567-e89b-42d3-a456-426614174000";
 const digest = (character: string) => `sha256:${character.repeat(64)}` as const;
-const normalizedDigest = (value: unknown): `sha256:${string}` =>
-  `sha256:${createHash("sha256").update(canonicalizeJson(value as JsonValue)).digest("hex")}`;
 const contextDigest = "c".repeat(64);
 const route = (overrides: Record<string, unknown> = {}) => Object.freeze({
   rsidHash: digest("a"), observedSequence: 7, contextDigest,
@@ -87,27 +93,122 @@ describe("WP-12 C39 observed recovery audit", () => {
     effectiveMcpSessionId: "mcp", sessionBindingId: binding, sessionBindingVersion: 1,
     rsid: "rsid", recoveryInvocationId: recovery, originInvocationId: origin,
     originResultDigest: digest("a") });
-  /** A real normalized-v2 projection: root references immutable child rows. */
+  type AuditFixtureRecord = { namespace: string; key: string; value: unknown; version: number };
+  const routeAuthority = Object.freeze({
+    version: 1,
+    provenance: "session_resume_route_rebind_v1",
+    routeAuthorityCheckpoint: digest("1"),
+    connectionDigest: digest("2"),
+    serverProofDigest: digest("3"),
+    authorityGenerationDigest: digest("4"),
+    resultantSessionBindingId: binding,
+    resultantSessionVersion: 1,
+    proofCasRecordVersion: 1,
+  });
+  const lane = (treeKind: SessionTreeKind, values: readonly JsonValue[]) =>
+    buildSessionHistoryPagePlan({
+      tenantId: "conformance",
+      rsid: "rsid",
+      treeKind,
+      entries: values.map((value, index): SessionHistoryEntry => ({
+        key: String(index).padStart(12, "0"),
+        value,
+      })),
+    });
+  const rootRow = (records: AuditFixtureRecord[]) => records.find((row) =>
+    row.namespace === GATEWAY_RBP_SESSION_V3_NAMESPACE)!;
+  const pageRow = (records: AuditFixtureRecord[], treeKind: SessionTreeKind) => records.find((row) =>
+    row.namespace === GATEWAY_SESSION_HISTORY_PAGE_NAMESPACE &&
+    (row.value as Record<string, unknown>).treeKind === treeKind)!;
+  const refreshV3 = (records: AuditFixtureRecord[]): AuditFixtureRecord[] => {
+    const rootRecord = rootRow(records);
+    const root = rootRecord.value as Record<string, unknown>;
+    for (const pageRecord of records.filter((row) => row.namespace === GATEWAY_SESSION_HISTORY_PAGE_NAMESPACE)) {
+      const page = pageRecord.value as Record<string, unknown>;
+      if (Array.isArray(page.entries)) {
+        page.entries = page.entries.map((entry) => ({
+          ...(entry as Record<string, unknown>),
+          digest: sessionCanonicalDigest((entry as Record<string, unknown>).value as JsonValue),
+        }));
+      }
+    }
+    root.trees = (root.trees as Record<string, unknown>[]).map((tree) => {
+      if (tree.root === null) return tree;
+      const page = pageRow(records, tree.treeKind as SessionTreeKind);
+      const value = page.value as Record<string, unknown>;
+      const entries = value.entries as Record<string, unknown>[];
+      return {
+        ...tree,
+        entryCount: entries.length,
+        root: {
+          ...(tree.root as Record<string, unknown>),
+          version: page.version,
+          digest: sessionCanonicalDigest(value as JsonValue),
+          firstKey: entries[0]!.key,
+          lastKey: entries.at(-1)!.key,
+          count: entries.length,
+        },
+      };
+    });
+    const marker = records.find((row) =>
+      row.namespace === GATEWAY_RBP_SESSION_CUTOVER_V3_NAMESPACE)!;
+    marker.value = {
+      ...(marker.value as Record<string, unknown>),
+      rootVersion: root.rootVersion,
+      rootDigest: sessionCanonicalDigest(root as JsonValue),
+      treesDigest: sessionCanonicalDigest(root.trees as JsonValue),
+    };
+    return records;
+  };
+  const replaceLane = (
+    records: AuditFixtureRecord[],
+    treeKind: SessionTreeKind,
+    values: readonly JsonValue[],
+  ): AuditFixtureRecord[] => {
+    const plan = lane(treeKind, values);
+    for (let index = records.length - 1; index >= 0; index -= 1) {
+      const row = records[index]!;
+      if (row.namespace === GATEWAY_SESSION_HISTORY_PAGE_NAMESPACE &&
+          (row.value as Record<string, unknown>).treeKind === treeKind) records.splice(index, 1);
+    }
+    records.push(...plan.pages.map((page) => ({
+      namespace: GATEWAY_SESSION_HISTORY_PAGE_NAMESPACE,
+      key: page.key,
+      version: 1,
+      value: structuredClone(page.value),
+    })));
+    const root = rootRow(records).value as Record<string, unknown>;
+    root.trees = (root.trees as Record<string, unknown>[]).map((tree) =>
+      tree.treeKind === treeKind ? structuredClone(plan.tree) : tree);
+    return refreshV3(records);
+  };
+  /** A real v3 projection: root+marker authenticate immutable evidence/receipt pages. */
   const observed = (overrides: Record<string, unknown> = {}) => {
-    const originChildIndex = digest("c");
-    const recoveryChildIndex = digest("d");
-    const originChild = { namespace: "gateway.rbp-session-evidence/v2", key: `${owner.rsid}/${originChildIndex}`, version: 3, value: {
-      schema: "gateway.rbp-session-evidence/v2", tenantId: "conformance", rsid: "rsid", invocationId: originChildIndex,
-      entry: { terminalInvocationId: origin, terminalSessionBindingId: binding, terminalSessionVersion: 1,
+    const originEvidence = { terminalInvocationId: origin, terminalSessionBindingId: binding, terminalSessionVersion: 1,
         effectiveMcpSessionId: "mcp", payloadOmittedRecoveryEvidenceVersion: 1, payloadOmittedRecoveryEligible: true,
         terminalDigest: digest("b"), terminalCarrierDigest: digest("d"),
-        terminalTruth: { state: "completed", resultDigest: digest("a"), payloadRetained: false } },
-    } };
-    const recoveryChild = { namespace: "gateway.rbp-session-evidence/v2", key: `${owner.rsid}/${recoveryChildIndex}`, version: 4, value: {
-      schema: "gateway.rbp-session-evidence/v2", tenantId: "conformance", rsid: "rsid", invocationId: recoveryChildIndex,
-      entry: { terminalInvocationId: recovery, terminalSessionBindingId: binding, terminalSessionVersion: 1,
+        terminalTruth: { state: "completed", resultDigest: digest("a"), payloadRetained: false } };
+    const recoveryEvidence = { terminalInvocationId: recovery, terminalSessionBindingId: binding, terminalSessionVersion: 1,
         effectiveMcpSessionId: "mcp", terminalDigest: digest("e"), terminalCarrierDigest: digest("b"),
-        terminalTruth: { state: "completed", resultDigest: digest("a"), payloadRetained: true } },
-    } };
-    const childRefs = [originChild, recoveryChild].map((child) => ({
-      namespace: child.namespace, key: child.key, version: child.version, digest: normalizedDigest(child.value),
-    })).sort((left, right) => `${left.namespace}\u0000${left.key}`.localeCompare(`${right.namespace}\u0000${right.key}`));
-    return [
+        c39RouteAuthority: routeAuthority,
+        terminalTruth: { state: "completed", resultDigest: digest("a"), payloadRetained: true } };
+    const plans = [
+      lane("evidence", [originEvidence, recoveryEvidence] as unknown as JsonValue[]),
+      lane("receipts", [{ seq: 4, immutableDigest: digest("f") }, { seq: 5, immutableDigest: digest("b") }]),
+      lane("outbox", []), lane("pending", []), lane("indices", []),
+    ];
+    const root = {
+      schema: GATEWAY_RBP_SESSION_V3_NAMESPACE, generation: 3, rootVersion: 7,
+      tenantId: "conformance", rsid: "rsid", identity: { userId: "user" },
+      binding: { sessionBindingId: "0197a3c2-0000-7000-8000-000000000904", sessionVersion: 6 },
+      lifecycle: {}, sequenceHead: { sequence: { rsid: "rsid", lastRxSeq: 5 } },
+      migrationProof: { sourceGeneration: 2, sourceDigest: digest("5"), equivalenceDigest: digest("6"),
+        targetPlanDigest: digest("7"), sourceCleanupReceiptDigest: digest("8") },
+      durabilityProfile: {}, trees: plans.map((plan) => plan.tree).sort((left, right) => left.treeKind.localeCompare(right.treeKind)),
+      singletonRefs: [], antiDowngradeRefs: [], retentionClosure: null,
+      retiredAuthorityDigest: null, completionDigest: null,
+    };
+    const records: AuditFixtureRecord[] = [
       { namespace: GATEWAY_OMITTED_PAYLOAD_RECOVERY_NAMESPACE, key: origin, version: 1, value: {
         schema: GATEWAY_OMITTED_PAYLOAD_RECOVERY_NAMESPACE, recordVersion: 1, tenantId: "conformance",
         owner: { userId: "user", effectiveMcpSessionId: "mcp", rsid: "rsid", sessionBindingId: binding, sessionVersion: 1 },
@@ -121,14 +222,21 @@ describe("WP-12 C39 observed recovery audit", () => {
         refId: "ref", expiresAtMs: 1000, activatedSessionBindingId: binding, activatedSessionBindingVersion: 1 } },
       { namespace: "gateway_resource_v1", key: "resource", version: 1, value: { kind: "result_ref", refId: "ref", digest: digest("c"), expiresAtMs: 1000, lifecycle: "active", byteSize: 3,
         protectedRecovery: { schemaVersion: "revagent-gateway-recovery/v1", owner, kid: "kid", storageKey: digest("d"), plainDigest: digest("a"), resultRefDigest: digest("c"), plainLength: 3, bridgeSequence: 4, chunkIndex: 1, activatedSessionBindingId: binding, activatedSessionBindingVersion: 1 } } },
-      { namespace: "gateway.rbp-session/v2", key: "rsid", version: 7, value: { schema: "gateway.rbp-session/v2", generation: 2, rootVersion: 7, tenantId: "conformance", rsid: "rsid",
-        identity: { userId: "user" }, binding: { sessionBindingId: "0197a3c2-0000-7000-8000-000000000904", sessionVersion: 6 },
-        sequence: { sequence: { rsid: "rsid", lastRxSeq: 5, acceptedInbound: [{ seq: 4, immutableDigest: digest("f") }, { seq: 5, immutableDigest: digest("b") }] }, pending: null },
-        childRefs, childrenDigest: normalizedDigest(childRefs) } },
-      originChild,
-      recoveryChild,
+      { namespace: GATEWAY_RBP_SESSION_V3_NAMESPACE, key: "rsid", version: 7, value: root },
+      { namespace: GATEWAY_RBP_SESSION_CUTOVER_V3_NAMESPACE, key: "rsid", version: 1, value: {
+        schema: GATEWAY_RBP_SESSION_CUTOVER_V3_NAMESPACE, generation: 3, tenantId: "conformance",
+        rsid: "rsid", rootVersion: 7, rootDigest: sessionCanonicalDigest(root as JsonValue),
+        treesDigest: sessionCanonicalDigest(root.trees as JsonValue), migratedAtMs: 1,
+      } },
+      ...plans.flatMap((plan) => plan.pages.map((page) => ({
+        namespace: GATEWAY_SESSION_HISTORY_PAGE_NAMESPACE,
+        key: page.key,
+        version: 1,
+        value: page.value,
+      }))),
       ...Object.entries(overrides).map(([namespace, value]) => ({ namespace, key: `extra-${namespace}`, version: 1, value })),
     ];
+    return records;
   };
   const multiObserved = (): Array<{ namespace: string; key: string; value: unknown; version: number }> => {
     const records: Array<{ namespace: string; key: string; value: unknown; version: number }> = structuredClone(observed());
@@ -141,16 +249,16 @@ describe("WP-12 C39 observed recovery audit", () => {
       ...(resourceValue.protectedRecovery as Record<string, unknown>), plainLength: 3,
       bridgeSequence: 6, chunkIndex: 2,
     } };
-    const session = records.find((row) => row.namespace === "gateway.rbp-session/v2")!;
+    const session = rootRow(records);
     const sessionValue = session.value as Record<string, unknown>;
-    const sessionSequence = (sessionValue.sequence as Record<string, unknown>).sequence as Record<string, unknown>;
-    session.value = { ...sessionValue, sequence: { ...(sessionValue.sequence as Record<string, unknown>), sequence: {
-      ...sessionSequence, lastRxSeq: 7, acceptedInbound: [
-        ...(sessionSequence.acceptedInbound as Array<Record<string, unknown>>).map((entry) =>
-          entry.seq === 5 ? { ...entry, immutableDigest: digest("d") } : entry),
-        { seq: 6, immutableDigest: digest("a") }, { seq: 7, immutableDigest: digest("b") },
-      ],
+    const sequenceHead = sessionValue.sequenceHead as Record<string, unknown>;
+    session.value = { ...sessionValue, sequenceHead: { ...sequenceHead, sequence: {
+      ...(sequenceHead.sequence as Record<string, unknown>), lastRxSeq: 7,
     } } };
+    replaceLane(records, "receipts", [
+      { seq: 4, immutableDigest: digest("f") }, { seq: 5, immutableDigest: digest("d") },
+      { seq: 6, immutableDigest: digest("a") }, { seq: 7, immutableDigest: digest("b") },
+    ]);
     records.push(
       { namespace: "gateway.recovery-chunk/v1", key: "chunk-1", version: 1, value: {
         ...chunkValue, bridgeSequence: 6, chunkIndex: 1, plainDigest: digest("f"), plainLength: 1,
@@ -160,7 +268,7 @@ describe("WP-12 C39 observed recovery audit", () => {
         tenantId: "conformance", effectiveMcpSessionId: "mcp", seq: 6, state: "chunk_durable",
       } },
     );
-    return records;
+    return refreshV3(records);
   };
 
   it("emits one redacted row only for one fully correlated active recovery", () => {
@@ -205,56 +313,55 @@ describe("WP-12 C39 observed recovery audit", () => {
   it("fails closed on normalized child proof or immutable inbound correlation breaks", () => {
     const invalid = (records: ReturnType<typeof observed>) =>
       expect(coherentC39RecoveryAudit({ records, nowMs: 10 }).status).toBe("no_coherent_row");
-    const root = (records: ReturnType<typeof observed>) => records.find((row) => row.namespace === "gateway.rbp-session/v2")!;
     const withRoot = (records: ReturnType<typeof observed>, mutate: (value: Record<string, unknown>) => Record<string, unknown>) =>
-      records.map((row) => row.namespace === "gateway.rbp-session/v2" ? { ...row, value: mutate(row.value as Record<string, unknown>) } : row);
-    const versionMismatch = withRoot(observed(), (value) => ({ ...value, childRefs: (value.childRefs as Record<string, unknown>[]).map((ref, index) =>
-      index === 0 ? { ...ref, version: 99 } : ref), childrenDigest: normalizedDigest((value.childRefs as Record<string, unknown>[]).map((ref, index) => index === 0 ? { ...ref, version: 99 } : ref)) }));
+      records.map((row) => row.namespace === GATEWAY_RBP_SESSION_V3_NAMESPACE
+        ? { ...row, value: mutate(row.value as Record<string, unknown>) }
+        : row).map((row, _index, next) => row.namespace === GATEWAY_RBP_SESSION_CUTOVER_V3_NAMESPACE
+          ? { ...row, value: { ...(row.value as Record<string, unknown>),
+              rootDigest: sessionCanonicalDigest(rootRow(next).value as JsonValue),
+              treesDigest: sessionCanonicalDigest((rootRow(next).value as Record<string, unknown>).trees as JsonValue) } }
+          : row);
+    const versionMismatch = withRoot(observed(), (value) => ({ ...value, trees: (value.trees as Record<string, unknown>[]).map((tree) =>
+      tree.treeKind === "evidence" ? { ...tree, root: { ...(tree.root as Record<string, unknown>), version: 99 } } : tree) }));
     invalid(versionMismatch);
-    const digestMismatch = withRoot(observed(), (value) => ({ ...value, childRefs: (value.childRefs as Record<string, unknown>[]).map((ref, index) =>
-      index === 0 ? { ...ref, digest: digest("a") } : ref), childrenDigest: normalizedDigest((value.childRefs as Record<string, unknown>[]).map((ref, index) => index === 0 ? { ...ref, digest: digest("a") } : ref)) }));
+    const digestMismatch = withRoot(observed(), (value) => ({ ...value, trees: (value.trees as Record<string, unknown>[]).map((tree) =>
+      tree.treeKind === "evidence" ? { ...tree, root: { ...(tree.root as Record<string, unknown>), digest: digest("a") } } : tree) }));
     invalid(digestMismatch);
-    const originEvidence = observed().find((row) => row.namespace === "gateway.rbp-session-evidence/v2" &&
-      ((row.value as Record<string, unknown>).entry as Record<string, unknown>).terminalInvocationId === origin)!;
-    const unreferencedDuplicate = [...observed(), { ...originEvidence, key: "rsid/unreferenced-origin", version: 5 }];
+    const originPage = pageRow(observed(), "evidence");
+    const unreferencedDuplicate = [...observed(), { ...originPage,
+      key: "rsid/evidence/p-unreferenced", version: 5,
+      value: { ...(originPage.value as Record<string, unknown>), pageId: "p-unreferenced" } }];
     invalid(unreferencedDuplicate);
     const duplicateChildRef = withRoot(observed(), (value) => {
-      const childRefs = value.childRefs as Record<string, unknown>[];
-      const duplicate = childRefs[0]!;
-      return { ...value, childRefs: [...childRefs, duplicate], childrenDigest: normalizedDigest([...childRefs, duplicate]) };
+      const trees = value.trees as Record<string, unknown>[];
+      return { ...value, trees: [...trees, trees.find((tree) => tree.treeKind === "evidence")!] };
     });
     invalid(duplicateChildRef);
     const mismatchedTerminal = structuredClone(observed());
-    const changedChild = mismatchedTerminal.find((row) => row.namespace === "gateway.rbp-session-evidence/v2" &&
-      ((row.value as Record<string, unknown>).entry as Record<string, unknown>).terminalInvocationId === origin)!;
-    changedChild.value = { ...(changedChild.value as Record<string, unknown>), entry: {
-      ...((changedChild.value as Record<string, unknown>).entry as Record<string, unknown>), terminalInvocationId: recovery,
-    } };
-    const changedRoot = root(mismatchedTerminal);
-    const changedRootValue = changedRoot.value as Record<string, unknown>;
-    const changedRefs = (changedRootValue.childRefs as Record<string, unknown>[]).map((ref) =>
-      ref.key === changedChild.key ? { ...ref, digest: normalizedDigest(changedChild.value) } : ref);
-    changedRoot.value = { ...changedRootValue, childRefs: changedRefs, childrenDigest: normalizedDigest(changedRefs) };
-    invalid(mismatchedTerminal);
-    const missingInbound = withRoot(observed(), (value) => ({ ...value, sequence: { ...(value.sequence as Record<string, unknown>), sequence: {
-      ...((value.sequence as Record<string, unknown>).sequence as Record<string, unknown>), acceptedInbound: [{ seq: 5, immutableDigest: digest("b") }],
-    } } }));
+    const evidencePage = pageRow(mismatchedTerminal, "evidence");
+    const evidenceEntries = (evidencePage.value as Record<string, unknown>).entries as Record<string, unknown>[];
+    const originEntry = evidenceEntries.find((entry) =>
+      ((entry.value as Record<string, unknown>).terminalInvocationId) === origin)!;
+    originEntry.value = { ...(originEntry.value as Record<string, unknown>), terminalInvocationId: recovery };
+    invalid(refreshV3(mismatchedTerminal));
+    const missingInbound = replaceLane(structuredClone(observed()), "receipts", [
+      { seq: 5, immutableDigest: digest("b") },
+    ]);
     invalid(missingInbound);
-    const duplicateInbound = withRoot(observed(), (value) => ({ ...value, sequence: { ...(value.sequence as Record<string, unknown>), sequence: {
-      ...((value.sequence as Record<string, unknown>).sequence as Record<string, unknown>), acceptedInbound: [
-        ...(((value.sequence as Record<string, unknown>).sequence as Record<string, unknown>).acceptedInbound as unknown[]), { seq: 4, immutableDigest: digest("c") },
-      ],
-    } } }));
+    const duplicateInbound = replaceLane(structuredClone(observed()), "receipts", [
+      { seq: 4, immutableDigest: digest("f") }, { seq: 5, immutableDigest: digest("b") },
+      { seq: 4, immutableDigest: digest("c") },
+    ]);
     invalid(duplicateInbound);
-    const terminalDigestMismatch = withRoot(observed(), (value) => ({ ...value, sequence: { ...(value.sequence as Record<string, unknown>), sequence: {
-      ...((value.sequence as Record<string, unknown>).sequence as Record<string, unknown>), acceptedInbound: [{ seq: 4, immutableDigest: digest("f") }, { seq: 5, immutableDigest: digest("c") }],
-    } } }));
+    const terminalDigestMismatch = replaceLane(structuredClone(observed()), "receipts", [
+      { seq: 4, immutableDigest: digest("f") }, { seq: 5, immutableDigest: digest("c") },
+    ]);
     invalid(terminalDigestMismatch);
     const resourceBridgeSeqMismatch = observed().map((row) => row.namespace === "gateway_resource_v1" ? { ...row, value: {
       ...(row.value as Record<string, unknown>), protectedRecovery: { ...((row.value as Record<string, unknown>).protectedRecovery as Record<string, unknown>), bridgeSequence: 5 },
     } } : row);
     invalid(resourceBridgeSeqMismatch);
-    expect(root(observed()).version).toBe(7);
+    expect(rootRow(observed()).version).toBe(7);
   });
 
   it("sorts valid shuffled partials deterministically and rejects every sequence/index invariant break", () => {
@@ -275,11 +382,14 @@ describe("WP-12 C39 observed recovery audit", () => {
     invalid([...valid, { ...secondChunk, key: "duplicate-digest", value: { ...(secondChunk.value as Record<string, unknown>), plainDigest: digest("d") } }]);
     invalid(valid.map((row) => row.key === "chunk-1" ? { ...row, value: { ...(row.value as Record<string, unknown>), bridgeSequence: 4 } } : row));
     invalid(valid.map((row) => row.key === "chunk-1" ? { ...row, value: { ...(row.value as Record<string, unknown>), bridgeSequence: 3 } } : row));
-    invalid(valid.map((row) => row.namespace === "gateway.rbp-session/v2" ? { ...row, value: {
-      ...(row.value as Record<string, unknown>), sequence: { ...((row.value as Record<string, unknown>).sequence as Record<string, unknown>), sequence: {
-        ...(((row.value as Record<string, unknown>).sequence as Record<string, unknown>).sequence as Record<string, unknown>), lastRxSeq: 6,
-      } },
-    } } : row));
+    const shortHead = structuredClone(valid);
+    const shortRoot = rootRow(shortHead);
+    const shortValue = shortRoot.value as Record<string, unknown>;
+    const shortSequenceHead = shortValue.sequenceHead as Record<string, unknown>;
+    shortRoot.value = { ...shortValue, sequenceHead: { ...shortSequenceHead, sequence: {
+      ...(shortSequenceHead.sequence as Record<string, unknown>), lastRxSeq: 6,
+    } } };
+    invalid(refreshV3(shortHead));
     invalid(valid.map((row) => row.namespace === "gateway_resource_v1" ? { ...row, value: { ...(row.value as Record<string, unknown>), protectedRecovery: { ...((row.value as Record<string, unknown>).protectedRecovery as Record<string, unknown>), chunkIndex: 1 } } } : row));
     invalid(valid.map((row) => row.namespace === "gateway_resource_v1" ? { ...row, value: { ...(row.value as Record<string, unknown>), byteSize: 4 } } : row));
   });

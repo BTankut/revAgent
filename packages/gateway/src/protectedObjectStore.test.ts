@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 
 import { ConformanceProtectedObjectKeyProvider } from "./protectedObjectKeyProvider.js";
-import { C39_MAX_PLAINTEXT_BYTES, EncryptedProtectedObjectStore } from "./protectedObjectStore.js";
+import { C39_MAX_PLAINTEXT_BYTES, C39_PROTECTED_OBJECT_MAX_ENVELOPE_BYTES, EncryptedProtectedObjectStore } from "./protectedObjectStore.js";
 import type { GatewayPortResult } from "./gatewayPorts.js";
 import type { ObjectStorePort, ProtectedObjectBinding } from "./store.js";
 
@@ -25,6 +25,21 @@ class MemoryObjectStore implements ObjectStorePort {
 }
 
 describe("C39 protected object encryption", () => {
+  it("accepts the maximum key id without exceeding the frozen envelope bound", async () => {
+    const inner = new MemoryObjectStore();
+    const kid = "k".repeat(64);
+    const subject = new EncryptedProtectedObjectStore(
+      inner,
+      new ConformanceProtectedObjectKeyProvider(kid, new Map([[kid, key]]), inventory),
+    );
+    const storageKey = digest(bytes);
+    expect(await subject.putProtected({ storageKey, contentType: "application/json", bytes, binding: binding() }))
+      .toMatchObject({ ok: true });
+    expect(inner.values.get(`tenant/${storageKey}`)!.bytes.byteLength)
+      .toBeLessThanOrEqual(C39_PROTECTED_OBJECT_MAX_ENVELOPE_BYTES);
+    expect(C39_PROTECTED_OBJECT_MAX_ENVELOPE_BYTES).toBe(C39_MAX_PLAINTEXT_BYTES + 98);
+  });
+
   it("encrypts before the backing store and requires the complete bound AAD to read", async () => {
     const inner = new MemoryObjectStore();
     const subject = new EncryptedProtectedObjectStore(inner, new ConformanceProtectedObjectKeyProvider("k1", new Map([["k1", key]]), inventory));

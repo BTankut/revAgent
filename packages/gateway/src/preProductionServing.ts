@@ -258,6 +258,7 @@ export async function preparePreProductionServing(
       ],
     },
     protocolStore: adapters.protocolStore,
+    servingOwnership: adapters.servingOwnership,
     entitlement: adapters.entitlement,
     events: adapters.events,
     objectStore: createUnavailableObjectStore(),

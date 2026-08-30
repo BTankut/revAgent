@@ -20,8 +20,6 @@ import {
   type IdentityPort,
 } from "./authContext.js";
 import {
-  GATEWAY_RBP_SESSION_CUTOVER_V2_NAMESPACE,
-  GATEWAY_RBP_SESSION_V2_NAMESPACE,
   GatewayBridgeSessionAuthority,
   GatewayRbpFault,
   TEST_RSID_CARRIER_RECEIVE_TAIL_OBSERVER,
@@ -29,6 +27,12 @@ import {
   type ConformanceOriginResendPolicy,
   type GatewayRouteRebindAuditSnapshot,
 } from "./bridgeSession.js";
+import {
+  GATEWAY_RBP_SESSION_CUTOVER_V3_NAMESPACE,
+  GATEWAY_RBP_SESSION_V3_NAMESPACE,
+  GATEWAY_SESSION_HISTORY_PAGE_NAMESPACE,
+  type SessionTreeKind,
+} from "./sessionHistoryStore.js";
 import type { GatewayExecutorRequest, GatewayJsonObject } from "./dispatch.js";
 import { gatewayUuidV7 } from "./identifiers.js";
 import {
@@ -36,6 +40,7 @@ import {
   createGatewayDispatchProofAuthority,
 } from "./invocationContext.js";
 import { GatewayResourceAuthority } from "./resourceAuthority.js";
+import { GatewayServingOwnership } from "./gatewayServingOwnership.js";
 import { ConformanceProtectedObjectKeyProvider } from "./protectedObjectKeyProvider.js";
 import { EncryptedProtectedObjectStore } from "./protectedObjectStore.js";
 import { SqliteConformanceProtocolStore } from "./conformanceEphemeralAdapters.js";
@@ -73,24 +78,60 @@ const id = (): string => gatewayUuidV7(Date.now() + idOffset++);
 const normalizedDigest = (value: unknown): `sha256:${string}` =>
   `sha256:${createHash("sha256").update(canonicalizeJson(value as JsonValue)).digest("hex")}`;
 
+type RestartableTestStore = ReturnType<typeof createRestartableTestStore>;
+
+function requireV3Root(
+  fixture: RestartableTestStore,
+  rsid: string,
+) {
+  const snapshot = fixture.snapshot().records;
+  const root = snapshot.find((row) =>
+    row.namespace === GATEWAY_RBP_SESSION_V3_NAMESPACE && row.key === rsid,
+  );
+  const marker = snapshot.find((row) =>
+    row.namespace === GATEWAY_RBP_SESSION_CUTOVER_V3_NAMESPACE && row.key === rsid,
+  );
+  if (root === undefined || marker === undefined) {
+    throw new Error("v3 fixture session is missing");
+  }
+  return Object.freeze({ root, marker });
+}
+
+function v3LaneEntries(
+  fixture: RestartableTestStore,
+  rsid: string,
+  treeKind: SessionTreeKind,
+): ReadonlyArray<Readonly<{ readonly row: ReturnType<RestartableTestStore["snapshot"]>["records"][number]; readonly value: GatewayJsonObject }>> {
+  const entries: Array<Readonly<{
+    readonly row: ReturnType<RestartableTestStore["snapshot"]>["records"][number];
+    readonly value: GatewayJsonObject;
+  }>> = [];
+  for (const row of fixture.snapshot().records) {
+    if (row.namespace !== GATEWAY_SESSION_HISTORY_PAGE_NAMESPACE ||
+        typeof row.value !== "object" || row.value === null ||
+        row.value.rsid !== rsid || row.value.treeKind !== treeKind ||
+        !Array.isArray(row.value.entries)) continue;
+    for (const entry of row.value.entries) {
+      if (typeof entry !== "object" || entry === null ||
+          typeof entry.value !== "object" || entry.value === null) continue;
+      entries.push(Object.freeze({ row, value: entry.value as GatewayJsonObject }));
+    }
+  }
+  return Object.freeze(entries);
+}
+
 async function injectDurableD2Claim(
-  fixture: ReturnType<typeof createRestartableTestStore>,
+  fixture: RestartableTestStore,
   rsid: string,
   originInvocationId: string,
 ): Promise<void> {
-  const root = fixture.snapshot().records.find((row) =>
-    row.namespace === GATEWAY_RBP_SESSION_V2_NAMESPACE && row.key === rsid,
-  );
-  const marker = fixture.snapshot().records.find((row) =>
-    row.namespace === GATEWAY_RBP_SESSION_CUTOVER_V2_NAMESPACE && row.key === rsid,
-  );
-  if (root === undefined || marker === undefined) throw new Error("normalized fixture session is missing");
+  const { root, marker } = requireV3Root(fixture, rsid);
   const nextRoot = structuredClone(root.value) as {
     rootVersion: number;
-    sequence: Record<string, unknown>;
+    sequenceHead: Record<string, unknown>;
   };
   nextRoot.rootVersion += 1;
-  nextRoot.sequence.d2ConformanceOriginResend = {
+  nextRoot.sequenceHead.d2ConformanceOriginResend = {
     version: 1,
     state: "claimed",
     originInvocationId,
@@ -106,13 +147,13 @@ async function injectDurableD2Claim(
   };
   const staged = await fixture.store.transact({ tenantId: TENANT_ID }, (tx) => {
     tx.stage({
-      namespace: GATEWAY_RBP_SESSION_V2_NAMESPACE,
+      namespace: GATEWAY_RBP_SESSION_V3_NAMESPACE,
       key: rsid,
       value: nextRoot as unknown as GatewayJsonObject,
       expect: { kind: "version", version: root.version },
     });
     tx.stage({
-      namespace: GATEWAY_RBP_SESSION_CUTOVER_V2_NAMESPACE,
+      namespace: GATEWAY_RBP_SESSION_CUTOVER_V3_NAMESPACE,
       key: rsid,
       value: nextMarker as GatewayJsonObject,
       expect: { kind: "version", version: marker.version },
@@ -122,7 +163,7 @@ async function injectDurableD2Claim(
 }
 
 async function mutateDurableRoute(
-  fixture: ReturnType<typeof createRestartableTestStore>,
+  fixture: RestartableTestStore,
   rsid: string,
   mutate: (
     route: Record<string, unknown>,
@@ -140,13 +181,7 @@ async function mutateDurableRoute(
     },
   ) => void,
 ): Promise<void> {
-  const root = fixture.snapshot().records.find((row) =>
-    row.namespace === GATEWAY_RBP_SESSION_V2_NAMESPACE && row.key === rsid,
-  );
-  const marker = fixture.snapshot().records.find((row) =>
-    row.namespace === GATEWAY_RBP_SESSION_CUTOVER_V2_NAMESPACE && row.key === rsid,
-  );
-  if (root === undefined || marker === undefined) throw new Error("normalized fixture session is missing");
+  const { root, marker } = requireV3Root(fixture, rsid);
   const nextRoot = structuredClone(root.value) as {
     rootVersion: number;
     lifecycle: {
@@ -171,13 +206,13 @@ async function mutateDurableRoute(
   };
   const staged = await fixture.store.transact({ tenantId: TENANT_ID }, (tx) => {
     tx.stage({
-      namespace: GATEWAY_RBP_SESSION_V2_NAMESPACE,
+      namespace: GATEWAY_RBP_SESSION_V3_NAMESPACE,
       key: rsid,
       value: nextRoot as unknown as GatewayJsonObject,
       expect: { kind: "version", version: root.version },
     });
     tx.stage({
-      namespace: GATEWAY_RBP_SESSION_CUTOVER_V2_NAMESPACE,
+      namespace: GATEWAY_RBP_SESSION_CUTOVER_V3_NAMESPACE,
       key: rsid,
       value: nextMarker as GatewayJsonObject,
       expect: { kind: "version", version: marker.version },
@@ -187,17 +222,11 @@ async function mutateDurableRoute(
 }
 
 async function mutateDurableSessionGrant(
-  fixture: ReturnType<typeof createRestartableTestStore>,
+  fixture: RestartableTestStore,
   rsid: string,
   mutate: (root: { binding: { grantedCapabilities: string[] } }) => void,
 ): Promise<void> {
-  const root = fixture.snapshot().records.find((row) =>
-    row.namespace === GATEWAY_RBP_SESSION_V2_NAMESPACE && row.key === rsid,
-  );
-  const marker = fixture.snapshot().records.find((row) =>
-    row.namespace === GATEWAY_RBP_SESSION_CUTOVER_V2_NAMESPACE && row.key === rsid,
-  );
-  if (root === undefined || marker === undefined) throw new Error("normalized fixture session is missing");
+  const { root, marker } = requireV3Root(fixture, rsid);
   const nextRoot = structuredClone(root.value) as {
     rootVersion: number;
     binding: { grantedCapabilities: string[] };
@@ -211,13 +240,13 @@ async function mutateDurableSessionGrant(
   };
   const staged = await fixture.store.transact({ tenantId: TENANT_ID }, (tx) => {
     tx.stage({
-      namespace: GATEWAY_RBP_SESSION_V2_NAMESPACE,
+      namespace: GATEWAY_RBP_SESSION_V3_NAMESPACE,
       key: rsid,
       value: nextRoot as unknown as GatewayJsonObject,
       expect: { kind: "version", version: root.version },
     });
     tx.stage({
-      namespace: GATEWAY_RBP_SESSION_CUTOVER_V2_NAMESPACE,
+      namespace: GATEWAY_RBP_SESSION_CUTOVER_V3_NAMESPACE,
       key: rsid,
       value: nextMarker as GatewayJsonObject,
       expect: { kind: "version", version: marker.version },
@@ -778,10 +807,8 @@ describe("GatewayBridgeSessionAuthority live document routing", () => {
       },
     });
     await expect(outcome).resolves.toMatchObject({ state: "completed" });
-    const root = fixture.snapshot().records.find((row) =>
-      row.namespace === GATEWAY_RBP_SESSION_V2_NAMESPACE && row.key === session.rsid,
-    );
-    expect((root?.value as { sequence?: Record<string, unknown> }).sequence)
+    const { root } = requireV3Root(fixture, session.rsid);
+    expect((root.value as { sequenceHead?: Record<string, unknown> }).sequenceHead)
       .toMatchObject({ d2ConformanceOriginResend: null });
   });
 
@@ -2369,16 +2396,11 @@ describe("GatewayBridgeSessionAuthority live document routing", () => {
     });
     await drainEntered.promise;
 
-    const egress = fixture.snapshot().records.find((row) =>
-      row.namespace === "gateway.rbp-session-egress/v2" &&
-      typeof row.value === "object" && row.value !== null &&
-      "rsid" in row.value && row.value.rsid === original.rsid,
-    );
-    expect(egress?.value).toMatchObject({
-      fence: {
-        state: "revocation_pending",
-        lease: { operation: "resume_ack", phase: "started" },
-      },
+    const egress = v3LaneEntries(fixture, original.rsid, "indices")
+      .find(({ value }) => value.role === "egress")?.value.value;
+    expect(egress).toMatchObject({
+      state: "revocation_pending",
+      lease: { operation: "resume_ack", phase: "started" },
     });
 
     // A distinct rsid is never queued behind the blocked carrier's tail.
@@ -2447,8 +2469,8 @@ describe("Gateway omitted-payload recovery admission", () => {
         },
       });
       await expect(outcome).resolves.toEqual({ state: "completed", result: { inline: true } });
-      const root = fixture.snapshot().records.find((row) => row.namespace === "gateway.rbp-session/v2" && row.key === session.payload.rsid);
-      const binding = (root?.value as { binding?: { sessionBindingId?: string; sessionVersion?: number } }).binding;
+      const { root } = requireV3Root(fixture, session.payload.rsid);
+      const binding = (root.value as { binding?: { sessionBindingId?: string; sessionVersion?: number } }).binding;
       if (binding?.sessionBindingId === undefined || binding.sessionVersion === undefined) throw new Error("missing fixture binding");
       await expect(created.admitOmittedPayloadRecovery({
         tenantId: TENANT_ID, userId: USER_ID, effectiveMcpSessionId: MCP_SESSION_ID,
@@ -2483,9 +2505,9 @@ describe("Gateway omitted-payload recovery admission", () => {
         },
       });
       await outcome;
-      const root = fixture.snapshot().records.find((row) => row.namespace === "gateway.rbp-session/v2" && row.key === session.payload.rsid);
-      const binding = (root?.value as { binding?: { sessionBindingId?: string; sessionVersion?: number } }).binding;
-      const evidence = fixture.snapshot().records.find((row) => row.namespace === "gateway.rbp-session-evidence/v2" && row.key.startsWith(`${session.payload.rsid}/`));
+      const { root } = requireV3Root(fixture, session.payload.rsid);
+      const binding = (root.value as { binding?: { sessionBindingId?: string; sessionVersion?: number } }).binding;
+      const evidence = v3LaneEntries(fixture, session.payload.rsid, "evidence")[0]?.row;
       if (binding?.sessionBindingId === undefined || binding.sessionVersion === undefined || evidence === undefined) throw new Error("missing omitted fixture evidence");
       await fixture.store.transact({ tenantId: TENANT_ID }, async (tx) => {
         tx.stage({ namespace: evidence.namespace, key: evidence.key, value: {}, expect: { kind: "version", version: evidence.version } });
@@ -2537,23 +2559,19 @@ describe("Gateway omitted-payload recovery admission", () => {
         originInvocationId: invocationId,
         expectedResultDigest: originResultDigest,
       });
-      const root = fixture.snapshot().records.find((row) =>
-        row.namespace === "gateway.rbp-session/v2" && row.key === session.payload.rsid,
-      );
-      const binding = root?.value as { binding?: { sessionBindingId?: string; sessionVersion?: number } };
+      const { root } = requireV3Root(fixture, session.payload.rsid);
+      const binding = root.value as { binding?: { sessionBindingId?: string; sessionVersion?: number } };
       expect(binding.binding).toMatchObject({ sessionVersion: 1 });
       const sessionBinding = binding.binding;
       if (sessionBinding?.sessionBindingId === undefined || sessionBinding.sessionVersion === undefined) {
         throw new Error("fixture omitted the current bridge session binding");
       }
-      const terminalEvidence = fixture.snapshot().records.find((row) =>
-        row.namespace === "gateway.rbp-session-evidence/v2" && row.key.startsWith(`${session.payload.rsid}/`),
-      );
-      expect(terminalEvidence?.value).toMatchObject({ entry: {
+      const terminalEvidence = v3LaneEntries(fixture, session.payload.rsid, "evidence")[0]?.value;
+      expect(terminalEvidence).toMatchObject({
         effectiveMcpSessionId: MCP_SESSION_ID,
         terminalInvocationId: invocationId,
         terminalTruth: { payloadRetained: false, resultDigest: originResultDigest },
-      } });
+      });
       const input = {
         tenantId: TENANT_ID,
         userId: USER_ID,
@@ -2587,8 +2605,8 @@ describe("Gateway omitted-payload recovery admission", () => {
         payload: { rsid: session.payload.rsid, resume_token: session.payload.resume_token, last_rx_seq: 1 },
       });
       await expect(created.admitOmittedPayloadRecovery(input)).resolves.toEqual({ kind: "guarded" });
-      const reboundRoot = fixture.snapshot().records.find((row) => row.namespace === "gateway.rbp-session/v2" && row.key === session.payload.rsid);
-      const reboundBinding = (reboundRoot?.value as { binding?: { sessionBindingId?: string; sessionVersion?: number } }).binding;
+      const reboundRoot = requireV3Root(fixture, session.payload.rsid).root;
+      const reboundBinding = (reboundRoot.value as { binding?: { sessionBindingId?: string; sessionVersion?: number } }).binding;
       if (reboundBinding?.sessionBindingId === undefined || reboundBinding.sessionVersion === undefined) throw new Error("missing rebound fixture binding");
       await expect(created.admitOmittedPayloadRecovery({
         ...input, sessionBindingId: reboundBinding.sessionBindingId, sessionVersion: reboundBinding.sessionVersion,
@@ -2631,8 +2649,8 @@ describe("Gateway omitted-payload recovery admission", () => {
         },
       });
       await outcome;
-      const root = fixture.snapshot().records.find((row) => row.namespace === "gateway.rbp-session/v2" && row.key === session.payload.rsid);
-      const binding = (root?.value as { binding?: { sessionBindingId?: string; sessionVersion?: number } }).binding;
+      const { root } = requireV3Root(fixture, session.payload.rsid);
+      const binding = (root.value as { binding?: { sessionBindingId?: string; sessionVersion?: number } }).binding;
       if (binding?.sessionBindingId === undefined || binding.sessionVersion === undefined) throw new Error("missing recovery binding");
       const claim = await created.admitOmittedPayloadRecovery({
         tenantId: TENANT_ID, userId: USER_ID, effectiveMcpSessionId: MCP_SESSION_ID,
@@ -2733,9 +2751,9 @@ describe("Gateway omitted-payload recovery admission", () => {
         },
       });
       await expect(origin).resolves.toMatchObject({ state: "omitted_payload" });
-      const sessionRecord = fixture.snapshot().records.find((row) =>
-        row.namespace === "gateway.rbp-session/v2" && row.key === session.payload.rsid,
-      )?.value as { binding?: { sessionBindingId?: string; sessionVersion?: number } };
+      const sessionRecord = requireV3Root(fixture, session.payload.rsid).root.value as {
+        binding?: { sessionBindingId?: string; sessionVersion?: number };
+      };
       const binding = sessionRecord.binding;
       if (binding?.sessionBindingId === undefined || binding.sessionVersion === undefined) {
         throw new Error("C39 C2 fixture lacks a current owner binding");
@@ -2776,8 +2794,8 @@ describe("Gateway omitted-payload recovery admission", () => {
       const afterPartial = fixture.snapshot().records;
       expect(afterPartial.find((row) => row.namespace === "gateway.recovery-chunk/v1")?.value)
         .toMatchObject({ state: "active", bridgeSequence: 3, chunkIndex: 0 });
-      expect(afterPartial.find((row) => row.namespace === "gateway.rbp-session/v2")?.value)
-        .toMatchObject({ sequence: { sequence: { lastRxSeq: 3 } } });
+      expect(requireV3Root(fixture, session.payload.rsid).root.value)
+        .toMatchObject({ sequenceHead: { sequence: { lastRxSeq: 3 } } });
       expect(objects.keys().length).toBeGreaterThanOrEqual(1);
 
       expect(afterPartial.some((row) => row.namespace === "gateway.carrier-ack/v1")).toBe(false);
@@ -2802,8 +2820,8 @@ describe("Gateway omitted-payload recovery admission", () => {
           originResultDigest: originDigest,
           resultReferenceDigest: expect.stringMatching(/^sha256:/u),
         });
-      expect(terminalRecords.find((row) => row.namespace === "gateway.rbp-session/v2")?.value)
-        .toMatchObject({ sequence: { sequence: { lastRxSeq: 4 } } });
+      expect(requireV3Root(fixture, session.payload.rsid).root.value)
+        .toMatchObject({ sequenceHead: { sequence: { lastRxSeq: 4 } } });
 
       const completedClaim = await created.admitOmittedPayloadRecoveryFromNorth({
         tenantId: TENANT_ID,
@@ -2899,6 +2917,14 @@ describe("Gateway omitted-payload recovery admission", () => {
     const outcomes: StoreOutcome<unknown>[] = [];
     const protocolStore = observingProtocolStore(backing, callbackErrors, outcomes);
     const objects = createMemoryObjectStore();
+    const servingOwnership = new GatewayServingOwnership({
+      protocolStore,
+      privateObjectStore: objects,
+      profile: "production_conformance",
+    });
+    const ownedProtocolStore = servingOwnership.protocolStore;
+    const ownedObjects = servingOwnership.resourceObjectStore;
+    if (ownedObjects === null) throw new Error("SQLite C39 fixture lacks owned objects");
     const inventory = Object.freeze({
       kind: "conformance" as const,
       async listLiveKids() { return Object.freeze(["c39-c2-key"]); },
@@ -2908,15 +2934,15 @@ describe("Gateway omitted-payload recovery admission", () => {
     );
     const authorityRef: { current: GatewayBridgeSessionAuthority | null } = { current: null };
     const resources = new GatewayResourceAuthority({
-      protocolStore, objectStore: objects,
-      protectedObjectStore: new EncryptedProtectedObjectStore(objects, keys),
+      protocolStore: ownedProtocolStore, objectStore: ownedObjects,
+      protectedObjectStore: new EncryptedProtectedObjectStore(ownedObjects, keys),
       reauthorizeRecoveryScope: async (owner) =>
         await authorityRef.current?.resolveCurrentRecoveryAuthoritySnapshot(owner) ?? null,
     });
     const created = new GatewayBridgeSessionAuthority(
-      protocolStore,
+      ownedProtocolStore,
       identity({ connectionCapabilities: ["chunked_results"] }),
-      { resourceAuthority: resources },
+      { resourceAuthority: resources, servingOwnership },
     );
     authorityRef.current = created;
     await created.open();
@@ -2950,8 +2976,8 @@ describe("Gateway omitted-payload recovery admission", () => {
         },
       });
       await expect(origin).resolves.toMatchObject({ state: "omitted_payload" });
-      const rootRead = await protocolStore.transact({ tenantId: TENANT_ID }, (tx) =>
-        tx.read("gateway.rbp-session/v2", session.payload.rsid),
+      const rootRead = await ownedProtocolStore.transact({ tenantId: TENANT_ID }, (tx) =>
+        tx.read(GATEWAY_RBP_SESSION_V3_NAMESPACE, session.payload.rsid),
       );
       if (!rootRead.ok || rootRead.value === null) throw new Error("SQLite C39 fixture lacks a session root");
       const binding = (rootRead.value.value as { binding?: { sessionBindingId?: string; sessionVersion?: number } }).binding;
@@ -2998,7 +3024,7 @@ describe("Gateway omitted-payload recovery admission", () => {
         data: partial.payload.data,
         commitBridge: async () => { throw new Error("test recovery activation lost before durable Bridge commit"); },
       })).rejects.toBeDefined();
-      const interrupted = await protocolStore.transact({ tenantId: TENANT_ID }, async (tx) => ({
+      const interrupted = await ownedProtocolStore.transact({ tenantId: TENANT_ID }, async (tx) => ({
         recovery: await tx.list("gateway.recovery-chunk/v1"),
         generic: await tx.list("gateway.carrier-chunk/v1"),
       }));
@@ -3034,16 +3060,18 @@ describe("Gateway omitted-payload recovery admission", () => {
         const failedOutcomes = outcomes.filter((outcome) => !outcome.ok);
         throw new Error(`SQLite C39 retry failed: receive=${String(receiveError)} callback=${JSON.stringify(callbackDetail)} outcomes=${JSON.stringify(failedOutcomes)}`);
       }
-      const afterPartial = await protocolStore.transact({ tenantId: TENANT_ID }, async (tx) => ({
+      const afterPartial = await ownedProtocolStore.transact({ tenantId: TENANT_ID }, async (tx) => ({
         recovery: await tx.list("gateway.recovery-chunk/v1"),
         generic: await tx.list("gateway.carrier-chunk/v1"),
-        session: await tx.read("gateway.rbp-session/v2", session.payload.rsid),
+        session: await tx.read(GATEWAY_RBP_SESSION_V3_NAMESPACE, session.payload.rsid),
       }));
       expect(afterPartial).toMatchObject({ ok: true });
       if (!afterPartial.ok) throw new Error(afterPartial.message);
       expect(afterPartial.value.recovery[0]?.value).toMatchObject({ state: "active", bridgeSequence: 3, chunkIndex: 0 });
       expect(afterPartial.value.generic).toEqual([]);
-      expect(afterPartial.value.session?.value).toMatchObject({ sequence: { sequence: { lastRxSeq: 3 } } });
+      expect(afterPartial.value.session?.value).toMatchObject({
+        sequenceHead: { sequence: { lastRxSeq: 3 } },
+      });
       void recovery.catch(() => undefined);
     } finally {
       await created.close().catch(() => undefined);

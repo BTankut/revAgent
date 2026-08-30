@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { ConformanceProtectedObjectKeyProvider, LinuxFileProtectedObjectKeyProvider, type ProtectedObjectLiveKeyInventoryPort } from "./protectedObjectKeyProvider.js";
+import { ConformanceProtectedObjectKeyProvider, LinuxFileProtectedObjectKeyProvider, MAX_PROTECTED_OBJECT_KEY_COUNT, type ProtectedObjectLiveKeyInventoryPort } from "./protectedObjectKeyProvider.js";
 
 const roots: string[] = [];
 const key64 = Buffer.alloc(32, 1).toString("base64");
@@ -21,7 +21,10 @@ describe("C39 protected object key providers", () => {
   it("keeps fixture keys conformance-only and has provider-owned live inventory", async () => {
     const owned = inventory(["old"], "conformance");
     const provider = new ConformanceProtectedObjectKeyProvider("next", new Map([["old", Buffer.alloc(32, 3)], ["next", Buffer.alloc(32, 4)]]), owned);
+    expect(MAX_PROTECTED_OBJECT_KEY_COUNT).toBe(16);
     expect(await provider.selfTest()).toBe(true);
+    owned.kids = Array.from({ length: MAX_PROTECTED_OBJECT_KEY_COUNT + 1 }, (_, index) => `kid-${index}`);
+    expect(await provider.snapshot()).toBeNull();
     owned.kids = ["missing"];
     expect(await provider.snapshot()).toBeNull();
   });

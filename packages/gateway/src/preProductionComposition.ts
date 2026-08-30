@@ -30,6 +30,7 @@ import type {
   GatewayProtocolStore,
   ObjectStorePort,
 } from "./store.js";
+import type { GatewayServingOwnership } from "./gatewayServingOwnership.js";
 
 export const PRE_PRODUCTION_LAN_TEST_PROFILE = "lan_test" as const;
 
@@ -83,6 +84,8 @@ export interface PreProductionLanTestCompositionOptions {
   readonly entitlement: EntitlementPort;
   readonly events: GatewayEventSink;
   readonly objectStore: ObjectStorePort;
+  /** Internal session durability graph; never installed as the public object port. */
+  readonly servingOwnership?: GatewayServingOwnership;
   readonly guardrails: GuardrailPort;
   readonly northAuth: {
     /** Explicit authorization scopes copied into each request-lifetime AuthInfo. */
@@ -320,7 +323,12 @@ export function createPreProductionLanTestComposition(
   const bridgeAuthority = new GatewayBridgeSessionAuthority(
     options.protocolStore,
     identity,
-    { clock: options.identityOptions.clock },
+    {
+      clock: options.identityOptions.clock,
+      ...(options.servingOwnership === undefined
+        ? {}
+        : { servingOwnership: options.servingOwnership }),
+    },
   );
   const rbpIngress = createPreProductionRbpIngress(bridgeAuthority, identity);
   const configuredNorthMcp =
@@ -333,7 +341,7 @@ export function createPreProductionLanTestComposition(
     identity,
     entitlement: options.entitlement,
     events: options.events,
-    protocolStore: options.protocolStore,
+    protocolStore: bridgeAuthority.store,
     objectStore: options.objectStore,
     guardrails: options.guardrails,
     rbpIngress,

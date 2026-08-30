@@ -4,6 +4,7 @@ import { createEffectiveMcpRequestScopeV1 } from "./invocationContext.js";
 import { describe, expect, it, vi } from "vitest";
 import {
   GatewayResourceAuthority,
+  ResourceAuthorityProtectedKeyInventoryPort,
   type GatewayResourceScope,
 } from "./resourceAuthority.js";
 import { createMemoryObjectStore, createRestartableTestStore } from "./testAdapters.js";
@@ -25,6 +26,38 @@ function effectiveScope() {
 }
 
 describe("WP-10 durable resource expiry GC", () => {
+  it("keeps expired writing/active C39 rows as key pins until authenticated deletion", async () => {
+    const restartable = createRestartableTestStore();
+    await restartable.store.open();
+    const owner = {
+      tenantId: "tenant-gc", userId: "user-gc", principalKey: "tenant-gc:user-gc",
+      effectiveMcpSessionId: "mcp-gc", sessionBindingId: "binding-gc",
+      sessionBindingVersion: 1, rsid: "rsid-gc",
+      recoveryInvocationId: "018f0f7a-3f5e-7c00-8000-000000000001",
+      originInvocationId: "018f0f7a-3f5e-7c00-8000-000000000002",
+      originResultDigest: `sha256:${"a".repeat(64)}`,
+    };
+    await restartable.store.transact({ tenantId: "tenant-gc" }, (tx) => {
+      tx.stage({
+        namespace: "gateway.recovery-chunk/v1", key: "expired-active",
+        value: {
+          schemaVersion: "revagent-gateway-recovery/v1", state: "active", owner,
+          bridgeSequence: 1, chunkIndex: 0, kid: "kid-expired",
+          storageKey: `sha256:${"b".repeat(64)}`,
+          plainDigest: `sha256:${"c".repeat(64)}`,
+          resultRefDigest: `sha256:${"d".repeat(64)}`,
+          plainLength: 1, expiresAtMs: 1,
+        },
+        expect: { kind: "absent" },
+      });
+    });
+    const inventory = new ResourceAuthorityProtectedKeyInventoryPort(
+      restartable.store,
+      { now: () => 1_000_000 },
+    );
+    await expect(inventory.listLiveKids()).resolves.toStrictEqual(["kid-expired"]);
+  });
+
   it("keeps 2MiB-1, rejects 2MiB+1, and reclaims expired object plus metadata", async () => {
     let now = 10_000;
     const restartable = createRestartableTestStore();

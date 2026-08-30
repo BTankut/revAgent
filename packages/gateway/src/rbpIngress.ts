@@ -21,7 +21,7 @@ import {
   type GatewayBridgeSessionAuthority,
 } from "./bridgeSession.js";
 import type { DeviceAuthContext } from "./authContext.js";
-import { gatewayUuidV7 } from "./identifiers.js";
+import { gatewayUuidV7, isGatewayUuidV7 } from "./identifiers.js";
 import {
   portNotImplemented,
   type GatewayPortAdapterKind,
@@ -879,6 +879,19 @@ function versionOneOffered(request: IncomingMessage): boolean {
 function frame(body: unknown): RbpEnvelope {
   if (Buffer.isBuffer(body)) return parseRbpFrame(body);
   return parseRbpFrame(Buffer.from(JSON.stringify(body), "utf8"));
+}
+
+function safeWssFrameCorrelationId(bytes: Buffer): string | null {
+  try {
+    const value = JSON.parse(
+      new TextDecoder("utf-8", { fatal: true }).decode(bytes),
+    ) as unknown;
+    if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
+    const id = (value as { readonly id?: unknown }).id;
+    return typeof id === "string" && isGatewayUuidV7(id) ? id : null;
+  } catch {
+    return null;
+  }
 }
 
 function faultBody(error: GatewayRbpFault): {
@@ -1882,6 +1895,7 @@ export function createProductionRbpIngressHost(
             readonly closeReason: string;
             readonly publicFault: PublicWssFault | null;
             readonly sendFaultFrame: boolean;
+            readonly faultCorrelationId: string | null;
           }): Promise<void> => {
             if (teardownTask !== null) return teardownTask;
             terminalEgressClaimed = true;
@@ -1941,7 +1955,7 @@ export function createProductionRbpIngressHost(
                   ? JSON.stringify({
                       v: 1,
                       type: "error",
-                      id: gatewayUuidV7(Date.now()),
+                      id: input.faultCorrelationId ?? gatewayUuidV7(Date.now()),
                       ts: new Date().toISOString(),
                       payload: {
                         retryable: false,
@@ -1992,6 +2006,7 @@ export function createProductionRbpIngressHost(
           const fail = (
             fault: GatewayRbpFault,
             phase: RbpWssInternalDiagnostic["phase"],
+            faultCorrelationId: string | null = null,
           ): void => {
             if (state === "closing" || state === "closed" || state === "faulted") return;
             const sendFaultFrame = state === "open";
@@ -2017,6 +2032,7 @@ export function createProductionRbpIngressHost(
               closeReason: publicFault.closeReason,
               publicFault,
               sendFaultFrame,
+              faultCorrelationId,
             });
           };
 
@@ -2029,6 +2045,7 @@ export function createProductionRbpIngressHost(
               closeReason: "RBP inbound queue overloaded",
               publicFault: null,
               sendFaultFrame: false,
+              faultCorrelationId: null,
             });
           };
 
@@ -2041,6 +2058,7 @@ export function createProductionRbpIngressHost(
               closeReason: "RBP application egress overloaded",
               publicFault: null,
               sendFaultFrame: false,
+              faultCorrelationId: null,
             });
           }
 
@@ -2118,6 +2136,7 @@ export function createProductionRbpIngressHost(
                 closeReason: safeChannelCloseReason(code),
                 publicFault: null,
                 sendFaultFrame: false,
+                faultCorrelationId: null,
               });
             },
           };
@@ -2220,6 +2239,7 @@ export function createProductionRbpIngressHost(
                 fail(
                   error instanceof GatewayRbpFault ? error : internalFault(error),
                   state === "opening" ? "opening" : "receive",
+                  binary ? null : safeWssFrameCorrelationId(bytes),
                 );
               } finally {
                 releaseQueueCharge(bytes.byteLength);
@@ -2241,6 +2261,7 @@ export function createProductionRbpIngressHost(
               closeReason: "WSS transport closed",
               publicFault: null,
               sendFaultFrame: false,
+              faultCorrelationId: null,
             });
           });
           websocket.on("message", enqueueFrame);

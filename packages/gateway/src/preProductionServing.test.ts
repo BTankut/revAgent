@@ -304,6 +304,8 @@ describe("M4 pre-production serving composition", () => {
     expect(prepared.composition.bridgeAuthority.store).toBe(
       prepared.composition.ports.protocolStore,
     );
+    expect(prepared.composition.ports.objectStore.kind).toBe("unavailable");
+    expect(Object.hasOwn(prepared.composition, "resourceAuthority")).toBe(false);
     expect(prepared.composition.northAuthenticator.identity).toBe(
       prepared.composition.identity,
     );

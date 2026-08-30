@@ -705,12 +705,17 @@ export class ResourceAuthorityProtectedKeyInventoryPort implements ProtectedObje
         if (chunk === null) return null;
         // A deletion claim still owns ciphertext until the object-store delete
         // has confirmed; preserve its kid through that final crash window.
-        if (chunk.state === "deleting" || ((chunk.state === "writing" || chunk.state === "active") && chunk.expiresAtMs > this.#now())) kids.add(chunk.kid);
+        if (chunk.state === "writing" || chunk.state === "active" || chunk.state === "deleting") {
+          kids.add(chunk.kid);
+        }
       }
       for (const row of rows.value.refs) {
         const resource = asJsonRecord(row.value);
         if (resource === null) return null;
-        if (resource.kind === "result_ref" && resource.protectedRecovery !== undefined && ((resource.lifecycle ?? "active") === "deleting" || resource.expiresAtMs > this.#now())) kids.add(resource.protectedRecovery.kid);
+        if (resource.kind === "result_ref" && resource.protectedRecovery !== undefined &&
+            ["allocating", "active", "deleting", "claimed"].includes(resource.lifecycle ?? "active")) {
+          kids.add(resource.protectedRecovery.kid);
+        }
       }
     }
     return Object.freeze([...kids].sort());

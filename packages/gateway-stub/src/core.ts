@@ -1032,23 +1032,33 @@ export class GatewayStubCore {
     void reason;
   }
 
-  async sendConnectionFault(connectionId: string, fault: GatewayStubFault): Promise<void> {
+  async sendConnectionFault(
+    connectionId: string,
+    fault: GatewayStubFault,
+    correlationId?: string,
+  ): Promise<void> {
     const runtime = this.connections.get(connectionId);
     if (runtime === undefined || !runtime.helloReceived) {
       return;
     }
-    const envelope = await this.store.update((draft) => this.makeControlEnvelope(draft, "error", {
-      retryable: false,
-      // O1 connection-level errors are deliberately limited to protocol/auth.
-      // Richer classes remain invocation-scoped data faults; an unsupported or
-      // environment connection guard therefore closes as a protocol fault.
-      fault_class: fault.faultClass === "auth" ? "auth" : "protocol",
-      outcome: "known",
-      verification_required: false,
-      replayed: false,
-      late_after_indeterminate: false,
-      message: fault.message.slice(0, 4096),
-    }));
+    const envelope = await this.store.update((draft) => {
+      const generated = this.makeControlEnvelope(draft, "error", {
+        retryable: false,
+        // O1 connection-level errors are deliberately limited to protocol/auth.
+        // Richer classes remain invocation-scoped data faults; an unsupported or
+        // environment connection guard therefore closes as a protocol fault.
+        fault_class: fault.faultClass === "auth" ? "auth" : "protocol",
+        outcome: "known",
+        verification_required: false,
+        replayed: false,
+        late_after_indeterminate: false,
+        message: fault.message.slice(0, 4096),
+      });
+      if (correlationId === undefined) return generated;
+      const correlated = { ...generated, id: correlationId } as RbpEnvelope;
+      assertEnvelope(correlated);
+      return correlated;
+    });
     await this.sendEnvelope(connectionId, envelope);
   }
 
