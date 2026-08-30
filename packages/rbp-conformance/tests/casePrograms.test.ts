@@ -436,6 +436,19 @@ describe("exact forty-case control and observation catalog", () => {
           parentTimeoutMs: 90_000,
         },
       ]);
+    const carrierCapabilities = [
+      "journal_v1", "chunked_results", "artifact_result_v1", "transport_streamable_http",
+    ];
+    expect(c32.steps
+      .filter(({ action, stepId }) =>
+        action === "restart_case_stack" && stepId !== "o1-c32.resource-baseline-start")
+      .map(({ stepId, arguments: input }) => ({
+        stepId,
+        connectionCapabilities: input.common?.startupOverrides?.connectionCapabilities,
+      }))).toEqual([
+        "o1-c32.isolated-stack",
+        ...vectors.slice(1).map((vector) => `o1-c32.${vector}.restart-stack`),
+      ].map((stepId) => ({ stepId, connectionCapabilities: carrierCapabilities })));
     expect(c32.steps.find(
       ({ stepId }) => stepId === "o1-c32.resource-baseline-start",
     )?.captures).toEqual([{

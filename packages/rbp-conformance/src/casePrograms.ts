@@ -699,6 +699,9 @@ function c32RestartStack(vector: C32Vector): CaseControlStep {
       binding: "{{binding}}",
       preserveState: false,
       requireExactExecutionPlanIdentity: true,
+      startupOverrides: {
+        connectionCapabilities: [...CARRIER_CASE_CONNECTION_CAPABILITIES],
+      },
     }), "setup", C32_STACK_LIFECYCLE_TIMEOUT_MS),
     [
       {
