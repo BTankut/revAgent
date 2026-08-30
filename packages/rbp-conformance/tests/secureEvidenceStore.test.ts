@@ -125,23 +125,28 @@ describe("secure retained-evidence store", () => {
   });
 
   it.runIf(process.platform === "win32").each([
-    "malformed_output",
-    "invalid_ready",
-    "crash",
-    "timeout",
-  ] as const)("reaps the async direct-root helper after %s", async (helperFault) => {
+    ["malformed_output", /protocol is malformed/u, 2_000],
+    ["invalid_ready", /READY protocol is invalid/u, 2_000],
+    ["crash", /protocol ended unexpectedly/u, 10_000],
+    ["timeout", /lifecycle deadline expired/u, 500],
+  ] as const)("reaps the async direct-root helper after %s", async (helperFault, expectedFailure, timeoutMs) => {
     const root = mkdtempSync(path.join(tmpdir(), `rbp-secure-direct-fault-${helperFault}-`));
     try {
       const lifecycle = { leasesOpened: 0, leasesDisposed: 0, helpersSpawned: 0, helpersClosed: 0 };
-      const store = new SecureEvidenceStore(root, { directRootOnly: true, test: { helperFault, timeoutMs: 500, lifecycle } });
+      const store = new SecureEvidenceStore(root, { directRootOnly: true, test: { helperFault, timeoutMs, lifecycle } });
       const bytes = Buffer.from("fault-bytes");
       const sha256 = createHash("sha256").update(bytes).digest("hex");
-      await expect(store.writeDirectAccepted("fault.json", bytes, (candidate) => candidate.acceptExact({
+      const observed = await store.writeDirectAccepted("fault.json", bytes, (candidate) => candidate.acceptExact({
         logicalPath: "fault.json",
         absolutePath: path.join(root, "fault.json"),
         bytes,
         sha256,
-      }, undefined))).rejects.toBeInstanceOf(Error);
+      }, undefined)).then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      expect(observed).toBeInstanceOf(Error);
+      expect((observed as Error).message).toMatch(expectedFailure);
       expect(lifecycle.helpersSpawned).toBe(1);
       expect(lifecycle.helpersClosed).toBe(1);
       expect(lifecycle.leasesDisposed).toBe(lifecycle.leasesOpened);

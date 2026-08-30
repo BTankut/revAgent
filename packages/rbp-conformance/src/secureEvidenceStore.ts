@@ -31,6 +31,7 @@ import { resolveWindowsSystemPaths } from "./windowsSystemPaths.js";
 const DIRECTORY_MODE = 0o700;
 const FILE_MODE = 0o600;
 const NATIVE_HELPER_TIMEOUT_MS = 15_000;
+const NATIVE_HELPER_CLOSE_TIMEOUT_MS = 1_000;
 const MAX_NATIVE_HELPER_INPUT_BYTES = 128 * 1024 * 1024;
 const MAX_NATIVE_HELPER_OUTPUT_BYTES = 4 * 1024;
 export const MAX_SECURE_EVIDENCE_CONTENT_BYTES = 32 * 1024 * 1024;
@@ -497,12 +498,9 @@ export class SecureEvidenceStore {
     verifyWindowsControllerRoot(this.#windowsControllerRoot);
     const identity = verifyPowerShellIdentityCurrent(this.#powerShellIdentity);
     const timeoutMs = Math.max(1, this.#test?.timeoutMs ?? NATIVE_HELPER_TIMEOUT_MS);
-    const lifecycleDeadlineMs = Date.now() + timeoutMs;
-    const helperJoinReserveMs = Math.min(
-      Math.max(0, timeoutMs - 1),
-      Math.min(1_000, Math.max(1, Math.floor(timeoutMs / 2))),
-    );
-    const deadlineMs = lifecycleDeadlineMs - helperJoinReserveMs;
+    const spawnedAtMs = Date.now();
+    const actionDeadlineMs = spawnedAtMs + timeoutMs;
+    const closeDeadlineMs = actionDeadlineMs + NATIVE_HELPER_CLOSE_TIMEOUT_MS;
     const request = Buffer.from(`${JSON.stringify({
       operation: "write",
       rootPath: this.artifactRoot,
@@ -518,7 +516,7 @@ export class SecureEvidenceStore {
       syncTimeoutMs: timeoutMs,
       helperTimeoutMs: timeoutMs,
       fault: this.#test?.helperFault ?? "",
-      deadlineUnixMs: deadlineMs,
+      deadlineUnixMs: actionDeadlineMs,
     })}\n`, "utf8");
     if (request.length > MAX_NATIVE_HELPER_INPUT_BYTES) throw new Error("secure evidence helper input exceeds its fixed bound");
     const child = spawn(identity.realPath, [
@@ -555,7 +553,7 @@ export class SecureEvidenceStore {
       if (child.exitCode === null) child.kill("SIGKILL");
     };
     const nextRecord = async (): Promise<Record<string, unknown>> => {
-      const next = await beforeDeadline(reader.next(), deadlineMs, stopHelper);
+      const next = await beforeDeadline(reader.next(), actionDeadlineMs, stopHelper);
       if (next.done || typeof next.value !== "string" || Buffer.byteLength(next.value, "utf8") > MAX_NATIVE_HELPER_OUTPUT_BYTES) {
         throw evidenceError("EVIDENCE_DISPOSAL_FAILED", "evidence helper protocol ended unexpectedly");
       }
@@ -565,11 +563,11 @@ export class SecureEvidenceStore {
       return parsed as Record<string, unknown>;
     };
     const writeInput = async (value: string | Buffer): Promise<void> => {
-      if (Date.now() >= deadlineMs) throw evidenceError("EVIDENCE_DISPOSAL_FAILED", "evidence helper input deadline expired");
+      if (Date.now() >= actionDeadlineMs) throw evidenceError("EVIDENCE_DISPOSAL_FAILED", "evidence helper input deadline expired");
       if (stdinError !== undefined) throw stdinError;
       await beforeDeadline(new Promise<void>((resolve, reject) => {
         child.stdin.write(value, (error) => error == null ? resolve() : reject(error));
-      }), deadlineMs, stopHelper);
+      }), actionDeadlineMs, stopHelper);
       if (stdinError !== undefined) throw stdinError;
     };
     try {
@@ -577,7 +575,7 @@ export class SecureEvidenceStore {
       await writeInput(request);
       const ready = await nextRecord();
     if (ready.schema === "revagent-pinned-evidence-helper/v1" && ready.status === "error") {
-      const exitCode = await beforeDeadline(exit, lifecycleDeadlineMs, stopHelper);
+      const exitCode = await beforeDeadline(exit, closeDeadlineMs, stopHelper);
       if (ready.code === "EEXIST" && exitCode === 71) {
         const error = evidenceError("EEXIST", "evidence target already exists");
         throw error;
@@ -615,14 +613,14 @@ export class SecureEvidenceStore {
         throw evidenceError("EVIDENCE_DISPOSAL_FAILED", `evidence helper final protocol is invalid (${String(final.status)}:${String(final.code ?? "none")})`);
       }
       child.stdin.end();
-      const exitCode = await beforeDeadline(exit, lifecycleDeadlineMs, stopHelper);
+      const exitCode = await beforeDeadline(exit, closeDeadlineMs, stopHelper);
       if (exitCode !== 0 || stderrObserved) throw evidenceError("EVIDENCE_DISPOSAL_FAILED", "evidence helper exit is not clean");
       };
-      return await this.#acceptPublished(logicalPath, target, bytes, consume, published, finalize, undefined, deadlineMs);
+      return await this.#acceptPublished(logicalPath, target, bytes, consume, published, finalize, undefined, actionDeadlineMs);
     } finally {
       if (!helperClosed) stopHelper();
       try {
-        await beforeDeadline(exit, lifecycleDeadlineMs, stopHelper);
+        await beforeDeadline(exit, closeDeadlineMs, stopHelper);
       } catch (error) {
         throw evidenceError(
           "EVIDENCE_HELPER_REAP_UNCERTAIN",
