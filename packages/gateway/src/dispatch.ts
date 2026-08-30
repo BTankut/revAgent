@@ -1358,12 +1358,10 @@ export class GatewayDispatcher {
             invocationId,
           });
         }
-        const mutationProbeReadOnlyPreview =
-          projection.previewExecutorMethod === "get_ui_state" &&
-          (tool.name === "conformance.fixture.mutation_probe_origin" ||
-            tool.name === "conformance.fixture.mutation_probe_next");
+        const serverAuthoredReadOnlyPreview =
+          projection.previewExecutorMethod === "get_ui_state";
         let executorContext = context;
-        if (mutationProbeReadOnlyPreview) {
+        if (serverAuthoredReadOnlyPreview) {
           try {
             executorContext = createGatewayInvocationContext({
               auth,
@@ -1394,7 +1392,7 @@ export class GatewayDispatcher {
           toolName: tool.name,
           toolVersion: tool.version,
           executorMethod: projection.previewExecutorMethod,
-          policyClass: mutationProbeReadOnlyPreview ? "auto" : tool.policyClass,
+          policyClass: serverAuthoredReadOnlyPreview ? "auto" : tool.policyClass,
           mutationScopePolicy: "none",
           args: projection.previewArgs,
           context: executorContext,
@@ -1421,10 +1419,9 @@ export class GatewayDispatcher {
           executorOutcome: rawPreview,
           threw: false,
         });
-        const previewIsAuthorizable = isAuthorizableConfirmationPreview(
-          tool,
-          previewOutcome,
-        );
+        const previewIsAuthorizable = serverAuthoredReadOnlyPreview
+          ? previewOutcome.ok && previewOutcome.state === "completed"
+          : isAuthorizableConfirmationPreview(tool, previewOutcome);
         if (!previewIsAuthorizable) {
           return this.#finish(previewOutcome, {
             auth: auditIdentity,
@@ -1536,7 +1533,7 @@ export class GatewayDispatcher {
           toolVersion: tool.version,
           executor: tool.executor,
           requestId: invocationId,
-          result: previewOutcome.result,
+          result: previewOutcome.result as GatewayJsonValue,
           confirmation: Object.freeze({
             confirmToken: issued.confirmToken,
             confirmationId: issued.pendingAction.confirmationId,

@@ -60,7 +60,10 @@ import {
   bindMutationProbeVerificationWorkflow,
   createMutationProbeVerificationWorkflow,
 } from "./productionConformanceVerification.js";
-import { MUTATION_PROBE_CONFORMANCE_TOOL_RECORDS } from "./productionConformanceTools.js";
+import {
+  MUTATION_PROBE_CONFORMANCE_TOOL_RECORDS,
+  PRODUCTION_CONFORMANCE_TOOL_RECORDS,
+} from "./productionConformanceTools.js";
 import {
   createCapturingEventSink,
   createReadOnlyRecoveryAuthorityFixture,
@@ -629,6 +632,7 @@ interface ConfirmationDispatchHarness {
   readonly durable: RestartableTestStore;
   readonly eventSink: CapturingEventSink;
   readonly executor: RecoveryExecutorHarness;
+  readonly recoveryAuthority: GatewayRecoveryAuthority;
   readonly mintedInvocationIds: () => readonly string[];
   readonly previewRequests: () => readonly GatewayExecutorRequest[];
   setNow(value: number): void;
@@ -687,6 +691,7 @@ async function createConfirmationDispatchHarness(
     durable,
     eventSink: dispatch.eventSink,
     executor,
+    recoveryAuthority: recovery.authority,
     mintedInvocationIds: dispatch.mintedInvocationIds,
     previewRequests: () => [...previewRequests],
     setNow(value) {
@@ -2363,6 +2368,70 @@ describe("GW-8 durable confirmation round trip", () => {
         confirmationId: null,
       },
     });
+  });
+
+  it("runs closed C28/C29 previews as auto reads and denies commits at an active hold with zero mutation calls", async () => {
+    const c28 = PRODUCTION_CONFORMANCE_TOOL_RECORDS.find((record) =>
+      record.name === "conformance.fixture.c28_mutation")!;
+    const c29 = PRODUCTION_CONFORMANCE_TOOL_RECORDS.find((record) =>
+      record.name === "conformance.fixture.c29_atomic_batch")!;
+    const c29Params = {
+      viewName: "revAgent_QA_WP12_fixture",
+      exactName: true,
+      mode: "commit",
+      confirmDelete: true,
+    } as const;
+    const cases = [
+      { record: c28, args: { vector: "O1-C28", fixtureOnly: true } },
+      { record: c29, args: {
+        batchContractVersion: 1,
+        batchId: uuid7(810_000),
+        batchDigest: `sha256:${"a".repeat(64)}`,
+        atomic: true,
+        rollbackPolicy: "rollback_on_non_success",
+        maxAggregateResultBytes: 1_024,
+        steps: [{ index: 0, invocationId: uuid7(810_001), method: "delete_review_view",
+          params: c29Params, paramsDigest: makeParamsDigest(c29Params), effect: "model_transaction" }],
+      } },
+    ] as const;
+    for (const candidate of cases) {
+      const harness = await createConfirmationDispatchHarness({ record: candidate.record });
+      const holdId = await installSessionHold({
+        authority: harness.recoveryAuthority,
+        bridgeEvidence: harness.bridgeEvidence,
+      });
+      const preview = await harness.dispatcher.dispatch(
+        dispatchInput(candidate.args, { toolName: candidate.record.name }),
+      );
+      expect(preview).toMatchObject({ ok: true, state: "confirmation_required" });
+      if (!preview.ok || preview.state !== "confirmation_required") {
+        throw new Error("expected conformance confirmation preview");
+      }
+      expect(harness.previewRequests()).toHaveLength(1);
+      expect(harness.previewRequests()[0]).toMatchObject({
+        executorMethod: "get_ui_state",
+        policyClass: "auto",
+        mutationScopePolicy: "none",
+        args: {},
+        context: { policyClass: "auto", policyDecision: "auto", mutating: false, mutationScope: null },
+      });
+      const commit = await harness.dispatcher.dispatch(dispatchInput(candidate.args, {
+        toolName: candidate.record.name,
+        confirmation: {
+          confirmToken: preview.confirmation.confirmToken,
+          originatingPreviewInvocationId: preview.confirmation.originatingPreviewInvocationId,
+        },
+      }));
+      expect(commit).toMatchObject({ ok: false, executorReached: false,
+        error: { code: "recovery_blocked", detailCode: "mutation_hold" } });
+      expect(harness.executor.prepareCount()).toBe(0);
+      expect(harness.executor.sentDispatches()).toEqual([]);
+      expect(harness.executor.plainExecutionCount()).toBe(0);
+      expect(harness.eventSink.captured().at(-1)?.payload).toMatchObject({
+        recovery_hold_ids: [holdId],
+        executor_reached: false,
+      });
+    }
   });
 
   async function preview(
