@@ -14,6 +14,7 @@ import {
   type ConformanceProtectedResourceReadStage,
 } from "./resourceAuthority.js";
 import { GatewayDispatcher } from "./dispatch.js";
+import { GatewayConfirmationAuthority } from "./confirmationAuthority.js";
 import { EntitledCatalogView } from "./entitledRegistry.js";
 import { GatewayToolRegistry, M2_BOOTSTRAP_TOOL_RECORDS } from "./registry.js";
 import {
@@ -83,6 +84,7 @@ export function createProductionConformanceRecoveryAuthority(input: {
   readonly protocolStore: GatewayProtocolStore;
   readonly bridgeEvidence: GatewayBridgeSessionAuthority;
   readonly verificationWorkflow?: MutationProbeVerificationWorkflow;
+  readonly confirmationAuthority?: GatewayConfirmationAuthority;
 }): GatewayRecoveryAuthority {
   if (input.verificationWorkflow !== undefined &&
       !isMutationProbeVerificationWorkflow(input.verificationWorkflow, {
@@ -93,6 +95,9 @@ export function createProductionConformanceRecoveryAuthority(input: {
   }
   const recoveryAuthority = new GatewayRecoveryAuthority(input.protocolStore, {
     bridgeEvidence: input.bridgeEvidence,
+    ...(input.confirmationAuthority === undefined
+      ? {}
+      : { confirmationAuthority: input.confirmationAuthority }),
     evidenceDecision: input.verificationWorkflow?.evidenceDecision ?? Object.freeze({
       async decideEvidence() {
         return Object.freeze({
@@ -1034,10 +1039,14 @@ export async function runProductionConformanceHostCli(args: readonly string[]): 
         runId: randomUUID(),
       })
     : undefined;
+  const confirmationAuthority = verificationWorkflow === undefined
+    ? undefined
+    : new GatewayConfirmationAuthority(protocolStore);
   const recoveryAuthority = createProductionConformanceRecoveryAuthority({
     protocolStore,
     bridgeEvidence: authority!,
     ...(verificationWorkflow === undefined ? {} : { verificationWorkflow }),
+    ...(confirmationAuthority === undefined ? {} : { confirmationAuthority }),
   });
   const ingress = createConformanceRbpIngressHost({ authority: authority! });
   const supporting = createConformanceSupportingPorts();
@@ -1064,6 +1073,7 @@ export async function runProductionConformanceHostCli(args: readonly string[]): 
       instance: "loopback",
     },
     recoveryAuthority,
+    ...(confirmationAuthority === undefined ? {} : { confirmationAuthority }),
     ...(verificationWorkflow === undefined ? {} : { mutationProbeVerification: verificationWorkflow }),
   });
   const auditAccesses: Array<{ readonly atMs: number; readonly tenantId: string; readonly action: string }> = [];
