@@ -325,6 +325,94 @@ async function seedV3Session(
   expect(result.ok).toBe(true);
 }
 
+async function seedAuthorityRecords(
+  store: GatewayProtocolStore,
+  records: readonly Readonly<{ readonly namespace: string; readonly value: JsonValue }>[]
+): Promise<void> {
+  const result = await store.transact({ tenantId: TENANT }, (tx) => {
+    for (const record of records) {
+      tx.stage({ namespace: record.namespace, key: RSID,
+        value: record.value, expect: { kind: "absent" } });
+    }
+  });
+  expect(result.ok).toBe(true);
+}
+
+function unregisterTombstone(): JsonValue {
+  return {
+    schema: "gateway.rbp-unregister/v1",
+    recordVersion: 1,
+    tenantId: TENANT,
+    createdAtMs: NOW,
+    updatedAtMs: NOW,
+    rsid: RSID,
+    sessionBindingId: SESSION_BINDING,
+    owner: { deviceId: "device-a", userId: USER, seatId: "seat-a" },
+    reason: "operator_requested",
+    revokedAtMs: NOW,
+    acceptedConnectionId: CONNECTION,
+    pendingDisposition: "none",
+    holdIds: [],
+    cleanupState: "retained",
+  };
+}
+
+function migrationDenySentinel(): JsonValue {
+  const digest = `sha256:${"d".repeat(64)}`;
+  return {
+    schema: "gateway.rbp-session-migration/v1",
+    tenantId: TENANT,
+    rsid: RSID,
+    migrationId: digest,
+    sessionSource: {
+      namespace: "gateway.rbp-session/v1",
+      key: RSID,
+      version: 1,
+      digest,
+    },
+    recoverySource: null,
+    legacyDigest: digest,
+    scopes: [],
+  };
+}
+
+function v2Topology(): Readonly<{ readonly root: JsonValue; readonly marker: JsonValue }> {
+  const digest = `sha256:${"e".repeat(64)}`;
+  const root: JsonValue = {
+    schema: "gateway.rbp-session/v2",
+    generation: 2,
+    rootVersion: 1,
+    tenantId: TENANT,
+    rsid: RSID,
+    identity: { userId: USER },
+    binding: { sessionBindingId: SESSION_BINDING, sessionVersion: 1, connectionId: CONNECTION },
+    lifecycle: { liveDocumentRoute: liveDocumentRoute() },
+    sequence: {},
+    migration: {
+      sourceVersionDigest: digest,
+      legacyDigest: digest,
+      counts: { holds: 0, conflicts: 0, resolutions: 0 },
+      deletionReceipt: { state: "retained", verifiedAtMs: null },
+    },
+    childRefs: [],
+    childrenDigest: sessionCanonicalDigest([]),
+  };
+  return Object.freeze({
+    root,
+    marker: {
+      schema: "gateway.rbp-session-cutover/v2",
+      generation: 2,
+      tenantId: TENANT,
+      rsid: RSID,
+      sourceLegacyDigest: digest,
+      rootVersion: 1,
+      rootDigest: sessionCanonicalDigest(root),
+      childrenDigest: sessionCanonicalDigest([]),
+      migratedAtMs: NOW,
+    },
+  });
+}
+
 async function admitOrigin(store: GatewayProtocolStore, runId: string): Promise<boolean> {
   const bridge = new TestBridgeEvidence(store) as unknown as GatewayBridgeSessionAuthority;
   const workflow = createMutationProbeVerificationWorkflow({
@@ -847,17 +935,58 @@ describe("mutation-probe-v1 verification authority", () => {
     expect(owners.value.filter((row) => row.key.startsWith("fault-plan-owner:"))).toHaveLength(1);
   });
 
-  it("uses canonical v3, admits only a physical v1 compatibility row, and denies ambiguous or corrupt topology", async () => {
+  it("admits only unfenced v3 or physical v1 and denies every durable authority fence", async () => {
+    const v3 = createRestartableTestStore();
+    await v3.store.open();
+    await seedV3Session(v3.store);
+    expect(await admitOrigin(v3.store, "v3-run")).toBe(true);
+
     const v1 = createRestartableTestStore();
     await v1.store.open();
     await seedV1Session(v1.store);
     expect(await admitOrigin(v1.store, "v1-run")).toBe(true);
 
-    const ambiguous = createRestartableTestStore();
-    await ambiguous.store.open();
-    await seedV3Session(ambiguous.store);
-    await seedV1Session(ambiguous.store);
-    expect(await admitOrigin(ambiguous.store, "ambiguous-run")).toBe(false);
+    for (const generation of ["v1", "v3"] as const) {
+      for (const fence of [
+        { name: "unregister", namespace: "gateway.rbp-unregister/v1",
+          value: unregisterTombstone() },
+        { name: "migration-deny", namespace: "gateway.rbp-session-migration/v1",
+          value: migrationDenySentinel() },
+      ] as const) {
+        const fenced = createRestartableTestStore();
+        await fenced.store.open();
+        if (generation === "v1") await seedV1Session(fenced.store);
+        else await seedV3Session(fenced.store);
+        await seedAuthorityRecords(fenced.store, [fence]);
+        expect(await admitOrigin(fenced.store, `${generation}-${fence.name}`)).toBe(false);
+      }
+    }
+
+    const topology = v2Topology();
+    for (const variant of [
+      { name: "v2-root-only", records: [
+        { namespace: "gateway.rbp-session/v2", value: topology.root },
+      ] },
+      { name: "v2-marker-only", records: [
+        { namespace: "gateway.rbp-session-cutover/v2", value: topology.marker },
+      ] },
+      { name: "v2-current", records: [
+        { namespace: "gateway.rbp-session/v2", value: topology.root },
+        { namespace: "gateway.rbp-session-cutover/v2", value: topology.marker },
+      ] },
+    ] as const) {
+      const v2 = createRestartableTestStore();
+      await v2.store.open();
+      await seedV1Session(v2.store);
+      await seedAuthorityRecords(v2.store, variant.records);
+      expect(await admitOrigin(v2.store, variant.name)).toBe(false);
+    }
+
+    const staleLegacy = createRestartableTestStore();
+    await staleLegacy.store.open();
+    await seedV3Session(staleLegacy.store);
+    await seedV1Session(staleLegacy.store);
+    expect(await admitOrigin(staleLegacy.store, "stale-v1-behind-v3")).toBe(false);
 
     const corrupt = createRestartableTestStore();
     await corrupt.store.open();

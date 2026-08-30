@@ -43,6 +43,10 @@ export const MUTATION_PROBE_MAX_RECORD_BYTES = 8_192;
 export const MUTATION_PROBE_AUTHORIZATION_MS = 600_000;
 
 const GATEWAY_RBP_SESSION_NAMESPACE = "gateway.rbp-session/v1";
+const GATEWAY_RBP_UNREGISTER_NAMESPACE = "gateway.rbp-unregister/v1";
+const GATEWAY_RBP_SESSION_V2_NAMESPACE = "gateway.rbp-session/v2";
+const GATEWAY_RBP_SESSION_CUTOVER_V2_NAMESPACE = "gateway.rbp-session-cutover/v2";
+const GATEWAY_RBP_SESSION_MIGRATION_DENY_NAMESPACE = "gateway.rbp-session-migration/v1";
 const GATEWAY_RECOVERY_NAMESPACE = "gateway.recovery-authority/v1";
 const MUTATION_PROBE_RESULT_SCHEMA = "revagent.fixture-mutation-probe/v1";
 const EMPTY_PARAMS_DIGEST = makeParamsDigest({});
@@ -378,6 +382,21 @@ async function readCurrentSessionAuthority(
   tenantId: string,
   rsid: string,
 ): Promise<CurrentSessionAuthority | null> {
+  // Match Bridge authority ordering: revocation and the universal migration
+  // barrier are deny-only. Their presence can never be interpreted as absence,
+  // even when the payload is malformed or a newer root is also visible.
+  const tombstone = await tx.read<GatewayJsonValue>(GATEWAY_RBP_UNREGISTER_NAMESPACE, rsid);
+  if (tombstone !== null) return null;
+  const migrationDeny = await tx.read<GatewayJsonValue>(GATEWAY_RBP_SESSION_MIGRATION_DENY_NAMESPACE, rsid);
+  if (migrationDeny !== null) return null;
+
+  // A v2 root is staging until its marker, and a marked v2 root is authority
+  // this profile does not project. Either side therefore forbids v1 fallback;
+  // mismatched, partial, and stale mixed-generation topologies stay opaque.
+  const v2Root = await tx.read<GatewayJsonValue>(GATEWAY_RBP_SESSION_V2_NAMESPACE, rsid);
+  const v2Marker = await tx.read<GatewayJsonValue>(GATEWAY_RBP_SESSION_CUTOVER_V2_NAMESPACE, rsid);
+  if (v2Root !== null || v2Marker !== null) return null;
+
   const legacy = await tx.read<GatewayJsonValue>(GATEWAY_RBP_SESSION_NAMESPACE, rsid);
   const root = await tx.read<GatewayJsonValue>(GATEWAY_RBP_SESSION_V3_NAMESPACE, rsid);
   const marker = await tx.read<GatewayJsonValue>(GATEWAY_RBP_SESSION_CUTOVER_V3_NAMESPACE, rsid);
