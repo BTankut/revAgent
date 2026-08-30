@@ -125,8 +125,7 @@ export interface GatewayPrivateObjectIntentTicket {
   readonly intentVersion: number;
 }
 
-export interface GatewayOwnedPrivateObjectMetadata
-  extends GatewayPrivateObjectBinding {}
+export type GatewayOwnedPrivateObjectMetadata = GatewayPrivateObjectBinding;
 
 /**
  * Adapter-internal extension used only by the nominal serving owner.  It is

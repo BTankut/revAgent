@@ -241,7 +241,7 @@ function envelope(input: {
         confirmation_id: input.context.confirmationId },
       verification: null,
       recovery_clearances: [],
-    },
+    } as unknown as InvokeEnvelope["payload"],
   };
 }
 

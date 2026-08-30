@@ -100,9 +100,9 @@ import type {
   StoredRecord,
 } from "./store.js";
 import {
-  GatewayServingOwnership,
   REFUSE_DISPATCH_DURABILITY_PROFILE,
   resolveBundledTestServingOwnership,
+  type GatewayServingOwnership,
   type SessionDurabilityProfileV1,
 } from "./gatewayServingOwnership.js";
 import {
@@ -121,18 +121,14 @@ import {
   sessionPrivateStorageKey,
   sessionRecordValueBytes,
   stageMigrationReservationBatch,
-  stageMigrationSlotSwaps,
   verifyMigrationReservationInventory,
   type DurableRbpSessionV3,
   type DurableSessionCutoverV3,
-  type SessionHistoryBranchPage,
   type SessionHistoryEntry,
-  type SessionHistoryLeafPage,
   type SessionHistoryPage,
   type SessionHistoryPagePlan,
   type SessionHistoryPageRef,
   type SessionHistoryTreeRef,
-  type SessionMigrationCapacityPlan,
   type SessionMigrationPrivateObjectPlan,
   type SessionMigrationTargetRecord,
   type SessionBlobDescriptorV1,
@@ -3892,11 +3888,9 @@ class SessionAggregateRepository {
     const plans = this.#plansForV3(input.record);
     const trees = plans.map((plan) => plan.tree)
       .sort((left, right) => left.treeKind.localeCompare(right.treeKind));
-    const {
-      outbox: _outbox,
-      acceptedInbound: _acceptedInbound,
-      ...sequenceHead
-    } = input.record.sequence;
+    const sequenceHead = { ...input.record.sequence };
+    Reflect.deleteProperty(sequenceHead, "outbox");
+    Reflect.deleteProperty(sequenceHead, "acceptedInbound");
     const logicalTargetDigest = sessionCanonicalDigest(asJson({
       sourceDigest: input.sourceDigest,
       logicalRecordDigest: sessionCanonicalDigest(asJson(input.record)),
@@ -4098,11 +4092,9 @@ class SessionAggregateRepository {
       ...plan.tree,
       root: plan.tree.root === null ? null : resolved.get(plan.tree.root.key)!,
     }));
-    const {
-      outbox: _outbox,
-      acceptedInbound: _acceptedInbound,
-      ...sequenceHead
-    } = record.sequence;
+    const sequenceHead = { ...record.sequence };
+    Reflect.deleteProperty(sequenceHead, "outbox");
+    Reflect.deleteProperty(sequenceHead, "acceptedInbound");
     const priorRoot = current?.value;
     const sourceDigest = existing === null
       ? sessionCanonicalDigest(asJson({ source: "new", tenantId, rsid }))

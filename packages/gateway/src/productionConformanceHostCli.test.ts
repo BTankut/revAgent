@@ -232,8 +232,8 @@ describe("WP-12 C39 observed recovery audit", () => {
       { namespace: GATEWAY_RBP_SESSION_V3_NAMESPACE, key: "rsid", version: 7, value: root },
       { namespace: GATEWAY_RBP_SESSION_CUTOVER_V3_NAMESPACE, key: "rsid", version: 1, value: {
         schema: GATEWAY_RBP_SESSION_CUTOVER_V3_NAMESPACE, generation: 3, tenantId: "conformance",
-        rsid: "rsid", rootVersion: 7, rootDigest: sessionCanonicalDigest(root as JsonValue),
-        treesDigest: sessionCanonicalDigest(root.trees as JsonValue), migratedAtMs: 1,
+        rsid: "rsid", rootVersion: 7, rootDigest: sessionCanonicalDigest(root as unknown as JsonValue),
+        treesDigest: sessionCanonicalDigest(root.trees as unknown as JsonValue), migratedAtMs: 1,
       } },
       ...plans.flatMap((plan) => plan.pages.map((page) => ({
         namespace: GATEWAY_SESSION_HISTORY_PAGE_NAMESPACE,
@@ -715,7 +715,7 @@ describe("WP-12 conformance recovery composition", () => {
         profile: "mutation-probe-v1",
         evidenceDecision: { async decideEvidence() { return { kind: "rejected", reason: "fake" }; } },
         async recordOrigin() { return true; },
-      } as MutationProbeVerificationWorkflow,
+      } as unknown as MutationProbeVerificationWorkflow,
     })).toThrow(/factory branded/u);
   });
   it("uses the exact SQLite store and Bridge evidence authority for isolated read windows", async () => {

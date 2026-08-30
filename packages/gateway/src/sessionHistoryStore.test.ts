@@ -242,7 +242,7 @@ describe("SessionHistoryStore v3", () => {
       }),
       sequenceHead: asJson({ nextTxSeq: 1 }),
       migrationProof: {
-        sourceGeneration: 1,
+        sourceGeneration: 1 as const,
         sourceDigest: digest("source"),
         equivalenceDigest: digest("equivalence"),
         targetPlanDigest: digest("plan"),
@@ -297,7 +297,7 @@ describe("SessionHistoryStore v3", () => {
       }),
       sequenceHead: asJson({ nextTxSeq: 4_161 }),
       migrationProof: {
-        sourceGeneration: 2,
+        sourceGeneration: 2 as const,
         sourceDigest: digest("source"),
         equivalenceDigest: digest("equivalence"),
         targetPlanDigest: digest("plan"),

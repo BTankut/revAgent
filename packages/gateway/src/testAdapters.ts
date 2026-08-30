@@ -23,7 +23,6 @@ import type {
   GatewayProtocolStore,
   GatewayStartupCoordinator,
   GatewayStartupLease,
-  ObjectStorePort,
   PrivateObjectStoreBackendPort,
   StoreExpectation,
   StoreOutcome,

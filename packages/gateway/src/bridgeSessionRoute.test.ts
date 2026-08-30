@@ -109,9 +109,11 @@ function v3LaneEntries(
   for (const row of fixture.snapshot().records) {
     if (row.namespace !== GATEWAY_SESSION_HISTORY_PAGE_NAMESPACE ||
         typeof row.value !== "object" || row.value === null ||
-        row.value.rsid !== rsid || row.value.treeKind !== treeKind ||
-        !Array.isArray(row.value.entries)) continue;
-    for (const entry of row.value.entries) {
+        Array.isArray(row.value)) continue;
+    const page = row.value as unknown as GatewayJsonObject;
+    if (page.rsid !== rsid || page.treeKind !== treeKind ||
+        !Array.isArray(page.entries)) continue;
+    for (const entry of page.entries) {
       if (typeof entry !== "object" || entry === null ||
           typeof entry.value !== "object" || entry.value === null) continue;
       entries.push(Object.freeze({ row, value: entry.value as GatewayJsonObject }));

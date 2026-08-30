@@ -911,7 +911,7 @@ describe("GatewayDispatcher fail-closed boundaries", () => {
   it("retries only the exact origin journal-before-ACK race without another send and times out closed", async () => {
     const mismatch = { kind: "protocol_fault" as const,
       reason: "bridge_evidence_dispatch_evidence_mismatch" };
-    let sends = 1;
+    const sends = 1;
     let reads = 0;
     let validations = 0;
     let clock = 0;

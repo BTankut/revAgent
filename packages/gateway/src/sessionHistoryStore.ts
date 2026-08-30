@@ -610,13 +610,22 @@ export function planSessionMigrationCapacity(input: {
       key: target.key,
       reservedMaxBytes: target.reserved,
     }));
+  const plannedTargets = Object.freeze(orderedTargets.map((target) => ({
+    ordinal: target.ordinal,
+    namespace: target.namespace,
+    key: target.key,
+    expectation: target.expectation,
+    valueByteLength: target.valueByteLength,
+    valueDigest: target.valueDigest,
+    role: target.role,
+  })));
   const digestInput = Object.freeze({
     domain: "revagent/gateway/session-migration-capacity-plan/v1",
     tenantId: input.tenantId,
     rsid: input.rsid,
     migrationId: input.migrationId,
     sourceSnapshotDigest: input.sourceSnapshotDigest,
-    orderedTargets: orderedTargets.map(({ reserved: _reserved, ...target }) => target),
+    orderedTargets: plannedTargets,
     orderedPrivateObjects: privateObjects,
     orderedMutableMaxima,
     totals: {
@@ -649,7 +658,7 @@ export function planSessionMigrationCapacity(input: {
     migrationId: input.migrationId,
     sourceSnapshotDigest: input.sourceSnapshotDigest,
     planDigest,
-    orderedTargets: Object.freeze(orderedTargets.map(({ reserved: _reserved, ...target }) => target)),
+    orderedTargets: plannedTargets,
     orderedPrivateObjects: Object.freeze(privateObjects),
     orderedMutableMaxima: Object.freeze(orderedMutableMaxima),
     totals: Object.freeze({

@@ -279,28 +279,27 @@ export class GatewayServingOwnership {
 
   public privateObjectStore(): OwnedPrivateObjectStorePort | null {
     if (this.#backend === null) return null;
-    const owner = this;
     const port: OwnedPrivateObjectStorePort = {
       kind: this.#backend.kind,
       contractVersion: "revagent.gateway-owned-private-object-store/v1" as const,
       maxObjectBytes: GATEWAY_PRIVATE_OBJECT_MAX_BYTES,
       ownerIdentity: this.#ownerIdentity,
       ownerEpoch: this.ownerEpoch,
-      isCurrent: () => owner.#currentLease() !== null,
+      isCurrent: () => this.#currentLease() !== null,
       put: async (ticket: GatewayPrivateObjectIntentTicket, bytes: Uint8Array) => {
-        if (!owner.#validTicket(ticket) || bytes.byteLength > GATEWAY_PRIVATE_OBJECT_MAX_BYTES ||
+        if (!this.#validTicket(ticket) || bytes.byteLength > GATEWAY_PRIVATE_OBJECT_MAX_BYTES ||
             bytes.byteLength !== ticket.binding.byteLength || digestBytes(bytes) !== ticket.binding.digest) {
           return objectFailure("private object intent or bytes are invalid");
         }
-        return await owner.#withObjectIo<{ readonly storageKey: string }>(
-          () => owner.#backend!.putOwned({ binding: ticket.binding, bytes }),
+        return await this.#withObjectIo<{ readonly storageKey: string }>(
+          () => this.#backend!.putOwned({ binding: ticket.binding, bytes }),
         );
       },
       get: async (binding: GatewayPrivateObjectBinding) => {
-        const result = await owner.#withObjectIo<
+        const result = await this.#withObjectIo<
           { readonly bytes: Uint8Array; readonly contentType: string } | null
         >(
-          () => owner.#backend!.getOwnedOptional({ binding }),
+          () => this.#backend!.getOwnedOptional({ binding }),
         );
         if (!result.ok) return result;
         if (result.value === null) return objectFailure("private object is unavailable");
@@ -312,10 +311,10 @@ export class GatewayServingOwnership {
         return Object.freeze({ ok: true as const, value: result.value });
       },
       getOptional: async (binding: GatewayPrivateObjectBinding) => {
-        const result = await owner.#withObjectIo<
+        const result = await this.#withObjectIo<
           { readonly bytes: Uint8Array; readonly contentType: string } | null
         >(
-          () => owner.#backend!.getOwnedOptional({ binding }),
+          () => this.#backend!.getOwnedOptional({ binding }),
         );
         if (!result.ok || result.value === null) return result;
         if (result.value.bytes.byteLength !== binding.byteLength ||
@@ -325,9 +324,9 @@ export class GatewayServingOwnership {
         }
         return result;
       },
-      delete: async (ticket: GatewayPrivateObjectIntentTicket) => owner.#validTicket(ticket)
-        ? await owner.#withObjectIo<{ readonly state: "deleted" | "missing" }>(
-            () => owner.#backend!.deleteOwned({ binding: ticket.binding }),
+      delete: async (ticket: GatewayPrivateObjectIntentTicket) => this.#validTicket(ticket)
+        ? await this.#withObjectIo<{ readonly state: "deleted" | "missing" }>(
+            () => this.#backend!.deleteOwned({ binding: ticket.binding }),
           )
         : objectFailure("private object deletion intent is invalid"),
       scanOwned: async (input: {
@@ -340,7 +339,7 @@ export class GatewayServingOwnership {
         if (!Number.isSafeInteger(input.limit) || input.limit < 1 || input.limit > 64) {
           return objectFailure("private object inventory limit is invalid");
         }
-        return await owner.#withObjectIo(() => owner.#backend!.scanOwned(input));
+        return await this.#withObjectIo(() => this.#backend!.scanOwned(input));
       },
     };
     return Object.freeze(port);

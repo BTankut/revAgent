@@ -3498,7 +3498,7 @@ describe("GW-12 production RBP ingress", () => {
         },
       });
       const reconstructedAcceptance = (
-        lookup as { readonly value: { readonly observation: { readonly acceptance: Record<string, unknown> } } }
+        lookup as unknown as { readonly value: { readonly observation: { readonly acceptance: Record<string, unknown> } } }
       ).value.observation.acceptance;
       for (const absent of ["invocationId", "correlationId", "proofDigest", "routeSnapshotDigest",
         "egressEpoch", "leaseTicket", "intent"] as const) {

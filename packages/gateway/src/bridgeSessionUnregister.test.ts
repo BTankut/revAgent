@@ -727,11 +727,9 @@ class ControlledStoreHarness {
         : fallback;
     const currentSequenceHead = rootValue.sequenceHead as GatewayJsonObject;
     const sequence = supplied("sequence", currentSequenceHead.sequence) as GatewayJsonObject;
-    const {
-      outbox: _outbox,
-      acceptedInbound: _acceptedInbound,
-      ...sequenceHead
-    } = sequence;
+    const sequenceHead = { ...sequence };
+    Reflect.deleteProperty(sequenceHead, "outbox");
+    Reflect.deleteProperty(sequenceHead, "acceptedInbound");
     const laneValues = new Map<SessionTreeKind, readonly GatewayJsonValue[]>([
       ["evidence", (supplied("evidence", currentLegacy.evidence) as GatewayJsonValue[]) ?? []],
       ["receipts", (sequence.acceptedInbound as GatewayJsonValue[]) ?? []],
@@ -1134,8 +1132,8 @@ function sessionForLegacyProof(
       },
       pending: lane("pending")[0] ?? null,
       evidence: lane("evidence"),
-      egressFence: byRole("egress"),
-      normalizedConflictIndex: byRole("conflict-index"),
+      egressFence: byRole("egress")!,
+      normalizedConflictIndex: byRole("conflict-index")!,
       d2ConformanceOriginResend: head.d2ConformanceOriginResend ?? null,
     };
   }
@@ -1182,7 +1180,8 @@ function preMarker(
   rsid: string,
 ): GatewayJsonObject {
   const source = sessionForLegacyProof(store, rsid);
-  const { recordVersion: _recordVersion, ...legacy } = source;
+  const legacy = { ...source };
+  Reflect.deleteProperty(legacy, "recordVersion");
   for (const [namespace, key] of [
     [GATEWAY_RBP_SESSION_V2_NAMESPACE, rsid],
     [GATEWAY_RBP_SESSION_CUTOVER_V2_NAMESPACE, rsid],
