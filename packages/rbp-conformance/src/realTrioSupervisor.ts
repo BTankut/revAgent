@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { Agent, request as httpsRequest } from "node:https";
+import path from "node:path";
 import type { TLSSocket } from "node:tls";
 
 import {
@@ -1346,6 +1347,7 @@ export async function startRealTrioSupervisor(input: RealTrioSupervisorLaunch): 
   const rootIndex = input.gateway.args.indexOf("--root");
   const gatewayRoot = rootIndex >= 0 ? input.gateway.args[rootIndex + 1] : undefined;
   if (gatewayRoot === undefined) throw new Error("real trio Gateway command lacks a storage root");
+  const canonicalGatewayRoot = path.resolve(input.gateway.workingDirectory, gatewayRoot);
   const gateway = await harness.startReady({
     componentId: "gateway_production_conformance",
     command: input.gateway,
@@ -1353,7 +1355,7 @@ export async function startRealTrioSupervisor(input: RealTrioSupervisorLaunch): 
       request: Object.freeze({
         action: "bootstrap_storage_v1",
         nonce: bootstrapNonce,
-        rootDigest: `sha256:${createHash("sha256").update(gatewayRoot).digest("hex")}`,
+        rootDigest: `sha256:${createHash("sha256").update(canonicalGatewayRoot).digest("hex")}`,
         launchDigest: `sha256:${createHash("sha256").update(JSON.stringify(input.gateway.args)).digest("hex")}`,
         generation: 1,
       }),
