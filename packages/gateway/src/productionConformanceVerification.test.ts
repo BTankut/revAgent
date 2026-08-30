@@ -39,6 +39,7 @@ import type {
 } from "./recoveryAuthority.js";
 import type { GatewayProtocolStore } from "./store.js";
 import { createRestartableTestStore } from "./testAdapters.js";
+import { sessionCanonicalDigest } from "./sessionHistoryStore.js";
 
 const TENANT = "tenant-a";
 const USER = "user-a";
@@ -204,7 +205,7 @@ function expected(value: InvokeEnvelope) {
     bindings: [binding(value)], recoveryClearances: value.payload.recovery_clearances };
 }
 
-async function seedSession(store: GatewayProtocolStore): Promise<void> {
+async function seedV1Session(store: GatewayProtocolStore): Promise<void> {
   const result = await store.transact({ tenantId: TENANT }, (tx) => {
     tx.stage({ namespace: "gateway.rbp-session/v1", key: RSID, expect: { kind: "absent" },
       value: { schema: "gateway.rbp-session/v1", tenantId: TENANT, userId: USER, rsid: RSID,
@@ -213,11 +214,89 @@ async function seedSession(store: GatewayProtocolStore): Promise<void> {
   expect(result.ok).toBe(true);
 }
 
+async function seedV3Session(
+  store: GatewayProtocolStore,
+  options: { readonly corruptRootDigest?: boolean } = {},
+): Promise<void> {
+  const root = {
+    schema: "gateway.rbp-session/v3",
+    generation: 3,
+    rootVersion: 1,
+    tenantId: TENANT,
+    rsid: RSID,
+    identity: { userId: USER },
+    binding: { sessionBindingId: SESSION_BINDING, sessionVersion: 1, connectionId: CONNECTION },
+    lifecycle: {},
+    sequenceHead: {},
+    migrationProof: {},
+    durabilityProfile: {},
+    trees: [],
+    singletonRefs: [],
+    antiDowngradeRefs: [],
+    retentionClosure: null,
+    retiredAuthorityDigest: null,
+    completionDigest: null,
+  };
+  const marker = {
+    schema: "gateway.rbp-session-cutover/v3",
+    generation: 3,
+    tenantId: TENANT,
+    rsid: RSID,
+    rootVersion: 1,
+    rootDigest: options.corruptRootDigest === true
+      ? `sha256:${"f".repeat(64)}`
+      : sessionCanonicalDigest(root),
+    treesDigest: sessionCanonicalDigest([]),
+    migratedAtMs: NOW,
+  };
+  const result = await store.transact({ tenantId: TENANT }, (tx) => {
+    tx.stage({ namespace: "gateway.rbp-session/v3", key: RSID,
+      value: root, expect: { kind: "absent" } });
+    tx.stage({ namespace: "gateway.rbp-session-cutover/v3", key: RSID,
+      value: marker, expect: { kind: "absent" } });
+  });
+  expect(result.ok).toBe(true);
+}
+
+async function admitOrigin(store: GatewayProtocolStore, runId: string): Promise<boolean> {
+  const bridge = new TestBridgeEvidence(store) as unknown as GatewayBridgeSessionAuthority;
+  const workflow = createMutationProbeVerificationWorkflow({
+    protocolStore: store,
+    bridgeAuthority: bridge,
+    runId,
+    clock: () => NOW,
+  });
+  const originContext = context({ invocationId: uuid7(70),
+    toolName: "conformance.fixture.mutation_probe_origin", method: "fixture_commit_then_throw",
+    policyClass: "confirm", confirmationId: uuid7(71) });
+  const originEnvelope = envelope({ context: originContext, method: "fixture_commit_then_throw", seq: 1 });
+  return await workflow.recordOrigin({ context: originContext, sessionBindingId: SESSION_BINDING,
+    connectionId: CONNECTION, envelope: originEnvelope, expected: expected(originEnvelope) });
+}
+
 describe("mutation-probe-v1 verification authority", () => {
+  it("uses canonical v3, admits only a physical v1 compatibility row, and denies ambiguous or corrupt topology", async () => {
+    const v1 = createRestartableTestStore();
+    await v1.store.open();
+    await seedV1Session(v1.store);
+    expect(await admitOrigin(v1.store, "v1-run")).toBe(true);
+
+    const ambiguous = createRestartableTestStore();
+    await ambiguous.store.open();
+    await seedV3Session(ambiguous.store);
+    await seedV1Session(ambiguous.store);
+    expect(await admitOrigin(ambiguous.store, "ambiguous-run")).toBe(false);
+
+    const corrupt = createRestartableTestStore();
+    await corrupt.store.open();
+    await seedV3Session(corrupt.store, { corruptRootDigest: true });
+    expect(await admitOrigin(corrupt.store, "corrupt-run")).toBe(false);
+  });
+
   it("runs admitted origin -> audited routed read -> private plan and denies owner drift", async () => {
     const durable = createRestartableTestStore();
     expect((await durable.store.open()).ok).toBe(true);
-    await seedSession(durable.store);
+    await seedV3Session(durable.store);
     const bridge = new TestBridgeEvidence(durable.store);
     const bridgeAuthority = bridge as unknown as GatewayBridgeSessionAuthority;
     const workflow = createMutationProbeVerificationWorkflow({

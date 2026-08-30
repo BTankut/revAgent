@@ -24,7 +24,15 @@ import type {
   GatewayRecoveryEvidenceCandidate,
   GatewayRecoveryResolutionPlan,
 } from "./recoveryAuthority.js";
-import type { GatewayProtocolStore, StoreTransaction, StoredRecord } from "./store.js";
+import type { GatewayProtocolStore, StoreTransaction } from "./store.js";
+import {
+  GATEWAY_RBP_SESSION_CUTOVER_V3_NAMESPACE,
+  GATEWAY_RBP_SESSION_V3_NAMESPACE,
+  SESSION_MARKER_MAX_BYTES,
+  SESSION_ROOT_MAX_BYTES,
+  sessionCanonicalDigest,
+  sessionRecordValueBytes,
+} from "./sessionHistoryStore.js";
 
 export const MUTATION_PROBE_VERIFICATION_PROFILE = "mutation-probe-v1" as const;
 export const MUTATION_PROBE_OWNER_NAMESPACE = "gateway.conformance-mutation-probe/v1" as const;
@@ -218,15 +226,66 @@ function ownerRecord(value: unknown): MutationProbeOwnerRecord | null {
   return value as unknown as MutationProbeOwnerRecord;
 }
 
+interface CurrentSessionAuthority {
+  readonly tenantId: string;
+  readonly userId: string;
+  readonly rsid: string;
+  readonly sessionBindingId: string;
+  readonly sessionVersion: number;
+  readonly connectionId: string;
+}
+
+async function readCurrentSessionAuthority(
+  tx: Pick<StoreTransaction, "read">,
+  tenantId: string,
+  rsid: string,
+): Promise<CurrentSessionAuthority | null> {
+  const legacy = await tx.read<GatewayJsonValue>(GATEWAY_RBP_SESSION_NAMESPACE, rsid);
+  const root = await tx.read<GatewayJsonValue>(GATEWAY_RBP_SESSION_V3_NAMESPACE, rsid);
+  const marker = await tx.read<GatewayJsonValue>(GATEWAY_RBP_SESSION_CUTOVER_V3_NAMESPACE, rsid);
+  if (root !== null || marker !== null) {
+    if (legacy !== null || root === null || marker === null || !isRecord(root.value) ||
+        !isRecord(marker.value)) return null;
+    const value = root.value;
+    const cutover = marker.value;
+    const identity = value.identity;
+    const binding = value.binding;
+    const trees = value.trees;
+    if (value.schema !== GATEWAY_RBP_SESSION_V3_NAMESPACE || value.generation !== 3 ||
+        value.tenantId !== tenantId || value.rsid !== rsid || !Number.isSafeInteger(value.rootVersion) ||
+        Number(value.rootVersion) < 1 || root.version !== value.rootVersion ||
+        cutover.schema !== GATEWAY_RBP_SESSION_CUTOVER_V3_NAMESPACE || cutover.generation !== 3 ||
+        cutover.tenantId !== tenantId || cutover.rsid !== rsid || cutover.rootVersion !== value.rootVersion ||
+        marker.version !== value.rootVersion || !Array.isArray(trees) || !isRecord(identity) ||
+        !isRecord(binding) || typeof identity.userId !== "string" ||
+        typeof binding.sessionBindingId !== "string" || !Number.isSafeInteger(binding.sessionVersion) ||
+        Number(binding.sessionVersion) < 1 || typeof binding.connectionId !== "string" ||
+        cutover.rootDigest !== sessionCanonicalDigest(root.value) ||
+        cutover.treesDigest !== sessionCanonicalDigest(trees as unknown as GatewayJsonValue) ||
+        sessionRecordValueBytes(root.value) > SESSION_ROOT_MAX_BYTES ||
+        sessionRecordValueBytes(marker.value) > SESSION_MARKER_MAX_BYTES) return null;
+    return { tenantId, userId: identity.userId, rsid,
+      sessionBindingId: binding.sessionBindingId,
+      sessionVersion: Number(binding.sessionVersion), connectionId: binding.connectionId };
+  }
+  if (legacy === null || !isRecord(legacy.value)) return null;
+  const value = legacy.value;
+  if (value.schema !== GATEWAY_RBP_SESSION_NAMESPACE || value.tenantId !== tenantId ||
+      value.rsid !== rsid || typeof value.userId !== "string" ||
+      typeof value.sessionBindingId !== "string" || !Number.isSafeInteger(value.sessionVersion) ||
+      Number(value.sessionVersion) < 1 || typeof value.connectionId !== "string") return null;
+  return { tenantId, userId: value.userId, rsid, sessionBindingId: value.sessionBindingId,
+    sessionVersion: Number(value.sessionVersion), connectionId: value.connectionId };
+}
+
 function currentSessionMatches(
-  stored: StoredRecord<GatewayJsonValue> | null,
+  session: CurrentSessionAuthority | null,
   owner: MutationProbeOwnerRecord,
   sessionBindingId = owner.sessionBindingId,
   connectionId = owner.connectionId,
 ): boolean {
-  const session = stored?.value;
-  return isRecord(session) && session.schema === GATEWAY_RBP_SESSION_NAMESPACE &&
-    session.tenantId === owner.tenantId && session.userId === owner.userId && session.rsid === owner.rsid &&
+  return session !== null && session.tenantId === owner.tenantId &&
+    session.userId === owner.userId && session.rsid === owner.rsid &&
     session.sessionBindingId === owner.sessionBindingId && session.sessionBindingId === sessionBindingId &&
     session.sessionVersion === owner.sessionBindingVersion && session.connectionId === owner.connectionId &&
     session.connectionId === connectionId;
@@ -341,7 +400,7 @@ export function createMutationProbeVerificationWorkflow(input: {
     async decideEvidence(tx: Pick<StoreTransaction, "read" | "list">, candidate: GatewayRecoveryEvidenceCandidate) {
       const stored = await tx.read<GatewayJsonValue>(MUTATION_PROBE_OWNER_NAMESPACE, ownerKey(input.runId, candidate.rsid));
       const owner = ownerRecord(stored?.value);
-      const session = owner === null ? null : await tx.read<GatewayJsonValue>(GATEWAY_RBP_SESSION_NAMESPACE, owner.rsid);
+      const session = owner === null ? null : await readCurrentSessionAuthority(tx, owner.tenantId, owner.rsid);
       const recovery = recoveryValue((await tx.read<GatewayJsonValue>(GATEWAY_RECOVERY_NAMESPACE, candidate.rsid))?.value);
       const ledger = recovery?.ledger;
       const holds = isRecord(ledger) && Array.isArray(ledger.holds) ? ledger.holds : [];
@@ -392,13 +451,10 @@ export function createMutationProbeVerificationWorkflow(input: {
       if (originEnvelopeDigest === null) return false;
       const issuedAtMs = now();
       const outcome = await input.protocolStore.transact({ tenantId: context.actor.tenantId }, async (tx) => {
-        const session = await tx.read<GatewayJsonValue>(GATEWAY_RBP_SESSION_NAMESPACE, context.rsid);
-        const value = session?.value;
-        if (!isRecord(value) || value.schema !== GATEWAY_RBP_SESSION_NAMESPACE ||
-            value.tenantId !== context.actor.tenantId || value.userId !== context.actor.userId ||
-            value.rsid !== context.rsid || value.sessionBindingId !== admission.sessionBindingId ||
-            value.connectionId !== admission.connectionId || !Number.isSafeInteger(value.sessionVersion) ||
-            Number(value.sessionVersion) < 1) return false;
+        const session = await readCurrentSessionAuthority(tx, context.actor.tenantId, context.rsid);
+        if (session === null || session.userId !== context.actor.userId ||
+            session.sessionBindingId !== admission.sessionBindingId ||
+            session.connectionId !== admission.connectionId) return false;
         const record: MutationProbeOwnerRecord = {
           schema: MUTATION_PROBE_OWNER_NAMESPACE, recordVersion: 1,
           profile: MUTATION_PROBE_VERIFICATION_PROFILE, runId: input.runId, rsid: context.rsid,
@@ -408,7 +464,7 @@ export function createMutationProbeVerificationWorkflow(input: {
           userId: context.actor.userId, principalKey: context.principalKey,
           gatewaySessionId: context.gatewaySessionId,
           effectiveMcpSessionId: context.effectiveMcpRequestScope!.effectiveMcpSessionId,
-          sessionBindingId: admission.sessionBindingId, sessionBindingVersion: Number(value.sessionVersion),
+          sessionBindingId: admission.sessionBindingId, sessionBindingVersion: session.sessionVersion,
           connectionId: admission.connectionId,
           mutationScope: structuredClone(context.mutationScope) as MutationScope,
           scopeKey: mutationScopeKey(context.mutationScope as MutationScope),
@@ -442,7 +498,7 @@ export function createMutationProbeVerificationWorkflow(input: {
       const selected = await input.protocolStore.transact({ tenantId: context.actor.tenantId }, async (tx) => {
         const stored = await tx.read<GatewayJsonValue>(MUTATION_PROBE_OWNER_NAMESPACE, ownerKey(input.runId, context.rsid));
         const owner = ownerRecord(stored?.value);
-        const session = owner === null ? null : await tx.read<GatewayJsonValue>(GATEWAY_RBP_SESSION_NAMESPACE, context.rsid);
+        const session = owner === null ? null : await readCurrentSessionAuthority(tx, owner.tenantId, context.rsid);
         const recovery = recoveryValue((await tx.read<GatewayJsonValue>(GATEWAY_RECOVERY_NAMESPACE, context.rsid))?.value);
         const ledger = recovery?.ledger;
         const holds = isRecord(ledger) && Array.isArray(ledger.holds) ? ledger.holds : [];
@@ -475,7 +531,7 @@ export function createMutationProbeVerificationWorkflow(input: {
       const outcome = await input.protocolStore.transact({ tenantId: context.actor.tenantId }, async (tx) => {
         const stored = await tx.read<GatewayJsonValue>(MUTATION_PROBE_OWNER_NAMESPACE, ownerKey(input.runId, context.rsid));
         const owner = ownerRecord(stored?.value);
-        const session = owner === null ? null : await tx.read<GatewayJsonValue>(GATEWAY_RBP_SESSION_NAMESPACE, context.rsid);
+        const session = owner === null ? null : await readCurrentSessionAuthority(tx, owner.tenantId, context.rsid);
         const recovery = recoveryValue((await tx.read<GatewayJsonValue>(GATEWAY_RECOVERY_NAMESPACE, context.rsid))?.value);
         const pending = recovery?.pendingDispatch;
         if (stored === null || owner === null || owner.phase !== "origin_admitted" || owner.expiresAtMs <= now() ||
@@ -499,7 +555,7 @@ export function createMutationProbeVerificationWorkflow(input: {
       const outcome = await input.protocolStore.transact({ tenantId: context.actor.tenantId }, async (tx) => {
         const stored = await tx.read<GatewayJsonValue>(MUTATION_PROBE_OWNER_NAMESPACE, ownerKey(input.runId, context.rsid));
         const owner = ownerRecord(stored?.value);
-        const session = owner === null ? null : await tx.read<GatewayJsonValue>(GATEWAY_RBP_SESSION_NAMESPACE, context.rsid);
+        const session = owner === null ? null : await readCurrentSessionAuthority(tx, owner.tenantId, context.rsid);
         const recovery = recoveryValue((await tx.read<GatewayJsonValue>(GATEWAY_RECOVERY_NAMESPACE, context.rsid))?.value);
         const corePlan = recovery?.resolutionPlan;
         const item = plan.items[0];
@@ -548,7 +604,7 @@ export function createMutationProbeVerificationWorkflow(input: {
       const selected = await input.protocolStore.transact({ tenantId: context.actor.tenantId }, async (tx) => {
         const stored = await tx.read<GatewayJsonValue>(MUTATION_PROBE_OWNER_NAMESPACE, ownerKey(input.runId, context.rsid));
         const owner = ownerRecord(stored?.value);
-        const session = owner === null ? null : await tx.read<GatewayJsonValue>(GATEWAY_RBP_SESSION_NAMESPACE, context.rsid);
+        const session = owner === null ? null : await readCurrentSessionAuthority(tx, owner.tenantId, context.rsid);
         const recovery = recoveryValue((await tx.read<GatewayJsonValue>(GATEWAY_RECOVERY_NAMESPACE, context.rsid))?.value);
         const plan = recovery?.resolutionPlan;
         const ledger = recovery?.ledger;
@@ -602,7 +658,7 @@ export function createMutationProbeVerificationWorkflow(input: {
             holdDigest: null, verificationInvocationDigest: null, rawResultDigest: null,
             auditDigest: null, planDigest: null, resolutionDigest: null };
         }
-        const session = await tx.read<GatewayJsonValue>(GATEWAY_RBP_SESSION_NAMESPACE, owner.rsid);
+        const session = await readCurrentSessionAuthority(tx, owner.tenantId, owner.rsid);
         return {
           status: "current" as const,
           recordCount: 1,
