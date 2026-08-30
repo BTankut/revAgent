@@ -22,7 +22,6 @@ export interface GatewayMaintenanceCursor {
   readonly tenantAfter: string | null;
   readonly keyAfter: string | null;
 }
-
 export interface GatewayMaintenanceStepResult {
   readonly operations: number;
   readonly cursor: GatewayMaintenanceCursor;
@@ -218,4 +217,3 @@ export class GatewayMaintenanceCoordinator {
     this.#timer.unref();
   }
 }
-
