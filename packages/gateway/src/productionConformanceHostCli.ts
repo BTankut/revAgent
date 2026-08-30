@@ -16,7 +16,18 @@ import {
 import { GatewayDispatcher } from "./dispatch.js";
 import { EntitledCatalogView } from "./entitledRegistry.js";
 import { GatewayToolRegistry, M2_BOOTSTRAP_TOOL_RECORDS } from "./registry.js";
-import { PRODUCTION_CONFORMANCE_TOOL_RECORDS, productionConformanceCatalog } from "./productionConformanceTools.js";
+import {
+  MUTATION_PROBE_CONFORMANCE_TOOL_RECORDS,
+  PRODUCTION_CONFORMANCE_TOOL_RECORDS,
+  productionConformanceCatalog,
+} from "./productionConformanceTools.js";
+import {
+  MUTATION_PROBE_VERIFICATION_PROFILE,
+  bindMutationProbeVerificationWorkflow,
+  createMutationProbeVerificationWorkflow,
+  isMutationProbeVerificationWorkflow,
+  type MutationProbeVerificationWorkflow,
+} from "./productionConformanceVerification.js";
 import type { AuthInfo } from "@modelcontextprotocol/server";
 import type { IncomingMessage } from "node:http";
 import {
@@ -51,6 +62,7 @@ interface CliOptions {
   readonly key: string;
   readonly controlToken: string;
   readonly port: number;
+  readonly verificationProfile: typeof MUTATION_PROBE_VERIFICATION_PROFILE | null;
 }
 
 type ConformanceBinding = "wss" | "streamable_http_sse";
@@ -70,10 +82,18 @@ export interface OrderedConformanceHostShutdown {
 export function createProductionConformanceRecoveryAuthority(input: {
   readonly protocolStore: GatewayProtocolStore;
   readonly bridgeEvidence: GatewayBridgeSessionAuthority;
+  readonly verificationWorkflow?: MutationProbeVerificationWorkflow;
 }): GatewayRecoveryAuthority {
-  return new GatewayRecoveryAuthority(input.protocolStore, {
+  if (input.verificationWorkflow !== undefined &&
+      !isMutationProbeVerificationWorkflow(input.verificationWorkflow, {
+        protocolStore: input.protocolStore,
+        bridgeAuthority: input.bridgeEvidence,
+      })) {
+    throw new TypeError("production conformance verification workflow is not factory branded");
+  }
+  const recoveryAuthority = new GatewayRecoveryAuthority(input.protocolStore, {
     bridgeEvidence: input.bridgeEvidence,
-    evidenceDecision: Object.freeze({
+    evidenceDecision: input.verificationWorkflow?.evidenceDecision ?? Object.freeze({
       async decideEvidence() {
         return Object.freeze({
           kind: "rejected" as const,
@@ -82,6 +102,15 @@ export function createProductionConformanceRecoveryAuthority(input: {
       },
     }),
   });
+  if (input.verificationWorkflow !== undefined) {
+    bindMutationProbeVerificationWorkflow({
+      workflow: input.verificationWorkflow,
+      protocolStore: input.protocolStore,
+      bridgeAuthority: input.bridgeEvidence,
+      recoveryAuthority,
+    });
+  }
+  return recoveryAuthority;
 }
 
 /**
@@ -799,7 +828,7 @@ export function validateConformanceDeviceProvision(input: {
 }
 
 function parse(args: readonly string[]): CliOptions {
-  if (args.length !== 10) throw new Error("production conformance host requires five --key value pairs");
+  if (args.length !== 10 && args.length !== 12) throw new Error("production conformance host requires five required --key value pairs and one optional verification profile");
   const values = new Map<string, string>();
   for (let index = 0; index < args.length; index += 2) {
     const key = args[index];
@@ -814,8 +843,10 @@ function parse(args: readonly string[]): CliOptions {
   };
   const rawPort = required("--port");
   const port = Number(rawPort);
-  if (!Number.isSafeInteger(port) || port < 0 || port > 65535 || values.size !== 5) throw new Error("invalid production conformance host port");
-  return Object.freeze({ root: path.resolve(required("--root")), certificate: path.resolve(required("--certificate")), key: path.resolve(required("--key")), controlToken: required("--control-token"), port });
+  const profile = values.get("--verification-profile") ?? null;
+  if (profile !== null && profile !== MUTATION_PROBE_VERIFICATION_PROFILE) throw new Error("invalid production conformance verification profile");
+  if (!Number.isSafeInteger(port) || port < 0 || port > 65535 || values.size !== (profile === null ? 5 : 6)) throw new Error("invalid production conformance host port");
+  return Object.freeze({ root: path.resolve(required("--root")), certificate: path.resolve(required("--certificate")), key: path.resolve(required("--key")), controlToken: required("--control-token"), port, verificationProfile: profile });
 }
 
 function constantTokenEquals(actual: unknown, expected: string): boolean {
@@ -996,20 +1027,33 @@ export async function runProductionConformanceHostCli(args: readonly string[]): 
       documentContextObservations.push(candidate);
     },
   });
+  const verificationWorkflow = options.verificationProfile === MUTATION_PROBE_VERIFICATION_PROFILE
+    ? createMutationProbeVerificationWorkflow({
+        protocolStore,
+        bridgeAuthority: authority,
+        runId: randomUUID(),
+      })
+    : undefined;
   const recoveryAuthority = createProductionConformanceRecoveryAuthority({
     protocolStore,
     bridgeEvidence: authority!,
+    ...(verificationWorkflow === undefined ? {} : { verificationWorkflow }),
   });
   const ingress = createConformanceRbpIngressHost({ authority: authority! });
   const supporting = createConformanceSupportingPorts();
   const registry = new GatewayToolRegistry([
     ...M2_BOOTSTRAP_TOOL_RECORDS,
     ...PRODUCTION_CONFORMANCE_TOOL_RECORDS,
+    ...(verificationWorkflow === undefined ? [] : MUTATION_PROBE_CONFORMANCE_TOOL_RECORDS),
   ]);
   const coreUiState = registry.require("core.ui.state");
   const payloadRecoveryTool = registry.require("core.dispatch.payload_recovery");
   const entitledCatalog = new EntitledCatalogView(
-    productionConformanceCatalog(coreUiState, payloadRecoveryTool),
+    productionConformanceCatalog(
+      coreUiState,
+      payloadRecoveryTool,
+      verificationWorkflow === undefined ? [] : MUTATION_PROBE_CONFORMANCE_TOOL_RECORDS,
+    ),
     () => true,
   );
   const dispatcher = new GatewayDispatcher(registry, [authority!.createExecutor()], {
@@ -1020,6 +1064,7 @@ export async function runProductionConformanceHostCli(args: readonly string[]): 
       instance: "loopback",
     },
     recoveryAuthority,
+    ...(verificationWorkflow === undefined ? {} : { mutationProbeVerification: verificationWorkflow }),
   });
   const auditAccesses: Array<{ readonly atMs: number; readonly tenantId: string; readonly action: string }> = [];
   const bootstrap = bootstrapRequest === null ? null : await bootstrapRequest;
@@ -1327,6 +1372,9 @@ export async function runProductionConformanceHostCli(args: readonly string[]): 
               processEpoch: documentContextProcessEpoch,
               snapshotObservations: snapshotDocumentContextObservations,
             });
+            const mutationProbeVerification = verificationWorkflow === undefined
+              ? Object.freeze({ status: "disabled" as const })
+              : await verificationWorkflow.readAuditProjection();
             return reply.send({
               ok: true,
               action,
@@ -1338,6 +1386,7 @@ export async function runProductionConformanceHostCli(args: readonly string[]): 
               c39PartialCarrierCommitFailure,
               c39ProtectedResourceReadFirst,
               c39ProtectedResourceReadLast,
+              mutationProbeVerification,
               documentContextUpdates: coherentDocumentContext.updates,
               documentContextCurrentRoute: coherentDocumentContext.currentRoute,
               documentContextEpochSchema: DOCUMENT_CONTEXT_EPOCH_SCHEMA,

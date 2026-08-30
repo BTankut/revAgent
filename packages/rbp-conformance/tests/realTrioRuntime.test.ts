@@ -306,6 +306,132 @@ describe("C39 route-rebind audit projection", () => {
 
 describe.sequential("WP-12 direct real trio runtime fixture", () => {
   it.each(["wss", "streamable_http_sse"] as const)(
+    "runs mutation-probe verification through the real %s trio with owner and schema negatives",
+    async (binding) => {
+      buildRealTrioRuntimeFixture();
+      const evidenceDirectory = mkdtempSync(path.join(tmpdir(), `wp12-verification-${binding}-`));
+      const launched = await runRealTrioCli(
+        ["real-trio", binding],
+        async (selectedBinding) => await startRealTrioRuntimeFixture(selectedBinding, {
+          evidenceDirectory,
+          verificationProfile: "mutation-probe-v1",
+        }),
+      );
+      const runtime = launched.result;
+      try {
+        await withRealTrioNorthMcpClient({
+          endpoint: runtime.endpoint,
+          certificateSha256: runtime.certificateSha256,
+          credential: runtime.credential,
+        }, async (client) => {
+          const listed = await client.request({
+            jsonrpc: "2.0", id: `wp12-verification-list-${binding}`,
+            method: "tools/list", params: {},
+          });
+          const response = object(listed.response);
+          const result = object(response?.result);
+          const tools = Array.isArray(result?.tools) ? result.tools : [];
+          const names = tools.flatMap((tool) => {
+            const row = object(tool);
+            return typeof row?.name === "string" ? [row.name] : [];
+          });
+          expect(names).toEqual(expect.arrayContaining([
+            "conformance.fixture.mutation_probe_origin",
+            "conformance.fixture.mutation_probe_verify",
+            "conformance.fixture.mutation_probe_next",
+          ]));
+
+          for (const [name, args, label] of [
+            ["conformance.fixture.mutation_probe_origin", { expected: true }, "origin"],
+            ["conformance.fixture.mutation_probe_verify", { conclusive: true }, "verify"],
+            ["conformance.fixture.mutation_probe_next", { clearances: [] }, "next"],
+          ] as const) {
+            const denied = await client.toolCall({ name, arguments: args,
+              requestId: `wp12-verification-extra-${label}-${binding}` });
+            expect(denied.content).toMatchObject({ state: "failed", executorReached: false,
+              error: { code: "invalid_arguments" } });
+          }
+
+          await runtime.verifyNorthDispatchFence();
+          const origin = await callConfirmedTool(client,
+            "conformance.fixture.mutation_probe_origin", {}, `wp12-verification-origin-${binding}`);
+          expect(origin.commit).toMatchObject({ state: "failed", executorReached: true,
+            error: { code: "recovery_blocked", detailCode: "journal_indeterminate" } });
+
+          const ordinaryBlocked = await callConfirmedTool(client,
+            "conformance.fixture.c28_mutation", { vector: "O1-C28", fixtureOnly: true },
+            `wp12-verification-ordinary-blocked-${binding}`);
+          expect(ordinaryBlocked.commit).toMatchObject({ state: "failed", executorReached: false,
+            error: { code: "recovery_blocked", detailCode: "mutation_hold" } });
+
+          const rebound = await runtime.issueReboundNorthCredential();
+          await withRealTrioNorthMcpClient({ endpoint: runtime.endpoint,
+            certificateSha256: runtime.certificateSha256, credential: rebound }, async (foreignSession) => {
+            const denied = await foreignSession.toolCall({
+              name: "conformance.fixture.mutation_probe_verify", arguments: {},
+              requestId: `wp12-verification-rebound-${binding}`,
+            });
+            expect(denied.content).toMatchObject({ state: "failed", executorReached: false,
+              error: { code: "recovery_blocked", detailCode: "verification_owner_or_hold_missing" } });
+          });
+
+          const foreignCredential = await runtime.issueForeignNorthCredential();
+          await withRealTrioNorthMcpClient({ endpoint: runtime.endpoint,
+            certificateSha256: runtime.certificateSha256, credential: foreignCredential }, async (foreign) => {
+            const denied = await foreign.toolCall({
+              name: "conformance.fixture.mutation_probe_verify", arguments: {},
+              requestId: `wp12-verification-foreign-${binding}`,
+            });
+            expect(denied.content).toMatchObject({ state: "failed", executorReached: false,
+              error: { code: "recovery_blocked", detailCode: "verification_owner_or_hold_missing" } });
+          });
+
+          await runtime.verifyNorthDispatchFence();
+          const verified = await client.toolCall({
+            name: "conformance.fixture.mutation_probe_verify", arguments: {},
+            requestId: `wp12-verification-read-${binding}`,
+          });
+          expect(verified.content).toMatchObject({ state: "completed", result: {
+            schema: "revagent.fixture-mutation-probe/v1", present: true, complete: true,
+            value: 1, originWriteCount: 1, nextWriteCount: 0,
+          } });
+
+          const next = await callConfirmedTool(client,
+            "conformance.fixture.mutation_probe_next", {}, `wp12-verification-next-${binding}`);
+          expect(next.commit).toMatchObject({ state: "completed", result: {
+            schema: "revagent.fixture-mutation-probe/v1", value: 2,
+            originWriteCount: 1, nextWriteCount: 1,
+          } });
+
+          const replay = await callConfirmedTool(client,
+            "conformance.fixture.mutation_probe_next", {}, `wp12-verification-replay-${binding}`);
+          expect(replay.commit).toMatchObject({ state: "failed", executorReached: false,
+            error: { code: "recovery_blocked", detailCode: "mutation_probe_plan_unavailable" } });
+
+          const evidence = await readCompleteFixtureEvidence(runtime);
+          expect(fixtureMethodCount(evidence, "fixture_commit_then_throw")).toBe(1);
+          expect(fixtureMethodCount(evidence, "fixture_read_mutation_probe")).toBe(1);
+          expect(fixtureMethodCount(evidence, "fixture_complete_mutation_probe")).toBe(1);
+          expect(fixtureMethodCount(evidence, "send_code_to_revit")).toBe(0);
+          const rawReadDigest = mutationProbeRawResponseDigest(evidence, "fixture_read_mutation_probe");
+          const audit = object(await runtime.supervisor.readRealCaseAudit());
+          const verificationAudit = object(audit?.mutationProbeVerification);
+          expect(verificationAudit).toMatchObject({
+            status: "current", recordCount: 1, phase: "plan_ready", ownerCurrent: true,
+            rawResultDigest: rawReadDigest,
+          });
+          expect(verificationAudit?.rawResultDigest).toMatch(SHA256);
+          expect(verificationAudit).not.toHaveProperty("clearances");
+          expect(verificationAudit).not.toHaveProperty("rsid");
+        });
+      } finally {
+        await runtime.stop();
+      }
+    },
+    360_000,
+  );
+
+  it.each(["wss", "streamable_http_sse"] as const)(
     "runs C38's public core UI probe against the real %s Worker binding",
     async (binding) => {
       buildRealTrioRuntimeFixture();
@@ -1723,6 +1849,55 @@ async function waitForC39RouteRebindCurrent(
     }
     await new Promise<void>((resolve) => setTimeout(resolve, 100));
   }
+}
+
+async function callConfirmedTool(
+  client: RealTrioNorthMcpClient,
+  name: string,
+  args: Readonly<Record<string, unknown>>,
+  requestId: string,
+): Promise<Readonly<{
+  readonly preview: Record<string, unknown>;
+  readonly commit: Record<string, unknown>;
+}>> {
+  const preview = await client.toolCall({ name, arguments: args, requestId });
+  expect(preview.content).toMatchObject({ state: "confirmation_required" });
+  const confirmation = object(preview.content.confirmation);
+  if (typeof confirmation?.confirmToken !== "string" ||
+      typeof confirmation.originatingPreviewInvocationId !== "string") {
+    throw new Error("mutation-probe confirmation response is malformed");
+  }
+  const commit = await client.toolCall({
+    name,
+    arguments: Object.freeze({
+      ...args,
+      confirm_token: confirmation.confirmToken,
+      originating_preview_invocation_id: confirmation.originatingPreviewInvocationId,
+    }),
+    requestId: `${requestId}-commit`,
+  });
+  return Object.freeze({ preview: preview.content, commit: commit.content });
+}
+
+function fixtureMethodCount(evidence: Record<string, unknown>, method: string): number {
+  const rows = Array.isArray(evidence.methodExecutionCounts) ? evidence.methodExecutionCounts : [];
+  const row = rows.map(object).find((candidate) => candidate?.method === method);
+  return Number(row?.count ?? 0);
+}
+
+function mutationProbeRawResponseDigest(
+  evidence: Record<string, unknown>,
+  method: string,
+): string {
+  const rows = Array.isArray(evidence.observations) ? evidence.observations : [];
+  const matches = rows.map(object).filter((row) =>
+    row?.method === method && row.phase === "response_sent" &&
+    typeof row.detail === "string" &&
+    /^mutation_probe_raw_response:sha256:[0-9a-f]{64}$/u.test(row.detail));
+  if (matches.length !== 1) {
+    throw new Error(`expected one mutation-probe raw response digest for ${method}`);
+  }
+  return String(matches[0]!.detail).slice("mutation_probe_raw_response:".length);
 }
 
 async function readCompleteFixtureEvidence(

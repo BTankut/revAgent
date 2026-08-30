@@ -580,6 +580,20 @@ interface DocumentContextEvidenceEvent {
   readonly atMonotonicMs: number;
 }
 
+interface MutationProbeCell {
+  originInvocationId: string;
+  value: 1 | 2;
+  originWriteCount: number;
+  nextWriteCount: number;
+}
+
+const MUTATION_PROBE_RESULT_SCHEMA = "revagent.fixture-mutation-probe/v1";
+const MUTATION_PROBE_METHODS = new Set([
+  "fixture_commit_then_throw",
+  "fixture_read_mutation_probe",
+  "fixture_complete_mutation_probe",
+]);
+
 export class AddinLoopbackFixture {
   readonly #options: Required<
     Pick<
@@ -613,6 +627,7 @@ export class AddinLoopbackFixture {
   #cacheIncarnationDigest: string;
   readonly #documentContextEvidenceTimeline: DocumentContextEvidenceEvent[] = [];
   #crashed = false;
+  #mutationProbe: MutationProbeCell | null = null;
 
   public constructor(options: FixtureOptions = {}) {
     assertFixtureOptions(options);
@@ -878,6 +893,41 @@ export class AddinLoopbackFixture {
       state: "completed",
       result: { success: true, executionOrdinal: context.executionOrdinal },
     }));
+    this.registerHandler("fixture_commit_then_throw", "model_transaction", (params, context): HandlerOutcome => {
+      if (Object.keys(params).length !== 0) {
+        return { state: "failed", error: { code: "command_failure", message: "mutation probe requires empty params" } };
+      }
+      if (this.#mutationProbe !== null) {
+        return { state: "guarded", guardedReason: "mutation_probe_origin_already_exists", result: this.#mutationProbeResult() };
+      }
+      this.#mutationProbe = {
+        originInvocationId: context.requestId,
+        value: 1,
+        originWriteCount: 1,
+        nextWriteCount: 0,
+      };
+      return {
+        state: "failed",
+        error: { code: "command_failure", message: "fixture mutation committed before application failure" },
+      };
+    });
+    this.registerHandler("fixture_read_mutation_probe", "read_only", (params): HandlerOutcome => {
+      if (Object.keys(params).length !== 0) {
+        return { state: "failed", error: { code: "command_failure", message: "mutation probe requires empty params" } };
+      }
+      return { state: "completed", result: this.#mutationProbeResult() };
+    });
+    this.registerHandler("fixture_complete_mutation_probe", "model_transaction", (params): HandlerOutcome => {
+      if (Object.keys(params).length !== 0) {
+        return { state: "failed", error: { code: "command_failure", message: "mutation probe requires empty params" } };
+      }
+      const current = this.#mutationProbe;
+      if (current === null || current.value !== 1 || current.originWriteCount !== 1 || current.nextWriteCount !== 0) {
+        return { state: "guarded", guardedReason: "mutation_probe_state_not_verified", result: this.#mutationProbeResult() };
+      }
+      this.#mutationProbe = { ...current, value: 2, nextWriteCount: 1 };
+      return { state: "completed", result: this.#mutationProbeResult() };
+    });
     this.registerHandler("fixture_multi_file_output", "read_only", (params) => ({
       state: "completed",
       result: {
@@ -905,6 +955,29 @@ export class AddinLoopbackFixture {
         };
       });
     }
+  }
+
+  #mutationProbeResult(): JsonObject {
+    const cell = this.#mutationProbe;
+    return cell === null
+      ? {
+          schema: MUTATION_PROBE_RESULT_SCHEMA,
+          present: false,
+          complete: false,
+          originInvocationId: null,
+          value: null,
+          originWriteCount: 0,
+          nextWriteCount: 0,
+        }
+      : {
+          schema: MUTATION_PROBE_RESULT_SCHEMA,
+          present: true,
+          complete: true,
+          originInvocationId: cell.originInvocationId,
+          value: cell.value,
+          originWriteCount: cell.originWriteCount,
+          nextWriteCount: cell.nextWriteCount,
+        };
   }
 
   #multiFileArtifacts(params: JsonObject): MultiFileArtifact[] | JsonObject[] {
@@ -1840,7 +1913,17 @@ export class AddinLoopbackFixture {
     await new Promise<void>((resolve, reject) => {
       socket.write(frame, (error) => (error ? reject(error) : resolve()));
     });
-    this.#observe(requestId, method, "response_sent", null, payload.byteLength, null);
+    const mutationProbeDigest = method !== null && MUTATION_PROBE_METHODS.has(method)
+      ? `mutation_probe_raw_response:${sha256(payload)}`
+      : null;
+    this.#observe(
+      requestId,
+      method,
+      "response_sent",
+      executionOrdinal,
+      payload.byteLength,
+      mutationProbeDigest,
+    );
   }
 
   #statusResult(): JsonObject {
@@ -1904,6 +1987,7 @@ export class AddinLoopbackFixture {
     if (payloadBytes > MAX_RESPONSE_PAYLOAD_BYTES) {
       return `response payload ${payloadBytes} exceeds cap ${MAX_RESPONSE_PAYLOAD_BYTES}`;
     }
+    if (MUTATION_PROBE_METHODS.has(method)) return null;
     try {
       this.#validator.validateResponse(method, requestId, response);
       return null;

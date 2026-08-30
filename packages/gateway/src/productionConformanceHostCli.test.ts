@@ -14,6 +14,7 @@ import {
   createOrderedConformanceHostShutdown,
   MAX_DOCUMENT_CONTEXT_OBSERVATIONS,
   MAX_DOCUMENT_CONTEXT_OBSERVATION_BYTES,
+  runProductionConformanceHostCli,
   validateConformanceDeviceProvision,
   type DocumentContextObservationSnapshot,
 } from "./productionConformanceHostCli.js";
@@ -21,6 +22,7 @@ import { GATEWAY_OMITTED_PAYLOAD_RECOVERY_NAMESPACE } from "./omittedPayloadReco
 import { GatewayBridgeSessionAuthority } from "./bridgeSession.js";
 import { GatewayResourceAuthority } from "./resourceAuthority.js";
 import { GATEWAY_RECOVERY_NAMESPACE } from "./recoveryAuthority.js";
+import type { MutationProbeVerificationWorkflow } from "./productionConformanceVerification.js";
 import { GATEWAY_AUTH_CONTRACT_VERSION, type AuthContext } from "./authContext.js";
 import { GatewayDispatcher, type GatewayExecutor } from "./dispatch.js";
 import { createEffectiveMcpRequestScopeV1 } from "./invocationContext.js";
@@ -641,6 +643,28 @@ describe("WP-12 conformance host shutdown", () => {
 });
 
 describe("WP-12 conformance recovery composition", () => {
+  it("rejects every non-literal verification profile before host startup", async () => {
+    await expect(runProductionConformanceHostCli([
+      "--root", "missing-root",
+      "--certificate", "missing-cert",
+      "--key", "missing-key",
+      "--control-token", "test-token",
+      "--port", "0",
+      "--verification-profile", "mutation-probe-v2",
+    ])).rejects.toThrow(/invalid production conformance verification profile/u);
+  });
+
+  it("rejects a structural mutation-probe workflow substitute", () => {
+    expect(() => createProductionConformanceRecoveryAuthority({
+      protocolStore: {} as never,
+      bridgeEvidence: {} as never,
+      verificationWorkflow: {
+        profile: "mutation-probe-v1",
+        evidenceDecision: { async decideEvidence() { return { kind: "rejected", reason: "fake" }; } },
+        async recordOrigin() { return true; },
+      } as MutationProbeVerificationWorkflow,
+    })).toThrow(/factory branded/u);
+  });
   it("uses the exact SQLite store and Bridge evidence authority for isolated read windows", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "revagent-wp12-recovery-composition-"));
     const store = new SqliteConformanceProtocolStore(root);

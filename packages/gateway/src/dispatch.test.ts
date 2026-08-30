@@ -29,7 +29,7 @@ import {
   type GatewayExecutorOutcome,
   type GatewayExecutorRequest,
 } from "./dispatch.js";
-import { GatewayRbpFault } from "./bridgeSession.js";
+import { GatewayRbpFault, type GatewayBridgeSessionAuthority } from "./bridgeSession.js";
 import {
   GATEWAY_CONFIRMATION_AUDIT_NAMESPACE,
   GatewayConfirmationAuthority,
@@ -55,6 +55,10 @@ import {
   type GatewayVerifiedBridgeJournalEvidence,
 } from "./recoveryAuthority.js";
 import { GatewayToolRegistry, type GatewayToolRecord } from "./registry.js";
+import {
+  bindMutationProbeVerificationWorkflow,
+  createMutationProbeVerificationWorkflow,
+} from "./productionConformanceVerification.js";
 import {
   createCapturingEventSink,
   createReadOnlyRecoveryAuthorityFixture,
@@ -896,6 +900,37 @@ function deferred<T>() {
 }
 
 describe("GatewayDispatcher fail-closed boundaries", () => {
+  it("rejects a branded verification workflow bound to a different recovery authority", () => {
+    const durable = createRestartableTestStore();
+    const evidence = new DispatchBridgeEvidence();
+    const bridge = Object.assign(evidence, { store: durable.store }) as unknown as GatewayBridgeSessionAuthority;
+    const workflow = createMutationProbeVerificationWorkflow({
+      protocolStore: durable.store,
+      bridgeAuthority: bridge,
+      runId: "dispatch-graph",
+    });
+    const ownerRecovery = new GatewayRecoveryAuthority(durable.store, {
+      bridgeEvidence: evidence,
+      evidenceDecision: workflow.evidenceDecision,
+    });
+    bindMutationProbeVerificationWorkflow({ workflow, protocolStore: durable.store,
+      bridgeAuthority: bridge, recoveryAuthority: ownerRecovery });
+    const substitutedRecovery = new GatewayRecoveryAuthority(durable.store, {
+      bridgeEvidence: evidence,
+      evidenceDecision: workflow.evidenceDecision,
+    });
+    expect(() => new GatewayDispatcher(
+      new GatewayToolRegistry([autoRecord]),
+      [{ binding: "bridge", async execute() { return { state: "completed", result: {} }; } }],
+      {
+        eventSink: createCapturingEventSink(),
+        eventSource: { component: "gateway-test", version: "1", instance: "dispatch" },
+        recoveryAuthority: substitutedRecovery,
+        mutationProbeVerification: workflow,
+      },
+    )).toThrow(/factory branded/u);
+  });
+
   it("validates direct dispatch arguments against the registry Zod shape", async () => {
     const harness = createDispatcher({
       execute: async () => ({ state: "completed", result: { ok: true } }),

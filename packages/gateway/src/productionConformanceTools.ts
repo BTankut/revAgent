@@ -48,6 +48,53 @@ const C39_INPUT = Object.freeze({
   contentType: z.literal("application/octet-stream"),
 });
 
+const MUTATION_PROBE_EMPTY_INPUT = Object.freeze({});
+
+export const MUTATION_PROBE_TOOL_NAMES = Object.freeze({
+  origin: "conformance.fixture.mutation_probe_origin",
+  verify: "conformance.fixture.mutation_probe_verify",
+  next: "conformance.fixture.mutation_probe_next",
+} as const);
+
+export const MUTATION_PROBE_CONFORMANCE_TOOL_RECORDS = Object.freeze([
+  Object.freeze({
+    name: MUTATION_PROBE_TOOL_NAMES.origin,
+    summary: "Commit the fixed fixture mutation probe origin.",
+    namespace: "conformance",
+    version: "1.0.0",
+    policyClass: "confirm",
+    mutationScopePolicy: "session",
+    executor: "bridge",
+    executorMethod: "fixture_commit_then_throw",
+    inputSchema: MUTATION_PROBE_EMPTY_INPUT,
+    inputJsonSchema: schema(MUTATION_PROBE_EMPTY_INPUT),
+  }),
+  Object.freeze({
+    name: MUTATION_PROBE_TOOL_NAMES.verify,
+    summary: "Read the fixed fixture mutation probe postcondition.",
+    namespace: "conformance",
+    version: "1.0.0",
+    policyClass: "auto",
+    mutationScopePolicy: "none",
+    executor: "bridge",
+    executorMethod: "fixture_read_mutation_probe",
+    inputSchema: MUTATION_PROBE_EMPTY_INPUT,
+    inputJsonSchema: schema(MUTATION_PROBE_EMPTY_INPUT),
+  }),
+  Object.freeze({
+    name: MUTATION_PROBE_TOOL_NAMES.next,
+    summary: "Complete the fixed fixture mutation probe after audited verification.",
+    namespace: "conformance",
+    version: "1.0.0",
+    policyClass: "confirm",
+    mutationScopePolicy: "session",
+    executor: "bridge",
+    executorMethod: "fixture_complete_mutation_probe",
+    inputSchema: MUTATION_PROBE_EMPTY_INPUT,
+    inputJsonSchema: schema(MUTATION_PROBE_EMPTY_INPUT),
+  }),
+] satisfies readonly GatewayToolRecord[]);
+
 export const PRODUCTION_CONFORMANCE_TOOL_RECORDS = Object.freeze([
   Object.freeze({
     name: "conformance.fixture.c28_mutation",
@@ -90,6 +137,7 @@ export const PRODUCTION_CONFORMANCE_TOOL_RECORDS = Object.freeze([
 export function productionConformanceCatalog(
   coreRecord: GatewayToolRecord,
   payloadRecoveryRecord: GatewayToolRecord,
+  profileRecords: readonly GatewayToolRecord[] = [],
 ): readonly CatalogEntry[] {
   if (coreRecord.name !== "core.ui.state" ||
       payloadRecoveryRecord.name !== "core.dispatch.payload_recovery" ||
@@ -98,7 +146,7 @@ export function productionConformanceCatalog(
       payloadRecoveryRecord.mutationScopePolicy !== "none") {
     throw new Error("production conformance catalog requires exact normal C39 recovery record");
   }
-  const records = [coreRecord, payloadRecoveryRecord, ...PRODUCTION_CONFORMANCE_TOOL_RECORDS];
+  const records = [coreRecord, payloadRecoveryRecord, ...PRODUCTION_CONFORMANCE_TOOL_RECORDS, ...profileRecords];
   return Object.freeze(records.map((record) => Object.freeze({
     name: record.name,
     summary: record.summary,

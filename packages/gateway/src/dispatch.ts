@@ -41,6 +41,10 @@ import type {
   GatewayRecoveryAuthority,
   GatewayRecoveryPendingDispatch,
 } from "./recoveryAuthority.js";
+import {
+  isMutationProbeVerificationWorkflow,
+  type MutationProbeVerificationWorkflow,
+} from "./productionConformanceVerification.js";
 import type {
   GatewayExecutorBinding,
   GatewayToolRecord,
@@ -741,7 +745,13 @@ export interface GatewayDispatcherOptions {
     | "preflightMutation"
     | "prepareMutationDispatch"
     | "reconcilePendingDispatch"
-  >;
+  > & Partial<Pick<GatewayRecoveryAuthority,
+    | "prepareVerificationDispatch"
+    | "recordVerificationEvidence"
+    | "planRecoveryClearances"
+  >>;
+  /** Factory-branded, conformance-only fixed-recipe workflow. */
+  readonly mutationProbeVerification?: MutationProbeVerificationWorkflow;
 }
 
 interface DispatchAuditInput {
@@ -966,6 +976,7 @@ export class GatewayDispatcher {
   readonly #confirmationAuthority:
     | GatewayDispatcherOptions["confirmationAuthority"]
     | undefined;
+  readonly #mutationProbeVerification: MutationProbeVerificationWorkflow | undefined;
   readonly #rsidTails = new Map<string, Promise<void>>();
   #eventSequence = 0;
 
@@ -1005,6 +1016,13 @@ export class GatewayDispatcher {
         : () => configuredEventId();
     this.#recoveryAuthority = options.recoveryAuthority;
     this.#confirmationAuthority = options.confirmationAuthority;
+    if (options.mutationProbeVerification !== undefined &&
+        !isMutationProbeVerificationWorkflow(options.mutationProbeVerification, {
+          recoveryAuthority: options.recoveryAuthority as GatewayRecoveryAuthority,
+        })) {
+      throw new TypeError("mutation probe verification workflow is not factory branded");
+    }
+    this.#mutationProbeVerification = options.mutationProbeVerification;
   }
 
   public registry(): GatewayToolRegistry {
@@ -1831,7 +1849,10 @@ export class GatewayDispatcher {
       }
 
       try {
-        const preflight = await recovery.preflightMutation({
+        const planAwareMutationProbeNext =
+          tool.name === "conformance.fixture.mutation_probe_next" &&
+          this.#mutationProbeVerification !== undefined;
+        const preflight = planAwareMutationProbeNext ? { kind: "clear" as const } : await recovery.preflightMutation({
           tenantId: auth.actor.tenantId,
           rsid: route!.rsid,
           mutationScopes: [authority!.mutationScope!],
@@ -1945,6 +1966,43 @@ export class GatewayDispatcher {
             invocationId,
             context,
           });
+        }
+        if (tool.name === "conformance.fixture.mutation_probe_origin") {
+          const admitted = await this.#mutationProbeVerification?.recordOrigin({
+            context,
+            sessionBindingId: draft.sessionBindingId,
+            connectionId: draft.connectionId,
+            envelope: draft.envelope,
+            expected: draft.expected,
+          }) ?? false;
+          if (!admitted) {
+            return finishFailure({
+              code: "recovery_unavailable",
+              detailCode: "mutation_probe_origin_provenance_unavailable",
+              message: "mutation probe origin provenance was not durably admitted",
+              invocationId,
+              context,
+            });
+          }
+        }
+        if (tool.name === "conformance.fixture.mutation_probe_next") {
+          const next = await this.#mutationProbeVerification?.prepareNext({
+            context,
+            sessionBindingId: draft.sessionBindingId,
+            connectionId: draft.connectionId,
+            envelope: draft.envelope,
+            expected: draft.expected,
+          }) ?? null;
+          if (next === null) {
+            return finishFailure({
+              code: "recovery_blocked",
+              detailCode: "mutation_probe_plan_unavailable",
+              message: "mutation probe next has no exact audited recovery plan",
+              invocationId,
+              context,
+            });
+          }
+          draft = next;
         }
         const prepared = await recovery.prepareMutationDispatch({
           tenantId: auth.actor.tenantId,
@@ -2611,6 +2669,114 @@ export class GatewayDispatcher {
       }
 
       try {
+        if (tool.name === "conformance.fixture.mutation_probe_verify") {
+          const workflow = this.#mutationProbeVerification;
+          if (workflow === undefined || executor.buildMutationDispatch === undefined ||
+              executor.executePreparedMutation === undefined ||
+              recovery.prepareVerificationDispatch === undefined ||
+              recovery.recordVerificationEvidence === undefined ||
+              recovery.planRecoveryClearances === undefined) {
+            const outcome: GatewayDispatchOutcome = {
+              ok: false, state: "failed", toolName: input.toolName, requestId: invocationId,
+              error: { code: "recovery_unavailable", detailCode: "verification_workflow_unavailable", message: "mutation probe verification workflow is unavailable" },
+              executorReached: false,
+            };
+            return this.#finish(outcome, { ...auditBase, route, tool, context, authority, executorReached: false });
+          }
+          const request: GatewayExecutorRequest = {
+            toolName: tool.name, toolVersion: tool.version, executorMethod: tool.executorMethod,
+            policyClass: tool.policyClass, mutationScopePolicy: tool.mutationScopePolicy,
+            args: parsedJsonArgs, context,
+          };
+          const draft = runWithGatewayInvocationContext(context, () => executor.buildMutationDispatch!(request));
+          const binding = draft.expected.bindings.length === 1 ? draft.expected.bindings[0] : undefined;
+          const verification = binding === undefined ? null : await workflow.prepareVerification({
+            context, sessionBindingId: draft.sessionBindingId, connectionId: draft.connectionId,
+            envelope: draft.envelope, binding,
+          });
+          if (verification === null) {
+            const outcome: GatewayDispatchOutcome = {
+              ok: false, state: "failed", toolName: input.toolName, requestId: invocationId,
+              error: { code: "recovery_blocked", detailCode: "verification_owner_or_hold_missing", message: "mutation probe verification has no exact owner-bound hold" },
+              executorReached: false,
+            };
+            return this.#finish(outcome, { ...auditBase, route, tool, context, authority, executorReached: false });
+          }
+          const prepared = await recovery.prepareVerificationDispatch({
+            tenantId: auth.actor.tenantId, attemptId,
+            sessionBindingId: verification.sessionBindingId, connectionId: verification.connectionId,
+            envelope: verification.envelope, expected: verification.expected,
+          });
+          if (prepared.kind !== "prepared" && prepared.kind !== "already_prepared") {
+            const outcome: GatewayDispatchOutcome = {
+              ok: false, state: "failed", toolName: input.toolName, requestId: invocationId,
+              error: { code: prepared.kind === "blocked" ? "recovery_blocked" : "recovery_unavailable", detailCode: prepared.kind, message: "mutation probe verification prepare failed" },
+              executorReached: false,
+            };
+            return this.#finish(outcome, { ...auditBase, route, tool, context, authority, executorReached: false });
+          }
+          const ownerPrepared = await workflow.recordVerificationPrepared({
+            context,
+            holdId: verification.holdId,
+            sessionBindingId: verification.sessionBindingId,
+            connectionId: verification.connectionId,
+            envelopeDigest: prepared.dispatch.envelopeDigest,
+          });
+          if (!ownerPrepared) {
+            const outcome: GatewayDispatchOutcome = {
+              ok: false, state: "failed", toolName: input.toolName, requestId: invocationId,
+              error: { code: "recovery_unavailable", detailCode: "verification_owner_commit_failed",
+                message: "mutation probe verification provenance was not durably committed" },
+              executorReached: false,
+            };
+            return this.#finish(outcome, { ...auditBase, route, tool, context, authority, executorReached: false });
+          }
+          executorReached = true;
+          try { await runWithGatewayInvocationContext(context, () => executor.executePreparedMutation!(request, prepared.dispatch)); } catch { }
+          const reconciled = await recovery.reconcilePendingDispatch({ tenantId: auth.actor.tenantId, rsid: context.rsid, envelopeDigest: prepared.dispatch.envelopeDigest });
+          if (reconciled.kind !== "verification_evidence_ready") {
+            const outcome: GatewayDispatchOutcome = { ok: false, state: "failed", toolName: input.toolName, requestId: invocationId, error: { code: "recovery_unavailable", detailCode: reconciled.kind, message: "verification terminal was not durably reconciled" }, executorReached: true };
+            return this.#finish(outcome, { ...auditBase, route, tool, context, authority, executorReached: true });
+          }
+          const recorded = await recovery.recordVerificationEvidence({ tenantId: auth.actor.tenantId, rsid: context.rsid, envelopeDigest: prepared.dispatch.envelopeDigest });
+          if (recorded.kind !== "recorded") {
+            const outcome: GatewayDispatchOutcome = { ok: false, state: "failed", toolName: input.toolName, requestId: invocationId, error: { code: "recovery_blocked", detailCode: recorded.kind, message: "verification evidence was not audited" }, executorReached: true };
+            return this.#finish(outcome, { ...auditBase, route, tool, context, authority, executorReached: true });
+          }
+          const planned = await recovery.planRecoveryClearances({
+            tenantId: auth.actor.tenantId,
+            rsid: context.rsid,
+            mutationScopes: [recorded.hold.mutationScope],
+            decisions: [{ holdId: recorded.hold.holdId, decision: "postcondition_verified" }],
+          });
+          if (planned.kind !== "planned" && planned.kind !== "already_planned") {
+            const outcome: GatewayDispatchOutcome = {
+              ok: false, state: "failed", toolName: input.toolName, requestId: invocationId,
+              error: { code: planned.kind === "blocked" || planned.kind === "rejected"
+                ? "recovery_blocked" : "recovery_unavailable", detailCode: planned.kind,
+                message: "mutation probe audited evidence did not produce an exact recovery plan" },
+              executorReached: true,
+            };
+            return this.#finish(outcome, { ...auditBase, route, tool, context, authority,
+              recoveryHoldIds: [recorded.hold.holdId], executorReached: true });
+          }
+          const planProof = await workflow.recordPlan({ context, hold: recorded.hold, plan: planned.plan });
+          if (planProof === null) {
+            const outcome: GatewayDispatchOutcome = {
+              ok: false, state: "failed", toolName: input.toolName, requestId: invocationId,
+              error: { code: "recovery_unavailable", detailCode: "verification_plan_provenance_failed",
+                message: "mutation probe recovery plan provenance was not durably bound" },
+              executorReached: true,
+            };
+            return this.#finish(outcome, { ...auditBase, route, tool, context, authority,
+              recoveryHoldIds: [recorded.hold.holdId], executorReached: true });
+          }
+          const outcome = outcomeFromDurableTerminal({ tool, requestId: invocationId,
+            journalRecords: [planProof.journalRecord], batchTerminal: null });
+          return this.#finish(outcome, { ...auditBase, route, tool, context, authority,
+            recoveryHoldIds: [planProof.holdId], recoveryResolutionIds: [planProof.resolutionId],
+            executorReached: true });
+        }
         if (input.beforeExecute !== undefined) {
           phase = "executor";
           const admitted = await input.beforeExecute(context);

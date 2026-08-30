@@ -241,6 +241,8 @@ export interface RealTrioRuntimeFixtureOptions {
   readonly c39D0PostWriteFault?: boolean;
   /** C39-only terminal fault after durable write observation, before peer delivery. */
   readonly c39TerminalPrePeerFault?: boolean;
+  /** Exact conformance-only verification profile; no other value is accepted. */
+  readonly verificationProfile?: "mutation-probe-v1";
   /** Unit-only supervisor/credential seam; production paths never supply it. */
   readonly controlledHarness?: Readonly<{
     readonly supervisor: RealTrioSupervisorResult;
@@ -1900,7 +1902,11 @@ export async function startRealTrioRuntimeFixture(
     evidenceDirectory: options.evidenceDirectory,
     gateway: {
       executable: node24,
-      args: [gatewayCli, "--root", path.join(root, "gateway"), "--certificate", tls.certificatePath, "--key", tls.privateKeyPath, "--control-token", controlToken, "--port", "0"],
+      args: [gatewayCli, "--root", path.join(root, "gateway"), "--certificate", tls.certificatePath,
+        "--key", tls.privateKeyPath, "--control-token", controlToken, "--port", "0",
+        ...(options.verificationProfile === "mutation-probe-v1"
+          ? ["--verification-profile", "mutation-probe-v1"]
+          : [])],
       workingDirectory: repoRoot,
     },
     bridgeWorker: {
