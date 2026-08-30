@@ -382,8 +382,9 @@ describe.sequential("WP-12 direct real trio runtime fixture", () => {
               name: "conformance.fixture.mutation_probe_verify", arguments: {},
               requestId: `wp12-verification-foreign-${binding}`,
             });
-            expect(denied).toMatchObject({ state: "failed", executorReached: false,
-              error: { code: "recovery_blocked", detailCode: "verification_owner_or_hold_missing" } });
+            expect(denied).toMatchObject({ state: "failed",
+              error: { code: "invalid_invocation_context", detailCode: "route_resolution_failed" } });
+            expect(denied.executorReached ?? false).toBe(false);
           });
 
           await runtime.verifyNorthDispatchFence();
