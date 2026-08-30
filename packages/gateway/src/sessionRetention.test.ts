@@ -122,6 +122,16 @@ describe("session retention v6", () => {
     const first = evaluateSessionRetention(candidate({ dependencyRefs: refs }), { nowMs });
     const second = evaluateSessionRetention(candidate({ dependencyRefs: [...refs].reverse() }), { nowMs });
     expect(first).toStrictEqual(second);
+    if (first.kind !== "eligible") throw new Error("dependency cutoff fixture is not eligible");
+    const later = evaluateSessionRetention(candidate({ dependencyRefs: refs }), {
+      nowMs: nowMs + 1_000,
+      eligibilityCutoffMs: nowMs,
+    });
+    expect(later).toMatchObject({
+      kind: "eligible",
+      eligibilityCutoffMs: nowMs,
+      dependencyClosureDigest: first.dependencyClosureDigest,
+    });
   });
 
   it("keeps private-object ordering outside the frozen canonical plan digest", () => {

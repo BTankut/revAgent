@@ -557,7 +557,7 @@ describe("long-lived Bridge JSONL daemon", () => {
         socket.send(JSON.stringify({
           v: 1,
           type: "error",
-          id: uuid(),
+          id: envelope.id,
           ts: "2026-07-22T00:00:02.000Z",
           payload: {
             message: "authenticated early chunk fault",

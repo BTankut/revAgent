@@ -492,6 +492,17 @@ export class DigestFileConformanceObjectStore implements PrivateObjectStoreBacke
     return this.#physicalRoot;
   }
 
+  async #withDeleteRootPinned<T>(action: () => Promise<T>): Promise<T> {
+    await this.#open();
+    const pin = await open(path.join(this.#root, ".conformance-owner-v1"), "r+");
+    try {
+      await this.#assertPhysicalRootCurrent();
+      return await action();
+    } finally {
+      await pin.close();
+    }
+  }
+
   async #open(): Promise<void> {
     if (this.#ready !== null) return this.#ready;
     this.#ready = (async () => {
@@ -699,8 +710,10 @@ export class DigestFileConformanceObjectStore implements PrivateObjectStoreBacke
     const file = this.#file(input.tenantId, input.storageKey);
     if (file === null) return this.#objectFailure("conformance object key rejected");
     try {
-      await this.#readableFile(file);
-      await rm(file);
+      await this.#withDeleteRootPinned(async () => {
+        await this.#readableFile(file);
+        await rm(file);
+      });
       return Object.freeze({ ok: true as const, value: undefined });
     } catch { return this.#objectFailure("conformance object unavailable"); }
   }
@@ -733,13 +746,19 @@ export class DigestFileConformanceObjectStore implements PrivateObjectStoreBacke
   }
 
   async deleteOwned(input: { readonly binding: GatewayPrivateObjectBinding }): Promise<GatewayPortResult<{ readonly state: "deleted" | "missing" }>> {
-    const existing = await this.getOwnedOptional(input);
-    if (!existing.ok) return existing;
-    if (existing.value === null) return Object.freeze({ ok: true as const, value: { state: "missing" as const } });
-    const file = this.#file(input.binding.tenantId, input.binding.storageKey)!;
+    const file = this.#file(input.binding.tenantId, input.binding.storageKey);
+    if (file === null) return this.#objectFailure("owned conformance object key rejected");
     try {
-      await rm(file);
-      return Object.freeze({ ok: true as const, value: { state: "deleted" as const } });
+      return await this.#withDeleteRootPinned(async () => {
+        const existing = await this.getOwnedOptional(input);
+        if (!existing.ok) return existing;
+        if (existing.value === null) {
+          return Object.freeze({ ok: true as const, value: { state: "missing" as const } });
+        }
+        await this.#readableFile(file);
+        await rm(file);
+        return Object.freeze({ ok: true as const, value: { state: "deleted" as const } });
+      });
     } catch { return this.#objectFailure("owned conformance object delete failed"); }
   }
 
@@ -837,6 +856,17 @@ export class ProtectedConformanceObjectStore implements ObjectStorePort {
       throw new Error("protected conformance physical root changed");
     }
     return this.#physicalRoot;
+  }
+
+  async #withDeleteRootPinned<T>(action: () => Promise<T>): Promise<T> {
+    await this.#open();
+    const pin = await open(path.join(this.#root, ".protected-conformance-owner-v1"), "r+");
+    try {
+      await this.#assertPhysicalRootCurrent();
+      return await action();
+    } finally {
+      await pin.close();
+    }
   }
 
   async #open(): Promise<void> {
@@ -996,9 +1026,10 @@ export class ProtectedConformanceObjectStore implements ObjectStorePort {
     const file = this.#file(input.tenantId, input.storageKey);
     if (file === null) return failure("protected conformance object unavailable") as GatewayPortResult<void>;
     try {
-      await this.#open();
-      await this.#readableFile(file);
-      await rm(file);
+      await this.#withDeleteRootPinned(async () => {
+        await this.#readableFile(file);
+        await rm(file);
+      });
       return Object.freeze({ ok: true as const, value: undefined });
     } catch {
       return failure("protected conformance object unavailable") as GatewayPortResult<void>;

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, open, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import Database from "better-sqlite3";
@@ -242,6 +242,27 @@ describe("conformance ephemeral adapters", () => {
     await expect(store.delete({ tenantId: "tenant_a", storageKey: key }))
       .resolves.toMatchObject({ ok: false });
     await expect(readFile(outsideFile, "utf8")).resolves.toBe("outside-must-survive");
+  });
+
+  it("holds the owner marker open across Windows pathname deletion", async () => {
+    if (process.platform !== "win32") return;
+    const location = await root();
+    const store = new DigestFileConformanceObjectStore(location);
+    const bytes = Buffer.from("delete-pin", "utf8");
+    const key = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+    await expect(store.put({
+      tenantId: "tenant_a", storageKey: key, bytes, contentType: "text/plain",
+    })).resolves.toMatchObject({ ok: true });
+    const objectRoot = path.join(location, "objects");
+    const pin = await open(path.join(objectRoot, ".conformance-owner-v1"), "r+");
+    try {
+      await expect(rename(objectRoot, path.join(location, "objects-swapped")))
+        .rejects.toMatchObject({ code: expect.stringMatching(/^(?:EACCES|EPERM)$/u) });
+    } finally {
+      await pin.close();
+    }
+    await expect(store.delete({ tenantId: "tenant_a", storageKey: key }))
+      .resolves.toMatchObject({ ok: true });
   });
 
   it("pins the opened protected-object physical root across a later junction swap", async () => {

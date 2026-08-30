@@ -319,6 +319,51 @@ describe("strict Gateway transport boundaries", () => {
     }
   });
 
+  it("rejects a delayed WSS prefix fault whose envelope id is not the singular target id", async () => {
+    const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+    await once(server, "listening");
+    const port = (server.address() as AddressInfo).port;
+    server.on("connection", (socket) => {
+      let opened = false;
+      socket.on("message", () => {
+        if (!opened) {
+          opened = true;
+          socket.send(JSON.stringify(helloAck("delayed-prefix-fault")));
+          return;
+        }
+        socket.send(JSON.stringify({
+          v: 1,
+          type: "error",
+          id: uuid(),
+          ts: "2026-07-22T00:00:02.000Z",
+          payload: {
+            message: "delayed prefix protocol fault",
+            retryable: false,
+            fault_class: "protocol",
+            outcome: "known",
+            verification_required: false,
+          },
+        }), () => socket.close(4400, "delayed prefix protocol fault"));
+      });
+    });
+    const binding = new WssGatewayBinding({
+      baseUrl: `ws://127.0.0.1:${port}/bridge/v1`,
+      deviceToken: "device-token",
+      endpointPolicy: "loopback_test_readiness",
+    });
+    try {
+      await binding.open(hello());
+      await expect(binding.sendChunkConformanceFrame?.({
+        id: uuid(), type: "result", vector: "singular-target",
+      })).rejects.toThrow(/lacked an authenticated Gateway error envelope/u);
+    } finally {
+      await binding.close();
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => error === undefined ? resolve() : reject(error));
+      });
+    }
+  });
+
   it("uses T5 numeric-loopback readiness URLs only under the explicit test policy", async () => {
     let resolveSseClosed: () => void = () => undefined;
     const sseClosed = new Promise<void>((resolve) => {

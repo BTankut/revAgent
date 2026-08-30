@@ -4707,6 +4707,7 @@ class SessionAggregateRepository {
         const decision = evaluateSessionRetention(candidate, {
           nowMs,
           retentionMs: DEFAULT_SESSION_RETENTION_MS,
+          eligibilityCutoffMs: closure.eligibilityCutoffMs,
         });
         if (decision.kind !== "eligible" ||
             decision.dependencyClosureDigest !== closure.dependencyClosureDigest) {

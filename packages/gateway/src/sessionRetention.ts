@@ -121,6 +121,7 @@ export function evaluateSessionRetention(
   input: {
     readonly nowMs: number;
     readonly retentionMs?: number;
+    readonly eligibilityCutoffMs?: number;
   },
 ): SessionRetentionDecision {
   const retentionMs = input.retentionMs ?? DEFAULT_SESSION_RETENTION_MS;
@@ -131,6 +132,11 @@ export function evaluateSessionRetention(
       !Number.isSafeInteger(candidate.resumeExpiresAtMs) ||
       !Number.isSafeInteger(candidate.retirementAnchorMs)) {
     throw new Error("session retention clock input is invalid");
+  }
+  const eligibilityCutoffMs = input.eligibilityCutoffMs ?? input.nowMs;
+  if (!Number.isSafeInteger(eligibilityCutoffMs) || eligibilityCutoffMs < 0 ||
+      eligibilityCutoffMs > input.nowMs) {
+    throw new Error("session retention eligibility cutoff is invalid");
   }
   const reasons: SessionRetentionPinReason[] = [];
   if (candidate.lifecyclePhase !== "terminal_retained" &&
@@ -162,7 +168,7 @@ export function evaluateSessionRetention(
     domain: "revagent/gateway/session-gc-dependencies/v1",
     tenantId: candidate.tenantId,
     rsid: candidate.rsid,
-    eligibilityCutoffMs: input.nowMs,
+    eligibilityCutoffMs,
     retentionAnchorMs,
     sessionLifecyclePhase: candidate.lifecyclePhase,
     dispatchAllowed: candidate.dispatchAllowed,
@@ -173,7 +179,7 @@ export function evaluateSessionRetention(
   }));
   return Object.freeze({
     kind: "eligible" as const,
-    eligibilityCutoffMs: input.nowMs,
+    eligibilityCutoffMs,
     retentionAnchorMs,
     dependencyClosureDigest,
   });
