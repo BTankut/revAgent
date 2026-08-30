@@ -15,6 +15,8 @@ import {
 
 import type { GatewayBridgeSessionAuthority } from "./bridgeSession.js";
 import type { GatewayJsonValue } from "./dispatch.js";
+import { isDocumentContextDigest } from "./documentContextDigest.js";
+import { isGatewayUuidV7 } from "./identifiers.js";
 import type { GatewayInvocationContext } from "./invocationContext.js";
 import type {
   GatewayAuditedRecoveryDecisionPort,
@@ -46,6 +48,7 @@ const MUTATION_PROBE_RESULT_SCHEMA = "revagent.fixture-mutation-probe/v1";
 const EMPTY_PARAMS_DIGEST = makeParamsDigest({});
 const DIGEST = /^sha256:[0-9a-f]{64}$/u;
 const HOLD_ID = /^vh:[0-9a-f]{64}$/u;
+const MAX_DURABLE_ROUTE_STRING_LENGTH = 4_096;
 
 type MutationProbePhase =
   | "origin_admitted"
@@ -72,6 +75,8 @@ interface MutationProbeOwnerRecord {
   readonly sessionBindingId: string;
   readonly sessionBindingVersion: number;
   readonly connectionId: string;
+  readonly documentIdentityDigest: string;
+  readonly liveDocumentRouteDigest: string;
   readonly mutationScope: MutationScope;
   readonly scopeKey: string;
   readonly functionalParamsDigest: string;
@@ -180,6 +185,20 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+function hasExactKeys(value: Record<string, unknown>, expected: readonly string[]): boolean {
+  const actual = Object.keys(value).sort();
+  const canonical = [...expected].sort();
+  return actual.length === canonical.length && actual.every((key, index) => key === canonical[index]);
+}
+
+function isSafePositiveInteger(value: unknown): value is number {
+  return Number.isSafeInteger(value) && Number(value) > 0;
+}
+
+function isBoundedRouteString(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0 && value.length <= MAX_DURABLE_ROUTE_STRING_LENGTH;
+}
+
 function sameJson(left: unknown, right: unknown): boolean {
   try {
     return makeParamsDigest(left as JsonValue) === makeParamsDigest(right as JsonValue);
@@ -204,6 +223,114 @@ function referenceDigest(kind: string, value: string | null): `sha256:${string}`
   });
 }
 
+function liveDocumentIdentityDigest(sessionDocumentId: string): `sha256:${string}` {
+  return makeParamsDigest({
+    domain: "revagent.mutation-probe-live-document-identity/v1",
+    document_identity: { kind: "live", session_document_id: sessionDocumentId },
+  });
+}
+
+function contextDocumentIdentityDigest(context: GatewayInvocationContext): `sha256:${string}` | null {
+  const identity = context.documentIdentity as unknown;
+  if (!isRecord(identity) || !hasExactKeys(identity, ["kind", "session_document_id"]) ||
+      identity.kind !== "live" || !isBoundedRouteString(identity.session_document_id)) return null;
+  return liveDocumentIdentityDigest(identity.session_document_id);
+}
+
+interface CurrentDocumentRouteAuthority {
+  readonly documentIdentityDigest: `sha256:${string}`;
+  readonly liveDocumentRouteDigest: `sha256:${string}`;
+}
+
+function currentDocumentRouteAuthority(input: {
+  readonly value: unknown;
+  readonly sessionBindingId: string;
+  readonly sessionVersion: number;
+  readonly connectionId: string;
+}): CurrentDocumentRouteAuthority | null {
+  if (!isRecord(input.value) || !isBoundedRouteString(input.value.sessionDocumentId) ||
+      typeof input.value.observedConnectionId !== "string" ||
+      !isGatewayUuidV7(input.value.observedConnectionId) ||
+      input.value.observedConnectionId !== input.connectionId ||
+      !isDocumentContextDigest(input.value.contextDigest)) return null;
+
+  let normalized: GatewayJsonValue;
+  if (input.value.source === undefined) {
+    if (!hasExactKeys(input.value,
+      ["sessionDocumentId", "observedConnectionId", "observedSequence", "contextDigest"]) ||
+        !isSafePositiveInteger(input.value.observedSequence)) return null;
+    normalized = {
+      source: "data_doc_context_v1",
+      sessionDocumentId: input.value.sessionDocumentId,
+      observedConnectionId: input.value.observedConnectionId,
+      observedSequence: input.value.observedSequence,
+      contextDigest: input.value.contextDigest,
+    };
+  } else if (input.value.source === "data_doc_context_v1") {
+    if (!hasExactKeys(input.value,
+      ["source", "sessionDocumentId", "observedConnectionId", "observedSequence", "contextDigest"]) ||
+        !isSafePositiveInteger(input.value.observedSequence)) return null;
+    normalized = {
+      source: "data_doc_context_v1",
+      sessionDocumentId: input.value.sessionDocumentId,
+      observedConnectionId: input.value.observedConnectionId,
+      observedSequence: input.value.observedSequence,
+      contextDigest: input.value.contextDigest,
+    };
+  } else if (input.value.source === "session_resume_route_rebind_v1") {
+    const legacyKeys = [
+      "source", "sessionDocumentId", "observedConnectionId", "contextDigest", "proofId",
+      "serverProofDigest", "sourceRevision", "cacheIncarnationDigest", "resultantSessionBindingId",
+      "resultantSessionVersion", "authorityGenerationDigest",
+    ] as const;
+    const currentKeys = [
+      ...legacyKeys, "routeAuthorityCheckpoint", "connectionDigest", "proofCasRecordVersion",
+    ] as const;
+    const current = hasExactKeys(input.value, currentKeys);
+    if ((!current && !hasExactKeys(input.value, legacyKeys)) ||
+        typeof input.value.proofId !== "string" || !isGatewayUuidV7(input.value.proofId) ||
+        typeof input.value.serverProofDigest !== "string" || !DIGEST.test(input.value.serverProofDigest) ||
+        !isSafePositiveInteger(input.value.sourceRevision) ||
+        typeof input.value.cacheIncarnationDigest !== "string" || !DIGEST.test(input.value.cacheIncarnationDigest) ||
+        typeof input.value.resultantSessionBindingId !== "string" ||
+        !isGatewayUuidV7(input.value.resultantSessionBindingId) ||
+        input.value.resultantSessionBindingId !== input.sessionBindingId ||
+        !isSafePositiveInteger(input.value.resultantSessionVersion) ||
+        input.value.resultantSessionVersion !== input.sessionVersion ||
+        typeof input.value.authorityGenerationDigest !== "string" ||
+        !DIGEST.test(input.value.authorityGenerationDigest) ||
+        (current && (typeof input.value.routeAuthorityCheckpoint !== "string" ||
+          !DIGEST.test(input.value.routeAuthorityCheckpoint) ||
+          typeof input.value.connectionDigest !== "string" || !DIGEST.test(input.value.connectionDigest) ||
+          !isSafePositiveInteger(input.value.proofCasRecordVersion)))) return null;
+    normalized = {
+      source: "session_resume_route_rebind_v1",
+      sessionDocumentId: input.value.sessionDocumentId,
+      observedConnectionId: input.value.observedConnectionId,
+      contextDigest: input.value.contextDigest,
+      proofId: input.value.proofId,
+      serverProofDigest: input.value.serverProofDigest,
+      sourceRevision: input.value.sourceRevision,
+      cacheIncarnationDigest: input.value.cacheIncarnationDigest,
+      resultantSessionBindingId: input.value.resultantSessionBindingId,
+      resultantSessionVersion: input.value.resultantSessionVersion,
+      authorityGenerationDigest: input.value.authorityGenerationDigest,
+      ...(current ? {
+        routeAuthorityCheckpoint: input.value.routeAuthorityCheckpoint as string,
+        connectionDigest: input.value.connectionDigest as string,
+        proofCasRecordVersion: input.value.proofCasRecordVersion as number,
+      } : {}),
+    };
+  } else {
+    return null;
+  }
+
+  return Object.freeze({
+    documentIdentityDigest: liveDocumentIdentityDigest(input.value.sessionDocumentId),
+    liveDocumentRouteDigest: sessionCanonicalDigest(normalized),
+  });
+}
+
 function ownerRecord(value: unknown): MutationProbeOwnerRecord | null {
   if (!isRecord(value) || value.schema !== MUTATION_PROBE_OWNER_NAMESPACE ||
       value.profile !== MUTATION_PROBE_VERIFICATION_PROFILE ||
@@ -216,7 +343,9 @@ function ownerRecord(value: unknown): MutationProbeOwnerRecord | null {
       typeof value.principalKey !== "string" || typeof value.gatewaySessionId !== "string" ||
       typeof value.effectiveMcpSessionId !== "string" || typeof value.sessionBindingId !== "string" ||
       !Number.isSafeInteger(value.sessionBindingVersion) || Number(value.sessionBindingVersion) < 1 ||
-      typeof value.connectionId !== "string" || !isRecord(value.mutationScope) ||
+      typeof value.connectionId !== "string" || typeof value.documentIdentityDigest !== "string" ||
+      !DIGEST.test(value.documentIdentityDigest) || typeof value.liveDocumentRouteDigest !== "string" ||
+      !DIGEST.test(value.liveDocumentRouteDigest) || !isRecord(value.mutationScope) ||
       typeof value.scopeKey !== "string" || typeof value.functionalParamsDigest !== "string" ||
       typeof value.nativeParamsDigest !== "string" || typeof value.originJournalBindingDigest !== "string" ||
       typeof value.originEnvelopeDigest !== "string" || !DIGEST.test(value.functionalParamsDigest) ||
@@ -240,6 +369,8 @@ interface CurrentSessionAuthority {
   readonly sessionBindingId: string;
   readonly sessionVersion: number;
   readonly connectionId: string;
+  readonly documentIdentityDigest: `sha256:${string}`;
+  readonly liveDocumentRouteDigest: `sha256:${string}`;
 }
 
 async function readCurrentSessionAuthority(
@@ -257,6 +388,7 @@ async function readCurrentSessionAuthority(
     const cutover = marker.value;
     const identity = value.identity;
     const binding = value.binding;
+    const lifecycle = value.lifecycle;
     const trees = value.trees;
     if (value.schema !== GATEWAY_RBP_SESSION_V3_NAMESPACE || value.generation !== 3 ||
         value.tenantId !== tenantId || value.rsid !== rsid || !Number.isSafeInteger(value.rootVersion) ||
@@ -264,6 +396,7 @@ async function readCurrentSessionAuthority(
         cutover.schema !== GATEWAY_RBP_SESSION_CUTOVER_V3_NAMESPACE || cutover.generation !== 3 ||
         cutover.tenantId !== tenantId || cutover.rsid !== rsid || cutover.rootVersion !== value.rootVersion ||
         marker.version !== value.rootVersion || !Array.isArray(trees) || !isRecord(identity) ||
+        !isRecord(lifecycle) ||
         !isRecord(binding) || typeof identity.userId !== "string" ||
         typeof binding.sessionBindingId !== "string" || !Number.isSafeInteger(binding.sessionVersion) ||
         Number(binding.sessionVersion) < 1 || typeof binding.connectionId !== "string" ||
@@ -271,9 +404,13 @@ async function readCurrentSessionAuthority(
         cutover.treesDigest !== sessionCanonicalDigest(trees as unknown as GatewayJsonValue) ||
         sessionRecordValueBytes(root.value) > SESSION_ROOT_MAX_BYTES ||
         sessionRecordValueBytes(marker.value) > SESSION_MARKER_MAX_BYTES) return null;
+    const route = currentDocumentRouteAuthority({ value: lifecycle.liveDocumentRoute,
+      sessionBindingId: binding.sessionBindingId, sessionVersion: Number(binding.sessionVersion),
+      connectionId: binding.connectionId });
+    if (route === null) return null;
     return { tenantId, userId: identity.userId, rsid,
       sessionBindingId: binding.sessionBindingId,
-      sessionVersion: Number(binding.sessionVersion), connectionId: binding.connectionId };
+      sessionVersion: Number(binding.sessionVersion), connectionId: binding.connectionId, ...route };
   }
   if (legacy === null || !isRecord(legacy.value)) return null;
   const value = legacy.value;
@@ -281,8 +418,12 @@ async function readCurrentSessionAuthority(
       value.rsid !== rsid || typeof value.userId !== "string" ||
       typeof value.sessionBindingId !== "string" || !Number.isSafeInteger(value.sessionVersion) ||
       Number(value.sessionVersion) < 1 || typeof value.connectionId !== "string") return null;
+  const route = currentDocumentRouteAuthority({ value: value.liveDocumentRoute,
+    sessionBindingId: value.sessionBindingId, sessionVersion: Number(value.sessionVersion),
+    connectionId: value.connectionId });
+  if (route === null) return null;
   return { tenantId, userId: value.userId, rsid, sessionBindingId: value.sessionBindingId,
-    sessionVersion: Number(value.sessionVersion), connectionId: value.connectionId };
+    sessionVersion: Number(value.sessionVersion), connectionId: value.connectionId, ...route };
 }
 
 function currentSessionMatches(
@@ -295,11 +436,15 @@ function currentSessionMatches(
     session.userId === owner.userId && session.rsid === owner.rsid &&
     session.sessionBindingId === owner.sessionBindingId && session.sessionBindingId === sessionBindingId &&
     session.sessionVersion === owner.sessionBindingVersion && session.connectionId === owner.connectionId &&
-    session.connectionId === connectionId;
+    session.connectionId === connectionId &&
+    session.documentIdentityDigest === owner.documentIdentityDigest &&
+    session.liveDocumentRouteDigest === owner.liveDocumentRouteDigest;
 }
 
 function contextMatches(owner: MutationProbeOwnerRecord, context: GatewayInvocationContext): boolean {
-  return owner.expiresAtMs > context.startedAtMs && owner.rsid === context.rsid &&
+  const documentIdentityDigest = contextDocumentIdentityDigest(context);
+  return documentIdentityDigest !== null && owner.documentIdentityDigest === documentIdentityDigest &&
+    owner.expiresAtMs > context.startedAtMs && owner.rsid === context.rsid &&
     owner.tenantId === context.actor.tenantId && owner.userId === context.actor.userId &&
     owner.principalKey === context.principalKey && owner.gatewaySessionId === context.gatewaySessionId &&
     owner.effectiveMcpSessionId === context.effectiveMcpRequestScope?.effectiveMcpSessionId;
@@ -459,9 +604,11 @@ export function createMutationProbeVerificationWorkflow(input: {
       const issuedAtMs = now();
       const outcome = await input.protocolStore.transact({ tenantId: context.actor.tenantId }, async (tx) => {
         const session = await readCurrentSessionAuthority(tx, context.actor.tenantId, context.rsid);
+        const documentIdentityDigest = contextDocumentIdentityDigest(context);
         if (session === null || session.userId !== context.actor.userId ||
             session.sessionBindingId !== admission.sessionBindingId ||
-            session.connectionId !== admission.connectionId) return false;
+            session.connectionId !== admission.connectionId || documentIdentityDigest === null ||
+            session.documentIdentityDigest !== documentIdentityDigest) return false;
         const record: MutationProbeOwnerRecord = {
           schema: MUTATION_PROBE_OWNER_NAMESPACE, recordVersion: 1,
           profile: MUTATION_PROBE_VERIFICATION_PROFILE, runId: input.runId, rsid: context.rsid,
@@ -473,6 +620,8 @@ export function createMutationProbeVerificationWorkflow(input: {
           effectiveMcpSessionId: context.effectiveMcpRequestScope!.effectiveMcpSessionId,
           sessionBindingId: admission.sessionBindingId, sessionBindingVersion: session.sessionVersion,
           connectionId: admission.connectionId,
+          documentIdentityDigest,
+          liveDocumentRouteDigest: session.liveDocumentRouteDigest,
           mutationScope: structuredClone(context.mutationScope) as MutationScope,
           scopeKey: mutationScopeKey(context.mutationScope as MutationScope),
           functionalParamsDigest: context.paramsDigest,

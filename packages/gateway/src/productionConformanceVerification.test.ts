@@ -52,11 +52,21 @@ const TENANT = "tenant-a";
 const USER = "user-a";
 const RSID = "0197a3c2-0000-7000-8000-000000000050";
 const SESSION_BINDING = "0197a3c2-0000-7000-8000-000000000010";
-const CONNECTION = "connection-a";
+const CONNECTION = "0197a3c2-0000-7000-8000-000000000011";
 const NOW = 1_775_000_000_000;
 
 function uuid7(value: number): string {
   return `0197a3c2-0000-7000-8000-${String(value).padStart(12, "0")}`;
+}
+
+function liveDocumentRoute(documentId = "fixture-document"): JsonValue {
+  return {
+    source: "data_doc_context_v1",
+    sessionDocumentId: documentId,
+    observedConnectionId: CONNECTION,
+    observedSequence: 1,
+    contextDigest: "a".repeat(64),
+  };
 }
 
 class TestBridgeEvidence implements GatewayDurableBridgeEvidencePort {
@@ -184,14 +194,17 @@ function context(input: {
   readonly policyClass: "auto" | "confirm";
   readonly mcpSessionId?: string;
   readonly confirmationId?: string;
+  readonly rsid?: string;
+  readonly documentId?: string;
 }): GatewayInvocationContext {
   const mcpSessionId = input.mcpSessionId ?? "mcp-a";
   const effective = scope(mcpSessionId);
   return createGatewayInvocationContext({
     auth: auth(),
     route: Object.freeze({ tenantId: TENANT, principalKey: auth().principalKey,
-      mcpSessionId, effectiveMcpRequestScope: effective, rsid: RSID,
-      documentIdentity: Object.freeze({ kind: "live" as const, session_document_id: "fixture-document" }) }),
+      mcpSessionId, effectiveMcpRequestScope: effective, rsid: input.rsid ?? RSID,
+      documentIdentity: Object.freeze({ kind: "live" as const,
+        session_document_id: input.documentId ?? "fixture-document" }) }),
     mcpSessionId,
     effectiveMcpRequestScope: effective,
     invocationId: input.invocationId,
@@ -215,7 +228,7 @@ function envelope(input: {
 }): InvokeEnvelope {
   return {
     v: 1, type: "invoke", id: uuid7(100 + input.seq), ts: "2026-08-30T12:00:00.000Z",
-    rsid: RSID, seq: input.seq, ack: 0,
+    rsid: input.context.rsid, seq: input.seq, ack: 0,
     payload: {
       invocation_id: input.context.invocationId,
       method: input.method,
@@ -256,14 +269,19 @@ async function seedV1Session(store: GatewayProtocolStore): Promise<void> {
   const result = await store.transact({ tenantId: TENANT }, (tx) => {
     tx.stage({ namespace: "gateway.rbp-session/v1", key: RSID, expect: { kind: "absent" },
       value: { schema: "gateway.rbp-session/v1", tenantId: TENANT, userId: USER, rsid: RSID,
-        sessionBindingId: SESSION_BINDING, sessionVersion: 1, connectionId: CONNECTION } });
+        sessionBindingId: SESSION_BINDING, sessionVersion: 1, connectionId: CONNECTION,
+        liveDocumentRoute: liveDocumentRoute() } });
   });
   expect(result.ok).toBe(true);
 }
 
 async function seedV3Session(
   store: GatewayProtocolStore,
-  options: { readonly corruptRootDigest?: boolean } = {},
+  options: {
+    readonly corruptRootDigest?: boolean;
+    readonly documentId?: string;
+    readonly omitRoute?: boolean;
+  } = {},
 ): Promise<void> {
   const root = {
     schema: "gateway.rbp-session/v3",
@@ -273,7 +291,9 @@ async function seedV3Session(
     rsid: RSID,
     identity: { userId: USER },
     binding: { sessionBindingId: SESSION_BINDING, sessionVersion: 1, connectionId: CONNECTION },
-    lifecycle: {},
+    lifecycle: { liveDocumentRoute: options.omitRoute === true
+      ? null
+      : liveDocumentRoute(options.documentId) },
     sequenceHead: {},
     migrationProof: {},
     durabilityProfile: {},
@@ -321,43 +341,35 @@ async function admitOrigin(store: GatewayProtocolStore, runId: string): Promise<
     connectionId: CONNECTION, envelope: originEnvelope, expected: expected(originEnvelope) });
 }
 
-interface DecisionHarness {
+interface OriginHarness {
   readonly store: GatewayProtocolStore;
+  readonly bridge: TestBridgeEvidence;
   readonly bridgeAuthority: GatewayBridgeSessionAuthority;
   readonly workflow: ReturnType<typeof createMutationProbeVerificationWorkflow>;
   readonly recovery: GatewayRecoveryAuthority;
-  readonly verifyContext: GatewayInvocationContext;
+  readonly originContext: GatewayInvocationContext;
   readonly holdId: string;
-  readonly verifyAttempt: string;
-  readonly verificationPending: GatewayRecoveryPendingDispatch;
-  readonly journal: InvocationJournalRecord;
-  readonly fixtureState: Readonly<Record<string, JsonValue>>;
 }
 
-async function createDecisionHarness(input: {
+async function createOriginHarness(input: {
   readonly runId: string;
   readonly store?: GatewayProtocolStore;
   readonly now?: () => number;
-}): Promise<DecisionHarness> {
+  readonly originDocumentId?: string;
+}): Promise<OriginHarness> {
   const store = input.store ?? createRestartableTestStore().store;
   expect((await store.open()).ok).toBe(true);
-  await seedV3Session(store);
+  await seedV3Session(store, { documentId: input.originDocumentId });
   const bridge = new TestBridgeEvidence(store);
   const bridgeAuthority = bridge as unknown as GatewayBridgeSessionAuthority;
-  const workflow = createMutationProbeVerificationWorkflow({
-    protocolStore: store,
-    bridgeAuthority,
-    runId: input.runId,
-    clock: input.now ?? (() => NOW + 10),
-  });
-  const recovery = createProductionConformanceRecoveryAuthority({
-    protocolStore: store,
-    bridgeEvidence: bridgeAuthority,
-    verificationWorkflow: workflow,
-  });
+  const workflow = createMutationProbeVerificationWorkflow({ protocolStore: store,
+    bridgeAuthority, runId: input.runId, clock: input.now ?? (() => NOW + 10) });
+  const recovery = createProductionConformanceRecoveryAuthority({ protocolStore: store,
+    bridgeEvidence: bridgeAuthority, verificationWorkflow: workflow });
   const originContext = context({ invocationId: uuid7(101),
     toolName: "conformance.fixture.mutation_probe_origin", method: "fixture_commit_then_throw",
-    policyClass: "confirm", confirmationId: uuid7(102) });
+    policyClass: "confirm", confirmationId: uuid7(102),
+    documentId: input.originDocumentId });
   const originEnvelope = envelope({ context: originContext,
     method: "fixture_commit_then_throw", seq: 1 });
   const originAttempt = uuid7(103);
@@ -378,10 +390,29 @@ async function createDecisionHarness(input: {
     envelopeDigest: originPrepared.dispatch.envelopeDigest })).toMatchObject({ kind: "indeterminate_recorded" });
   expect(await recovery.releaseInvocationWindow({ tenantId: TENANT, rsid: RSID,
     attemptId: originAttempt })).toMatchObject({ kind: "released" });
+  return { store, bridge, bridgeAuthority, workflow, recovery, originContext, holdId };
+}
 
+interface DecisionHarness extends OriginHarness {
+  readonly verifyContext: GatewayInvocationContext;
+  readonly verifyAttempt: string;
+  readonly verificationPending: GatewayRecoveryPendingDispatch;
+  readonly journal: InvocationJournalRecord;
+  readonly fixtureState: Readonly<Record<string, JsonValue>>;
+}
+
+async function createDecisionHarness(input: {
+  readonly runId: string;
+  readonly store?: GatewayProtocolStore;
+  readonly now?: () => number;
+  readonly originDocumentId?: string;
+  readonly verifyDocumentId?: string;
+}): Promise<DecisionHarness> {
+  const origin = await createOriginHarness(input);
+  const { store, bridge, bridgeAuthority, workflow, recovery, originContext, holdId } = origin;
   const verifyContext = context({ invocationId: uuid7(104),
     toolName: "conformance.fixture.mutation_probe_verify", method: "fixture_read_mutation_probe",
-    policyClass: "auto" });
+    policyClass: "auto", documentId: input.verifyDocumentId });
   const verifyDraft = envelope({ context: verifyContext, method: "fixture_read_mutation_probe", seq: 2 });
   const selected = await workflow.prepareVerification({ context: verifyContext,
     sessionBindingId: SESSION_BINDING, connectionId: CONNECTION,
@@ -410,7 +441,7 @@ async function createDecisionHarness(input: {
     envelopeDigest: verifyPrepared.dispatch.envelopeDigest })).toMatchObject({
       kind: "verification_evidence_ready",
     });
-  return { store, bridgeAuthority, workflow, recovery, verifyContext,
+  return { ...origin, store, bridgeAuthority, workflow, recovery, verifyContext,
     holdId, verifyAttempt, verificationPending: verifyPrepared.dispatch, journal, fixtureState };
 }
 
@@ -431,6 +462,15 @@ function evidenceCandidate(
   };
 }
 
+function candidateWithJournal(
+  harness: DecisionHarness,
+  journalRecord: InvocationJournalRecord,
+): GatewayRecoveryEvidenceCandidate {
+  const resultDigest = journalRecord.terminalOutcome?.resultDigest;
+  if (resultDigest === undefined) throw new Error("journal variant lacks result digest");
+  return evidenceCandidate(harness, { journalRecord, evidenceDigest: resultDigest });
+}
+
 async function decide(
   harness: DecisionHarness,
   candidate: GatewayRecoveryEvidenceCandidate,
@@ -445,7 +485,7 @@ function journalVariant(
   harness: DecisionHarness,
   input: {
     readonly method?: string;
-    readonly status?: "completed" | "guarded";
+    readonly status?: "completed" | "failed" | "guarded";
     readonly payloadRetained?: boolean;
     readonly payload?: JsonValue;
     readonly resultDigest?: string;
@@ -468,20 +508,16 @@ function journalVariant(
   });
 }
 
-async function mutateCurrentSession(
+async function mutateCurrentRoot(
   store: GatewayProtocolStore,
-  mutation: (binding: Record<string, JsonValue>) => void,
+  mutation: (root: Record<string, JsonValue>) => void,
 ): Promise<void> {
   const outcome = await store.transact({ tenantId: TENANT }, async (tx) => {
     const rootRecord = await tx.read("gateway.rbp-session/v3", RSID);
     const markerRecord = await tx.read("gateway.rbp-session-cutover/v3", RSID);
     if (rootRecord === null || markerRecord === null) throw new Error("session topology missing");
     const root = structuredClone(rootRecord.value) as Record<string, JsonValue>;
-    const bindingValue = root.binding;
-    if (bindingValue === null || typeof bindingValue !== "object" || Array.isArray(bindingValue)) {
-      throw new Error("session binding missing");
-    }
-    mutation(bindingValue as Record<string, JsonValue>);
+    mutation(root);
     root.rootVersion = rootRecord.version + 1;
     const marker = structuredClone(markerRecord.value) as Record<string, JsonValue>;
     marker.rootVersion = root.rootVersion;
@@ -493,6 +529,19 @@ async function mutateCurrentSession(
       expect: { kind: "version", version: markerRecord.version } });
   });
   expect(outcome.ok).toBe(true);
+}
+
+async function mutateCurrentSession(
+  store: GatewayProtocolStore,
+  mutation: (binding: Record<string, JsonValue>) => void,
+): Promise<void> {
+  await mutateCurrentRoot(store, (root) => {
+    const bindingValue = root.binding;
+    if (bindingValue === null || typeof bindingValue !== "object" || Array.isArray(bindingValue)) {
+      throw new Error("session binding missing");
+    }
+    mutation(bindingValue as Record<string, JsonValue>);
+  });
 }
 
 function paddedRecord(
@@ -530,6 +579,9 @@ describe("mutation-probe-v1 verification authority", () => {
       conclusion: "postcondition_verified",
     });
     const wrongValue = { ...harness.fixtureState, value: 2 } as JsonValue;
+    const duplicateWrite = { ...harness.fixtureState, originWriteCount: 2 } as JsonValue;
+    const wrongOrigin = { ...harness.fixtureState, originInvocationId: uuid7(702) } as JsonValue;
+    const incomplete = { ...harness.fixtureState, complete: false } as JsonValue;
     const absent = { schema: "revagent.fixture-mutation-probe/v1", resultContractVersion: 2,
       present: false, complete: false, originInvocationId: null, value: null,
       originWriteCount: 0, nextWriteCount: 0 } as JsonValue;
@@ -542,29 +594,30 @@ describe("mutation-probe-v1 verification authority", () => {
       { name: "wrong hold", candidate: evidenceCandidate(harness, {
         holdId: makeMutationHoldId(RSID, { kind: "session" }, [`${RSID}/${uuid7(701)}`]),
       }) },
-      { name: "wrong value", candidate: evidenceCandidate(harness, {
-        journalRecord: journalVariant(harness, { payload: wrongValue }),
-      }) },
-      { name: "absent", candidate: evidenceCandidate(harness, {
-        journalRecord: journalVariant(harness, { payload: absent }),
-      }) },
-      { name: "guarded", candidate: evidenceCandidate(harness, {
-        journalRecord: journalVariant(harness, { status: "guarded" }),
-      }) },
-      { name: "omitted", candidate: evidenceCandidate(harness, {
-        journalRecord: journalVariant(harness, { payloadRetained: false }),
-      }) },
-      { name: "malformed", candidate: evidenceCandidate(harness, {
-        journalRecord: journalVariant(harness, { payload: malformed }),
-      }) },
+      { name: "wrong value", candidate: candidateWithJournal(harness,
+        journalVariant(harness, { payload: wrongValue })) },
+      { name: "duplicate write", candidate: candidateWithJournal(harness,
+        journalVariant(harness, { payload: duplicateWrite })) },
+      { name: "wrong origin", candidate: candidateWithJournal(harness,
+        journalVariant(harness, { payload: wrongOrigin })) },
+      { name: "present but incomplete", candidate: candidateWithJournal(harness,
+        journalVariant(harness, { payload: incomplete })) },
+      { name: "absent", candidate: candidateWithJournal(harness,
+        journalVariant(harness, { payload: absent })) },
+      { name: "guarded", candidate: candidateWithJournal(harness,
+        journalVariant(harness, { status: "guarded" })) },
+      { name: "failed read", candidate: candidateWithJournal(harness,
+        journalVariant(harness, { status: "failed" })) },
+      { name: "omitted", candidate: candidateWithJournal(harness,
+        journalVariant(harness, { payloadRetained: false })) },
+      { name: "malformed", candidate: candidateWithJournal(harness,
+        journalVariant(harness, { payload: malformed })) },
       { name: "raw digest mismatch", candidate: evidenceCandidate(harness, {
         evidenceDigest: `sha256:${"f".repeat(64)}`,
       }) },
       ...["fixture_echo", "fixture_counter", "get_ui_state"].map((method) => ({
         name: `substituted ${method}`,
-        candidate: evidenceCandidate(harness, {
-          journalRecord: journalVariant(harness, { method }),
-        }),
+        candidate: candidateWithJournal(harness, journalVariant(harness, { method })),
       })),
     ];
     for (const candidate of cases) {
@@ -591,6 +644,57 @@ describe("mutation-probe-v1 verification authority", () => {
         reason: "mutation_probe_postcondition_unverified",
       });
     }
+  });
+
+  it("denies document-route drift independently at verify, decision, and next", async () => {
+    const origin = await createOriginHarness({ runId: "document-drift-verify",
+      originDocumentId: "document-a" });
+    const driftedVerify = context({ invocationId: uuid7(730),
+      toolName: "conformance.fixture.mutation_probe_verify", method: "fixture_read_mutation_probe",
+      policyClass: "auto", documentId: "document-b" });
+    const driftedVerifyDraft = envelope({ context: driftedVerify,
+      method: "fixture_read_mutation_probe", seq: 2 });
+    const verifyDenied = await origin.workflow.prepareVerification({ context: driftedVerify,
+      sessionBindingId: SESSION_BINDING, connectionId: CONNECTION,
+      envelope: driftedVerifyDraft, binding: binding(driftedVerifyDraft) }) === null;
+
+    const decisionHarness = await createDecisionHarness({ runId: "document-drift-decision",
+      originDocumentId: "document-a", verifyDocumentId: "document-a" });
+    await mutateCurrentRoot(decisionHarness.store, (root) => {
+      root.lifecycle = { liveDocumentRoute: liveDocumentRoute("document-b") };
+    });
+    const decisionDenied = (await decide(
+      decisionHarness,
+      evidenceCandidate(decisionHarness),
+    )).kind === "rejected";
+
+    const nextHarness = await createDecisionHarness({ runId: "document-drift-next",
+      originDocumentId: "document-a", verifyDocumentId: "document-a" });
+    const recorded = await nextHarness.recovery.recordVerificationEvidence({ tenantId: TENANT,
+      rsid: RSID, envelopeDigest: nextHarness.verificationPending.envelopeDigest });
+    if (recorded.kind !== "recorded") throw new Error("next drift evidence setup failed");
+    const planned = await nextHarness.recovery.planRecoveryClearances({ tenantId: TENANT,
+      rsid: RSID, mutationScopes: [recorded.hold.mutationScope],
+      decisions: [{ holdId: recorded.hold.holdId, decision: "postcondition_verified" }] });
+    if (planned.kind !== "planned") throw new Error("next drift plan setup failed");
+    expect(await nextHarness.workflow.recordPlan({ context: nextHarness.verifyContext,
+      hold: recorded.hold, plan: planned.plan })).not.toBeNull();
+    expect(await nextHarness.recovery.releaseInvocationWindow({ tenantId: TENANT, rsid: RSID,
+      attemptId: nextHarness.verifyAttempt })).toMatchObject({ kind: "released" });
+    const driftedNext = context({ invocationId: uuid7(731),
+      toolName: "conformance.fixture.mutation_probe_next", method: "fixture_complete_mutation_probe",
+      policyClass: "confirm", confirmationId: uuid7(732), documentId: "document-b" });
+    const driftedNextDraft = envelope({ context: driftedNext,
+      method: "fixture_complete_mutation_probe", seq: 3 });
+    const nextDenied = await nextHarness.workflow.prepareNext({ context: driftedNext,
+      sessionBindingId: SESSION_BINDING, connectionId: CONNECTION,
+      envelope: driftedNextDraft, expected: expected(driftedNextDraft) }) === null;
+
+    expect({ verifyDenied, decisionDenied, nextDenied }).toEqual({
+      verifyDenied: true,
+      decisionDenied: true,
+      nextDenied: true,
+    });
   });
 
   it("accepts the final authorization millisecond and denies the exact expiry boundary", async () => {
@@ -759,6 +863,11 @@ describe("mutation-probe-v1 verification authority", () => {
     await corrupt.store.open();
     await seedV3Session(corrupt.store, { corruptRootDigest: true });
     expect(await admitOrigin(corrupt.store, "corrupt-run")).toBe(false);
+
+    const absentRoute = createRestartableTestStore();
+    await absentRoute.store.open();
+    await seedV3Session(absentRoute.store, { omitRoute: true });
+    expect(await admitOrigin(absentRoute.store, "absent-route-run")).toBe(false);
   });
 
   it("runs admitted origin -> audited routed read -> private plan and denies owner drift", async () => {
