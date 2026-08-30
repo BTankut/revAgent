@@ -156,8 +156,8 @@ describe("exact forty-case control and observation catalog", () => {
     expect(JSON.stringify(probes)).not.toContain("passed");
   });
 
-  it("grants carriers only to the four cases that exercise chunk or artifact bytes", () => {
-    const carrierCases = new Set(["O1-C15", "O1-C32", "O1-C39", "O1-C40"]);
+  it("grants carriers only to the five cases whose frozen oracles require them", () => {
+    const carrierCases = new Set(["O1-C01", "O1-C15", "O1-C32", "O1-C39", "O1-C40"]);
     const expected = [
       "journal_v1", "chunked_results", "artifact_result_v1", "transport_streamable_http",
     ];

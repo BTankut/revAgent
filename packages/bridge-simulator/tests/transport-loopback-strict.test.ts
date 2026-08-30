@@ -739,6 +739,77 @@ describe("strict Gateway transport boundaries", () => {
     expect(eventReaderCancelled).toBe(true);
   });
 
+  it("retains an early HTTP chunk fault and leaves ordinary sends fail-closed", async () => {
+    const sentBodies: JsonObject[] = [];
+    let eventReaderCancelled = false;
+    let call = 0;
+    const fetchMock: typeof fetch = async (_input, init = {}) => {
+      call += 1;
+      if (call === 1) {
+        return new Response(JSON.stringify(helloAck("chunk-fault")), {
+          status: 201,
+          headers: { "RBP-Connection-Id": "chunk-fault" },
+        });
+      }
+      if (call === 2) {
+        return new Response(new ReadableStream<Uint8Array>({
+          cancel() { eventReaderCancelled = true; },
+        }), {
+          status: 200,
+          headers: { "Content-Type": "text/event-stream" },
+        });
+      }
+      sentBodies.push(JSON.parse(String(init.body)) as JsonObject);
+      if (sentBodies.length === 1) return new Response(null, { status: 202 });
+      return new Response(JSON.stringify({ error: "authenticated early HTTP chunk fault" }), {
+        status: 400,
+        headers: { "Content-Type": "application/json" },
+      });
+    };
+    const binding = new HttpSseGatewayBinding({
+      baseUrl: "http://127.0.0.1:32767/bridge/v1/http/connections",
+      deviceToken: "device-token",
+      endpointPolicy: "loopback_test_readiness",
+      fetch: fetchMock,
+    });
+    try {
+      await binding.open(hello());
+      await expect(binding.sendChunkConformanceFrames?.([
+        { type: "partial", vector: "valid-prefix" },
+        { type: "result", vector: "invalid-target" },
+        { type: "result", vector: "must-not-send" },
+      ])).resolves.toEqual({
+        binding: "streamable_http_sse",
+        accepted: false,
+        source: "authenticated_http_response",
+        faultClass: "protocol",
+        httpStatus: 400,
+        closeCode: null,
+        closeReason: null,
+        message: "authenticated early HTTP chunk fault",
+      });
+      expect(sentBodies).toEqual([
+        { type: "partial", vector: "valid-prefix" },
+        { type: "result", vector: "invalid-target" },
+      ]);
+
+      await expect(binding.send({
+        v: 1,
+        type: "heartbeat",
+        id: uuid(),
+        ts: "2026-07-22T00:00:03.000Z",
+        payload: { bridge_version: "bridge-test", acks: [], sessions: [] },
+      })).rejects.toMatchObject({
+        faultClass: "protocol",
+        httpStatus: 400,
+      });
+      expect(sentBodies).toHaveLength(3);
+    } finally {
+      await binding.close();
+    }
+    expect(eventReaderCancelled).toBe(true);
+  });
+
   it("orders same-session data before unregister without globally serializing HTTP uplink", async () => {
     const firstRsid = uuid();
     const secondRsid = uuid();

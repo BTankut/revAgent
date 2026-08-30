@@ -82,6 +82,9 @@ export interface GatewayBinding {
   sendChunkConformanceFrame?(
     frame: unknown,
   ): Promise<GatewayChunkConformanceFaultEvidence>;
+  sendChunkConformanceFrames?(
+    frames: readonly unknown[],
+  ): Promise<GatewayChunkConformanceFaultEvidence>;
   messages(): AsyncIterable<RbpEnvelope>;
   close(): Promise<void>;
 }
@@ -814,13 +817,20 @@ export class WssGatewayBinding implements GatewayBinding {
   public async sendChunkConformanceFrame(
     frame: unknown,
   ): Promise<GatewayChunkConformanceFaultEvidence> {
+    return await this.sendChunkConformanceFrames([frame]);
+  }
+
+  public async sendChunkConformanceFrames(
+    frames: readonly unknown[],
+  ): Promise<GatewayChunkConformanceFaultEvidence> {
     if (this.#socket?.readyState !== WebSocket.OPEN || this.#connectionId === null) {
       throw new Error("WSS binding is not steady");
     }
+    if (frames.length === 0) throw new Error("WSS conformance frame sequence is empty");
     const socket = this.#socket;
-    const body = JSON.stringify(frame);
-    if (Buffer.byteLength(body, "utf8") > MAX_RBP_WIRE_FRAME_BYTES) {
-      throw new Error(`WSS conformance frame exceeds ${MAX_RBP_WIRE_FRAME_BYTES} raw bytes`);
+    const bodies = frames.map((frame) => JSON.stringify(frame));
+    if (bodies.some((body) => Buffer.byteLength(body, "utf8") > MAX_RBP_WIRE_FRAME_BYTES)) {
+      throw new Error(`WSS conformance frame sequence exceeds ${MAX_RBP_WIRE_FRAME_BYTES} raw bytes`);
     }
     const sendTimeoutMs = positiveTimeout(
       this.#options.sendTimeoutMs,
@@ -890,11 +900,28 @@ export class WssGatewayBinding implements GatewayBinding {
       socket.on("message", onMessage);
       socket.once("close", onClose);
       socket.once("error", onError);
-      socket.send(body, (error) => {
-        if (error !== undefined && error !== null) {
+      let nextBody = 0;
+      const sendNext = (): void => {
+        if (
+          settled ||
+          remoteFault !== null ||
+          socket.readyState !== WebSocket.OPEN ||
+          nextBody >= bodies.length
+        ) return;
+        const body = bodies[nextBody++]!;
+        try {
+          socket.send(body, (error) => {
+            if (error !== undefined && error !== null) {
+              fail(normalizedTransportError(error, "WSS conformance send failed"));
+              return;
+            }
+            sendNext();
+          });
+        } catch (error) {
           fail(normalizedTransportError(error, "WSS conformance send failed"));
         }
-      });
+      };
+      sendNext();
     });
   }
 
@@ -1243,6 +1270,23 @@ export class HttpSseGatewayBinding implements GatewayBinding {
   public async sendChunkConformanceFrame(
     frame: unknown,
   ): Promise<GatewayChunkConformanceFaultEvidence> {
+    return await this.sendChunkConformanceFrames([frame]);
+  }
+
+  public async sendChunkConformanceFrames(
+    frames: readonly unknown[],
+  ): Promise<GatewayChunkConformanceFaultEvidence> {
+    if (frames.length === 0) throw new Error("HTTP/SSE conformance frame sequence is empty");
+    for (const frame of frames) {
+      const fault = await this.#sendChunkConformanceFrameOnce(frame);
+      if (fault !== null) return fault;
+    }
+    throw new Error("HTTP/SSE Gateway unexpectedly accepted every invalid chunk conformance frame");
+  }
+
+  async #sendChunkConformanceFrameOnce(
+    frame: unknown,
+  ): Promise<GatewayChunkConformanceFaultEvidence | null> {
     const connectionId = this.#connectionId;
     if (connectionId === null) throw new Error("HTTP/SSE binding is not steady");
     const body = JSON.stringify(frame);
@@ -1271,7 +1315,7 @@ export class HttpSseGatewayBinding implements GatewayBinding {
       "HTTP/SSE conformance message send",
     );
     if (response.status === 202) {
-      throw new Error("HTTP/SSE Gateway unexpectedly accepted the invalid chunk conformance frame");
+      return null;
     }
     const faultClass = classForHttpStatus(response.status, "message_send");
     if (faultClass !== "protocol") {

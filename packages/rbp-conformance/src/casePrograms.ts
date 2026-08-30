@@ -892,6 +892,9 @@ const CASE_DEFINITIONS: ProgramDefinition[] = [
     caseId: "O1-C01",
     controls: sessionSetup("O1-C01"),
     requiredHarnessCapabilities: ["authenticated_transport", "hello_negotiation", "session_registration"],
+    startupOverrides: {
+      connectionCapabilities: [...CARRIER_CASE_CONNECTION_CAPABILITIES],
+    },
   },
   {
     caseId: "O1-C02",
