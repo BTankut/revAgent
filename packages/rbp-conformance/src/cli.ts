@@ -399,31 +399,45 @@ export async function runFinalEvidenceAsyncCli(
   });
 
   const store = new SecureEvidenceStore(context.artifactRoot);
-  const storedJunit = store.write(aggregateJunitPath, aggregateJunitBytes);
-  if (!storedJunit.bytes.equals(aggregateJunitBytes)) {
+  const aggregateJunitSha256 = createHash("sha256").update(aggregateJunitBytes).digest("hex");
+  const storedJunitBytes = await store.writeAccepted(aggregateJunitPath, aggregateJunitBytes, (candidate) => candidate.acceptExact({
+    logicalPath: aggregateJunitPath,
+    absolutePath: store.resolve(aggregateJunitPath),
+    bytes: aggregateJunitBytes,
+    sha256: aggregateJunitSha256,
+  }, candidate.bytes));
+  if (!storedJunitBytes.equals(aggregateJunitBytes)) {
     throw new Error("retained aggregate JUnit bytes differ from the in-memory result");
   }
   if (
-    createHash("sha256").update(storedJunit.bytes).digest("hex") !==
+    createHash("sha256").update(storedJunitBytes).digest("hex") !==
     aggregate.artifacts[0]!.sha256
   ) {
     throw new Error("retained aggregate JUnit hash differs from the in-memory result");
   }
 
   const aggregateBytes = Buffer.from(stableJson(aggregate), "utf8");
-  const storedAggregate = store.write(aggregate.reportPath, aggregateBytes);
-  if (!storedAggregate.bytes.equals(aggregateBytes)) {
+  const aggregateSha256 = createHash("sha256").update(aggregateBytes).digest("hex");
+  const acceptedAggregate = await store.writeAccepted(aggregate.reportPath, aggregateBytes, (candidate) => candidate.acceptExact({
+    logicalPath: aggregate.reportPath,
+    absolutePath: store.resolve(aggregate.reportPath),
+    bytes: aggregateBytes,
+    sha256: aggregateSha256,
+  }, {
+    absolutePath: candidate.absolutePath,
+    bytes: candidate.bytes,
+    sha256: candidate.sha256,
+    parsed: JSON.parse(candidate.bytes.toString("utf8")) as typeof aggregate,
+  }));
+  if (!acceptedAggregate.bytes.equals(aggregateBytes) || acceptedAggregate.sha256 !== aggregateSha256) {
     throw new Error("retained aggregate JSON bytes differ from the in-memory result");
   }
-  const retainedAggregate = readExactRetainedJson(
-    context.artifactRoot,
-    aggregate.reportPath,
-    aggregate,
-    "aggregate report",
-  );
-  context.options.aggregateReportFile = retainedAggregate.absolutePath;
-  assertPassingAggregateReport(aggregate, context.options);
-  assertAggregateMatchesPlans(aggregate, context.runPlans);
+  if (stableJson(acceptedAggregate.parsed) !== stableJson(aggregate)) {
+    throw new Error("accepted aggregate JSON differs from the in-memory result");
+  }
+  context.options.aggregateReportFile = acceptedAggregate.absolutePath;
+  assertPassingAggregateReport(acceptedAggregate.parsed, context.options);
+  assertAggregateMatchesPlans(acceptedAggregate.parsed, context.runPlans);
 
   assertFinalPlanSnapshotsCurrent(context);
   const soakResult = await runReconnectSoak({
@@ -449,16 +463,18 @@ export async function runFinalEvidenceAsyncCli(
   );
   context.options.soakReportFile = retainedSoak.absolutePath;
   assertPassingSoakReport(soakResult.report, context.options);
-  assertAggregateAndSoakShareExactCandidate(aggregate, soakResult.report);
+  assertAggregateAndSoakShareExactCandidate(
+    acceptedAggregate.parsed,
+    soakResult.report,
+  );
 
-  // Reopen and revalidate the entire evidence set after the one-hour boundary.
-  // A plan or retained-output mutation during the soak invalidates the set.
+  // Reopen retained outputs after the one-hour boundary. The aggregate reread
+  // is liveness/integrity evidence only: callback-accepted path, bytes, hash,
+  // and parsed value remain the sole decision authority.
   assertFinalPlanSnapshotsCurrent(context);
-  readExactRetainedJson(
+  assertAcceptedAggregateRetainedAfterSoak(
     context.artifactRoot,
-    aggregate.reportPath,
-    aggregate,
-    "aggregate report",
+    acceptedAggregate,
   );
   for (const input of runInputs) {
     readExactRetainedJson(
@@ -474,12 +490,15 @@ export async function runFinalEvidenceAsyncCli(
     soakResult.report,
     "one-hour soak report",
   );
-  assertPassingAggregateReport(aggregate, context.options);
-  assertAggregateMatchesPlans(aggregate, context.runPlans);
+  assertPassingAggregateReport(acceptedAggregate.parsed, context.options);
+  assertAggregateMatchesPlans(acceptedAggregate.parsed, context.runPlans);
   assertPassingSoakReport(soakResult.report, context.options);
   assertFinalSoakReportMode(soakResult.report);
   assertSoakMatchesPlan(soakResult.report, context.soakPlan);
-  assertAggregateAndSoakShareExactCandidate(aggregate, soakResult.report);
+  assertAggregateAndSoakShareExactCandidate(
+    acceptedAggregate.parsed,
+    soakResult.report,
+  );
 
   process.stdout.write("RBP FINAL EVIDENCE: PASS\n");
 }
@@ -1034,6 +1053,37 @@ function readExactRetainedJson<T>(
     bytes,
     sha256: createHash("sha256").update(bytes).digest("hex"),
   };
+}
+
+function assertAcceptedAggregateRereadMatches(
+  accepted: { readonly bytes: Buffer; readonly sha256: string },
+  reread: { readonly bytes: Buffer; readonly sha256: string },
+): void {
+  if (
+    !reread.bytes.equals(accepted.bytes) ||
+    reread.sha256 !== accepted.sha256
+  ) {
+    throw new Error("retained aggregate JSON changed after the one-hour boundary");
+  }
+}
+
+/** @internal Final-evidence liveness check; accepted evidence remains authoritative. */
+export function assertAcceptedAggregateRetainedAfterSoak<T>(
+  artifactRoot: string,
+  accepted: {
+    readonly absolutePath: string;
+    readonly bytes: Buffer;
+    readonly sha256: string;
+    readonly parsed: T;
+  },
+): void {
+  const reread = readExactRetainedJson(
+    artifactRoot,
+    path.relative(artifactRoot, accepted.absolutePath),
+    accepted.parsed,
+    "aggregate report",
+  );
+  assertAcceptedAggregateRereadMatches(accepted, reread);
 }
 
 function assertAggregateAndSoakShareExactCandidate(

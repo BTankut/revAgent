@@ -16,6 +16,7 @@ import {
   type ProductionGitIdentity,
 } from "./productionGitIdentity.js";
 import { sha256Json } from "./stableJson.js";
+import { resolveWindowsSystemPaths } from "./windowsSystemPaths.js";
 
 export const PRODUCTION_FILE_SET_ALGORITHM =
   "sha256-stable-json-path-file-sha256/v1" as const;
@@ -1113,26 +1114,30 @@ function npmLauncherIdentity(npmExecutableValue: string): ProductionNpmLauncherI
   };
 }
 
+/**
+ * Resolves the Windows root through the fixed NT GLOBALROOT SystemRoot alias.
+ * The protected production launcher independently derives the same root from
+ * SpecialFolder.Windows before Node starts; SystemRoot/WINDIR are checked only
+ * as defense-in-depth ceremony outputs, never as authority or fallback.
+ */
+export function resolveCanonicalWindowsRoot(): string | null {
+  return resolveWindowsSystemPaths()?.windowsRoot ?? null;
+}
+
 export function resolvePowerShellIdentity(): ProductionPowerShellIdentity | null {
-  if (process.platform !== "win32") return null;
-  const systemRoot = process.env.SystemRoot ?? process.env.WINDIR;
-  if (systemRoot === undefined || !path.isAbsolute(systemRoot)) {
-    throw new Error("Windows SystemRoot is unavailable for the canonical PowerShell identity");
-  }
-  const executable = path.resolve(
-    systemRoot,
-    "System32",
-    "WindowsPowerShell",
-    "v1.0",
-    "powershell.exe",
-  );
+  const systemPaths = resolveWindowsSystemPaths();
+  if (systemPaths === null) return null;
+  const windowsRoot = systemPaths.windowsRoot;
+  const executable = systemPaths.powershell;
   if (lstatSync(executable).isSymbolicLink()) {
     throw new Error(`PowerShell executable cannot be a symbolic link: ${executable}`);
   }
   const realExecutable = realpathSync(executable);
-  if (!statSync(realExecutable).isFile()) {
+  if (!statSync(realExecutable).isFile() || normalizePath(realExecutable) !== normalizePath(executable)) {
     throw new Error(`PowerShell executable is not a regular file: ${executable}`);
   }
+  // Bind bytes before executing the candidate version probe.
+  const sha256 = sha256File(realExecutable);
   const result = spawnSync(
     realExecutable,
     [
@@ -1146,7 +1151,10 @@ export function resolvePowerShellIdentity(): ProductionPowerShellIdentity | null
       shell: false,
       windowsHide: true,
       timeout: 15_000,
-      env: sanitizedProductionRuntimeEnvironment(),
+      env: sanitizedProductionRuntimeEnvironment(process.env, {
+        SystemRoot: windowsRoot,
+        WINDIR: windowsRoot,
+      }),
     },
   );
   if (result.error !== undefined) throw result.error;
@@ -1160,7 +1168,7 @@ export function resolvePowerShellIdentity(): ProductionPowerShellIdentity | null
   return {
     path: normalizePath(executable),
     realPath: normalizePath(realExecutable),
-    sha256: sha256File(realExecutable),
+    sha256,
     version,
   };
 }
@@ -1176,7 +1184,12 @@ export function verifyPowerShellIdentityCurrent(
   if (process.platform !== "win32") {
     throw new Error("a bound PowerShell identity is invalid on this platform");
   }
-  const executable = path.resolve(expected.path);
+  const systemPaths = resolveWindowsSystemPaths();
+  if (systemPaths === null) throw new Error("canonical Windows system paths are unavailable");
+  const executable = systemPaths.powershell;
+  if (normalizePath(executable) !== normalizePath(expected.path)) {
+    throw new Error("bound PowerShell path differs from canonical OS provenance");
+  }
   if (lstatSync(executable).isSymbolicLink()) {
     throw new Error(`PowerShell executable cannot be a symbolic link: ${executable}`);
   }

@@ -17,21 +17,27 @@ function retained(relative: string): string {
   return `${canonicalManifest.retainedEvidence.root}/${relative}`;
 }
 
-function artifact(
+async function artifact(
   store: SecureEvidenceStore,
   kind: ArtifactEvidence["kind"],
   relativePath: string,
   contents: string | Buffer,
   mediaType: string,
-): ArtifactEvidence {
-  const stored = store.write(relativePath, contents);
-  return {
+): Promise<ArtifactEvidence> {
+  const bytes = Buffer.isBuffer(contents) ? Buffer.from(contents) : Buffer.from(contents, "utf8");
+  const sha256 = createHash("sha256").update(bytes).digest("hex");
+  return await store.writeAccepted(relativePath, bytes, (candidate) => candidate.acceptExact({
+    logicalPath: relativePath,
+    absolutePath: store.resolve(relativePath),
+    bytes,
+    sha256,
+  }, {
     kind,
     path: relativePath,
-    sha256: createHash("sha256").update(stored.bytes).digest("hex"),
-    bytes: stored.bytes.length,
+    sha256,
+    bytes: bytes.length,
     mediaType,
-  };
+  }));
 }
 
 function assertionRecord(assertion: CaseResult["assertions"][number]): EvidenceAssertionRecord {
@@ -113,12 +119,12 @@ function caseDocument(input: {
  * parent-evidence document digest. The caller owns the semantic verdict; this
  * writer only validates identity, intervals, references, and bytes.
  */
-export function retainSupervisedCaseEvidence(input: {
+export async function retainSupervisedCaseEvidence(input: {
   artifactRoot: string;
   runId: string;
   result: CaseResult;
   observations: readonly ProcessObservationRecord[];
-}): ArtifactEvidence[] {
+}): Promise<ArtifactEvidence[]> {
   assertCaseIdentity(input.result, input.observations, input.runId);
   const store = new SecureEvidenceStore(input.artifactRoot);
   const evidenceDocument = caseDocument({ ...input, source: "case_evidence" });
@@ -127,7 +133,7 @@ export function retainSupervisedCaseEvidence(input: {
     throw new Error(`parent case evidence is invalid: ${stableJson(evidenceIssues)}`);
   }
   const evidencePath = retained(`runs/${input.runId}/cases/${input.result.caseId}/supervised-evidence-v2.json`);
-  const evidenceArtifact = artifact(
+  const evidenceArtifact = await artifact(
     store,
     "case_evidence",
     evidencePath,
@@ -140,7 +146,7 @@ export function retainSupervisedCaseEvidence(input: {
   if (journalIssues.length > 0) {
     throw new Error(`parent journal evidence is invalid: ${stableJson(journalIssues)}`);
   }
-  const journalArtifact = artifact(
+  const journalArtifact = await artifact(
     store,
     "journal_snapshot",
     retained(`runs/${input.runId}/journal/${input.result.caseId}.json`),
@@ -148,7 +154,8 @@ export function retainSupervisedCaseEvidence(input: {
     "application/json",
   );
 
-  const wireArtifacts = input.result.bindings.map(({ binding }) => {
+  const wireArtifacts: ArtifactEvidence[] = [];
+  for (const { binding } of input.result.bindings) {
     const trace: WireTraceRecord = {
       schemaVersion: "rbp-wire-trace/v1",
       runId: input.runId,
@@ -159,14 +166,14 @@ export function retainSupervisedCaseEvidence(input: {
       status: input.result.status,
       assertions: [],
     };
-    return artifact(
+    wireArtifacts.push(await artifact(
       store,
       "wire_trace",
       retained(`runs/${input.runId}/wire/${input.result.caseId}-${binding}.jsonl`),
       `${JSON.stringify(trace)}\n`,
       "application/x-ndjson",
-    );
-  });
+    ));
+  }
 
   input.result.assertions.forEach((assertion) => {
     assertion.evidenceSha256 = evidenceArtifact.sha256;

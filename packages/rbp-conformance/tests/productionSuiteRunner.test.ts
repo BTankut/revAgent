@@ -70,7 +70,7 @@ describe("production suite dependency boundary", () => {
     expect(() => serializedWallDurationMs(2_000, 1_999)).toThrow(/finish precedes start/u);
   });
 
-  it("keeps evaluated observations accounted when case-evidence retention fails", () => {
+  it("keeps evaluated observations accounted when case-evidence retention fails", async () => {
     const root = mkdtempSync(path.join(tmpdir(), "rbp-production-retention-"));
     const report = createUnexecutedRunReport(createPlan());
     const result = report.cases[0]!;
@@ -79,7 +79,7 @@ describe("production suite dependency boundary", () => {
     const retentionFailures: Error[] = [];
 
     try {
-      retainAccountedCaseEvidence({
+      await retainAccountedCaseEvidence({
         artifactRoot: root,
         runId: report.run.runId,
         result,

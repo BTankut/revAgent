@@ -1,4 +1,5 @@
-import { existsSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -25,6 +26,67 @@ function productionPlan(binding: Binding): ExecutionPlan {
 }
 
 describe("shared production case-stack controls", () => {
+  it("retains bounded teardown evidence before successful instance cleanup", async () => {
+    const evidenceRoot = mkdtempSync(path.join(tmpdir(), "wp12-c29-teardown-evidence-"));
+    const plan = productionPlan("wss");
+    const supervisor = new CaseStackSupervisor({
+      plan,
+      repoRoot,
+      teardownEvidenceRoot: evidenceRoot,
+      runtimeLaunchGuard() {},
+    });
+    const unhandled: unknown[] = [];
+    const onUnhandled = (error: unknown): void => { unhandled.push(error); };
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      await supervisor.restartCaseStack({
+        caseId: "O1-C29",
+        binding: "wss",
+        preserveState: false,
+      }, "o1-c29.stack-start", "restart_case_stack");
+      const stopped = await supervisor.stopCaseStack("o1-c29.stack-stop", "stop_case_stack");
+      expect(stopped.result.orphanProcessCount).toBe(0);
+      expect(supervisor.active).toBe(false);
+
+      const files = readdirSync(evidenceRoot, { recursive: true })
+        .filter((entry) => typeof entry === "string" && entry.endsWith(".json"));
+      expect(files).toHaveLength(1);
+      const document = JSON.parse(readFileSync(path.join(evidenceRoot, files[0]!), "utf8")) as {
+        instanceRootId: string;
+        survivors: number[];
+        components: Array<{
+          componentId: string;
+          stop: {
+            observed: boolean;
+            killEscalated: boolean;
+            telemetry: { correlationKind: string | null; acknowledgement: string };
+            output: { stdout: { safeLines: string[] }; stderr: { safeLines: string[] } };
+          };
+        }>;
+      };
+      expect(document.instanceRootId).toMatch(/^sha256:/u);
+      expect(document.survivors).toEqual([]);
+      expect(document.components).toHaveLength(3);
+      const gateway = document.components.find(({ componentId }) => componentId === "gateway_stub")!;
+      expect(gateway.stop.observed).toBe(true);
+      expect(gateway.stop.telemetry.correlationKind).toBe("ipc_stop_nonce");
+      expect(gateway.stop.output.stdout.safeLines.join("\n")).toContain("\"ws_url\"");
+      if (gateway.stop.telemetry.acknowledgement !== "closed") {
+        expect(gateway.stop.killEscalated).toBe(true);
+      }
+      expect(JSON.stringify(document)).not.toContain(evidenceRoot);
+      expect(JSON.stringify(document)).not.toMatch(/(?:[A-Za-z]:\\|"token"\s*:|"proof"\s*:)/u);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+      if (supervisor.active) {
+        await supervisor.stopCaseStack("o1-c29.test-cleanup", "stop_case_stack");
+      }
+      rmSync(evidenceRoot, { recursive: true, force: true });
+    }
+  }, 60_000);
+
   it.each(["wss", "streamable_http_sse"] as const)(
     "owns restart, extra-fixture, compact-snapshot, and backpressure seams for %s",
     async (binding) => {

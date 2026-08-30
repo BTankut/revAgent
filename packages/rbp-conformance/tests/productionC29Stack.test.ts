@@ -1,4 +1,5 @@
 import path from "node:path";
+import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
@@ -20,6 +21,14 @@ import {
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const repoRoot = path.resolve(packageRoot, "..", "..");
 const caseId = "O1-C29";
+const teardownEvidenceRoot = process.env.REVAGENT_RBP_C29_TEARDOWN_EVIDENCE_ROOT;
+
+function retainedTeardownEvidence(root: string): Record<string, unknown>[] {
+  const files = readdirSync(root, { recursive: true })
+    .filter((entry) => typeof entry === "string" && entry.endsWith(".json"))
+    .map((entry) => path.join(root, entry));
+  return files.map((file) => JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>);
+}
 
 function productionPlan(): ExecutionPlan {
   return createCurrentProductionPlan(
@@ -77,8 +86,26 @@ describe.sequential("C29 production batch redelivery and crash recovery", () => 
           plan,
           repoRoot,
           caseId,
+          ...(teardownEvidenceRoot === undefined
+            ? {}
+            : { teardownEvidenceRoot }),
         }),
       );
+      const observedPrivateIdentities = new Set<string>();
+      const collectIdentities = (value: unknown): void => {
+        if (Array.isArray(value)) { value.forEach(collectIdentities); return; }
+        if (value === null || typeof value !== "object") return;
+        for (const [key, entry] of Object.entries(value)) {
+          if (/^(?:subject|rsid)$/iu.test(key) && typeof entry === "string" && entry.length > 0) {
+            observedPrivateIdentities.add(entry);
+          }
+          collectIdentities(entry);
+        }
+      };
+      // Use identifiers actually observed in this production run, including
+      // durability-event subjects, rather than guessed sentinel formats.
+      for (const execution of executions) collectIdentities(execution.evidence.observations);
+      expect(observedPrivateIdentities.size).toBeGreaterThan(0);
 
       for (const execution of executions) {
         const results = canonicalManifest.requiredAssertions[caseId]!.map((assertion) => ({
@@ -144,6 +171,56 @@ describe.sequential("C29 production batch redelivery and crash recovery", () => 
         expect(JSON.stringify(execution.evidence.observations)).not.toMatch(
           /"(?:actual|passed|verdict)"\s*:/u,
         );
+      }
+
+      if (teardownEvidenceRoot !== undefined) {
+        const retained = retainedTeardownEvidence(teardownEvidenceRoot);
+        expect(retained).toHaveLength(4);
+        for (const document of retained) {
+          expect(document).toMatchObject({
+            schemaVersion: "rbp-c29-teardown-evidence/v1",
+            caseId,
+            orphanProcessCount: 0,
+            survivors: [],
+            proxyDrain: {
+              gatewayProxyStopped: true,
+              fixtureProxyStopped: true,
+            },
+          });
+          const components = document.components as Array<Record<string, unknown>>;
+          expect(components).toHaveLength(3);
+          for (const component of components) {
+            const processEvidence = component.process as Record<string, unknown>;
+            expect(component).toMatchObject({
+              process: { exitCode: 0, stoppedAt: expect.any(String) },
+              stop: {
+                observed: true,
+                exitCode: 0,
+                killEscalated: false,
+                stoppedAt: processEvidence.stoppedAt,
+                output: { pid: processEvidence.pid, exitCode: 0 },
+              },
+            });
+          }
+          const gateway = components.find(({ componentId }) => componentId === "gateway_stub");
+          expect(gateway).toMatchObject({
+            stop: {
+              observed: true,
+              killEscalated: false,
+              telemetry: {
+                correlationKind: "ipc_stop_nonce",
+                acknowledgement: "closed",
+              },
+            },
+          });
+          const telemetry = (gateway?.stop as Record<string, unknown>).telemetry as Record<string, unknown>;
+          expect(telemetry.correlationId).toEqual(expect.any(String));
+          expect(telemetry.acknowledgedAt).toEqual(expect.any(String));
+          expect(JSON.stringify(document)).not.toMatch(/(?:[A-Za-z]:\\|"token"\s*:|"proof"\s*:)/u);
+          for (const identity of observedPrivateIdentities) {
+            expect(JSON.stringify(document)).not.toContain(identity);
+          }
+        }
       }
     },
     180_000,

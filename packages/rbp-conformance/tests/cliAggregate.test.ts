@@ -66,8 +66,8 @@ describe("aggregate CLI retained-evidence flow", () => {
         )) as [
           ReturnType<typeof createCurrentProductionPlan>,
           ReturnType<typeof createCurrentProductionPlan>,
-          ReturnType<typeof createCurrentProductionPlan>,
-        ];
+        ReturnType<typeof createCurrentProductionPlan>,
+      ];
       const planFiles = plans.map((plan, index) => {
         const target = path.join(root, `plan-${String(index + 1)}.json`);
         writeFileSync(target, stableJson(plan), "utf8");
