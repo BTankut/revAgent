@@ -86,11 +86,35 @@ internal sealed class RbpRoutedInvocationChannel(
             // entirely on how far the request got, which the evidence below
             // answers; the lease is still handed back so the dispatcher, not
             // this method, decides when the session reopens.
-            return FromFailure(exception, lease, leaseHandle);
+            return FromFailure(exception, lease, leaseHandle) with
+            {
+                RouteLocalSessionKey = handle.LocalSessionKey,
+                RouteAuthority = RouteSnapshot(lease.Authority),
+            };
         }
 
-        return FromResponse(result, leaseHandle);
+        bool current = lease.TryReadCurrentIncarnation(out var currentAuthority) &&
+            currentAuthority == lease.Authority;
+        bool attestationMatches = result.ProcessAttestation is { } attestation &&
+            string.Equals(
+                AddinSessionRouter.ProcessAttestationDigest(attestation),
+                lease.Authority.ProcessAttestationDigest,
+                StringComparison.Ordinal);
+        return FromResponse(result, leaseHandle) with
+        {
+            RouteLocalSessionKey = handle.LocalSessionKey,
+            RouteAuthority = RouteSnapshot(lease.Authority),
+            RouteFailure = !current || !attestationMatches,
+        };
     }
+
+    private static RbpRouteAuthoritySnapshot RouteSnapshot(
+        AddinSessionRouter.InvocationAuthoritySnapshot value) =>
+        new(
+            value.LocalSessionKey,
+            value.HandleGeneration,
+            value.RegistrationSignatureDigest,
+            value.ProcessAttestationDigest);
 
     private static RbpAddinOutcome FromResponse(
         AddinCallResult result,
@@ -475,6 +499,12 @@ internal interface IRbpSessionRouteBindingAuthority
 {
     /// <summary>Begins one coordinator-owned route epoch and fences all prior routes.</summary>
     bool BeginConnectionEpoch(long epoch);
+
+    /// <summary>
+    /// Publishes a lock-free monotonic deny fence before retained teardown can
+    /// wait on route synchronization.
+    /// </summary>
+    void DenyConnectionEpoch(long epoch) { }
 
     /// <summary>Fences exactly the active epoch before its work is cancelled or drained.</summary>
     void FenceConnectionEpoch(long epoch);

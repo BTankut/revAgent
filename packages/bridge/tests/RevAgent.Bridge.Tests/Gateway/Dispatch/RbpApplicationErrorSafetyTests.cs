@@ -540,6 +540,7 @@ public sealed class RbpApplicationErrorSafetyTests
         internal readonly AddinSessionRouter Router;
         internal readonly MutableRoute Route = new();
         internal readonly RbpRoutedInvocationChannel Channel;
+        internal RbpInvocationAuthoritySnapshot? InvocationAuthority;
         internal RoutedFixture(string resultJson, int? errorCode)
         {
             Transport = new ResponseTransport(resultJson, errorCode);
@@ -577,6 +578,11 @@ public sealed class RbpApplicationErrorSafetyTests
 
     internal sealed class ResponseTransport(string result, int? errorCode) : IAddinTransport
     {
+        internal void SetResponse(string resultJson, int? code = null)
+        {
+            result = resultJson;
+            errorCode = code;
+        }
         internal int Calls;
         internal byte[] LastBytes = [];
         internal Action? BeforeReturn;

@@ -23,8 +23,23 @@ internal sealed partial class RbpJournalStore : IAsyncDisposable
     private readonly IRbpJournalFaultInjector? _faultInjector;
     private readonly int _commandTimeoutSeconds;
     private long _activeConnectionGeneration;
-    private bool _closed;
+    private readonly object _lifetimeSync = new();
+    private RbpJournalLifetimeState _lifetimeState =
+        RbpJournalLifetimeState.Open;
+    private int _admittedOperationCount;
+    private readonly TaskCompletionSource _finalized = new(
+        TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly TaskCompletionSource _authorityPoisoned = new(
+        TaskCreationOptions.RunContinuationsAsynchronously);
     private bool _sensitiveCompactionUnproven;
+
+    private enum RbpJournalLifetimeState
+    {
+        Open,
+        QuarantineRequested,
+        Finalizing,
+        Closed,
+    }
 
     private RbpJournalStore(
         string databasePath,
@@ -279,11 +294,11 @@ internal sealed partial class RbpJournalStore : IAsyncDisposable
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(operation);
-        EnsureOpen();
+        using RbpJournalOperationLease admitted = AdmitOperation();
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            EnsureOpen();
+            EnsureAdmittedUsable();
             using SqliteTransaction transaction =
                 _connection.BeginTransaction(deferred: false);
             var context = new RbpJournalWriteContext(
@@ -365,11 +380,11 @@ internal sealed partial class RbpJournalStore : IAsyncDisposable
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(operation);
-        EnsureOpen();
+        using RbpJournalOperationLease admitted = AdmitOperation();
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            EnsureOpen();
+            EnsureAdmittedUsable();
             return operation(_connection);
         }
         finally
@@ -380,29 +395,42 @@ internal sealed partial class RbpJournalStore : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        await _gate.WaitAsync().ConfigureAwait(false);
-        try
+        bool finalize = false;
+        Task wait;
+        lock (_lifetimeSync)
         {
-            if (_closed)
+            switch (_lifetimeState)
+            {
+                case RbpJournalLifetimeState.Open:
+                    _lifetimeState =
+                        RbpJournalLifetimeState.QuarantineRequested;
+                    break;
+                case RbpJournalLifetimeState.Closed:
+                    return;
+            }
+
+            if (_lifetimeState ==
+                    RbpJournalLifetimeState.QuarantineRequested &&
+                _admittedOperationCount == 0)
+            {
+                _lifetimeState = RbpJournalLifetimeState.Finalizing;
+                finalize = true;
+            }
+            wait = _finalized.Task;
+            if (!finalize && _authorityPoisoned.Task.IsCompleted)
             {
                 return;
             }
+        }
 
-            _closed = true;
-            try
-            {
-                RunTruncateCheckpoint(_connection);
-            }
-            finally
-            {
-                _connection.Dispose();
-                _writerLease.Dispose();
-            }
-        }
-        finally
+        if (finalize)
         {
-            _gate.Release();
+            FinalizeStore();
+            return;
         }
+
+        await Task.WhenAny(wait, _authorityPoisoned.Task)
+            .ConfigureAwait(false);
     }
 
     private static bool InitializeSqlite()
@@ -1164,15 +1192,28 @@ internal sealed partial class RbpJournalStore : IAsyncDisposable
         }
     }
 
-    private void EnsureOpen()
+    private RbpJournalOperationLease AdmitOperation()
     {
-        if (_closed)
+        lock (_lifetimeSync)
+        {
+            if (_lifetimeState != RbpJournalLifetimeState.Open ||
+                _authorityPoisoned.Task.IsCompleted)
+                throw new RbpJournalException(
+                    RbpJournalErrorCode.StoreClosed,
+                    "The RBP journal store is closed or quarantined.");
+            checked { _admittedOperationCount++; }
+            return new RbpJournalOperationLease(this);
+        }
+    }
+
+    private void EnsureAdmittedUsable()
+    {
+        if (_authorityPoisoned.Task.IsCompleted)
         {
             throw new RbpJournalException(
                 RbpJournalErrorCode.StoreClosed,
-                "The RBP journal store is closed.");
+                "The RBP journal store is quarantined.");
         }
-
         if (_sensitiveCompactionUnproven)
         {
             throw new RbpJournalException(
@@ -1181,6 +1222,66 @@ internal sealed partial class RbpJournalStore : IAsyncDisposable
                 "WAL compaction could not be proven.",
                 durableStateObserved: true);
         }
+    }
+
+    private void ReleaseAdmittedOperation()
+    {
+        bool finalize = false;
+        lock (_lifetimeSync)
+        {
+            if (_admittedOperationCount <= 0)
+                throw new InvalidOperationException(
+                    "The RBP journal operation lease was released twice.");
+            _admittedOperationCount--;
+            if (_admittedOperationCount == 0 &&
+                _lifetimeState ==
+                    RbpJournalLifetimeState.QuarantineRequested)
+            {
+                _lifetimeState = RbpJournalLifetimeState.Finalizing;
+                finalize = true;
+            }
+        }
+        if (finalize) FinalizeStore();
+    }
+
+    private void FinalizeStore()
+    {
+        Exception? failure = null;
+        try
+        {
+            if (!_authorityPoisoned.Task.IsCompleted)
+                RunTruncateCheckpoint(_connection);
+        }
+        catch (Exception exception)
+        {
+            failure = exception;
+        }
+        finally
+        {
+            try { _connection.Dispose(); }
+            catch (Exception exception) { failure ??= exception; }
+            try { _writerLease.Dispose(); }
+            catch (Exception exception) { failure ??= exception; }
+            lock (_lifetimeSync)
+            {
+                _lifetimeState = RbpJournalLifetimeState.Closed;
+            }
+            if (failure is null) _finalized.TrySetResult();
+            else _finalized.TrySetException(failure);
+        }
+    }
+
+    internal void PoisonProcessAuthority() =>
+        _authorityPoisoned.TrySetResult();
+
+    private sealed class RbpJournalOperationLease(
+        RbpJournalStore owner) : IDisposable
+    {
+        private RbpJournalStore? _owner = owner;
+
+        public void Dispose() =>
+            Interlocked.Exchange(ref _owner, null)?
+                .ReleaseAdmittedOperation();
     }
 
     private static void RejectEscapedAsynchronousResult<T>(T result)

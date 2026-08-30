@@ -30,6 +30,14 @@ public sealed partial class RbpConnectionCoordinatorTests
             connectionId: "019f9add-7a83-7d11-a6a9-d2f8108c0101");
         RbpRecoveryCarrierReservation reservation =
             await PrepareRecoveryReservationAsync(store);
+        using (RbpRecoveredPayload? initial =
+               await store.GetCorrelatedRecoveryPayloadAsync(
+                   reservation.Rsid,
+                   reservation.OriginInvocationId,
+                   reservation.ResultDigest))
+        {
+            Assert.NotNull(initial);
+        }
         var coordinator = Coordinator(
             new FakeConnectionCycleFactory(cycle),
             store,
@@ -79,7 +87,22 @@ public sealed partial class RbpConnectionCoordinatorTests
             item.Scope == RbpEnvelopeScope.Data &&
             item.Id == reservation.RecoveryInvocationId);
 
+        await EventuallyAsync(() =>
+        {
+            RbpConnectionCoordinatorSnapshot snapshot =
+                coordinator.GetSnapshot();
+            return snapshot.HasActiveConnection &&
+                   snapshot.ActiveInvocationCount == 0 &&
+                   snapshot.Lifecycle.Phase == RbpConnectionPhase.Steady;
+        });
+        Task<RbpCoordinatorTeardownResult> teardown =
+            coordinator.RequestStopTeardown();
         stop.Cancel();
+        RbpCoordinatorTeardownResult result = await teardown.WaitAsync(
+            TimeSpan.FromSeconds(5));
+        Assert.Equal(
+            RbpCoordinatorTeardownDisposition.NormalStopped,
+            result.Disposition);
         await run.WaitAsync(TimeSpan.FromSeconds(5));
     }
 
@@ -488,8 +511,8 @@ public sealed partial class RbpConnectionCoordinatorTests
             RbpRecoveryCarrierObservationPhase.Acknowledged &&
             item.Sequence == terminal.Sequence);
 
-        stop.Cancel();
-        await run.WaitAsync(TimeSpan.FromSeconds(5));
+        await StopAfterAssertedConnectionFailureAsync(
+            coordinator, stop, run, () => first.CloseCount > 0);
     }
 
     [Fact]
@@ -557,9 +580,13 @@ public sealed partial class RbpConnectionCoordinatorTests
             await store.ListActiveRecoveryTerminalPlansAsync());
         Assert.Equal(reservation.CurrentReservedSequence + 1,
             durable.FinalSequence);
-        Assert.NotNull(await store.GetCorrelatedRecoveryPayloadAsync(
-            reservation.Rsid, reservation.OriginInvocationId,
-            reservation.ResultDigest));
+        using (RbpRecoveredPayload? retained =
+               await store.GetCorrelatedRecoveryPayloadAsync(
+                   reservation.Rsid, reservation.OriginInvocationId,
+                   reservation.ResultDigest))
+        {
+            Assert.NotNull(retained);
+        }
         Assert.Empty((await store.LoadSequenceAsync(reservation.Rsid)).Outbox);
 
         await EventuallyAsync(() => coordinator.GetSnapshot().ConnectionGeneration == 2);
@@ -685,6 +712,391 @@ public sealed partial class RbpConnectionCoordinatorTests
     }
 
     [Fact]
+    public async Task RecoveryAckGateInstalledBeforeStopIsRemovedAfterOwnedCallbackDrains()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        var clock = new ManualCoordinatorClock();
+        await using RbpJournalStore store = RbpJournalStore.Open(
+            directory.JournalPath, new TestResumeTokenProtector(),
+            RbpJournalTestData.Options(), new TestRecoveryPayloadProtector());
+        RbpRecoveryCarrierReservation reservation =
+            await PrepareRecoveryReservationAsync(store);
+        var responder = new ScriptedGatewayResponder(clock);
+        var cycle = new FakeConnectionCycle(
+            envelope => envelope.Type == "heartbeat"
+                ? null
+                : responder.Respond(envelope),
+            grantedConnectionCapabilities: RouteProofCapabilities(),
+            connectionId: "019f9add-7a83-7d11-a6a9-d2f8108c0210");
+        var entered = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var coordinator = new RbpConnectionCoordinator(
+            new FakeConnectionCycleFactory(cycle), store,
+            new MutableSessionCatalog(LocalSession(8080, 1000)),
+            new RbpConnectionCoordinatorOptions(
+                new Uri("wss://gateway.revagent.app/bridge/v1"),
+                RouteProofHelloProfile()),
+            new RecoveryDispatcher(reservation), new RecordingInboundJournal(),
+            clock, new FixedRandomSource(0), RouteProofWatcher(clock),
+            afterRecoveryCarrierWriteBeforeAck: async _ =>
+            {
+                entered.TrySetResult();
+                await release.Task.ConfigureAwait(false);
+            });
+        using var stop = new CancellationTokenSource();
+        Task run = coordinator.RunAsync(stop.Token);
+        Task<RbpCoordinatorTeardownResult>? teardown = null;
+        try
+        {
+            await EventuallyAsync(
+                () => coordinator.GetSnapshot().ActiveRsids.Count == 1);
+            _ = await EventuallySentAsync(cycle, item =>
+                item.Type == "partial" &&
+                item.Id == reservation.RecoveryInvocationId);
+            clock.Advance(TimeSpan.FromSeconds(15));
+            await EventuallyAsync(
+                () => cycle.Sent.Any(item => item.Type == "heartbeat"));
+            cycle.Deliver(HeartbeatAck(
+                clock, Id(9781), reservation.Rsid,
+                reservation.CurrentReservedSequence));
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            Assert.Equal(1, RecoveryAckGateCount(coordinator));
+
+            teardown = coordinator.RequestStopTeardown();
+            stop.Cancel();
+            await Task.Delay(20);
+            Assert.False(teardown.IsCompleted);
+        }
+        finally
+        {
+            release.TrySetResult();
+            stop.Cancel();
+        }
+        Assert.NotNull(teardown);
+        RbpCoordinatorTeardownResult result = await teardown.WaitAsync(
+            TimeSpan.FromSeconds(2));
+        Assert.Equal(
+            RbpCoordinatorTeardownDisposition.NormalStopped,
+            result.Disposition);
+        await run.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.Equal(0, RecoveryAckGateCount(coordinator));
+        Assert.Equal(1, cycle.CloseCount);
+        Assert.Equal(1, cycle.DisposeCount);
+    }
+
+    [Fact]
+    public async Task StopBeforeAckGateInstallStartsNoGateOrTerminalSend()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        var clock = new ManualCoordinatorClock();
+        await using RbpJournalStore store = RbpJournalStore.Open(
+            directory.JournalPath, new TestResumeTokenProtector(),
+            RbpJournalTestData.Options(), new TestRecoveryPayloadProtector());
+        RbpRecoveryCarrierReservation reservation =
+            await PrepareRecoveryReservationAsync(store);
+        var responder = new ScriptedGatewayResponder(clock);
+        var cycle = new FakeConnectionCycle(
+            envelope => envelope.Type == "heartbeat"
+                ? null
+                : responder.Respond(envelope),
+            grantedConnectionCapabilities: RouteProofCapabilities(),
+            connectionId: "019f9add-7a83-7d11-a6a9-d2f8108c0211");
+        var entered = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var coordinator = new RbpConnectionCoordinator(
+            new FakeConnectionCycleFactory(cycle), store,
+            new MutableSessionCatalog(LocalSession(8080, 1000)),
+            new RbpConnectionCoordinatorOptions(
+                new Uri("wss://gateway.revagent.app/bridge/v1"),
+                RouteProofHelloProfile()),
+            new RecoveryDispatcher(reservation), new RecordingInboundJournal(),
+            clock, new FixedRandomSource(0), RouteProofWatcher(clock),
+            beforeRecoveryTerminalWrite: async _ =>
+            {
+                entered.TrySetResult();
+                await release.Task.ConfigureAwait(false);
+            },
+            afterRecoveryCarrierWriteBeforeAck: _ => Task.CompletedTask);
+        using var stop = new CancellationTokenSource();
+        Task run = coordinator.RunAsync(stop.Token);
+        Task<RbpCoordinatorTeardownResult>? teardown = null;
+        try
+        {
+            await EventuallyAsync(
+                () => coordinator.GetSnapshot().ActiveRsids.Count == 1);
+            _ = await EventuallySentAsync(cycle, item =>
+                item.Type == "partial" &&
+                item.Id == reservation.RecoveryInvocationId);
+            clock.Advance(TimeSpan.FromSeconds(15));
+            await EventuallyAsync(
+                () => cycle.Sent.Any(item => item.Type == "heartbeat"));
+            cycle.Deliver(HeartbeatAck(
+                clock, Id(9782), reservation.Rsid,
+                reservation.CurrentReservedSequence));
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            Assert.Equal(0, RecoveryAckGateCount(coordinator));
+
+            teardown = coordinator.RequestStopTeardown();
+            stop.Cancel();
+        }
+        finally
+        {
+            release.TrySetResult();
+            stop.Cancel();
+        }
+        Assert.NotNull(teardown);
+        _ = await teardown.WaitAsync(TimeSpan.FromSeconds(2));
+        await run.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.Equal(0, RecoveryAckGateCount(coordinator));
+        Assert.DoesNotContain(cycle.Sent, item =>
+            item.Type == "result" &&
+            item.Id == reservation.RecoveryInvocationId);
+    }
+
+    [Fact]
+    public async Task StopAfterRecoveryListBeforeClaimUsesShutdownTombstoneNoSend()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        var clock = new ManualCoordinatorClock();
+        var faults = new BlockingJournalFaultInjector();
+        await using RbpJournalStore store = RbpJournalStore.Open(
+            directory.JournalPath, new TestResumeTokenProtector(),
+            RbpJournalTestData.Options(faults),
+            new TestRecoveryPayloadProtector());
+        RbpRecoveryCarrierReservation reservation =
+            await PrepareRecoveryReservationAsync(store);
+        using (RbpRecoveredPayload? initial =
+               await store.GetCorrelatedRecoveryPayloadAsync(
+                   reservation.Rsid,
+                   reservation.OriginInvocationId,
+                   reservation.ResultDigest))
+        {
+            Assert.NotNull(initial);
+        }
+        var responder = new ScriptedGatewayResponder(clock);
+        var cycle = new FakeConnectionCycle(
+            responder.Respond,
+            grantedConnectionCapabilities: RouteProofCapabilities(),
+            connectionId: "019f9add-7a83-7d11-a6a9-d2f8108c0212");
+        var coordinator = new RbpConnectionCoordinator(
+            new FakeConnectionCycleFactory(cycle), store,
+            new MutableSessionCatalog(LocalSession(8080, 1000)),
+            new RbpConnectionCoordinatorOptions(
+                new Uri("wss://gateway.revagent.app/bridge/v1"),
+                RouteProofHelloProfile()),
+            new RecoveryDispatcher(reservation), new RecordingInboundJournal(),
+            clock, new FixedRandomSource(0), RouteProofWatcher(clock));
+        using var stop = new CancellationTokenSource();
+        faults.Arm(RbpJournalFaultPoint.RecoverySendStarted);
+        Task run = coordinator.RunAsync(stop.Token);
+        Task<RbpCoordinatorTeardownResult>? teardown = null;
+        try
+        {
+            await faults.Entered.WaitAsync(TimeSpan.FromSeconds(2));
+            Assert.Equal(0, RecoverySetCount(
+                coordinator, "_recoveryCarrierClaims"));
+            teardown = coordinator.RequestStopTeardown();
+            stop.Cancel();
+        }
+        finally
+        {
+            faults.Release();
+            stop.Cancel();
+        }
+        Assert.NotNull(teardown);
+        RbpCoordinatorTeardownResult result = await teardown.WaitAsync(
+            TimeSpan.FromSeconds(2));
+        Assert.Equal(
+            RbpCoordinatorTeardownDisposition.NormalStopped,
+            result.Disposition);
+        await run.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.DoesNotContain(cycle.Sent, item =>
+            item.Scope == RbpEnvelopeScope.Data);
+        Assert.Equal(0, RecoverySetCount(
+            coordinator, "_recoveryCarrierClaims"));
+        RbpRecoveryCarrierReservation tombstoned = Assert.IsType<
+            RbpRecoveryCarrierReservation>(
+            await store.GetRecoveryCarrierReservationAsync(
+                reservation.RecoveryInvocationId));
+        Assert.Equal(RbpRecoveryCarrierPhase.Tombstoned, tombstoned.Phase);
+        Assert.Equal("session_unregistered", tombstoned.TombstoneReason);
+        RbpUnregisterTombstone unregister = Assert.IsType<
+            RbpUnregisterTombstone>(
+            await store.GetUnregisterTombstoneAsync(reservation.Rsid));
+        Assert.Equal(RbpSessionUnregisterReason.BridgeShutdown, unregister.Reason);
+        Assert.Equal(RbpUnregisterPhase.Pending, unregister.Phase);
+        Assert.Null(await store.GetCorrelatedRecoveryPayloadAsync(
+            reservation.Rsid,
+            reservation.OriginInvocationId,
+            reservation.ResultDigest));
+    }
+
+    [Fact]
+    public async Task StopAfterConfirmBeforeCarrierSendClearsClaimViaShutdownTombstone()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        var clock = new ManualCoordinatorClock();
+        await using RbpJournalStore store = RbpJournalStore.Open(
+            directory.JournalPath, new TestResumeTokenProtector(),
+            RbpJournalTestData.Options(), new TestRecoveryPayloadProtector());
+        RbpRecoveryCarrierReservation reservation =
+            await PrepareRecoveryReservationAsync(store);
+        using (RbpRecoveredPayload? initial =
+               await store.GetCorrelatedRecoveryPayloadAsync(
+                   reservation.Rsid,
+                   reservation.OriginInvocationId,
+                   reservation.ResultDigest))
+        {
+            Assert.NotNull(initial);
+        }
+        var responder = new ScriptedGatewayResponder(clock);
+        var cycle = new FakeConnectionCycle(
+            responder.Respond,
+            grantedConnectionCapabilities: RouteProofCapabilities(),
+            connectionId: "019f9add-7a83-7d11-a6a9-d2f8108c0213");
+        var entered = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var coordinator = new RbpConnectionCoordinator(
+            new FakeConnectionCycleFactory(cycle), store,
+            new MutableSessionCatalog(LocalSession(8080, 1000)),
+            new RbpConnectionCoordinatorOptions(
+                new Uri("wss://gateway.revagent.app/bridge/v1"),
+                RouteProofHelloProfile()),
+            new RecoveryDispatcher(reservation), new RecordingInboundJournal(),
+            clock, new FixedRandomSource(0), RouteProofWatcher(clock),
+            beforeRecoveryCarrierWrite: async _ =>
+            {
+                entered.TrySetResult();
+                await release.Task.ConfigureAwait(false);
+            });
+        using var stop = new CancellationTokenSource();
+        Task run = coordinator.RunAsync(stop.Token);
+        Task<RbpCoordinatorTeardownResult>? teardown = null;
+        try
+        {
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            Assert.Equal(1, RecoverySetCount(
+                coordinator, "_recoveryCarrierClaims"));
+            teardown = coordinator.RequestStopTeardown();
+            stop.Cancel();
+        }
+        finally
+        {
+            release.TrySetResult();
+            stop.Cancel();
+        }
+        Assert.NotNull(teardown);
+        RbpCoordinatorTeardownResult result = await teardown.WaitAsync(
+            TimeSpan.FromSeconds(2));
+        Assert.Equal(
+            RbpCoordinatorTeardownDisposition.NormalStopped,
+            result.Disposition);
+        await run.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.DoesNotContain(cycle.Sent, item =>
+            item.Scope == RbpEnvelopeScope.Data);
+        Assert.Equal(0, RecoverySetCount(
+            coordinator, "_recoveryCarrierClaims"));
+        RbpRecoveryCarrierReservation tombstoned = Assert.IsType<
+            RbpRecoveryCarrierReservation>(
+            await store.GetRecoveryCarrierReservationAsync(
+                reservation.RecoveryInvocationId));
+        Assert.Equal(RbpRecoveryCarrierPhase.Tombstoned, tombstoned.Phase);
+        Assert.Equal("session_unregistered", tombstoned.TombstoneReason);
+        RbpUnregisterTombstone unregister = Assert.IsType<
+            RbpUnregisterTombstone>(
+            await store.GetUnregisterTombstoneAsync(reservation.Rsid));
+        Assert.Equal(RbpSessionUnregisterReason.BridgeShutdown, unregister.Reason);
+        Assert.Equal(RbpUnregisterPhase.Pending, unregister.Phase);
+        Assert.Null(await store.GetCorrelatedRecoveryPayloadAsync(
+            reservation.Rsid,
+            reservation.OriginInvocationId,
+            reservation.ResultDigest));
+    }
+
+    [Fact]
+    public async Task StopDuringTerminalSourceReleaseCommitsPriorDeleteAndNoSuccessor()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        var clock = new ManualCoordinatorClock();
+        var faults = new BlockingJournalFaultInjector();
+        await using RbpJournalStore store = RbpJournalStore.Open(
+            directory.JournalPath, new TestResumeTokenProtector(),
+            RbpJournalTestData.Options(faults),
+            new TestRecoveryPayloadProtector());
+        RbpRecoveryCarrierReservation reservation =
+            await PrepareRecoveryReservationAsync(store);
+        var responder = new ScriptedGatewayResponder(clock);
+        var cycle = new FakeConnectionCycle(
+            envelope => envelope.Type == "heartbeat"
+                ? null
+                : responder.Respond(envelope),
+            grantedConnectionCapabilities: RouteProofCapabilities(),
+            connectionId: "019f9add-7a83-7d11-a6a9-d2f8108c0214");
+        var coordinator = new RbpConnectionCoordinator(
+            new FakeConnectionCycleFactory(cycle), store,
+            new MutableSessionCatalog(LocalSession(8080, 1000)),
+            new RbpConnectionCoordinatorOptions(
+                new Uri("wss://gateway.revagent.app/bridge/v1"),
+                RouteProofHelloProfile()),
+            new RecoveryDispatcher(reservation), new RecordingInboundJournal(),
+            clock, new FixedRandomSource(0), RouteProofWatcher(clock));
+        using var stop = new CancellationTokenSource();
+        Task run = coordinator.RunAsync(stop.Token);
+        Task<RbpCoordinatorTeardownResult>? teardown = null;
+        try
+        {
+            await EventuallyAsync(
+                () => coordinator.GetSnapshot().ActiveRsids.Count == 1);
+            _ = await EventuallySentAsync(cycle, item =>
+                item.Type == "partial" &&
+                item.Id == reservation.RecoveryInvocationId);
+            clock.Advance(TimeSpan.FromSeconds(15));
+            await EventuallyAsync(
+                () => cycle.Sent.Any(item => item.Type == "heartbeat"));
+            cycle.Deliver(HeartbeatAck(
+                clock, Id(9783), reservation.Rsid,
+                reservation.CurrentReservedSequence));
+            RbpEnvelope terminal = await EventuallySentAsync(cycle, item =>
+                item.Type == "result" &&
+                item.Id == reservation.RecoveryInvocationId);
+            faults.Arm(RbpJournalFaultPoint.RecoveryTerminalEqualAcknowledgement);
+            clock.Advance(TimeSpan.FromSeconds(15));
+            await EventuallyAsync(() =>
+                cycle.Sent.Count(item => item.Type == "heartbeat") >= 2);
+            cycle.Deliver(HeartbeatAck(
+                clock, Id(9784), reservation.Rsid,
+                terminal.Sequence!.Value));
+            await faults.Entered.WaitAsync(TimeSpan.FromSeconds(2));
+            teardown = coordinator.RequestStopTeardown();
+            stop.Cancel();
+        }
+        finally
+        {
+            faults.Release();
+            stop.Cancel();
+        }
+        Assert.NotNull(teardown);
+        _ = await teardown.WaitAsync(TimeSpan.FromSeconds(2));
+        await run.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.Null(await store.GetCorrelatedRecoveryPayloadAsync(
+            reservation.Rsid,
+            reservation.OriginInvocationId,
+            reservation.ResultDigest));
+        Assert.Empty(await store.ListActiveRecoveryTerminalPlansAsync());
+        Assert.Equal(0, RecoverySetCount(
+            coordinator, "_recoveryTerminalClaims"));
+        _ = Assert.Single(cycle.Sent, item =>
+            item.Type == "result" &&
+            item.Id == reservation.RecoveryInvocationId);
+    }
+
+    [Fact]
     public void C39C1cExposesPostConfirmationPreSendCrashHook()
     {
         Assert.Contains(typeof(RbpConnectionCoordinator).GetConstructors(
@@ -693,6 +1105,33 @@ public sealed partial class RbpConnectionCoordinatorTests
             constructor.GetParameters().Any(parameter =>
                 parameter.Name == "beforeRecoveryCarrierWrite" &&
                 parameter.ParameterType == typeof(Func<CancellationToken, Task>)));
+    }
+
+    private static int RecoveryAckGateCount(
+        RbpConnectionCoordinator coordinator) =>
+        RecoverySetCount(coordinator, "_recoveryCarrierAckGates");
+
+    private static int RecoverySetCount(
+        RbpConnectionCoordinator coordinator,
+        string fieldName)
+    {
+        FieldInfo syncField = typeof(RbpConnectionCoordinator).GetField(
+            "_recoveryCarrierClaimSync",
+            BindingFlags.Instance | BindingFlags.NonPublic) ??
+            throw new MissingFieldException("_recoveryCarrierClaimSync");
+        FieldInfo gatesField = typeof(RbpConnectionCoordinator).GetField(
+            fieldName,
+            BindingFlags.Instance | BindingFlags.NonPublic) ??
+            throw new MissingFieldException(fieldName);
+        object sync = syncField.GetValue(coordinator) ??
+            throw new InvalidOperationException("Recovery gate lock is null.");
+        lock (sync)
+        {
+            object gates = gatesField.GetValue(coordinator) ??
+                throw new InvalidOperationException("Recovery gate set is null.");
+            return (int)(gates.GetType().GetProperty("Count")?.GetValue(gates) ??
+                throw new MissingMemberException("Recovery gate count"));
+        }
     }
 
     [Fact]
@@ -991,6 +1430,13 @@ public sealed partial class RbpConnectionCoordinatorTests
 
         public IRbpInvocationClaim? TryClaim(string rsid) =>
             _gate.TryEnter(rsid) ? new GateClaim(_gate, rsid) : null;
+
+        public IRbpInvocationClaim? TryClaim(
+            string rsid,
+            RbpInvocationAuthoritySnapshot authority) =>
+            _gate.TryEnter(rsid)
+                ? new GateClaim(_gate, rsid, authority)
+                : null;
 
         public Task<RbpInvocationAnswer> DispatchClaimedAsync(
             IRbpInvocationClaim claim, JsonElement payload,

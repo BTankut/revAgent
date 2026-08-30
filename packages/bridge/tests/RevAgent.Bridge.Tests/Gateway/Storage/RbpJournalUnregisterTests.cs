@@ -295,6 +295,46 @@ public sealed class RbpJournalUnregisterTests
         Assert.True(reader.GetInt64(4) >= reader.GetInt64(3));
     }
 
+    [Fact]
+    public async Task CancelledPostCommitRereadClaimsNoObservationButReopenRecovers()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        using var cancellation = new CancellationTokenSource();
+        var faults = new CancelAfterCommitFault(cancellation);
+        await using (RbpJournalStore store = RbpJournalStore.Open(
+                         directory.JournalPath,
+                         new TestResumeTokenProtector(),
+                         RbpJournalTestData.Options(faults)))
+        {
+            _ = await store.PersistRegisteredSessionAsync(
+                RbpJournalTestData.Registration());
+            faults.Arm();
+
+            Exception failure = Assert.IsAssignableFrom<Exception>(
+                await Record.ExceptionAsync(() =>
+                    store.RecordUnregisterIntentAsync(
+                        "rs-test",
+                        RbpSessionUnregisterReason.OperatorRequested,
+                        cancellation.Token)));
+
+            Assert.IsAssignableFrom<OperationCanceledException>(failure);
+            Assert.False(failure is RbpJournalException
+                { DurableStateObserved: true });
+            Assert.True(cancellation.IsCancellationRequested);
+        }
+
+        await using RbpJournalStore reopened = RbpJournalStore.Open(
+            directory.JournalPath,
+            new TestResumeTokenProtector(),
+            RbpJournalTestData.Options());
+        RbpUnregisterTombstone recovered = Assert.Single(
+            (await reopened.LoadRecoveryPlanAsync()).PendingUnregister);
+        Assert.Equal("rs-test", recovered.Rsid);
+        Assert.Equal(
+            RbpSessionUnregisterReason.OperatorRequested,
+            recovered.Reason);
+    }
+
     private static RbpHeartbeatFence FenceForLiveAndDead()
     {
         return new RbpHeartbeatFence(
@@ -302,5 +342,22 @@ public sealed class RbpJournalUnregisterTests
             new[] { "rs-live" },
             new[] { new RbpSessionAcknowledgement("rs-live", 0) },
             new[] { "rs-dead" });
+    }
+
+    private sealed class CancelAfterCommitFault(
+        CancellationTokenSource cancellation) : IRbpJournalFaultInjector
+    {
+        private int _armed;
+
+        internal void Arm() => Interlocked.Exchange(ref _armed, 1);
+
+        public void Hit(RbpJournalFaultPoint point)
+        {
+            if (point != RbpJournalFaultPoint.AfterCommitBeforeReturn ||
+                Interlocked.Exchange(ref _armed, 0) == 0)
+                return;
+            cancellation.Cancel();
+            throw new IOException("Injected unregister post-commit fault.");
+        }
     }
 }

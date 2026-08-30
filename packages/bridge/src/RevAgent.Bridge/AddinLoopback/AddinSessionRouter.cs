@@ -1,4 +1,6 @@
 using System.Collections.ObjectModel;
+using System.Security.Cryptography;
+using System.Text;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 
@@ -87,12 +89,21 @@ internal sealed class AddinSessionRouter
         internal long Generation { get; }
     }
 
+    internal sealed record InvocationAuthoritySnapshot(
+        string LocalSessionKey,
+        long HandleGeneration,
+        string RegistrationSignatureDigest,
+        string ProcessAttestationDigest);
+
     internal sealed class InvocationLease
     {
         private SessionSlot? _slot;
+        private readonly SessionHandle _handle;
 
         internal InvocationLease(
             SessionSlot slot,
+            SessionHandle handle,
+            InvocationAuthoritySnapshot authority,
             AddinCallResult? result,
             Exception? failure)
         {
@@ -103,6 +114,8 @@ internal sealed class AddinSessionRouter
             }
 
             _slot = slot;
+            _handle = handle;
+            Authority = authority;
             Result = result;
             Failure = failure;
         }
@@ -111,7 +124,36 @@ internal sealed class AddinSessionRouter
 
         internal Exception? Failure { get; }
 
+        internal InvocationAuthoritySnapshot Authority { get; }
+
         internal bool IsReleased => Volatile.Read(ref _slot) == null;
+
+        internal bool TryReadCurrentIncarnation(
+            out InvocationAuthoritySnapshot current)
+        {
+            SessionSlot? owned = Volatile.Read(ref _slot);
+            if (owned is null)
+            {
+                current = null!;
+                return false;
+            }
+
+            lock (_handle.Owner._sync)
+            {
+                if (!ReferenceEquals(owned, Volatile.Read(ref _slot)) ||
+                    !owned.IsAvailable ||
+                    !ReferenceEquals(owned.CurrentHandle, _handle) ||
+                    owned.Generation != Authority.HandleGeneration ||
+                    owned.InvocationGate.CurrentCount != 0)
+                {
+                    current = null!;
+                    return false;
+                }
+
+                current = CreateInvocationAuthority(_handle, owned);
+                return current == Authority;
+            }
+        }
 
         internal AddinCallResult GetResult()
         {
@@ -267,11 +309,32 @@ internal sealed class AddinSessionRouter
                     slot.IsAvailable &&
                     !assignedSlots.Contains(slot))
                 .ToList();
+            var busyUnavailableSlots = unavailableSlots
+                .Where(slot => slot.InvocationGate.CurrentCount == 0)
+                .ToList();
+            bool oneForOneBusyReplacement =
+                busyUnavailableSlots.Count == 1 &&
+                assignments.Count(assignment => assignment.Slot is null) == 1 &&
+                incoming.Count == _slots.Count;
 
-            ThrowIfGenerationWouldOverflow(assignments);
+            // A routed invocation lease owns both single-flight and slot
+            // incarnation until its journal decision is durable. Discovery is
+            // nonblocking: retain busy slots unchanged, reconcile independent
+            // slots, and let the next bounded refresh apply the deferred view.
+            List<Assignment> applicableAssignments = assignments
+                .Where(assignment => assignment.Slot is null ||
+                    assignment.Slot.InvocationGate.CurrentCount != 0)
+                .Where(assignment =>
+                    !(oneForOneBusyReplacement && assignment.Slot is null))
+                .ToList();
+            unavailableSlots = unavailableSlots
+                .Where(slot => slot.InvocationGate.CurrentCount != 0)
+                .ToList();
+
+            ThrowIfGenerationWouldOverflow(applicableAssignments);
 
             var changes = new List<LifecycleChange>();
-            foreach (Assignment assignment in assignments)
+            foreach (Assignment assignment in applicableAssignments)
             {
                 ApplyAssignment(assignment, changes);
             }
@@ -320,6 +383,7 @@ internal sealed class AddinSessionRouter
         AddinEndpoint endpoint;
         AddinProcessAttestation expectedProcessAttestation;
         int probedMaxRequestPayloadBytes;
+        InvocationAuthoritySnapshot authority;
         lock (_sync)
         {
             if (!ReferenceEquals(handle.Owner, this) ||
@@ -355,10 +419,13 @@ internal sealed class AddinSessionRouter
                 slot.Session.ProcessAttestation;
             probedMaxRequestPayloadBytes =
                 slot.Session.Status.Service.Framing.MaxRequestPayloadBytes;
+            authority = CreateInvocationAuthority(handle, slot);
         }
 
         return InvokeWithLeaseAsync(
             slot,
+            handle,
+            authority,
             endpoint,
             expectedProcessAttestation,
             call,
@@ -369,6 +436,8 @@ internal sealed class AddinSessionRouter
 
     private async Task<InvocationLease> InvokeWithLeaseAsync(
         SessionSlot slot,
+        SessionHandle handle,
+        InvocationAuthoritySnapshot authority,
         AddinEndpoint endpoint,
         AddinProcessAttestation expectedProcessAttestation,
         AddinCall call,
@@ -395,12 +464,15 @@ internal sealed class AddinSessionRouter
                 new ExpectedAddinProcessAttestor(
                     _processAttestor,
                     expectedProcessAttestation)).ConfigureAwait(false);
-            return new InvocationLease(slot, result, failure: null);
+            return new InvocationLease(
+                slot, handle, authority, result, failure: null);
         }
         catch (Exception exception)
         {
             return new InvocationLease(
                 slot,
+                handle,
+                authority,
                 result: null,
                 failure: exception);
         }
@@ -891,6 +963,39 @@ internal sealed class AddinSessionRouter
 
         return signature.ToString(Formatting.None);
     }
+
+    private static InvocationAuthoritySnapshot CreateInvocationAuthority(
+        SessionHandle handle,
+        SessionSlot slot) =>
+        new(
+            handle.LocalSessionKey,
+            handle.Generation,
+            Digest("revagent/addin-registration-signature/v1",
+                slot.RegistrationSignature),
+            ProcessAttestationDigest(slot.Session.ProcessAttestation));
+
+    internal static string ProcessAttestationDigest(
+        AddinProcessAttestation attestation)
+    {
+        ArgumentNullException.ThrowIfNull(attestation);
+        string material = System.Text.Json.JsonSerializer.Serialize(new
+        {
+            domain = "revagent/addin-process-attestation/v1",
+            process_id = attestation.Identity.ProcessId,
+            start_time_file_time_utc =
+                attestation.Identity.StartTimeFileTimeUtc,
+            revit_version = attestation.RevitVersion,
+            image_path = attestation.ImagePath,
+        });
+        return Sha256(Encoding.UTF8.GetBytes(material));
+    }
+
+    private static string Digest(string domain, string value) =>
+        Sha256(Encoding.UTF8.GetBytes(domain + "\n" + value));
+
+    private static string Sha256(ReadOnlySpan<byte> bytes) =>
+        "sha256:" + Convert.ToHexString(SHA256.HashData(bytes))
+            .ToLowerInvariant();
 
     private static JToken BatchAtomicSignature(
         RevAgent.Contracts.AddinLoopback.AddinStatusSnapshot status)

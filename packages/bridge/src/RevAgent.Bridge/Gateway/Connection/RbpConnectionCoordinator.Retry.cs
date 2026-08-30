@@ -9,62 +9,93 @@ namespace RevAgent.Bridge.Gateway.Connection;
 
 internal sealed partial class RbpConnectionCoordinator
 {
-    private async Task CloseCycleBoundedAsync(IRbpConnectionCycle cycle)
+    private enum CloseCycleDisposition
     {
-        using var timeout = new CancellationTokenSource(
-            _options.EffectiveCloseTimeout);
-        Task close = cycle.CloseAsync(timeout.Token);
+        CloseQuiesced,
+        Quarantined,
+    }
+
+    private sealed record CycleCloseOperation(
+        IRbpConnectionCycle Cycle,
+        Task CloseTask,
+        long StartedTimestamp,
+        CloseCycleDisposition Disposition,
+        Exception? SecondaryFault = null);
+
+    private async Task<CycleCloseOperation?> CloseCycleBoundedAsync(
+        IRbpConnectionCycle cycle,
+        ConnectionTeardownDeadline teardownDeadline)
+    {
+        if (teardownDeadline.Remaining == TimeSpan.Zero)
+            return null;
+
+        Task close = cycle.CloseAsync(teardownDeadline.Token);
+        var operation = new CycleCloseOperation(
+            cycle,
+            close,
+            System.Diagnostics.Stopwatch.GetTimestamp(),
+            CloseCycleDisposition.Quarantined);
+        Exception? secondaryFault = null;
         try
         {
-            Task completedClose = await Task.WhenAny(
-                    close,
-                    Task.Delay(_options.EffectiveCloseTimeout))
+            await close.WaitAsync(teardownDeadline.Token)
                 .ConfigureAwait(false);
-            if (ReferenceEquals(completedClose, close))
-            {
-                await close.ConfigureAwait(false);
-            }
-            else
-            {
-                timeout.Cancel();
-                ObserveLateFault(close);
-            }
         }
         catch (OperationCanceledException)
-            when (timeout.IsCancellationRequested)
+            when (teardownDeadline.Token.IsCancellationRequested)
         {
-            // Disposal below remains the final bounded transport abort path.
+            if (!close.IsCompleted)
+            {
+                RetainQuarantinedTeardownTask(close);
+                return operation;
+            }
+            secondaryFault = new TimeoutException(
+                "The connection close exceeded the shared teardown deadline.");
         }
-        catch (RbpGatewayTransportException)
+        catch (Exception exception)
         {
-            // A connection fault is already the reason this cycle is closing.
+            secondaryFault = exception;
+        }
+
+        return operation with
+        {
+            Disposition = secondaryFault is null
+                ? CloseCycleDisposition.CloseQuiesced
+                : CloseCycleDisposition.Quarantined,
+            SecondaryFault = secondaryFault,
+        };
+    }
+
+    private async Task<bool> DisposeCycleBoundedAsync(
+        CycleCloseOperation close,
+        ConnectionTeardownDeadline teardownDeadline)
+    {
+        if (close.Disposition != CloseCycleDisposition.CloseQuiesced ||
+            !close.CloseTask.IsCompletedSuccessfully ||
+            teardownDeadline.Remaining == TimeSpan.Zero)
+            return false;
+
+        Task dispose = close.Cycle.DisposeAsync().AsTask();
+        try
+        {
+            await dispose.WaitAsync(teardownDeadline.Token)
+                .ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+            when (teardownDeadline.Token.IsCancellationRequested)
+        {
+            if (!dispose.IsCompleted)
+            {
+                RetainQuarantinedTeardownTask(dispose);
+                return false;
+            }
+            return false;
         }
         catch (Exception)
         {
-            // Cleanup must not replace the connection/journal failure that
-            // already owns retry authority.
+            return false;
         }
-
-        Task dispose = cycle.DisposeAsync().AsTask();
-        Task completed = await Task.WhenAny(
-                dispose,
-                Task.Delay(_options.EffectiveCloseTimeout))
-            .ConfigureAwait(false);
-        if (ReferenceEquals(completed, dispose))
-        {
-            try
-            {
-                await dispose.ConfigureAwait(false);
-            }
-            catch
-            {
-                // Disposal is a bounded finalizer for an already failed cycle.
-            }
-        }
-        else
-        {
-            ObserveLateFault(dispose);
-        }
+        return true;
     }
 
     private static void ObserveLateFault(Task task)

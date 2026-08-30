@@ -80,21 +80,28 @@ public sealed class RbpInvocationDispatcherTests
     public async Task ResultDigestCoversTheRawAddinResponseBytes()
     {
         using var directory = new RbpJournalTestDirectory();
-        await using RbpJournalStore store = await OpenAsync(directory);
-        byte[] raw = Encoding.UTF8.GetBytes(
-            """{"jsonrpc":"2.0","id":"x","result":{"ok":true}}""");
-        var channel = new StubChannel(
-            () => Task.FromResult(Completed("""{"ok":true}""", raw)));
+        var fixture = new RbpApplicationErrorSafetyTests.RoutedFixture("{}", -32603);
+        await using RbpJournalStore store = await RbpCorrelatedVerificationFlowTests
+            .OpenForRoute(directory, fixture);
+        RbpInvocationDispatcher dispatcher = Dispatcher(store, fixture.Channel);
+        RbpInvocationAnswer mutation = await dispatcher.DispatchAsync(
+            RbpApplicationErrorSafetyTests.Request(mutating: true),
+            CancellationToken.None);
+        string holdId = mutation.Payload.GetProperty("verification_hold_id").GetString()!;
+        fixture.Transport.SetResponse("{\"ok\":true}");
+        RbpInvokeRequest request = RbpCorrelatedVerificationFlowTests.VerificationRequest(
+            "0197a3c2-0000-7000-8000-0000000000e1",
+            holdId);
 
         // Section 10.3 requires the digest on a terminal read that carries a
         // Section 6.2.1 verification correlation.
         RbpInvocationAnswer answer =
-            await Dispatcher(store, channel).DispatchAsync(
-                ReadRequest(verification: """{"hold_id":"vh:1"}"""),
+            await dispatcher.DispatchAsync(
+                request,
                 CancellationToken.None);
 
         string expected = "sha256:" + Convert.ToHexString(
-            System.Security.Cryptography.SHA256.HashData(raw))
+            System.Security.Cryptography.SHA256.HashData(fixture.Transport.LastBytes))
             .ToLowerInvariant();
         Assert.Equal(
             expected,

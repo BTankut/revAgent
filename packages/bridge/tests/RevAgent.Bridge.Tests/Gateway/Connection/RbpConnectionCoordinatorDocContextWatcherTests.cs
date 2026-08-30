@@ -643,6 +643,301 @@ public sealed partial class RbpConnectionCoordinatorTests
     }
 
     [Fact]
+    public async Task ImmediatePollAdmittedBeforeStopSettlesWithoutLateWireOrDiagnostic()
+    {
+        await using var harness = await DocContextHarness.StartAsync(
+            DocContextLocalSession(8088, 1008));
+        await EventuallyAsync(
+            () => harness.SentDocContextUpdates().Length == 1);
+        await EventuallyAsync(() => harness.Observations.Count > 0);
+        int sentBefore = harness.SentDocContextUpdates().Length;
+        int observationsBefore = harness.Observations.Count;
+        ScriptedDocContextChannel.BlockingPoll blocked =
+            harness.Channel.BlockNextPoll();
+        harness.Channel.SetSnapshot(revision: 2, title: "Project stopped");
+
+        Task? stop = null;
+        try
+        {
+            harness.Clock.Advance(TimeSpan.FromSeconds(15));
+            await blocked.Entered.WaitAsync(TimeSpan.FromSeconds(2));
+            stop = harness.StopAsync();
+            await Task.Delay(20);
+            Assert.False(stop.IsCompleted);
+        }
+        finally
+        {
+            blocked.Release();
+        }
+        Assert.NotNull(stop);
+        await stop.WaitAsync(TimeSpan.FromSeconds(2));
+        await Task.Delay(20);
+
+        Assert.Equal(sentBefore, harness.SentDocContextUpdates().Length);
+        Assert.Equal(observationsBefore, harness.Observations.Count);
+        Assert.True(harness.Channel.AllLeasesReleased);
+    }
+
+    [Fact]
+    public async Task ReplacementWaitsForExactOldLoopBeforeFirstCandidatePoll()
+    {
+        var clock = new ManualCoordinatorClock();
+        var channel = new ScriptedDocContextChannel();
+        ScriptedDocContextChannel.BlockingPoll blocked =
+            channel.BlockNextPoll();
+        var watcher = new RbpDocContextWatcher(channel, clock);
+        using var cycle = new CancellationTokenSource();
+        const string rsid = "rs-watcher-replace";
+        RbpDocContextEmit emit = (_, _, _) => Task.FromResult(false);
+
+        watcher.BeginWatch(
+            rsid, DocContextLocalSession(8100, 1100), emit, cycle.Token);
+        try
+        {
+            await blocked.Entered.WaitAsync(TimeSpan.FromSeconds(2));
+            RbpDocContextWatcher.PreparedWatch prepared = watcher.PrepareWatch(
+                rsid,
+                DocContextLocalSession(8101, 1101),
+                emit,
+                cycle.Token,
+                attemptGeneration: 2);
+            RbpDocContextWatcher.WatchCommitReceipt receipt =
+                Assert.IsType<RbpDocContextWatcher.WatchCommitReceipt>(
+                    prepared.Commit());
+            Assert.True(receipt.TryReserveStart());
+            receipt.Launch();
+
+            await Task.Delay(20);
+            Assert.Equal(1, channel.CallCount);
+            blocked.Release();
+            await EventuallyAsync(() => channel.CallCount == 2);
+            Assert.True(watcher.IsWatching(rsid));
+        }
+        finally
+        {
+            blocked.Release();
+            watcher.EndWatch(rsid);
+            cycle.Cancel();
+        }
+    }
+
+    [Fact]
+    public async Task ReplacementAbortBeforeLaunchStartsNoCandidatePoll()
+    {
+        var clock = new ManualCoordinatorClock();
+        var channel = new ScriptedDocContextChannel();
+        ScriptedDocContextChannel.BlockingPoll blocked =
+            channel.BlockNextPoll();
+        var watcher = new RbpDocContextWatcher(channel, clock);
+        using var cycle = new CancellationTokenSource();
+        const string rsid = "rs-watcher-abort";
+        RbpDocContextEmit emit = (_, _, _) => Task.FromResult(false);
+        watcher.BeginWatch(
+            rsid, DocContextLocalSession(8102, 1102), emit, cycle.Token);
+        Task? aborted = null;
+        try
+        {
+            await blocked.Entered.WaitAsync(TimeSpan.FromSeconds(2));
+            RbpDocContextWatcher.PreparedWatch prepared = watcher.PrepareWatch(
+                rsid,
+                DocContextLocalSession(8103, 1103),
+                emit,
+                cycle.Token,
+                attemptGeneration: 3);
+            RbpDocContextWatcher.WatchCommitReceipt receipt =
+                Assert.IsType<RbpDocContextWatcher.WatchCommitReceipt>(
+                    prepared.Commit());
+            Assert.True(receipt.TryReserveStart());
+            aborted = receipt.Abort();
+            blocked.Release();
+            await aborted.WaitAsync(TimeSpan.FromSeconds(2));
+
+            Assert.Equal(1, channel.CallCount);
+            Assert.False(watcher.IsWatching(rsid));
+        }
+        finally
+        {
+            blocked.Release();
+            if (aborted is not null)
+            {
+                try { await aborted.WaitAsync(TimeSpan.FromSeconds(2)); }
+                catch { }
+            }
+            watcher.EndWatch(rsid);
+            cycle.Cancel();
+        }
+    }
+
+    [Fact]
+    public async Task EmergencyBeforeWatcherCommitLeavesNoRegistryCallbackOrStart()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        var clock = new ManualCoordinatorClock();
+        await using RbpJournalStore store = OpenStore(directory, clock);
+        var channel = new ScriptedDocContextChannel();
+        var observations = new ConcurrentQueue<RbpDocumentContextObservation>();
+        var watcher = new RbpDocContextWatcher(
+            channel,
+            clock,
+            onObservation: observation =>
+            {
+                observations.Enqueue(observation);
+                return ValueTask.CompletedTask;
+            });
+        var cycle = new FakeConnectionCycle(_ => null);
+        var coordinator = Coordinator(
+            new FakeConnectionCycleFactory(cycle),
+            store,
+            new MutableSessionCatalog(),
+            clock,
+            docContextWatcher: watcher);
+        object context = CreateWatcherTestContext(
+            coordinator, cycle, attemptStopState: 4, out Type contextType);
+        try
+        {
+            InvokeStartDocContextWatch(
+                coordinator,
+                contextType,
+                context,
+                "rs-watch-emergency",
+                DocContextLocalSession(8110, 1110));
+
+            await Task.Delay(20);
+            Assert.False(watcher.IsWatching("rs-watch-emergency"));
+            Assert.Equal(0, channel.CallCount);
+            Assert.Empty(observations);
+        }
+        finally
+        {
+            DisposeWatcherTestContext(coordinator, contextType, context);
+            watcher.EndWatch("rs-watch-emergency");
+        }
+    }
+
+    [Fact]
+    public async Task WatcherStartCallbackCanReenterEmergencyAbortWithoutPoll()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        var clock = new ManualCoordinatorClock();
+        await using RbpJournalStore store = OpenStore(directory, clock);
+        var channel = new ScriptedDocContextChannel();
+        object? context = null;
+        Type? contextType = null;
+        var reentered = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var watcher = new RbpDocContextWatcher(
+            channel,
+            clock,
+            onObservation: observation =>
+            {
+                if (observation.Stage == "probe" &&
+                    observation.Outcome == "started" &&
+                    context is not null && contextType is not null)
+                {
+                    RequiredContextMethod(
+                            contextType, "AbortPreparedWatches")
+                        .Invoke(context, null);
+                    reentered.TrySetResult();
+                }
+                return ValueTask.CompletedTask;
+            });
+        var cycle = new FakeConnectionCycle(_ => null);
+        var coordinator = Coordinator(
+            new FakeConnectionCycleFactory(cycle),
+            store,
+            new MutableSessionCatalog(),
+            clock,
+            docContextWatcher: watcher);
+        context = CreateWatcherTestContext(
+            coordinator, cycle, attemptStopState: 2, out contextType);
+        try
+        {
+            InvokeStartDocContextWatch(
+                coordinator,
+                contextType,
+                context,
+                "rs-watch-reentrant",
+                DocContextLocalSession(8111, 1111));
+            await reentered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            await Task.Delay(20);
+
+            Assert.False(watcher.IsWatching("rs-watch-reentrant"));
+            Assert.Equal(0, channel.CallCount);
+        }
+        finally
+        {
+            DisposeWatcherTestContext(coordinator, contextType, context);
+            watcher.EndWatch("rs-watch-reentrant");
+        }
+    }
+
+    [Fact]
+    public void StalePreparedWatcherVersionFailsWithoutMutationOrCallback()
+    {
+        var channel = new ScriptedDocContextChannel();
+        var observations = new ConcurrentQueue<RbpDocumentContextObservation>();
+        var watcher = new RbpDocContextWatcher(
+            channel,
+            onObservation: observation =>
+            {
+                observations.Enqueue(observation);
+                return ValueTask.CompletedTask;
+            });
+        using var cycle = new CancellationTokenSource();
+        RbpDocContextWatcher.PreparedWatch prepared = watcher.PrepareWatch(
+            "rs-watch-stale",
+            DocContextLocalSession(8112, 1112),
+            (_, _, _) => Task.FromResult(false),
+            cycle.Token,
+            attemptGeneration: 1);
+
+        watcher.EndWatch("rs-unrelated-version-change");
+        Assert.Null(prepared.Commit());
+        Assert.False(watcher.IsWatching("rs-watch-stale"));
+        Assert.Equal(0, channel.CallCount);
+        Assert.Empty(observations);
+    }
+
+    [Fact]
+    public async Task WatchReservationIsSinglePerRsidAndEveryAbortReleasesIt()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        var clock = new ManualCoordinatorClock();
+        await using RbpJournalStore store = OpenStore(directory, clock);
+        var cycle = new FakeConnectionCycle(_ => null);
+        var coordinator = Coordinator(
+            new FakeConnectionCycleFactory(cycle),
+            store,
+            new MutableSessionCatalog(),
+            clock);
+        object context = CreateWatcherTestContext(
+            coordinator, cycle, attemptStopState: 2, out Type contextType);
+        MethodInfo reserve = RequiredContextMethod(
+            contextType, "TryReservePreparedWatch");
+        MethodInfo abort = RequiredContextMethod(
+            contextType, "AbortPreparedWatchReservation");
+        try
+        {
+            Assert.True((bool)reserve.Invoke(
+                context, new object[] { "rs-watch-bounded" })!);
+            Assert.False((bool)reserve.Invoke(
+                context, new object[] { "rs-watch-bounded" })!);
+            Assert.Equal(1, WatchReservationCount(contextType, context));
+            abort.Invoke(context, new object[] { "rs-watch-bounded" });
+            Assert.Equal(0, WatchReservationCount(contextType, context));
+            Assert.True((bool)reserve.Invoke(
+                context, new object[] { "rs-watch-bounded" })!);
+            abort.Invoke(context, new object[] { "rs-watch-bounded" });
+            Assert.Equal(0, WatchReservationCount(contextType, context));
+        }
+        finally
+        {
+            abort.Invoke(context, new object[] { "rs-watch-bounded" });
+            DisposeWatcherTestContext(coordinator, contextType, context);
+        }
+    }
+
+    [Fact]
     public async Task WatcherRoutesOnlyTheCachedDocumentContextMethod()
     {
         await using var harness = await DocContextHarness.StartAsync(
@@ -744,6 +1039,93 @@ public sealed partial class RbpConnectionCoordinatorTests
             });
     }
 
+    private static object CreateWatcherTestContext(
+        RbpConnectionCoordinator coordinator,
+        IRbpConnectionCycle cycle,
+        int attemptStopState,
+        out Type contextType)
+    {
+        contextType = typeof(RbpConnectionCoordinator).GetNestedType(
+            "ConnectionCycleContext", BindingFlags.NonPublic) ??
+            throw new MissingMemberException("ConnectionCycleContext");
+        ConstructorInfo constructor = Assert.Single(
+            contextType.GetConstructors(
+                BindingFlags.Instance | BindingFlags.NonPublic));
+        object context = constructor.Invoke(new object[]
+        {
+            coordinator,
+            cycle,
+            1L,
+            Array.Empty<string>(),
+            CancellationToken.None,
+        });
+        typeof(RbpConnectionCoordinator).GetField(
+                "_active", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .SetValue(coordinator, context);
+        typeof(RbpConnectionCoordinator).GetField(
+                "_connectionGeneration",
+                BindingFlags.Instance | BindingFlags.NonPublic)!
+            .SetValue(coordinator, 1L);
+        typeof(RbpConnectionCoordinator).GetField(
+                "_attemptStopState",
+                BindingFlags.Instance | BindingFlags.NonPublic)!
+            .SetValue(coordinator, attemptStopState);
+        return context;
+    }
+
+    private static void DisposeWatcherTestContext(
+        RbpConnectionCoordinator coordinator,
+        Type contextType,
+        object context)
+    {
+        typeof(RbpConnectionCoordinator).GetField(
+                "_active", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .SetValue(coordinator, null);
+        RequiredContextMethod(contextType, "AbortPreparedWatches")
+            .Invoke(context, null);
+        contextType.GetMethod(
+                "Dispose",
+                BindingFlags.Instance | BindingFlags.Public |
+                BindingFlags.NonPublic)!
+            .Invoke(context, null);
+    }
+
+    private static void InvokeStartDocContextWatch(
+        RbpConnectionCoordinator coordinator,
+        Type contextType,
+        object context,
+        string rsid,
+        RbpLocalSessionSnapshot local)
+    {
+        MethodInfo method = typeof(RbpConnectionCoordinator).GetMethod(
+            "StartDocContextWatch",
+            BindingFlags.Instance | BindingFlags.NonPublic,
+            binder: null,
+            types: new[]
+            {
+                contextType,
+                typeof(string),
+                typeof(RbpLocalSessionSnapshot),
+            },
+            modifiers: null) ??
+            throw new MissingMethodException("StartDocContextWatch");
+        method.Invoke(coordinator, new object[] { context, rsid, local });
+    }
+
+    private static int WatchReservationCount(Type contextType, object context)
+    {
+        object reservations = contextType.GetField(
+                                  "_watchReservations",
+                                  BindingFlags.Instance |
+                                  BindingFlags.NonPublic)?.GetValue(context) ??
+                              throw new MissingFieldException(
+                                  "_watchReservations");
+        return (int)(reservations.GetType().GetProperty("Count")?
+                         .GetValue(reservations) ??
+                     throw new MissingMemberException(
+                         "Watch reservation count"));
+    }
+
     /// <summary>
     /// A scripted stand-in for the routed add-in invocation channel. It
     /// records every routed method name so the tests can prove the frozen
@@ -758,6 +1140,7 @@ public sealed partial class RbpConnectionCoordinatorTests
         private int _callCount;
         private int _failNextPolls;
         private int _failNextRoutes;
+        private BlockingPoll? _nextBlockingPoll;
         private long _revision = 1;
         private string _title = "Project A";
         private string? _incarnation;
@@ -774,6 +1157,16 @@ public sealed partial class RbpConnectionCoordinatorTests
 
         internal void FailNextRoute() =>
             Interlocked.Increment(ref _failNextRoutes);
+
+        internal BlockingPoll BlockNextPoll()
+        {
+            var block = new BlockingPoll();
+            if (Interlocked.CompareExchange(
+                    ref _nextBlockingPoll, block, comparand: null) is not null)
+                throw new InvalidOperationException(
+                    "A scripted document-context poll is already blocked.");
+            return block;
+        }
 
         internal void SetSnapshot(long revision, string title, string? incarnation = null)
         {
@@ -834,8 +1227,12 @@ public sealed partial class RbpConnectionCoordinatorTests
 
             var lease = new RecordingLease();
             _leases.Enqueue(lease);
-            return Task.FromResult(
-                DocContextOutcome(call, revision, title, incarnation, lease));
+            RbpAddinOutcome outcome =
+                DocContextOutcome(call, revision, title, incarnation, lease);
+            BlockingPoll? blocked = Interlocked.Exchange(
+                ref _nextBlockingPoll, null);
+            if (blocked is null) return Task.FromResult(outcome);
+            return blocked.CompleteAsync(outcome);
         }
 
         private static RbpAddinOutcome DocContextOutcome(
@@ -900,6 +1297,25 @@ public sealed partial class RbpConnectionCoordinatorTests
             public void ReleaseAfterDurableDecision() =>
                 Interlocked.Exchange(ref _released, 1);
         }
+
+        internal sealed class BlockingPoll
+        {
+            private readonly TaskCompletionSource _entered = new(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            private readonly TaskCompletionSource _release = new(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+
+            internal Task Entered => _entered.Task;
+            internal void Release() => _release.TrySetResult();
+
+            internal async Task<RbpAddinOutcome> CompleteAsync(
+                RbpAddinOutcome outcome)
+            {
+                _entered.TrySetResult();
+                await _release.Task.ConfigureAwait(false);
+                return outcome;
+            }
+        }
     }
 
     private sealed class DocContextHarness : IAsyncDisposable
@@ -908,6 +1324,7 @@ public sealed partial class RbpConnectionCoordinatorTests
         private readonly RbpJournalStore _store;
         private readonly CancellationTokenSource _stop = new();
         private readonly Task _run;
+        private int _stopped;
 
         private DocContextHarness(
             RbpJournalTestDirectory directory,
@@ -946,6 +1363,18 @@ public sealed partial class RbpConnectionCoordinatorTests
             Cycle.Sent
                 .Where(envelope => envelope.Type == "doc_context_update")
                 .ToArray();
+
+        internal async Task StopAsync()
+        {
+            if (Interlocked.Exchange(ref _stopped, 1) == 0)
+            {
+                Task<RbpCoordinatorTeardownResult> teardown =
+                    Coordinator.RequestStopTeardown();
+                _stop.Cancel();
+                _ = await teardown.ConfigureAwait(false);
+            }
+            await _run.ConfigureAwait(false);
+        }
 
         internal static async Task<DocContextHarness> StartAsync(
             RbpLocalSessionSnapshot local,
@@ -1022,10 +1451,9 @@ public sealed partial class RbpConnectionCoordinatorTests
 
         public async ValueTask DisposeAsync()
         {
-            _stop.Cancel();
             try
             {
-                await _run.WaitAsync(TimeSpan.FromSeconds(5));
+                await StopAsync().WaitAsync(TimeSpan.FromSeconds(5));
             }
             catch (TimeoutException)
             {

@@ -443,7 +443,12 @@ public sealed partial class RbpConnectionCoordinatorTests
 
             var stopwatch = System.Diagnostics.Stopwatch.StartNew();
             stop.Cancel();
-            await run.WaitAsync(TimeSpan.FromSeconds(1));
+            RbpCoordinatorException failure = await Assert.ThrowsAsync<
+                RbpCoordinatorException>(() =>
+                run.WaitAsync(TimeSpan.FromSeconds(1)));
+            Assert.Equal(
+                RbpCoordinatorErrorCode.NonDrainingConnectionAuthority,
+                failure.ErrorCode);
             Assert.True(stopwatch.Elapsed < TimeSpan.FromSeconds(1));
             Assert.False(coordinator.GetSnapshot().HasActiveConnection);
             Assert.Equal(
@@ -467,7 +472,15 @@ public sealed partial class RbpConnectionCoordinatorTests
         {
             stop.Cancel();
             faults.Release();
-            await run.WaitAsync(TimeSpan.FromSeconds(2));
+            try
+            {
+                await run.WaitAsync(TimeSpan.FromSeconds(2));
+            }
+            catch (RbpCoordinatorException exception)
+                when (exception.ErrorCode ==
+                    RbpCoordinatorErrorCode.NonDrainingConnectionAuthority)
+            {
+            }
         }
 
         await EventuallyAsync(
@@ -510,7 +523,8 @@ public sealed partial class RbpConnectionCoordinatorTests
             Assert.Equal(
                 RbpCoordinatorErrorCode.NonDrainingConnectionAuthority,
                 failure.ErrorCode);
-            Assert.True(first.CloseCount > 0);
+            Assert.Equal(0, first.CloseCount);
+            Assert.Equal(0, first.DisposeCount);
             Assert.Equal(1, factory.OpenCount);
             Assert.Empty(second.Sent);
             Assert.Equal(1, coordinator.GetSnapshot().ConnectionGeneration);

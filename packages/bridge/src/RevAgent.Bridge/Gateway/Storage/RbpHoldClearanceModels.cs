@@ -1,11 +1,10 @@
 namespace RevAgent.Bridge.Gateway.Storage;
 
 /// <summary>
-/// A durable verification attempt journaled against a Section 6.2.1 hold.
-/// A conclusive attempt proves non-execution or the intended postcondition
-/// and drives <c>active -&gt; evidence_recorded</c>; an inconclusive attempt
-/// is retained while the hold stays blocking, because evidence is never
-/// clearance.
+/// Compatibility lookup for a production-written verification candidate.
+/// Conclusive is retained for source compatibility only and grants no
+/// authority. The correlated read terminal, never this caller-supplied flag,
+/// determines candidate eligibility; a candidate is not an effect verdict.
 /// </summary>
 internal sealed record RbpHoldVerificationEvidence(
     string VerificationHoldId,

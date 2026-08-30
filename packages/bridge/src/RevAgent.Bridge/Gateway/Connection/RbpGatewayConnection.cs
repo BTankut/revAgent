@@ -10,7 +10,12 @@ internal sealed class RbpGatewayConnection : IAsyncDisposable
     private readonly ClientWebSocket _socket;
     private readonly SemaphoreSlim _sendGate = new(1, 1);
     private readonly SemaphoreSlim _receiveGate = new(1, 1);
-    private int _disposeStarted;
+    private readonly object _lifetimeSync = new();
+    private Task? _closeTask;
+    private TaskCompletionSource? _operationsQuiesced;
+    private Exception? _abortReason;
+    private int _admittedOperations;
+    private bool _disposeRequested;
     private bool _disposed;
 
     internal RbpGatewayConnection(ClientWebSocket socket)
@@ -37,6 +42,7 @@ internal sealed class RbpGatewayConnection : IAsyncDisposable
                 "The outbound RBP frame exceeds the frozen wire limit.");
         }
 
+        using TransportOperationLease admitted = AdmitOperation();
         await _sendGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -56,10 +62,12 @@ internal sealed class RbpGatewayConnection : IAsyncDisposable
         catch (Exception exception)
             when (exception is WebSocketException or IOException)
         {
-            throw new RbpGatewayTransportException(
+            var failure = new RbpGatewayTransportException(
                 RbpGatewayFailureKind.Network,
                 "The RBP text frame could not be sent.",
                 innerException: exception);
+            AbortOnce(failure);
+            throw failure;
         }
         finally
         {
@@ -70,6 +78,7 @@ internal sealed class RbpGatewayConnection : IAsyncDisposable
     internal async Task<byte[]> ReceiveTextAsync(
         CancellationToken cancellationToken = default)
     {
+        using TransportOperationLease admitted = AdmitOperation();
         await _receiveGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         byte[]? rented = null;
         try
@@ -95,10 +104,12 @@ internal sealed class RbpGatewayConnection : IAsyncDisposable
                 catch (Exception exception)
                     when (exception is WebSocketException or IOException)
                 {
-                    throw new RbpGatewayTransportException(
+                    var failure = new RbpGatewayTransportException(
                         RbpGatewayFailureKind.Network,
                         "The RBP text frame could not be received.",
                         innerException: exception);
+                    AbortOnce(failure);
+                    throw failure;
                 }
 
                 if (result.MessageType == WebSocketMessageType.Close)
@@ -108,19 +119,21 @@ internal sealed class RbpGatewayConnection : IAsyncDisposable
 
                 if (result.MessageType != WebSocketMessageType.Text)
                 {
-                    _socket.Abort();
-                    throw new RbpGatewayTransportException(
+                    var failure = new RbpGatewayTransportException(
                         RbpGatewayFailureKind.Protocol,
                         "RBP accepts WebSocket text messages only.");
+                    AbortOnce(failure);
+                    throw failure;
                 }
 
                 if (stream.Length + result.Count >
                     RbpProtocolLimits.MaximumWireFrameBytes)
                 {
-                    _socket.Abort();
-                    throw new RbpGatewayTransportException(
+                    var failure = new RbpGatewayTransportException(
                         RbpGatewayFailureKind.Protocol,
                         "The inbound RBP frame exceeds the frozen wire limit.");
+                    AbortOnce(failure);
+                    throw failure;
                 }
 
                 stream.Write(rented, 0, result.Count);
@@ -141,19 +154,75 @@ internal sealed class RbpGatewayConnection : IAsyncDisposable
         }
     }
 
-    internal async Task CloseAsync(
+    internal Task CloseAsync(
         CancellationToken cancellationToken = default)
     {
-        if (_disposed ||
-            _socket.State is WebSocketState.Closed or WebSocketState.Aborted)
+        TaskCompletionSource? owner = null;
+        Task quiescence = Task.CompletedTask;
+        Task close;
+        lock (_lifetimeSync)
         {
-            return;
+            if (_closeTask is not null) return _closeTask;
+            if (_disposeRequested || _disposed)
+                return Task.FromException(
+                    new ObjectDisposedException(nameof(RbpGatewayConnection)));
+            if (_admittedOperations == 0)
+            {
+                quiescence = Task.CompletedTask;
+            }
+            else
+            {
+                _operationsQuiesced = new TaskCompletionSource(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+                quiescence = _operationsQuiesced.Task;
+            }
+            owner = new TaskCompletionSource(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            _closeTask = owner.Task;
+            close = _closeTask;
         }
+        _ = CompleteCloseAsync(owner!, cancellationToken, quiescence);
+        return close;
+    }
 
+    private async Task CompleteCloseAsync(
+        TaskCompletionSource owner,
+        CancellationToken cancellationToken,
+        Task quiescence)
+    {
+        try
+        {
+            await CloseCoreAsync(cancellationToken, quiescence)
+                .ConfigureAwait(false);
+            owner.TrySetResult();
+        }
+        catch (OperationCanceledException exception)
+            when (cancellationToken.IsCancellationRequested)
+        {
+            AbortOnce(exception);
+            try { await quiescence.ConfigureAwait(false); }
+            catch { }
+            owner.TrySetException(exception);
+        }
+        catch (Exception exception)
+        {
+            owner.TrySetException(exception);
+        }
+        finally
+        {
+            TryFinalizeAfterOperation();
+        }
+    }
+
+    private async Task CloseCoreAsync(
+        CancellationToken cancellationToken,
+        Task quiescence)
+    {
         await _sendGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            if (_socket.State is
+            if (Volatile.Read(ref _abortReason) is null &&
+                _socket.State is
                 WebSocketState.Open or WebSocketState.CloseReceived)
             {
                 try
@@ -167,16 +236,18 @@ internal sealed class RbpGatewayConnection : IAsyncDisposable
                 catch (OperationCanceledException)
                     when (cancellationToken.IsCancellationRequested)
                 {
-                    _socket.Abort();
+                    AbortOnce(new OperationCanceledException(
+                        "The retained WSS close was cancelled.",
+                        cancellationToken));
                     throw;
                 }
-                catch (WebSocketException)
+                catch (WebSocketException exception)
                 {
-                    _socket.Abort();
+                    AbortOnce(exception);
                 }
-                catch (IOException)
+                catch (IOException exception)
                 {
-                    _socket.Abort();
+                    AbortOnce(exception);
                 }
             }
         }
@@ -184,45 +255,188 @@ internal sealed class RbpGatewayConnection : IAsyncDisposable
         {
             _sendGate.Release();
         }
+        // Do not hold the send gate while waiting for already-admitted sends:
+        // one may have acquired its lease before Close but still be queued on
+        // this gate. It must be able to observe the published close and settle.
+        await quiescence.WaitAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    public async ValueTask DisposeAsync()
+    public ValueTask DisposeAsync()
     {
-        if (Interlocked.Exchange(ref _disposeStarted, 1) != 0)
+        TaskCompletionSource? owner = null;
+        Task quiescence = Task.CompletedTask;
+        Task ending;
+        lock (_lifetimeSync)
         {
-            return;
+            if (_disposed)
+                return _closeTask is { } settled
+                    ? new ValueTask(settled)
+                    : ValueTask.CompletedTask;
+            if (_disposeRequested)
+                return new ValueTask(_closeTask ??
+                    throw new InvalidOperationException(
+                        "Direct WSS disposal has no retained lifetime owner."));
+            _disposeRequested = true;
+            if (_closeTask is null)
+            {
+                if (_admittedOperations != 0)
+                {
+                    _operationsQuiesced = new TaskCompletionSource(
+                        TaskCreationOptions.RunContinuationsAsynchronously);
+                    quiescence = _operationsQuiesced.Task;
+                }
+                owner = new TaskCompletionSource(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+                _closeTask = owner.Task;
+            }
+            ending = _closeTask;
         }
+        if (owner is not null)
+        {
+            AbortOnce(new ObjectDisposedException(
+                nameof(RbpGatewayConnection)));
+            _ = CompleteDirectDisposeAsync(owner, quiescence);
+        }
+        TryFinalizeAfterOperation();
+        return new ValueTask(ending);
+    }
 
+    private async Task CompleteDirectDisposeAsync(
+        TaskCompletionSource owner,
+        Task quiescence)
+    {
         try
         {
-            using var timeout = new CancellationTokenSource(
-                TimeSpan.FromSeconds(2));
-            try
-            {
-                await CloseAsync(timeout.Token).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException)
-                when (timeout.IsCancellationRequested)
-            {
-                _socket.Abort();
-            }
+            await quiescence.ConfigureAwait(false);
+            owner.TrySetResult();
+        }
+        catch (Exception exception)
+        {
+            owner.TrySetException(exception);
         }
         finally
         {
-            _disposed = true;
-            _socket.Dispose();
+            TryFinalizeAfterOperation();
         }
     }
 
     private void EnsureOpen()
     {
         ObjectDisposedException.ThrowIf(
-            Volatile.Read(ref _disposeStarted) != 0 || _disposed,
+            _disposeRequested || _disposed || _closeTask is not null ||
+            Volatile.Read(ref _abortReason) is not null,
             this);
         if (_socket.State != WebSocketState.Open)
         {
             throw CreateRemoteCloseException();
         }
+    }
+
+    private TransportOperationLease AdmitOperation()
+    {
+        lock (_lifetimeSync)
+        {
+            if (_disposed || _disposeRequested || _closeTask is not null ||
+                Volatile.Read(ref _abortReason) is not null)
+                throw new ObjectDisposedException(nameof(RbpGatewayConnection));
+            checked { _admittedOperations++; }
+            return new TransportOperationLease(this);
+        }
+    }
+
+    private void ReleaseOperation()
+    {
+        lock (_lifetimeSync)
+        {
+            if (_admittedOperations <= 0)
+                throw new InvalidOperationException(
+                    "The WSS transport operation lease was released twice.");
+            _admittedOperations--;
+            if (_admittedOperations == 0)
+                _operationsQuiesced?.TrySetResult();
+        }
+        TryFinalizeAfterOperation();
+    }
+
+    private void TryFinalizeAfterOperation()
+    {
+        bool finalize = false;
+        lock (_lifetimeSync)
+        {
+            bool closeSettled = _closeTask?.IsCompleted == true;
+            if (_disposeRequested && !_disposed &&
+                _admittedOperations == 0 &&
+                closeSettled)
+            {
+                _disposed = true;
+                finalize = true;
+            }
+        }
+        if (!finalize) return;
+        _socket.Dispose();
+        _sendGate.Dispose();
+        _receiveGate.Dispose();
+    }
+
+    private void AbortOnce(Exception reason)
+    {
+        ArgumentNullException.ThrowIfNull(reason);
+        TaskCompletionSource? owner = null;
+        Task quiescence = Task.CompletedTask;
+        lock (_lifetimeSync)
+        {
+            if (_abortReason is not null) return;
+            Volatile.Write(ref _abortReason, reason);
+            if (_closeTask is null)
+            {
+                if (_admittedOperations != 0)
+                {
+                    _operationsQuiesced = new TaskCompletionSource(
+                        TaskCreationOptions.RunContinuationsAsynchronously);
+                    quiescence = _operationsQuiesced.Task;
+                }
+                owner = new TaskCompletionSource(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+                _closeTask = owner.Task;
+            }
+        }
+        try { _socket.Abort(); }
+        catch
+        {
+            // The first abort reason remains authoritative. Physical Abort is
+            // best effort and never creates a second lifecycle owner.
+        }
+        if (owner is not null)
+            _ = CompleteAbortOwnerAsync(owner, quiescence);
+    }
+
+    private async Task CompleteAbortOwnerAsync(
+        TaskCompletionSource owner,
+        Task quiescence)
+    {
+        try
+        {
+            await quiescence.ConfigureAwait(false);
+            owner.TrySetResult();
+        }
+        catch (Exception exception)
+        {
+            owner.TrySetException(exception);
+        }
+        finally
+        {
+            TryFinalizeAfterOperation();
+        }
+    }
+
+    internal Exception? AbortReason => Volatile.Read(ref _abortReason);
+
+    private sealed class TransportOperationLease(
+        RbpGatewayConnection owner) : IDisposable
+    {
+        private RbpGatewayConnection? _owner = owner;
+        public void Dispose() =>
+            Interlocked.Exchange(ref _owner, null)?.ReleaseOperation();
     }
 
     internal static RbpGatewayFailureKind ClassifyCloseCode(

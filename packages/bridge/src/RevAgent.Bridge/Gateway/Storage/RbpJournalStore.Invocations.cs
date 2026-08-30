@@ -2,6 +2,9 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Data.Sqlite;
+using RevAgent.Bridge.AddinLoopback;
+using RevAgent.Bridge.Gateway.Dispatch;
+using RevAgent.Contracts.AddinLoopback;
 using RevAgent.Bridge.Gateway.Protocol;
 
 namespace RevAgent.Bridge.Gateway.Storage;
@@ -26,6 +29,942 @@ namespace RevAgent.Bridge.Gateway.Storage;
 /// </summary>
 internal sealed partial class RbpJournalStore
 {
+    private enum RbpLegacySafetyPurpose
+    {
+        MutationAdmission,
+        Retention,
+        Registration,
+    }
+
+    private enum RbpLegacySafetyOutcome
+    {
+        Safe,
+        Unsafe,
+        InventoryLimit,
+    }
+
+    private sealed record RbpLegacySafetyBudget(
+        int MaxCandidateRsids,
+        int MaxInvocations,
+        int MaxStepReferences,
+        int MaxBatches,
+        long MaxInspectedJsonBytes,
+        int MaxNewHolds)
+    {
+        internal static readonly RbpLegacySafetyBudget Admission =
+            new(128, 10_000, 10_000, 1_024, 32L * 1024 * 1024, 128);
+
+        internal static readonly RbpLegacySafetyBudget Registration =
+            new(128, 10_000, 10_000, 1_024, 32L * 1024 * 1024, 0);
+
+        internal static readonly RbpLegacySafetyBudget Retention =
+            new(128, 10_000, 10_000, 1_024, 32L * 1024 * 1024, 0);
+    }
+
+    private sealed record RbpLegacySafetyQuery(
+        RbpLegacySafetyPurpose Purpose,
+        string? CurrentRsid,
+        string? LocalSessionKey,
+        string? RegistrationDigest,
+        IReadOnlyList<string> IncomingMutationScopesJcs,
+        IReadOnlyList<string> CandidateRsids,
+        string? ExactReplayKey = null,
+        bool ZeroDispatchReplay = false)
+    {
+        internal static RbpLegacySafetyQuery ForAdmission(
+            string rsid,
+            IReadOnlyList<string> scopes,
+            string? exactReplayKey = null,
+            bool? zeroDispatchReplay = null) =>
+            new(RbpLegacySafetyPurpose.MutationAdmission, rsid, null, null,
+                scopes, Array.Empty<string>(), exactReplayKey,
+                zeroDispatchReplay ?? exactReplayKey is not null);
+
+        internal static RbpLegacySafetyQuery ForRegistration(
+            string localSessionKey,
+            string registrationDigest) =>
+            new(RbpLegacySafetyPurpose.Registration, null, localSessionKey,
+                registrationDigest, Array.Empty<string>(),
+                Array.Empty<string>(), null, false);
+
+        internal static RbpLegacySafetyQuery ForRetention(
+            IReadOnlyList<string> candidateRsids) =>
+            new(RbpLegacySafetyPurpose.Retention, null, null, null,
+                Array.Empty<string>(), candidateRsids, null, false);
+    }
+
+    private sealed record RbpProjectedHoldView(
+        IReadOnlyDictionary<string, RbpVerificationHold> Holds)
+    {
+        internal static readonly RbpProjectedHoldView Empty =
+            new(new Dictionary<string, RbpVerificationHold>(
+                StringComparer.Ordinal));
+    }
+
+    private enum RbpLegacyResolutionState
+    {
+        Unresolved,
+        ProjectedResolved,
+        DurablyResolved,
+    }
+
+    private sealed record RbpLegacyUnsafeGroup(
+        string Rsid,
+        string ScopeJcs,
+        IReadOnlyList<string> OrderedOriginKeys,
+        string DeterministicHoldId,
+        string? BatchKey,
+        RbpLegacyResolutionState Resolution,
+        string Reason,
+        bool SessionQuarantine);
+
+    private sealed record RbpLegacyHoldPlan(
+        string Rsid,
+        string ScopeJcs,
+        IReadOnlyList<string> OrderedOriginKeys,
+        string DeterministicHoldId);
+
+    private sealed record RbpRetentionSafetyPlan(
+        IReadOnlySet<string> EligibleInvocationKeys,
+        IReadOnlySet<string> EligibleBatchKeys,
+        IReadOnlySet<string> EligibleHoldIds,
+        IReadOnlySet<string> EligibleCarrierPlanIds,
+        IReadOnlySet<string> EligibleRecoveryPayloadKeys,
+        IReadOnlySet<string> EligibleRecoveryReservationIds,
+        IReadOnlySet<string> EligibleTransportRsids)
+    {
+        internal static readonly RbpRetentionSafetyPlan Empty = new(
+            new HashSet<string>(StringComparer.Ordinal),
+            new HashSet<string>(StringComparer.Ordinal),
+            new HashSet<string>(StringComparer.Ordinal),
+            new HashSet<string>(StringComparer.Ordinal),
+            new HashSet<string>(StringComparer.Ordinal),
+            new HashSet<string>(StringComparer.Ordinal),
+            new HashSet<string>(StringComparer.Ordinal));
+    }
+
+    private sealed record RbpLegacySafetyPlan(
+        RbpLegacySafetyOutcome Outcome,
+        string SafetyDecisionDigest,
+        IReadOnlyList<RbpLegacyUnsafeGroup> UnsafeGroups,
+        IReadOnlyList<RbpLegacyHoldPlan> NewHoldPlans,
+        RbpRetentionSafetyPlan RetentionSafety);
+
+    private static RbpLegacySafetyPlan ClassifyLegacySafety(
+        RbpJournalWriteContext context,
+        RbpLegacySafetyQuery query,
+        RbpProjectedHoldView projectedHolds,
+        RbpLegacySafetyBudget budget)
+    {
+        ArgumentNullException.ThrowIfNull(query);
+        ArgumentNullException.ThrowIfNull(projectedHolds);
+        ArgumentNullException.ThrowIfNull(budget);
+
+        string[] candidateRsids = ResolveLegacyCandidateRsids(context, query);
+        if (candidateRsids.Length > budget.MaxCandidateRsids)
+            return LegacyInventoryLimit(query, "candidate_rsids");
+        if (candidateRsids.Length == 0)
+            return BuildLegacyPlan(query, RbpLegacySafetyOutcome.Safe,
+                Array.Empty<RbpLegacyUnsafeGroup>(),
+                Array.Empty<RbpLegacyHoldPlan>(),
+                RbpRetentionSafetyPlan.Empty, null);
+
+        string candidateJson = JsonSerializer.Serialize(candidateRsids);
+        long invocationCount = ScalarInt64(context,
+            "SELECT COUNT(*) FROM rbp_invocations WHERE rsid IN (SELECT value FROM json_each($rsids));",
+            candidateJson);
+        if (invocationCount > budget.MaxInvocations)
+            return LegacyInventoryLimit(query, "invocations");
+
+        long batchCount = ScalarInt64(context,
+            "SELECT COUNT(*) FROM rbp_batches WHERE rsid IN (SELECT value FROM json_each($rsids));",
+            candidateJson);
+        if (batchCount > budget.MaxBatches)
+            return LegacyInventoryLimit(query, "batches");
+
+        long stepReferences = ScalarInt64(context,
+            "SELECT COALESCE(SUM(step_count),0) FROM rbp_batches WHERE rsid IN (SELECT value FROM json_each($rsids));",
+            candidateJson);
+        if (stepReferences > budget.MaxStepReferences)
+            return LegacyInventoryLimit(query, "step_references");
+
+        long inspectedBytes = ScalarInt64(context,
+            """
+            SELECT COALESCE(SUM(
+              length(CAST(COALESCE(terminal_outcome_json,'') AS BLOB))+
+              length(CAST(COALESCE(late_terminal_outcome_json,'') AS BLOB))+
+              length(CAST(policy_jcs AS BLOB))+
+              length(CAST(recovery_clearances_jcs AS BLOB))+
+              length(CAST(COALESCE(mutation_scope_jcs,'') AS BLOB))+
+              length(CAST(COALESCE(verification_correlation_json,'') AS BLOB))),0)
+            FROM rbp_invocations
+            WHERE rsid IN (SELECT value FROM json_each($rsids));
+            """, candidateJson);
+        inspectedBytes = checked(inspectedBytes + ScalarInt64(context,
+            """
+            SELECT COALESCE(SUM(
+              length(CAST(steps_jcs AS BLOB))+
+              length(CAST(recovery_clearances_jcs AS BLOB))+
+              length(CAST(COALESCE(terminal_outcome_json,'') AS BLOB))),0)
+            FROM rbp_batches
+            WHERE rsid IN (SELECT value FROM json_each($rsids));
+            """, candidateJson));
+        inspectedBytes = checked(inspectedBytes + ScalarInt64(context,
+            """
+            SELECT COALESCE(SUM(
+              length(CAST(scope_jcs AS BLOB))+
+              length(CAST(ordered_origin_idempotency_keys_json AS BLOB))+
+              length(CAST(COALESCE(evidence_digest,'') AS BLOB))+
+              length(CAST(COALESCE(resolution_id,'') AS BLOB))+
+              length(CAST(COALESCE(resolution_basis,'') AS BLOB))+
+              length(CAST(COALESCE(resolution_decision,'') AS BLOB))+
+              length(CAST(COALESCE(audit_id,'') AS BLOB))),0)
+            FROM rbp_verification_holds
+            WHERE rsid IN (SELECT value FROM json_each($rsids));
+            """, candidateJson));
+        inspectedBytes = checked(inspectedBytes + ScalarInt64(context,
+            """
+            SELECT COALESCE(SUM(
+              length(CAST(local_session_key AS BLOB))+
+              length(CAST(registration_json AS BLOB))+
+              length(CAST(registration_digest AS BLOB))+
+              length(CAST(granted_capabilities_json AS BLOB))),0)
+            FROM rbp_sessions
+            WHERE rsid IN (SELECT value FROM json_each($rsids));
+            """, candidateJson));
+        if (inspectedBytes > budget.MaxInspectedJsonBytes)
+            return LegacyInventoryLimit(query, "inspected_json_bytes");
+
+        try
+        {
+            List<RbpStoredInvocation> invocations =
+                ReadLegacyInvocations(context, candidateJson);
+            List<RbpStoredBatch> batches = ReadLegacyBatches(context, candidateJson);
+            List<RbpVerificationHold> holds = ReadLegacyHolds(context,
+                candidateJson);
+            Dictionary<string, RbpStoredInvocation> byKey = invocations
+                .ToDictionary(row => row.Identity.IdempotencyKey,
+                    StringComparer.Ordinal);
+            List<RbpLegacyRegistrationFact> registrations = candidateRsids
+                .Select(candidateRsid => ReadLegacyRegistrationFact(context,
+                    candidateRsid)).ToList();
+            var unsafeRows = new Dictionary<string, string>(StringComparer.Ordinal);
+            foreach (RbpStoredInvocation row in invocations)
+            {
+                ValidateStoredLegacyInvocation(row);
+                if (row.Identity.Mutating && IsLegacyInvocationUnsafe(row, context))
+                    unsafeRows[row.Identity.IdempotencyKey] = "legacy_invocation_unverified";
+            }
+            foreach (RbpVerificationHold hold in holds)
+                ValidateStoredLegacyHold(context, hold, byKey);
+            if (query.ExactReplayKey is not null)
+                unsafeRows.Remove(query.ExactReplayKey);
+
+            var rawGroups = new List<(string Rsid, string Scope,
+                IReadOnlyList<string> Origins, string? BatchKey,
+                string Reason)>();
+            var groupedOrigins = new HashSet<string>(StringComparer.Ordinal);
+            foreach (RbpStoredBatch batch in batches)
+            {
+                RbpBatchIdentity identity = RehydrateStoredBatchIdentity(batch);
+                VerifyStoredBatchMembers(identity, byKey);
+                if (query.ExactReplayKey == identity.BatchKey)
+                {
+                    foreach (RbpBatchStepIdentity step in identity.Steps)
+                        unsafeRows.Remove(identity.Rsid + "/" + step.InvocationId);
+                    continue;
+                }
+                if (!batch.Atomic || batch.DispatchedAtMilliseconds is null)
+                    continue;
+
+                bool aggregateUnsafe = batch.State != RbpBatchState.Terminal ||
+                    batch.TerminalOutcomeJson is null ||
+                    ClassifyStoredCarrier(batch.TerminalOutcomeJson) is
+                        RbpApplicationResultClassification.ApplicationError or
+                        RbpApplicationResultClassification.Unclassifiable;
+                bool memberUnsafe = identity.Steps.Select((_, index) =>
+                        identity.Rsid + "/" + identity.Steps[index].InvocationId)
+                    .Any(unsafeRows.ContainsKey);
+                if (!aggregateUnsafe && !memberUnsafe)
+                    continue;
+
+                IReadOnlyList<(string Scope, IReadOnlyList<string> Origins)> planned =
+                    PlanAtomicLegacyGroups(identity);
+                foreach ((string scope, IReadOnlyList<string> origins) in planned)
+                {
+                    rawGroups.Add((identity.Rsid, scope, origins,
+                        identity.BatchKey, "legacy_atomic_batch_unverified"));
+                    foreach (string origin in origins) groupedOrigins.Add(origin);
+                }
+            }
+
+            foreach ((string key, string reason) in unsafeRows.OrderBy(value => value.Key,
+                         StringComparer.Ordinal))
+            {
+                if (groupedOrigins.Contains(key)) continue;
+                RbpStoredInvocation row = byKey[key];
+                if (row.Identity.MutationScopeJcs is not { } scope)
+                    throw RbpJournalSerialization.Corrupt(
+                        "A retained mutating invocation has no scope.");
+                rawGroups.Add((row.Identity.Rsid, scope, new[] { key },
+                    row.Identity.BatchId is null ? null :
+                        row.Identity.Rsid + "/" + row.Identity.BatchId,
+                    reason));
+            }
+
+            var unsafeGroups = new List<RbpLegacyUnsafeGroup>();
+            var newHolds = new List<RbpLegacyHoldPlan>();
+            foreach (var group in rawGroups
+                         .OrderBy(value => value.Rsid, StringComparer.Ordinal)
+                         .ThenBy(value => value.Scope, StringComparer.Ordinal)
+                         .ThenBy(value => value.Origins[0], StringComparer.Ordinal))
+            {
+                using JsonDocument scope = JsonDocument.Parse(group.Scope);
+                string holdId = Rfc8785Json.MakeVerificationHoldId(
+                    group.Rsid, scope.RootElement, group.Origins);
+                RbpLegacyResolutionState resolution = ResolveLegacyGroup(
+                    context, projectedHolds, group.Rsid, group.Scope,
+                    group.Origins, holdId);
+                bool sessionQuarantine =
+                    ReadScopeShape(group.Scope).ScopeKind == "session" ||
+                    (query.Purpose == RbpLegacySafetyPurpose.MutationAdmission &&
+                     !string.Equals(group.Rsid, query.CurrentRsid,
+                         StringComparison.Ordinal));
+                RbpVerificationHold? conflicting =
+                    FindHoldByExactScope(context, group.Rsid, group.Scope);
+                string reason = group.Reason;
+                if (conflicting is not null &&
+                    (!string.Equals(conflicting.VerificationHoldId, holdId,
+                         StringComparison.Ordinal) ||
+                     !conflicting.OrderedOriginIdempotencyKeys.SequenceEqual(
+                         group.Origins, StringComparer.Ordinal)))
+                {
+                    resolution = RbpLegacyResolutionState.Unresolved;
+                    sessionQuarantine = true;
+                    reason = "legacy_hold_representation_collision";
+                }
+
+                unsafeGroups.Add(new RbpLegacyUnsafeGroup(group.Rsid,
+                    group.Scope, group.Origins, holdId, group.BatchKey,
+                    resolution, reason, sessionQuarantine));
+                if (resolution == RbpLegacyResolutionState.Unresolved &&
+                    conflicting is null)
+                    newHolds.Add(new RbpLegacyHoldPlan(group.Rsid, group.Scope,
+                        group.Origins, holdId));
+            }
+
+            bool blocks = query.Purpose switch
+            {
+                RbpLegacySafetyPurpose.MutationAdmission
+                    when query.ZeroDispatchReplay => false,
+                RbpLegacySafetyPurpose.MutationAdmission => unsafeGroups.Any(group =>
+                    group.Resolution == RbpLegacyResolutionState.Unresolved &&
+                    (group.SessionQuarantine || query.IncomingMutationScopesJcs.Any(
+                        scope => ScopeConflicts(scope, new RbpVerificationHold(
+                            group.DeterministicHoldId, group.Rsid,
+                            ReadScopeShape(group.ScopeJcs).ScopeKind,
+                            ReadScopeShape(group.ScopeJcs).DocumentId, group.ScopeJcs,
+                            group.OrderedOriginKeys, RbpHoldState.Active, null,
+                            null, null, null, null, null, 0, 0, null))))),
+                _ => unsafeGroups.Any(group =>
+                    group.Resolution == RbpLegacyResolutionState.Unresolved),
+            };
+
+            if (newHolds.Count > budget.MaxNewHolds)
+                return LegacyInventoryLimit(query, "new_holds");
+
+            RbpRetentionSafetyPlan retention = BuildRetentionSafetyPlan(
+                query, candidateRsids, invocations, batches, unsafeGroups, context);
+            return BuildLegacyPlan(query,
+                blocks ? RbpLegacySafetyOutcome.Unsafe : RbpLegacySafetyOutcome.Safe,
+                unsafeGroups, query.ZeroDispatchReplay
+                    ? Array.Empty<RbpLegacyHoldPlan>()
+                    : newHolds,
+                retention, null, new
+                {
+                    candidate_rsids = candidateRsids,
+                    invocations,
+                    batches,
+                    holds,
+                    registrations,
+                });
+        }
+        catch (RbpJournalException)
+        {
+            throw;
+        }
+        catch (Exception exception) when (exception is JsonException or
+            ArgumentException or InvalidOperationException or OverflowException)
+        {
+            throw RbpJournalSerialization.Corrupt(
+                "The retained legacy safety inventory is malformed.", exception);
+        }
+    }
+
+    private static string[] ResolveLegacyCandidateRsids(
+        RbpJournalWriteContext context,
+        RbpLegacySafetyQuery query)
+    {
+        if (query.Purpose == RbpLegacySafetyPurpose.MutationAdmission)
+        {
+            string current = query.CurrentRsid ?? throw new ArgumentException(
+                "Admission safety requires an RSID.");
+            using SqliteCommand local = context.CreateCommand(
+                "SELECT local_session_key FROM rbp_sessions WHERE rsid=$rsid;");
+            local.Parameters.AddWithValue("$rsid", current);
+            string? localKey = local.ExecuteScalar() as string;
+            if (localKey is null) return new[] { current };
+            using SqliteCommand predecessors = context.CreateCommand(
+                """
+                SELECT rsid FROM (
+                  SELECT rsid FROM rbp_sessions
+                  WHERE local_session_key=$local_key
+                  UNION SELECT facts.rsid FROM (
+                    SELECT rsid FROM rbp_invocations WHERE mutating=1
+                    UNION SELECT rsid FROM rbp_batches
+                    UNION SELECT rsid FROM rbp_verification_holds
+                  ) AS facts
+                  WHERE NOT EXISTS(
+                    SELECT 1 FROM rbp_sessions AS registered
+                    WHERE registered.rsid=facts.rsid
+                  )
+                )
+                ORDER BY rsid;
+                """);
+            predecessors.Parameters.AddWithValue("$local_key", localKey);
+            using SqliteDataReader predecessorReader = predecessors.ExecuteReader();
+            var predecessorValues = new List<string>();
+            while (predecessorReader.Read())
+                predecessorValues.Add(predecessorReader.GetString(0));
+            if (!predecessorValues.Contains(current, StringComparer.Ordinal))
+                predecessorValues.Add(current);
+            return predecessorValues.OrderBy(value => value,
+                StringComparer.Ordinal).ToArray();
+        }
+        if (query.Purpose == RbpLegacySafetyPurpose.Retention)
+            return query.CandidateRsids.Distinct(StringComparer.Ordinal)
+                .OrderBy(value => value, StringComparer.Ordinal).ToArray();
+
+        using SqliteCommand command = context.CreateCommand(
+            """
+            SELECT rsid FROM (
+              SELECT rsid FROM rbp_sessions
+              UNION SELECT rsid FROM rbp_invocations WHERE mutating=1
+              UNION SELECT rsid FROM rbp_batches
+              UNION SELECT rsid FROM rbp_verification_holds
+            ) ORDER BY rsid;
+            """);
+        using SqliteDataReader reader = command.ExecuteReader();
+        var values = new List<string>();
+        while (reader.Read()) values.Add(reader.GetString(0));
+        return values.ToArray();
+    }
+
+    private static long ScalarInt64(
+        RbpJournalWriteContext context,
+        string sql,
+        string candidateJson)
+    {
+        using SqliteCommand command = context.CreateCommand(sql);
+        command.Parameters.AddWithValue("$rsids", candidateJson);
+        return Convert.ToInt64(command.ExecuteScalar() ?? 0);
+    }
+
+    private static List<RbpStoredInvocation> ReadLegacyInvocations(
+        RbpJournalWriteContext context,
+        string candidateJson)
+    {
+        using SqliteCommand keys = context.CreateCommand(
+            """
+            SELECT idempotency_key FROM rbp_invocations
+            WHERE rsid IN (SELECT value FROM json_each($rsids))
+            ORDER BY rsid,idempotency_key;
+            """);
+        keys.Parameters.AddWithValue("$rsids", candidateJson);
+        var values = new List<string>();
+        using (SqliteDataReader reader = keys.ExecuteReader())
+            while (reader.Read()) values.Add(reader.GetString(0));
+        return values.Select(key => ReadInvocation(context, key) ??
+                throw RbpJournalSerialization.Corrupt(
+                    "A retained invocation disappeared during classification."))
+            .ToList();
+    }
+
+    private static List<RbpStoredBatch> ReadLegacyBatches(
+        RbpJournalWriteContext context,
+        string candidateJson)
+    {
+        using SqliteCommand keys = context.CreateCommand(
+            """
+            SELECT batch_key FROM rbp_batches
+            WHERE rsid IN (SELECT value FROM json_each($rsids))
+            ORDER BY rsid,batch_key;
+            """);
+        keys.Parameters.AddWithValue("$rsids", candidateJson);
+        var values = new List<string>();
+        using (SqliteDataReader reader = keys.ExecuteReader())
+            while (reader.Read()) values.Add(reader.GetString(0));
+        return values.Select(key => ReadBatch(context, key) ??
+                throw RbpJournalSerialization.Corrupt(
+                    "A retained batch disappeared during classification."))
+            .ToList();
+    }
+
+    private static List<RbpVerificationHold> ReadLegacyHolds(
+        RbpJournalWriteContext context,
+        string candidateJson)
+    {
+        using SqliteCommand command = context.CreateCommand(
+            $"""
+             SELECT {HoldColumns}
+             FROM rbp_verification_holds
+             WHERE rsid IN (SELECT value FROM json_each($rsids))
+             ORDER BY rsid,verification_hold_id;
+             """);
+        command.Parameters.AddWithValue("$rsids", candidateJson);
+        var values = new List<RbpVerificationHold>();
+        using SqliteDataReader reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            string originsJson = reader.GetString(5);
+            using JsonDocument originsDocument = JsonDocument.Parse(originsJson);
+            if (originsDocument.RootElement.ValueKind != JsonValueKind.Array ||
+                Rfc8785Json.Canonicalize(originsDocument.RootElement) != originsJson)
+                throw RbpJournalSerialization.Corrupt(
+                    "A retained hold origin list is not canonical.");
+            IReadOnlyList<string> origins =
+                JsonSerializer.Deserialize<string[]>(originsJson) ??
+                throw RbpJournalSerialization.Corrupt(
+                    "A retained hold has unreadable origins.");
+            values.Add(new RbpVerificationHold(reader.GetString(0),
+                reader.GetString(1), reader.GetString(2),
+                reader.IsDBNull(3) ? null : reader.GetString(3),
+                reader.GetString(4), origins,
+                FromStorageHoldState(reader.GetString(6)),
+                reader.IsDBNull(7) ? null : reader.GetString(7),
+                reader.IsDBNull(8) ? null : reader.GetString(8),
+                reader.IsDBNull(9) ? null : reader.GetString(9),
+                reader.IsDBNull(10) ? null : reader.GetString(10),
+                reader.IsDBNull(11) ? null : reader.GetString(11),
+                reader.IsDBNull(12) ? null : reader.GetString(12),
+                reader.GetInt64(13), reader.GetInt64(14),
+                reader.IsDBNull(15) ? null : reader.GetInt64(15)));
+        }
+        return values;
+    }
+
+    private sealed record RbpLegacyRegistrationFact(
+        string Rsid,
+        string LocalSessionKey,
+        string RegistrationJson,
+        string RegistrationDigest,
+        string GrantedCapabilitiesJson);
+
+    private static RbpLegacyRegistrationFact ReadLegacyRegistrationFact(
+        RbpJournalWriteContext context,
+        string rsid)
+    {
+        using SqliteCommand command = context.CreateCommand(
+            """
+            SELECT local_session_key,registration_json,registration_digest,
+                   granted_capabilities_json
+            FROM rbp_sessions WHERE rsid=$rsid;
+            """);
+        command.Parameters.AddWithValue("$rsid", rsid);
+        using SqliteDataReader reader = command.ExecuteReader();
+        if (!reader.Read())
+            throw RbpJournalSerialization.Corrupt(
+                "A retained safety candidate has no registration facts.");
+        string localKey = reader.GetString(0);
+        string registrationJson = reader.GetString(1);
+        string registrationDigest = reader.GetString(2);
+        string capabilitiesJson = reader.GetString(3);
+        if (string.IsNullOrEmpty(localKey))
+            throw RbpJournalSerialization.Corrupt(
+                "A retained safety candidate has no local session identity.");
+        _ = RbpJournalSerialization.ParseRegistration(registrationJson,
+            registrationDigest);
+        IReadOnlyList<string> capabilities =
+            RbpJournalSerialization.ParseCapabilities(capabilitiesJson);
+        if (RbpJournalSerialization.SerializeCapabilities(capabilities) !=
+            capabilitiesJson)
+            throw RbpJournalSerialization.Corrupt(
+                "A retained safety candidate has noncanonical capabilities.");
+        if (reader.Read())
+            throw RbpJournalSerialization.Corrupt(
+                "A retained safety candidate has duplicate registration facts.");
+        return new RbpLegacyRegistrationFact(rsid, localKey,
+            registrationJson, registrationDigest, capabilitiesJson);
+    }
+
+    private static void ValidateStoredLegacyHold(
+        RbpJournalWriteContext context,
+        RbpVerificationHold hold,
+        IReadOnlyDictionary<string, RbpStoredInvocation> invocations)
+    {
+        RequireCanonicalJson(hold.ScopeJcs, "hold scope");
+        if (hold.OrderedOriginIdempotencyKeys.Count is < 1 or > 10_000 ||
+            hold.OrderedOriginIdempotencyKeys.Distinct(StringComparer.Ordinal).Count() !=
+                hold.OrderedOriginIdempotencyKeys.Count)
+            throw RbpJournalSerialization.Corrupt(
+                "A retained hold has an invalid ordered origin set.");
+        using JsonDocument scope = JsonDocument.Parse(hold.ScopeJcs);
+        if (Rfc8785Json.MakeVerificationHoldId(hold.Rsid, scope.RootElement,
+                hold.OrderedOriginIdempotencyKeys) != hold.VerificationHoldId)
+            throw RbpJournalSerialization.Corrupt(
+                "A retained hold id does not bind its exact material.");
+        (string kind, string? document) = ReadScopeShape(hold.ScopeJcs);
+        if (kind != hold.ScopeKind || document != hold.DocumentId)
+            throw RbpJournalSerialization.Corrupt(
+                "A retained hold scope columns contradict its canonical scope.");
+        if (hold.State == RbpHoldState.Cleared &&
+            !IsExactResolvedHold(context, hold, hold.Rsid, hold.ScopeJcs,
+                hold.OrderedOriginIdempotencyKeys, hold.VerificationHoldId,
+                allowProjectedEvidence: false))
+            throw RbpJournalSerialization.Corrupt(
+                "A cleared legacy hold lacks complete exact resolution evidence.");
+        foreach (string originKey in hold.OrderedOriginIdempotencyKeys)
+        {
+            if (!invocations.TryGetValue(originKey,
+                    out RbpStoredInvocation? origin))
+                throw RbpJournalSerialization.Corrupt(
+                    "A retained hold references a missing mutation origin.");
+            bool linkedCurrent =
+                origin.State == RbpInvocationState.Indeterminate &&
+                origin.VerificationHoldId == hold.VerificationHoldId;
+            bool legacyUnsafeUnlinked = origin.VerificationHoldId is null &&
+                IsRawLegacyOriginUncertain(context, origin);
+            if (
+                origin.Identity.IdempotencyKey != originKey ||
+                origin.Identity.Rsid != hold.Rsid ||
+                !origin.Identity.Mutating ||
+                (!linkedCurrent && !legacyUnsafeUnlinked) ||
+                origin.Identity.MutationScopeJcs is null ||
+                (hold.ScopeKind == "session"
+                    ? !ScopeConflicts(origin.Identity.MutationScopeJcs, hold)
+                    : origin.Identity.MutationScopeJcs != hold.ScopeJcs))
+                throw RbpJournalSerialization.Corrupt(
+                    "A retained hold does not bind every exact mutating origin.");
+        }
+    }
+
+    private static void ValidateStoredLegacyInvocation(RbpStoredInvocation row)
+    {
+        ValidateInvocationIdentity(row.Identity);
+        if (!string.Equals(row.Identity.IdempotencyKey,
+                row.Identity.Rsid + "/" + row.Identity.InvocationId,
+                StringComparison.Ordinal))
+            throw RbpJournalSerialization.Corrupt(
+                "A retained invocation key is not canonical.");
+        RequireCanonicalJson(row.Identity.PolicyJcs, "policy");
+        RequireCanonicalJson(row.Identity.RecoveryClearancesJcs, "clearances");
+        if (row.Identity.MutationScopeJcs is { } scope)
+            RequireCanonicalJson(scope, "scope");
+        if (row.TerminalOutcomeJson is { } terminal &&
+            !IsExactLegacyRecoveryTerminal(row))
+            RequireCanonicalJson(terminal, "terminal");
+        if (row.LateTerminalOutcomeJson is { } late)
+            RequireCanonicalJson(late, "late terminal");
+        if (row.ResultDigest is { } digest &&
+            !RbpJournalSerialization.IsSha256Digest(digest))
+            throw RbpJournalSerialization.Corrupt(
+                "A retained invocation result digest is malformed.");
+        if (row.LateResultDigest is { } lateDigest &&
+            !RbpJournalSerialization.IsSha256Digest(lateDigest))
+            throw RbpJournalSerialization.Corrupt(
+                "A retained invocation late-result digest is malformed.");
+    }
+
+    private static bool IsExactLegacyRecoveryTerminal(
+        RbpStoredInvocation row)
+    {
+        if (row.Identity.Method != "dispatch_payload_recovery" ||
+            row.Identity.Mutating || row.Identity.MutationScopeJcs is not null ||
+            row.Identity.BatchId is not null || row.Identity.BatchIndex is not null ||
+            row.Identity.PolicyJcs != "{\"decision\":\"auto\"}" ||
+            row.Identity.RecoveryClearancesJcs != "[]" ||
+            row.State != RbpInvocationState.Completed ||
+            row.StartedAtMilliseconds is null || row.FinishedAtMilliseconds is null ||
+            row.VerificationHoldId is not null ||
+            row.VerificationCorrelationJson is not null ||
+            row.LateTerminalOutcomeJson is not null ||
+            row.LateResultDigest is not null ||
+            row.ResultDigest is null ||
+            !RbpJournalSerialization.IsSha256Digest(row.ResultDigest) ||
+            row.TerminalOutcomeJson is null)
+            return false;
+        string expected = JsonSerializer.Serialize(new
+        {
+            kind = "invocation",
+            invocation_id = row.Identity.InvocationId,
+            status = "completed",
+            result = new { },
+            replayed = false,
+            payload_omitted = false,
+            late_after_indeterminate = false,
+            result_digest = row.ResultDigest,
+            metrics = new
+            {
+                execute_ms = 0,
+                request_bytes = 0,
+                response_bytes = 0,
+                framing = "length-prefixed",
+            },
+        });
+        return string.Equals(row.TerminalOutcomeJson, expected,
+            StringComparison.Ordinal);
+    }
+
+    private static void RequireCanonicalJson(string json, string field)
+    {
+        using JsonDocument document = JsonDocument.Parse(json);
+        if (!string.Equals(Rfc8785Json.Canonicalize(document.RootElement), json,
+                StringComparison.Ordinal))
+            throw RbpJournalSerialization.Corrupt(
+                $"A retained {field} value is not canonical.");
+    }
+
+    private static bool IsLegacyInvocationUnsafe(
+        RbpStoredInvocation row,
+        RbpJournalWriteContext context)
+    {
+        if (row.State is RbpInvocationState.Received or RbpInvocationState.Executing)
+            return true;
+        if (row.State == RbpInvocationState.Indeterminate)
+            return !HasExactResolvedSingletonHold(context, row);
+        if (row.State is RbpInvocationState.Failed or RbpInvocationState.Cancelled)
+        {
+            if (row.StartedAtMilliseconds is not null)
+                return !HasExactResolvedSingletonHold(context, row);
+            return !HasExactNoDispatchProof(context, row);
+        }
+        if (row.State == RbpInvocationState.Completed)
+            return row.TerminalOutcomeJson is null ||
+                ClassifyStoredCarrier(row.TerminalOutcomeJson) is
+                    RbpApplicationResultClassification.ApplicationError or
+                    RbpApplicationResultClassification.Unclassifiable;
+        if (row.State == RbpInvocationState.Guarded)
+            return row.TerminalOutcomeJson is null ||
+                ClassifyStoredCarrier(row.TerminalOutcomeJson) !=
+                    RbpApplicationResultClassification.Guarded;
+        return true;
+    }
+
+    private static bool IsRawLegacyOriginUncertain(
+        RbpJournalWriteContext context,
+        RbpStoredInvocation row)
+    {
+        if (!row.Identity.Mutating) return false;
+        if (row.State is RbpInvocationState.Received or
+            RbpInvocationState.Executing or RbpInvocationState.Indeterminate)
+            return true;
+        if (row.State is RbpInvocationState.Failed or
+            RbpInvocationState.Cancelled)
+            return row.StartedAtMilliseconds is not null ||
+                !HasExactNoDispatchProof(context, row);
+        if (row.State == RbpInvocationState.Completed)
+            return row.TerminalOutcomeJson is null ||
+                ClassifyStoredCarrier(row.TerminalOutcomeJson) is
+                    RbpApplicationResultClassification.ApplicationError or
+                    RbpApplicationResultClassification.Unclassifiable;
+        if (row.State == RbpInvocationState.Guarded)
+            return row.TerminalOutcomeJson is null ||
+                ClassifyStoredCarrier(row.TerminalOutcomeJson) !=
+                    RbpApplicationResultClassification.Guarded;
+        return true;
+    }
+
+    private static bool HasExactNoDispatchProof(
+        RbpJournalWriteContext context,
+        RbpStoredInvocation row)
+    {
+        if (row.StartedAtMilliseconds is not null ||
+            row.TerminalOutcomeJson is null)
+            return false;
+        if (row.Identity.BatchId is { } batchId)
+        {
+            RbpStoredBatch? batch = ReadBatch(context,
+                row.Identity.Rsid + "/" + batchId);
+            if (batch is null || batch.State != RbpBatchState.Received ||
+                batch.DispatchedAtMilliseconds is not null)
+                return false;
+        }
+        using JsonDocument document = JsonDocument.Parse(
+            row.TerminalOutcomeJson);
+        JsonElement root = document.RootElement;
+        if (root.ValueKind != JsonValueKind.Object ||
+            RbpApplicationResultClassifier.Classify(root) !=
+                RbpApplicationResultClassification.Completed ||
+            root.TryGetProperty("addin_error", out _) ||
+            root.TryGetProperty("result", out _) ||
+            root.TryGetProperty("payload_omitted", out _) ||
+            root.TryGetProperty("result_digest", out _))
+            return false;
+        if (root.TryGetProperty("metrics", out JsonElement metrics))
+        {
+            if (metrics.ValueKind != JsonValueKind.Object ||
+                !metrics.TryGetProperty("request_bytes", out JsonElement request) ||
+                !metrics.TryGetProperty("response_bytes", out JsonElement response) ||
+                !request.TryGetInt64(out long requestBytes) ||
+                !response.TryGetInt64(out long responseBytes) ||
+                requestBytes != 0 || responseBytes != 0)
+                return false;
+        }
+        return true;
+    }
+
+    private static RbpApplicationResultClassification ClassifyStoredCarrier(
+        string json)
+    {
+        using JsonDocument document = JsonDocument.Parse(json);
+        return RbpApplicationResultClassifier.Classify(document.RootElement);
+    }
+
+    private static bool HasExactResolvedSingletonHold(
+        RbpJournalWriteContext context,
+        RbpStoredInvocation row)
+    {
+        if (row.Identity.MutationScopeJcs is not { } scopeJcs) return false;
+        using JsonDocument scope = JsonDocument.Parse(scopeJcs);
+        string holdId = Rfc8785Json.MakeVerificationHoldId(row.Identity.Rsid,
+            scope.RootElement, new[] { row.Identity.IdempotencyKey });
+        return ResolveLegacyGroup(context, RbpProjectedHoldView.Empty,
+            row.Identity.Rsid, scopeJcs, new[] { row.Identity.IdempotencyKey },
+            holdId) == RbpLegacyResolutionState.DurablyResolved;
+    }
+
+    private static RbpLegacyResolutionState ResolveLegacyGroup(
+        RbpJournalWriteContext context,
+        RbpProjectedHoldView projected,
+        string rsid,
+        string scopeJcs,
+        IReadOnlyList<string> origins,
+        string holdId)
+    {
+        if (projected.Holds.TryGetValue(holdId, out RbpVerificationHold? projectedHold) &&
+            IsExactResolvedHold(context, projectedHold, rsid, scopeJcs, origins,
+                holdId, allowProjectedEvidence: true))
+            return RbpLegacyResolutionState.ProjectedResolved;
+        RbpVerificationHold? durable = FindHoldById(context, rsid, holdId);
+        return durable is not null && IsExactResolvedHold(context, durable,
+            rsid, scopeJcs, origins, holdId, allowProjectedEvidence: false)
+            ? RbpLegacyResolutionState.DurablyResolved
+            : RbpLegacyResolutionState.Unresolved;
+    }
+
+    private static bool IsExactResolvedHold(
+        RbpJournalWriteContext context,
+        RbpVerificationHold hold,
+        string rsid,
+        string scopeJcs,
+        IReadOnlyList<string> origins,
+        string holdId,
+        bool allowProjectedEvidence)
+    {
+        if (hold.VerificationHoldId != holdId || hold.Rsid != rsid ||
+            hold.ScopeJcs != scopeJcs || hold.State != RbpHoldState.Cleared ||
+            !hold.OrderedOriginIdempotencyKeys.SequenceEqual(origins,
+                StringComparer.Ordinal) || hold.ResolutionId is null ||
+            hold.ResolutionBasis is null || hold.ResolutionDecision is null ||
+            hold.AuditId is null || hold.EvidenceDigest is null ||
+            hold.ClearedAtMilliseconds is null)
+            return false;
+        if (!RbpRecoveryClearance.IsUuidV7(hold.ResolutionId) ||
+            !RbpRecoveryClearance.IsUuidV7(hold.AuditId) ||
+            !RbpJournalSerialization.IsSha256Digest(hold.EvidenceDigest))
+            return false;
+        if (allowProjectedEvidence) return true;
+        return hold.ResolutionBasis switch
+        {
+            "verification_read" => HasEligibleVerificationRead(context, hold,
+                hold.VerificationInvocationId, hold.EvidenceDigest),
+            "late_terminal" => HasDurableLateTerminal(context, holdId,
+                hold.EvidenceDigest),
+            _ => false,
+        };
+    }
+
+    private static RbpRetentionSafetyPlan BuildRetentionSafetyPlan(
+        RbpLegacySafetyQuery query,
+        IReadOnlyList<string> candidateRsids,
+        IReadOnlyList<RbpStoredInvocation> invocations,
+        IReadOnlyList<RbpStoredBatch> batches,
+        IReadOnlyList<RbpLegacyUnsafeGroup> unsafeGroups,
+        RbpJournalWriteContext context)
+    {
+        if (query.Purpose != RbpLegacySafetyPurpose.Retention)
+            return RbpRetentionSafetyPlan.Empty;
+        var unsafeRsids = unsafeGroups
+            .Where(group => group.Resolution == RbpLegacyResolutionState.Unresolved)
+            .Select(group => group.Rsid).ToHashSet(StringComparer.Ordinal);
+        var safeRsids = candidateRsids.Where(rsid => !unsafeRsids.Contains(rsid))
+            .ToHashSet(StringComparer.Ordinal);
+        var invocationKeys = invocations.Where(row => safeRsids.Contains(row.Identity.Rsid))
+            .Select(row => row.Identity.IdempotencyKey).ToHashSet(StringComparer.Ordinal);
+        var batchKeys = batches.Where(row => safeRsids.Contains(row.Rsid))
+            .Select(row => row.BatchKey).ToHashSet(StringComparer.Ordinal);
+        var carrierPlans = invocations.Where(row => safeRsids.Contains(row.Identity.Rsid) &&
+                row.CarrierPlan is not null).Select(row => row.CarrierPlan!.PlanId)
+            .ToHashSet(StringComparer.Ordinal);
+        var holds = new HashSet<string>(StringComparer.Ordinal);
+        var recoveryPayloads = new HashSet<string>(StringComparer.Ordinal);
+        var recoveryReservations = new HashSet<string>(StringComparer.Ordinal);
+        foreach (string rsid in safeRsids)
+        {
+            using SqliteCommand holdCommand = context.CreateCommand(
+                "SELECT verification_hold_id FROM rbp_verification_holds WHERE rsid=$rsid ORDER BY verification_hold_id;");
+            holdCommand.Parameters.AddWithValue("$rsid", rsid);
+            using (SqliteDataReader reader = holdCommand.ExecuteReader())
+                while (reader.Read()) holds.Add(reader.GetString(0));
+            using SqliteCommand payloadCommand = context.CreateCommand(
+                "SELECT idempotency_key FROM rbp_recovery_payloads WHERE rsid=$rsid ORDER BY idempotency_key;");
+            payloadCommand.Parameters.AddWithValue("$rsid", rsid);
+            using (SqliteDataReader reader = payloadCommand.ExecuteReader())
+                while (reader.Read()) recoveryPayloads.Add(reader.GetString(0));
+            using SqliteCommand reservationCommand = context.CreateCommand(
+                "SELECT recovery_invocation_id FROM rbp_recovery_carrier_reservations WHERE rsid=$rsid ORDER BY recovery_invocation_id;");
+            reservationCommand.Parameters.AddWithValue("$rsid", rsid);
+            using (SqliteDataReader reader = reservationCommand.ExecuteReader())
+                while (reader.Read()) recoveryReservations.Add(reader.GetString(0));
+        }
+        return new RbpRetentionSafetyPlan(invocationKeys, batchKeys, holds,
+            carrierPlans, recoveryPayloads, recoveryReservations, safeRsids);
+    }
+
+    private static RbpLegacySafetyPlan LegacyInventoryLimit(
+        RbpLegacySafetyQuery query,
+        string marker) => BuildLegacyPlan(query,
+            RbpLegacySafetyOutcome.InventoryLimit,
+            Array.Empty<RbpLegacyUnsafeGroup>(),
+            Array.Empty<RbpLegacyHoldPlan>(), RbpRetentionSafetyPlan.Empty,
+            marker);
+
+    private static RbpLegacySafetyPlan BuildLegacyPlan(
+        RbpLegacySafetyQuery query,
+        RbpLegacySafetyOutcome outcome,
+        IReadOnlyList<RbpLegacyUnsafeGroup> groups,
+        IReadOnlyList<RbpLegacyHoldPlan> newHolds,
+        RbpRetentionSafetyPlan retention,
+        string? limitMarker,
+        object? inventory = null)
+    {
+        JsonElement material = JsonSerializer.SerializeToElement(new
+        {
+            purpose = query.Purpose.ToString(),
+            current_rsid = query.CurrentRsid,
+            local_session_key = query.LocalSessionKey,
+            registration_digest = query.RegistrationDigest,
+            incoming_scopes = query.IncomingMutationScopesJcs,
+            candidates = query.CandidateRsids,
+            outcome = outcome.ToString(),
+            limit = limitMarker,
+            inventory,
+            groups,
+        });
+        return new RbpLegacySafetyPlan(outcome,
+            Rfc8785Json.Sha256Digest(material), groups, newHolds, retention);
+    }
+
     /// <summary>
     /// Admits an invocation under its canonical idempotency key and applies
     /// the frozen Section 12.2 redelivery rules. On first delivery this
@@ -36,7 +975,9 @@ internal sealed partial class RbpJournalStore
     /// </summary>
     internal Task<RbpInvocationAdmissionResult> AdmitInvocationAsync(
         RbpInvocationIdentity identity,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        JsonElement verification = default,
+        RbpInvocationAuthoritySnapshot? invocationAuthority = null)
     {
         ArgumentNullException.ThrowIfNull(identity);
         ValidateInvocationIdentity(identity);
@@ -45,18 +986,89 @@ internal sealed partial class RbpJournalStore
             context =>
             {
                 RequireActiveSession(context, identity.Rsid);
-                return AdmitInvocation(context, identity, now);
+                if (identity.Mutating)
+                {
+                    RbpStoredInvocation? exactReplay =
+                        ReadInvocation(context, identity.IdempotencyKey);
+                    if (exactReplay is not null)
+                        RequireIdenticalIdentity(exactReplay.Identity, identity);
+                    RbpLegacySafetyPlan safety = ClassifyLegacySafety(context,
+                        RbpLegacySafetyQuery.ForAdmission(identity.Rsid,
+                            new[] { identity.MutationScopeJcs! },
+                            exactReplay?.Identity.IdempotencyKey),
+                        RbpProjectedHoldView.Empty,
+                        RbpLegacySafetyBudget.Admission);
+                    if (safety.Outcome == RbpLegacySafetyOutcome.InventoryLimit)
+                        throw LegacyAdmissionFault("legacy_inventory_limit");
+                    if (exactReplay is null &&
+                        HasUnsafeExternalPredecessor(safety, identity.Rsid))
+                        throw LegacyAdmissionFault("legacy_outcome_unverified");
+                    InstallLegacyHoldPlans(context, safety.NewHoldPlans, now);
+                }
+                RbpVerificationAdmissionAuthority? admissionAuthority =
+                    verification.ValueKind is JsonValueKind.Null or
+                        JsonValueKind.Undefined ||
+                    invocationAuthority is null
+                        ? null
+                        : RequireCurrentInvocationAuthority(
+                            context,
+                            identity,
+                            invocationAuthority);
+                return AdmitInvocation(
+                    context,
+                    identity,
+                    now,
+                    verification,
+                    admissionAuthority);
             },
             cancellationToken);
     }
 
+    private static bool HasUnsafeExternalPredecessor(
+        RbpLegacySafetyPlan safety,
+        string currentRsid) =>
+        safety.UnsafeGroups.Any(group =>
+            group.Resolution == RbpLegacyResolutionState.Unresolved &&
+            !string.Equals(group.Rsid, currentRsid, StringComparison.Ordinal));
+
     private static RbpInvocationAdmissionResult AdmitInvocation(
         RbpJournalWriteContext context,
         RbpInvocationIdentity identity,
-        long now)
+        long now,
+        JsonElement verification = default,
+        RbpVerificationAdmissionAuthority? admissionAuthority = null)
     {
+        string? requestedCorrelation = BuildVerificationCorrelation(
+            identity,
+            verification,
+            terminal: null,
+            admissionAuthority,
+            routeAuthority: null);
         RbpStoredInvocation? existing =
             ReadInvocation(context, identity.IdempotencyKey);
+        if (identity.Mutating && identity.BatchId is null && existing is null)
+        {
+            string[] externalRsids = ResolveLegacyCandidateRsids(context,
+                    RbpLegacySafetyQuery.ForAdmission(identity.Rsid,
+                        new[] { identity.MutationScopeJcs! },
+                        existing?.Identity.IdempotencyKey))
+                .Where(rsid => !string.Equals(rsid, identity.Rsid,
+                    StringComparison.Ordinal)).ToArray();
+            if (externalRsids.Length != 0)
+            {
+                RbpLegacySafetyPlan predecessorSafety = ClassifyLegacySafety(
+                    context, RbpLegacySafetyQuery.ForRetention(externalRsids),
+                    RbpProjectedHoldView.Empty,
+                    RbpLegacySafetyBudget.Admission);
+                if (predecessorSafety.Outcome ==
+                    RbpLegacySafetyOutcome.InventoryLimit)
+                    throw LegacyAdmissionFault("legacy_inventory_limit");
+                if (predecessorSafety.UnsafeGroups.Any(group =>
+                        group.Resolution ==
+                            RbpLegacyResolutionState.Unresolved))
+                    throw LegacyAdmissionFault("legacy_outcome_unverified");
+            }
+        }
         if (existing is null)
         {
             // Spec ~480-482: "Before writing the first add-in byte, the
@@ -70,7 +1082,17 @@ internal sealed partial class RbpJournalStore
                 return BlockedByConflictingHold(context, blocking);
             }
 
+            if (requestedCorrelation is not null)
+                _ = RequireVerificationHold(context, identity, verification);
             InsertReceivedInvocation(context, identity, now);
+            if (requestedCorrelation is not null)
+            {
+                using SqliteCommand correlate = context.CreateCommand(
+                    "UPDATE rbp_invocations SET verification_correlation_json=$correlation WHERE idempotency_key=$key AND state='received' AND verification_correlation_json IS NULL;");
+                correlate.Parameters.AddWithValue("$correlation", requestedCorrelation);
+                correlate.Parameters.AddWithValue("$key", identity.IdempotencyKey);
+                if (correlate.ExecuteNonQuery() != 1) throw ClearanceFault("verification admission correlation was not installed");
+            }
             RbpStoredInvocation stored =
                 ReadInvocation(context, identity.IdempotencyKey) ??
                 throw new RbpJournalException(
@@ -85,6 +1107,7 @@ internal sealed partial class RbpJournalStore
         // Section 12.2 rule 5: any identity drift under the same
         // canonical key is a terminal protocol fault, never a replay.
         RequireIdenticalIdentity(existing.Identity, identity);
+        RequireVerificationCorrelationMatch(existing, requestedCorrelation);
 
         // Rule 1: a known terminal row replays its stored outcome.
         // Rule 2 takes precedence for indeterminate rows that later
@@ -253,7 +1276,8 @@ internal sealed partial class RbpJournalStore
         string idempotencyKey,
         RbpInvocationTerminal terminal,
         CancellationToken cancellationToken = default,
-        RbpInvocationIdentity? expectedIdentity = null)
+        RbpInvocationIdentity? expectedIdentity = null,
+        RbpAddinOutcome? responseEvidence = null)
     {
         ValidateIdentifier(idempotencyKey, nameof(idempotencyKey), 293);
         ArgumentNullException.ThrowIfNull(terminal);
@@ -405,6 +1429,8 @@ internal sealed partial class RbpJournalStore
                         "the terminal outcome could be persisted.");
                 }
 
+                PersistVerificationCandidate(context, existing, terminal, responseEvidence, now);
+
                 // Payload protection is intentionally best-effort *after* the
                 // normal terminal update in the same transaction. A DPAPI or
                 // capacity failure cannot strand a completed invocation;
@@ -440,7 +1466,8 @@ internal sealed partial class RbpJournalStore
         IReadOnlyList<string> invocationKeys,
         string? batchKey,
         CancellationToken cancellationToken,
-        bool allowRetry = true)
+        bool allowRetry = true,
+        IReadOnlyDictionary<string, string>? additionalHoldRsids = null)
     {
         if (invocationKeys.Count is < 1 or > 1024)
             throw new ArgumentException("A durable decision requires bounded exact invocation keys.");
@@ -453,19 +1480,22 @@ internal sealed partial class RbpJournalStore
             {
                 return await ExecuteImmediateAsync(context =>
                 {
-                    string current = CaptureDecisionSnapshot(context, invocationKeys, batchKey);
+                    string current = CaptureDecisionSnapshot(context,
+                        invocationKeys, batchKey, additionalHoldRsids);
                     if (before is not null && !string.Equals(before, current, StringComparison.Ordinal))
                         throw new RbpJournalException(RbpJournalErrorCode.IntegrityCheckFailed,
                             "The durable decision changed before its persistence-only retry.");
                     before = current;
                     projection = operation(context);
-                    intended = CaptureDecisionSnapshot(context, invocationKeys, batchKey);
+                    intended = CaptureDecisionSnapshot(context,
+                        invocationKeys, batchKey, additionalHoldRsids);
                     produced = true;
                     return projection;
                 }, cancellationToken).ConfigureAwait(false);
             }
             catch
             {
+                if (!produced) throw;
                 // ReadAsync serializes the snapshot with local writers; the
                 // explicit SQLite read transaction also excludes mixed external
                 // generations. No write fault-injection hook runs on a read.
@@ -473,7 +1503,8 @@ internal sealed partial class RbpJournalStore
                 {
                     using SqliteTransaction snapshot = connection.BeginTransaction(deferred: true);
                     var context = new RbpJournalWriteContext(connection, snapshot, _commandTimeoutSeconds);
-                    return CaptureDecisionSnapshot(context, invocationKeys, batchKey);
+                    return CaptureDecisionSnapshot(context, invocationKeys,
+                        batchKey, additionalHoldRsids);
                 }, CancellationToken.None).ConfigureAwait(false);
                 if (produced && string.Equals(intended, observed, StringComparison.Ordinal))
                     return projection;
@@ -485,7 +1516,9 @@ internal sealed partial class RbpJournalStore
     }
 
     private static string CaptureDecisionSnapshot(
-        RbpJournalWriteContext context, IReadOnlyList<string> invocationKeys, string? batchKey)
+        RbpJournalWriteContext context, IReadOnlyList<string> invocationKeys,
+        string? batchKey,
+        IReadOnlyDictionary<string, string>? additionalHoldRsids = null)
     {
         var rows = new List<RbpStoredInvocation?>(invocationKeys.Count);
         var recoveryRows = new List<RecoveryDecisionProjection?>(invocationKeys.Count);
@@ -502,9 +1535,24 @@ internal sealed partial class RbpJournalStore
             }
             if (row.VerificationHoldId is { } id)
                 Include(FindHoldById(context, row.Identity.Rsid, id));
+            if (row.VerificationCorrelationJson is not null)
+            {
+                using JsonDocument correlation = ReadVerificationCorrelation(row);
+                Include(FindHoldById(context, row.Identity.Rsid,
+                    correlation.RootElement.GetProperty("verification").GetProperty("hold_id").GetString()!));
+            }
             if (row.Identity.MutationScopeJcs is { } scope)
                 Include(FindHoldByExactScope(context, row.Identity.Rsid, scope));
             Include(FindHoldByExactScope(context, row.Identity.Rsid, "{\"kind\":\"session\"}"));
+        }
+        if (additionalHoldRsids is not null)
+        {
+            foreach ((string holdId, string rsid) in additionalHoldRsids
+                         .OrderBy(value => value.Key, StringComparer.Ordinal))
+            {
+                RbpVerificationHold? hold = FindHoldById(context, rsid, holdId);
+                if (hold is not null) holds[holdId] = hold;
+            }
         }
         return JsonSerializer.Serialize(new
         {
@@ -622,6 +1670,520 @@ internal sealed partial class RbpJournalStore
             }
             payload.Clear();
         }
+    }
+
+    private const int MaximumVerificationCorrelationBytes = 32_768;
+
+    private sealed record RbpVerificationAdmissionAuthority(
+        string Rsid,
+        string ConnectionId,
+        long ConnectionGeneration,
+        long RouteEpoch,
+        string ConnectionCapabilitiesDigest,
+        string LocalSessionKey,
+        string RegistrationDigest,
+        string SessionCapabilitiesDigest);
+
+    private RbpVerificationAdmissionAuthority RequireCurrentInvocationAuthority(
+        RbpJournalWriteContext context,
+        RbpInvocationIdentity identity,
+        RbpInvocationAuthoritySnapshot? authority)
+    {
+        if (authority is null ||
+            !string.Equals(authority.Rsid, identity.Rsid,
+                StringComparison.Ordinal) ||
+            authority.ConnectionId is not { Length: > 0 and <= 128 } ||
+            authority.ConnectionGeneration <= 0 ||
+            authority.RouteEpoch != authority.ConnectionGeneration ||
+            !IsActiveConnectionGeneration(
+                authority.ConnectionGeneration) ||
+            !RbpJournalSerialization.IsSha256Digest(
+                authority.ConnectionCapabilitiesDigest) ||
+            !RbpJournalSerialization.IsSha256Digest(
+                authority.RegistrationDigest) ||
+            !RbpJournalSerialization.IsSha256Digest(
+                authority.SessionCapabilitiesDigest) ||
+            !HasCurrentSessionAuthority(context, identity.Rsid))
+        {
+            throw ClearanceFault(
+                "verification admission lacks exact current connection authority");
+        }
+
+        RbpStoredSession session = ReadStoredSession(context, identity.Rsid) ??
+            throw ClearanceFault(
+                "verification admission lacks a current session binding");
+        if (!string.Equals(
+                session.LocalSessionKey,
+                authority.LocalSessionKey,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                session.RegistrationDigest,
+                authority.RegistrationDigest,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                RbpInvocationAuthoritySnapshot.CapabilitiesDigest(
+                    session.GrantedCapabilities),
+                authority.SessionCapabilitiesDigest,
+                StringComparison.Ordinal))
+        {
+            throw ClearanceFault(
+                "verification admission session binding changed");
+        }
+
+        return new RbpVerificationAdmissionAuthority(
+            authority.Rsid,
+            authority.ConnectionId,
+            authority.ConnectionGeneration,
+            authority.RouteEpoch,
+            authority.ConnectionCapabilitiesDigest,
+            authority.LocalSessionKey,
+            authority.RegistrationDigest,
+            authority.SessionCapabilitiesDigest);
+    }
+
+    private static string? BuildVerificationCorrelation(
+        RbpInvocationIdentity identity,
+        JsonElement verification,
+        object? terminal,
+        RbpVerificationAdmissionAuthority? admissionAuthority = null,
+        RbpRouteAuthoritySnapshot? routeAuthority = null)
+    {
+        if (verification.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined) return null;
+        if (identity.Mutating || identity.MutationScopeJcs is not null || identity.BatchId is not null ||
+            identity.RecoveryClearancesJcs != "[]" || verification.ValueKind != JsonValueKind.Object)
+            throw ClearanceFault("verification requires an ordinary read without clearances");
+        string[] names = verification.EnumerateObject().Select(property => property.Name).ToArray();
+        if (names.Length != 3 || names.Distinct(StringComparer.Ordinal).Count() != 3 ||
+            names.Any(name => name is not ("hold_id" or "mutation_scope" or "purpose")) ||
+            !verification.TryGetProperty("hold_id", out JsonElement hold) || hold.ValueKind != JsonValueKind.String ||
+            !RbpRecoveryClearance.IsVerificationHoldId(hold.GetString()) ||
+            !verification.TryGetProperty("purpose", out JsonElement purpose) || purpose.ValueKind != JsonValueKind.String ||
+            purpose.GetString() != "resolve_indeterminate" ||
+            !verification.TryGetProperty("mutation_scope", out JsonElement scope) || scope.ValueKind != JsonValueKind.Object)
+            throw ClearanceFault("verification violates the frozen correlation shape");
+        string scopeJcs = Rfc8785Json.Canonicalize(scope);
+        _ = ReadScopeShape(scopeJcs);
+        object value = admissionAuthority is null
+            ? new
+            {
+                schema = "bridge.verification-correlation/v1",
+                rsid = identity.Rsid,
+                invocation_id = identity.InvocationId,
+                verification,
+                terminal,
+            }
+            : new
+            {
+                schema = "bridge.verification-correlation/v2",
+                rsid = identity.Rsid,
+                invocation_id = identity.InvocationId,
+                verification,
+                authority = new
+                {
+                    schema = "bridge.verification-authority/v1",
+                    admission = new
+                    {
+                        rsid = admissionAuthority.Rsid,
+                        connection_id = admissionAuthority.ConnectionId,
+                        connection_generation =
+                            admissionAuthority.ConnectionGeneration,
+                        route_epoch = admissionAuthority.RouteEpoch,
+                        connection_capabilities_digest =
+                            admissionAuthority.ConnectionCapabilitiesDigest,
+                        local_session_key = admissionAuthority.LocalSessionKey,
+                        registration_digest =
+                            admissionAuthority.RegistrationDigest,
+                        session_capabilities_digest =
+                            admissionAuthority.SessionCapabilitiesDigest,
+                    },
+                    route = routeAuthority is null
+                        ? null
+                        : new
+                        {
+                            local_session_key = routeAuthority.LocalSessionKey,
+                            handle_generation =
+                                routeAuthority.HandleGeneration,
+                            registration_signature_digest =
+                                routeAuthority.RegistrationSignatureDigest,
+                            process_attestation_digest =
+                                routeAuthority.ProcessAttestationDigest,
+                        },
+                },
+                terminal,
+            };
+        string correlation = Rfc8785Json.Canonicalize(
+            JsonSerializer.SerializeToElement(value));
+        if (Encoding.UTF8.GetByteCount(correlation) > MaximumVerificationCorrelationBytes)
+            throw ClearanceFault("verification correlation exceeds its byte budget");
+        return correlation;
+    }
+
+    private static JsonDocument ReadVerificationCorrelation(RbpStoredInvocation row)
+    {
+        if (row.VerificationCorrelationJson is not { } json ||
+            Encoding.UTF8.GetByteCount(json) > MaximumVerificationCorrelationBytes)
+            throw ClearanceFault("verification correlation is absent or over budget");
+        JsonDocument document = JsonDocument.Parse(json);
+        try
+        {
+            JsonElement root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object ||
+                !root.TryGetProperty("schema", out JsonElement schema) || schema.ValueKind != JsonValueKind.String ||
+                !root.TryGetProperty("rsid", out JsonElement rsid) || rsid.ValueKind != JsonValueKind.String ||
+                rsid.GetString() != row.Identity.Rsid ||
+                !root.TryGetProperty("invocation_id", out JsonElement invocation) ||
+                invocation.ValueKind != JsonValueKind.String ||
+                invocation.GetString() != row.Identity.InvocationId ||
+                !root.TryGetProperty("verification", out JsonElement verification) ||
+                !root.TryGetProperty("terminal", out JsonElement terminal) ||
+                Rfc8785Json.Canonicalize(root) != json)
+                throw ClearanceFault("verification correlation is malformed or mismatched");
+            string? schemaName = schema.GetString();
+            if (schemaName == "bridge.verification-correlation/v1")
+            {
+                if (root.EnumerateObject().Count() != 5 ||
+                    root.TryGetProperty("authority", out _))
+                    throw ClearanceFault(
+                        "verification v1 correlation is not closed");
+                _ = BuildVerificationCorrelation(
+                    row.Identity,
+                    verification,
+                    terminal: null);
+            }
+            else if (schemaName == "bridge.verification-correlation/v2")
+            {
+                if (root.EnumerateObject().Count() != 6 ||
+                    !root.TryGetProperty("authority", out JsonElement authority))
+                    throw ClearanceFault(
+                        "verification v2 correlation lacks authority");
+                ValidateVerificationAuthority(authority);
+                RbpVerificationAdmissionAuthority admission =
+                    ReadVerificationAdmissionAuthority(
+                        authority.GetProperty("admission"));
+                if (!string.Equals(
+                        admission.Rsid,
+                        row.Identity.Rsid,
+                        StringComparison.Ordinal))
+                    throw ClearanceFault(
+                        "verification authority RSID is mismatched");
+            }
+            else
+            {
+                throw ClearanceFault("verification correlation schema is unsupported");
+            }
+            RequireVerificationTerminalShape(terminal);
+            if (schemaName == "bridge.verification-correlation/v1" &&
+                terminal.ValueKind == JsonValueKind.Object &&
+                terminal.GetProperty("eligible").ValueKind ==
+                    JsonValueKind.True)
+            {
+                JsonElement normalized = JsonSerializer.SerializeToElement(new
+                {
+                    schema = schemaName,
+                    rsid = row.Identity.Rsid,
+                    invocation_id = row.Identity.InvocationId,
+                    verification,
+                    terminal = new
+                    {
+                        status = terminal.GetProperty("status").GetString(),
+                        raw_response_digest = terminal
+                            .GetProperty("raw_response_digest")
+                            .ValueKind == JsonValueKind.Null
+                                ? null
+                                : terminal.GetProperty("raw_response_digest")
+                                    .GetString(),
+                        eligible = false,
+                    },
+                });
+                document.Dispose();
+                return JsonDocument.Parse(
+                    Rfc8785Json.Canonicalize(normalized));
+            }
+            return document;
+        }
+        catch { document.Dispose(); throw; }
+    }
+
+    private static void RequireVerificationCorrelationMatch(RbpStoredInvocation row, string? requested)
+    {
+        if (row.VerificationCorrelationJson is null && requested is null) return;
+        if (row.VerificationCorrelationJson is null || requested is null)
+            throw ClearanceFault("verification presence changed under the same invocation id");
+        using JsonDocument stored = ReadVerificationCorrelation(row);
+        JsonElement root = stored.RootElement;
+        string? immutable;
+        if (root.GetProperty("schema").GetString() ==
+            "bridge.verification-correlation/v1")
+        {
+            immutable = BuildVerificationCorrelation(
+                row.Identity,
+                root.GetProperty("verification"),
+                terminal: null);
+        }
+        else
+        {
+            RbpVerificationAdmissionAuthority admission =
+                ReadVerificationAdmissionAuthority(
+                    root.GetProperty("authority").GetProperty("admission"));
+            immutable = BuildVerificationCorrelation(
+                row.Identity,
+                root.GetProperty("verification"),
+                terminal: null,
+                admission,
+                routeAuthority: null);
+        }
+        if (!string.Equals(immutable, requested, StringComparison.Ordinal))
+            throw ClearanceFault("verification binding changed under the same invocation id");
+    }
+
+    private static void ValidateVerificationAuthority(JsonElement authority)
+    {
+        if (authority.ValueKind != JsonValueKind.Object ||
+            authority.EnumerateObject().Count() != 3 ||
+            !authority.TryGetProperty("schema", out JsonElement schema) ||
+            schema.ValueKind != JsonValueKind.String ||
+            schema.GetString() != "bridge.verification-authority/v1" ||
+            !authority.TryGetProperty("admission", out JsonElement admission) ||
+            !authority.TryGetProperty("route", out JsonElement route))
+            throw ClearanceFault("verification authority is malformed");
+        _ = ReadVerificationAdmissionAuthority(admission);
+        if (route.ValueKind == JsonValueKind.Null) return;
+        _ = ReadRouteAuthority(route);
+    }
+
+    private static RbpVerificationAdmissionAuthority
+        ReadVerificationAdmissionAuthority(JsonElement admission)
+    {
+        if (admission.ValueKind != JsonValueKind.Object ||
+            admission.EnumerateObject().Count() != 8 ||
+            !TryString(admission, "rsid", out string? rsid) ||
+            !TryString(admission, "connection_id", out string? connectionId) ||
+            !TryInt64(admission, "connection_generation", out long generation) ||
+            !TryInt64(admission, "route_epoch", out long epoch) ||
+            generation <= 0 || epoch != generation ||
+            !TryDigest(admission, "connection_capabilities_digest",
+                out string? connectionCapabilities) ||
+            !TryString(admission, "local_session_key", out string? localKey) ||
+            !TryDigest(admission, "registration_digest",
+                out string? registration) ||
+            !TryDigest(admission, "session_capabilities_digest",
+                out string? sessionCapabilities))
+            throw ClearanceFault("verification admission authority is malformed");
+        return new RbpVerificationAdmissionAuthority(
+            rsid!, connectionId!, generation, epoch, connectionCapabilities!,
+            localKey!, registration!, sessionCapabilities!);
+    }
+
+    private static RbpRouteAuthoritySnapshot ReadRouteAuthority(
+        JsonElement route)
+    {
+        if (route.ValueKind != JsonValueKind.Object ||
+            route.EnumerateObject().Count() != 4 ||
+            !TryString(route, "local_session_key", out string? localKey) ||
+            !TryInt64(route, "handle_generation", out long generation) ||
+            generation <= 0 ||
+            !TryDigest(route, "registration_signature_digest",
+                out string? registration) ||
+            !TryDigest(route, "process_attestation_digest",
+                out string? attestation))
+            throw ClearanceFault("verification route authority is malformed");
+        return new RbpRouteAuthoritySnapshot(
+            localKey!, generation, registration!, attestation!);
+    }
+
+    private static bool TryString(
+        JsonElement value,
+        string name,
+        out string? result)
+    {
+        result = null;
+        return value.TryGetProperty(name, out JsonElement property) &&
+            property.ValueKind == JsonValueKind.String &&
+            (result = property.GetString()) is { Length: > 0 };
+    }
+
+    private static bool TryInt64(
+        JsonElement value,
+        string name,
+        out long result)
+    {
+        result = 0;
+        return value.TryGetProperty(name, out JsonElement property) &&
+            property.ValueKind == JsonValueKind.Number &&
+            property.TryGetInt64(out result);
+    }
+
+    private static bool TryDigest(
+        JsonElement value,
+        string name,
+        out string? result) =>
+        TryString(value, name, out result) &&
+        RbpJournalSerialization.IsSha256Digest(result);
+
+    private static void RequireVerificationTerminalShape(JsonElement terminal)
+    {
+        if (terminal.ValueKind == JsonValueKind.Null) return;
+        if (terminal.ValueKind != JsonValueKind.Object || terminal.EnumerateObject().Count() != 3 ||
+            !terminal.TryGetProperty("status", out JsonElement status) || status.ValueKind != JsonValueKind.String ||
+            status.GetString() is not ("completed" or "failed" or "guarded" or "cancelled" or "indeterminate") ||
+            !terminal.TryGetProperty("raw_response_digest", out JsonElement digest) ||
+            digest.ValueKind is not (JsonValueKind.Null or JsonValueKind.String) ||
+            (digest.ValueKind == JsonValueKind.String && !RbpJournalSerialization.IsSha256Digest(digest.GetString())) ||
+            !terminal.TryGetProperty("eligible", out JsonElement eligible) ||
+            eligible.ValueKind is not (JsonValueKind.True or JsonValueKind.False) ||
+            (eligible.ValueKind == JsonValueKind.True &&
+             (status.GetString() != "completed" || digest.ValueKind != JsonValueKind.String)))
+            throw ClearanceFault("verification terminal violates the closed correlation shape");
+    }
+
+    private static RbpVerificationHold RequireVerificationHold(
+        RbpJournalWriteContext context, RbpInvocationIdentity identity, JsonElement verification)
+    {
+        RbpVerificationHold hold = FindHoldById(context, identity.Rsid, verification.GetProperty("hold_id").GetString()!) ??
+            throw ClearanceFault("verification does not name a retained hold in this session");
+        string scope = Rfc8785Json.Canonicalize(verification.GetProperty("mutation_scope"));
+        if (hold.ScopeJcs != scope || hold.State is not (RbpHoldState.Active or RbpHoldState.EvidenceRecorded) ||
+            hold.OrderedOriginIdempotencyKeys.Count is < 1 or > 10_000 ||
+            hold.OrderedOriginIdempotencyKeys.Distinct(StringComparer.Ordinal).Count() != hold.OrderedOriginIdempotencyKeys.Count ||
+            Rfc8785Json.MakeVerificationHoldId(identity.Rsid, verification.GetProperty("mutation_scope"), hold.OrderedOriginIdempotencyKeys) != hold.VerificationHoldId)
+            throw ClearanceFault("verification hold scope, origins or state is not eligible");
+        foreach (string key in hold.OrderedOriginIdempotencyKeys)
+        {
+            RbpStoredInvocation origin = ReadInvocation(context, key) ?? throw ClearanceFault("verification origin evidence is missing");
+            bool scopeBound = origin.Identity.MutationScopeJcs is { } originScope &&
+                (hold.ScopeKind == "session"
+                    ? ScopeConflicts(originScope, hold)
+                    : originScope == hold.ScopeJcs);
+            bool linkedCurrent =
+                origin.State == RbpInvocationState.Indeterminate &&
+                origin.VerificationHoldId == hold.VerificationHoldId;
+            bool legacyUnsafeUnlinked = origin.VerificationHoldId is null &&
+                IsRawLegacyOriginUncertain(context, origin);
+            if (origin.Identity.IdempotencyKey != key ||
+                origin.Identity.Rsid != identity.Rsid ||
+                !origin.Identity.Mutating || !scopeBound ||
+                (!linkedCurrent && !legacyUnsafeUnlinked))
+                throw ClearanceFault(
+                    "verification origin identity, scope, state or hold linkage is inconsistent");
+        }
+        return hold;
+    }
+
+    private static bool HasCurrentSessionAuthority(
+        RbpJournalWriteContext context,
+        string rsid)
+    {
+        using SqliteCommand command = context.CreateCommand(
+            """
+            SELECT EXISTS(SELECT 1 FROM rbp_sessions WHERE rsid=$rsid)
+              AND NOT EXISTS(SELECT 1 FROM rbp_unregister_tombstones WHERE rsid=$rsid)
+              AND NOT EXISTS(SELECT 1 FROM rbp_recovery_sequence_tombstones WHERE rsid=$rsid);
+            """);
+        command.Parameters.AddWithValue("$rsid", rsid);
+        return Convert.ToInt32(command.ExecuteScalar() ?? 0) == 1;
+    }
+
+    private void PersistVerificationCandidate(
+        RbpJournalWriteContext context, RbpStoredInvocation before,
+        RbpInvocationTerminal terminal, RbpAddinOutcome? response, long now)
+    {
+        if (before.VerificationCorrelationJson is null) return;
+        using JsonDocument correlation = ReadVerificationCorrelation(before);
+        if (correlation.RootElement.GetProperty("terminal").ValueKind != JsonValueKind.Null)
+            throw ClearanceFault("verification terminal facts are immutable");
+        JsonElement verification = correlation.RootElement.GetProperty("verification");
+        bool authorityV2 = correlation.RootElement.GetProperty("schema")
+            .GetString() == "bridge.verification-correlation/v2";
+        RbpVerificationAdmissionAuthority? admissionAuthority = authorityV2
+            ? ReadVerificationAdmissionAuthority(
+                correlation.RootElement.GetProperty("authority")
+                    .GetProperty("admission"))
+            : null;
+        RbpRouteAuthoritySnapshot? routeAuthority =
+            response?.RouteAuthority;
+        RbpVerificationHold hold = RequireVerificationHold(context, before.Identity, verification);
+        string? rawDigest = null;
+        bool eligible = false;
+        if (response is { RawResponsePayload.Length: > 0, ResponseBytes: > 0 })
+        {
+            try
+            {
+                AddinJsonRpcResponse parsed = AddinJsonRpcCodec.ParseResponse(response.RawResponsePayload, before.Identity.InvocationId);
+                rawDigest = RawResponseDigest(response.RawResponsePayload);
+                using JsonDocument raw = JsonDocument.Parse(response.RawResponsePayload);
+                RbpStoredSession? session =
+                    ReadStoredSession(context, before.Identity.Rsid);
+                bool sessionMatches = admissionAuthority is not null &&
+                    session is not null &&
+                    string.Equals(
+                        session.LocalSessionKey,
+                        admissionAuthority.LocalSessionKey,
+                        StringComparison.Ordinal) &&
+                    string.Equals(
+                        session.RegistrationDigest,
+                        admissionAuthority.RegistrationDigest,
+                        StringComparison.Ordinal) &&
+                    string.Equals(
+                        RbpInvocationAuthoritySnapshot.CapabilitiesDigest(
+                            session.GrantedCapabilities),
+                        admissionAuthority.SessionCapabilitiesDigest,
+                        StringComparison.Ordinal);
+                bool routeMatches = admissionAuthority is not null &&
+                    routeAuthority is not null &&
+                    string.Equals(
+                        routeAuthority.LocalSessionKey,
+                        admissionAuthority.LocalSessionKey,
+                        StringComparison.Ordinal) &&
+                    response?.ProcessAttestation is { } attestation &&
+                    string.Equals(
+                        AddinSessionRouter.ProcessAttestationDigest(attestation),
+                        routeAuthority.ProcessAttestationDigest,
+                        StringComparison.Ordinal);
+                eligible = authorityV2 &&
+                    IsActiveConnectionGeneration(
+                        admissionAuthority!.ConnectionGeneration) &&
+                    admissionAuthority.RouteEpoch ==
+                        admissionAuthority.ConnectionGeneration &&
+                    HasCurrentSessionAuthority(context, before.Identity.Rsid) &&
+                    sessionMatches && routeMatches &&
+                    response is { ProcessAttestation: not null, RouteFailure: false } &&
+                    string.Equals(session!.LocalSessionKey, response.RouteLocalSessionKey, StringComparison.Ordinal) &&
+                    hold.State == RbpHoldState.Active &&
+                    terminal.State == RbpInvocationState.Completed && response.Kind == RbpAddinOutcomeKind.Completed &&
+                    parsed.Error is null && raw.RootElement.TryGetProperty("result", out JsonElement result) &&
+                    RbpApplicationResultClassifier.Classify(result) == RbpApplicationResultClassification.Completed &&
+                    terminal.ResultDigest == rawDigest &&
+                    terminal.Outcome.TryGetProperty("payload_omitted", out JsonElement omitted) &&
+                    omitted.ValueKind == JsonValueKind.False;
+            }
+            catch (Exception exception) when (exception is AddinJsonRpcProtocolException or StrictJsonException or JsonException)
+            { rawDigest = null; }
+        }
+        string completed = BuildVerificationCorrelation(
+            before.Identity,
+            verification,
+            new
+            {
+                status = ToStorageState(terminal.State),
+                raw_response_digest = rawDigest,
+                eligible,
+            },
+            admissionAuthority,
+            authorityV2 ? routeAuthority : null)!;
+        using SqliteCommand update = context.CreateCommand(
+            "UPDATE rbp_invocations SET verification_correlation_json=$completed WHERE idempotency_key=$key AND verification_correlation_json=$before;");
+        update.Parameters.AddWithValue("$completed", completed);
+        update.Parameters.AddWithValue("$key", before.Identity.IdempotencyKey);
+        update.Parameters.AddWithValue("$before", before.VerificationCorrelationJson);
+        if (update.ExecuteNonQuery() != 1) throw ClearanceFault("verification terminal correlation changed concurrently");
+        if (!eligible) return;
+        using SqliteCommand candidate = context.CreateCommand(
+            "UPDATE rbp_verification_holds SET state='evidence_recorded',verification_invocation_id=$read,evidence_digest=$digest,updated_at_ms=MAX(updated_at_ms,$now) WHERE verification_hold_id=$hold AND state='active' AND resolution_id IS NULL;");
+        candidate.Parameters.AddWithValue("$read", before.Identity.InvocationId);
+        candidate.Parameters.AddWithValue("$digest", rawDigest!);
+        candidate.Parameters.AddWithValue("$now", now);
+        candidate.Parameters.AddWithValue("$hold", hold.VerificationHoldId);
+        if (candidate.ExecuteNonQuery() != 1) throw ClearanceFault("verification candidate no longer owns the unresolved hold");
     }
 
     private static string RawResponseDigest(ReadOnlySpan<byte> bytes) =>
@@ -1134,11 +2696,12 @@ internal sealed partial class RbpJournalStore
         using SqliteCommand update = context.CreateCommand(
             """
             UPDATE rbp_invocations
-            SET late_terminal_outcome_json=
-                  COALESCE(late_terminal_outcome_json,$outcome),
-                late_result_digest=COALESCE(late_result_digest,$digest),
+            SET late_terminal_outcome_json=$outcome,
+                late_result_digest=$digest,
                 finished_at_ms=COALESCE(finished_at_ms,$now)
-            WHERE idempotency_key=$key AND state='indeterminate';
+            WHERE idempotency_key=$key AND state='indeterminate'
+              AND late_terminal_outcome_json IS NULL
+              AND late_result_digest IS NULL;
             """);
         update.Parameters.AddWithValue("$outcome", outcomeJson);
         update.Parameters.AddWithValue(
@@ -1146,7 +2709,18 @@ internal sealed partial class RbpJournalStore
             (object?)resultDigest ?? DBNull.Value);
         update.Parameters.AddWithValue("$now", now);
         update.Parameters.AddWithValue("$key", idempotencyKey);
-        _ = update.ExecuteNonQuery();
+        if (update.ExecuteNonQuery() == 1) return;
+
+        RbpStoredInvocation existing = ReadInvocation(context, idempotencyKey) ??
+            throw new RbpJournalException(RbpJournalErrorCode.ProtocolConflict,
+                "An unknown invocation cannot record a late terminal.");
+        if (existing.State != RbpInvocationState.Indeterminate ||
+            !string.Equals(existing.LateTerminalOutcomeJson, outcomeJson,
+                StringComparison.Ordinal) ||
+            !string.Equals(existing.LateResultDigest, resultDigest,
+                StringComparison.Ordinal))
+            throw new RbpJournalException(RbpJournalErrorCode.ProtocolConflict,
+                "A late terminal is immutable; only a byte-identical replay is accepted.");
     }
 
     private static (string ScopeKind, string? DocumentId) ReadScopeShape(

@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using RevAgent.Bridge.AddinLoopback;
@@ -25,25 +26,32 @@ public sealed class RbpDispatcherVerificationReplayTests
     public async Task AReplayedVerificationReadKeepsItsRequiredResultDigest()
     {
         using var directory = new RbpJournalTestDirectory();
-        await using RbpJournalStore store = await OpenAsync(directory);
-
-        // The digest is over the exact raw add-in JSON-RPC response bytes, so
-        // the stub answers with a body distinct from the RBP-wrapped result.
-        byte[] raw = Encoding.UTF8.GetBytes(
-            """{"jsonrpc":"2.0","id":"x","result":{"ok":true}}""");
-        var channel = new StubChannel(
-            () => Task.FromResult(Completed("""{"ok":true}""", raw)));
-        RbpInvocationDispatcher dispatcher = Dispatcher(store, channel);
-
-        RbpInvocationAnswer first = await dispatcher.DispatchAsync(
-            VerificationReadRequest(),
+        var fixture = new RbpApplicationErrorSafetyTests.RoutedFixture("{}", -32603);
+        await using RbpJournalStore store = await RbpCorrelatedVerificationFlowTests
+            .OpenForRoute(directory, fixture);
+        RbpInvocationDispatcher dispatcher = Dispatcher(store, fixture.Channel);
+        RbpInvocationAnswer mutation = await dispatcher.DispatchAsync(
+            RbpApplicationErrorSafetyTests.Request(mutating: true),
             CancellationToken.None);
-        RbpInvocationAnswer replay = await dispatcher.DispatchAsync(
-            VerificationReadRequest(),
-            CancellationToken.None);
+        string holdId = mutation.Payload.GetProperty("verification_hold_id").GetString()!;
+        fixture.Transport.SetResponse("{\"ok\":true}");
+        RbpInvokeRequest request = RbpCorrelatedVerificationFlowTests.VerificationRequest(
+            "0197a3c2-0000-7000-8000-0000000000e1",
+            holdId);
+
+        RbpInvocationAnswer first = await
+            RbpCorrelatedVerificationFlowTests.DispatchVerificationAsync(
+                dispatcher, fixture, request);
+        string exactRawDigest = "sha256:" + Convert.ToHexString(
+            SHA256.HashData(fixture.Transport.LastBytes)).ToLowerInvariant();
+        int callsAfterFirstDelivery = fixture.Transport.Calls;
+        RbpInvocationAnswer replay = await
+            RbpCorrelatedVerificationFlowTests.DispatchVerificationAsync(
+                dispatcher, fixture, request);
 
         // The add-in is not called again for the replay.
-        Assert.Equal(1, channel.Calls);
+        Assert.Equal(2, callsAfterFirstDelivery);
+        Assert.Equal(callsAfterFirstDelivery, fixture.Transport.Calls);
         Assert.Equal("result", first.Type);
         Assert.Equal("result", replay.Type);
         Assert.True(replay.Payload.GetProperty("replayed").GetBoolean());
@@ -53,9 +61,9 @@ public sealed class RbpDispatcherVerificationReplayTests
         // by both peers. Redelivery must therefore answer with the same
         // digest the journal row holds, not with none.
         RbpStoredInvocation? stored = await store.GetInvocationAsync(
-            VerificationReadRequest().ToIdentity().IdempotencyKey);
+            request.ToIdentity().IdempotencyKey);
         Assert.Equal(RbpInvocationState.Completed, stored!.State);
-        Assert.StartsWith("sha256:", stored.ResultDigest);
+        Assert.Equal(exactRawDigest, stored.ResultDigest);
         Assert.Equal(
             stored.ResultDigest,
             first.Payload.GetProperty("result_digest").GetString());
@@ -114,11 +122,6 @@ public sealed class RbpDispatcherVerificationReplayTests
             RbpJournalTestData.Registration());
         return store;
     }
-
-    private static RbpInvokeRequest VerificationReadRequest() =>
-        ReadRequest(
-            "0197a3c2-0000-7000-8000-0000000000e1",
-            """{"hold_id":"vh:1"}""");
 
     private static RbpInvokeRequest PlainReadRequest() =>
         ReadRequest("0197a3c2-0000-7000-8000-0000000000e2", "null");

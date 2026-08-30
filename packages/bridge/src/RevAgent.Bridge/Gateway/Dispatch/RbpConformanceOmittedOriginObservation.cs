@@ -23,6 +23,16 @@ internal sealed class RbpConformanceOmittedOriginObservation
     private readonly Func<AddinProcessAttestation?>? _readCurrentAttestation;
     private readonly object _sync = new();
     private Marker? _marker;
+    private long _markerVersion;
+    private AbortedReplay? _lastAbort;
+
+    private enum MarkerState
+    {
+        Armed,
+        BoundUnexposed,
+        Exposed,
+        Consumed,
+    }
 
     private RbpConformanceOmittedOriginObservation(
         Func<AddinProcessAttestation?>? readCurrentAttestation) =>
@@ -55,11 +65,14 @@ internal sealed class RbpConformanceOmittedOriginObservation
             // stays an ordinary terminal; no selector can broaden this seam.
             if (_marker is not null) return false;
             _marker = new Marker(
+                checked(++_markerVersion),
+                _markerVersion,
                 identity.Rsid,
                 identity.IdempotencyKey,
                 identity.InvocationId,
                 resultDigest,
                 outcome.ProcessAttestation!);
+            _lastAbort = null;
             return true;
         }
     }
@@ -82,7 +95,7 @@ internal sealed class RbpConformanceOmittedOriginObservation
         lock (_sync)
         {
             marker = _marker;
-            if (marker is null || marker.Bound ||
+            if (marker is null || marker.State != MarkerState.Armed ||
                 !string.Equals(marker.Rsid, stored.Identity.Rsid, StringComparison.Ordinal) ||
                 !string.Equals(marker.IdempotencyKey, stored.Identity.IdempotencyKey, StringComparison.Ordinal) ||
                 !string.Equals(marker.OriginInvocationId, stored.Identity.InvocationId, StringComparison.Ordinal) ||
@@ -107,22 +120,105 @@ internal sealed class RbpConformanceOmittedOriginObservation
         }
 
         return new RbpConformanceOmittedOriginReplay(
+            marker.ReservationGeneration,
             marker.Rsid, marker.IdempotencyKey, marker.OriginInvocationId,
             marker.ResultDigest);
     }
 
     internal bool TryBindReplay(
         RbpConformanceOmittedOriginReplay replay,
+        long attemptGeneration,
         long sequence,
         string outerDigest)
     {
-        if (!RbpJournalSerialization.IsSha256Digest(outerDigest) || sequence < 1)
+        if (!RbpJournalSerialization.IsSha256Digest(outerDigest) ||
+            attemptGeneration < 1 || sequence < 1)
             return false;
         lock (_sync)
         {
-            if (_marker is not { Bound: false } marker ||
+            if (_marker is not { State: MarkerState.Armed } marker ||
                 !Same(marker, replay)) return false;
-            _marker = marker with { Bound = true, Sequence = sequence, OuterDigest = outerDigest };
+            _marker = marker with
+            {
+                Version = checked(++_markerVersion),
+                State = MarkerState.BoundUnexposed,
+                AttemptGeneration = attemptGeneration,
+                Sequence = sequence,
+                OuterDigest = outerDigest,
+            };
+            return true;
+        }
+    }
+
+    // Retained for the unchanged conformance consumer. Production coordinator
+    // binding always supplies its exact connection-attempt generation.
+    internal bool TryBindReplay(
+        RbpConformanceOmittedOriginReplay replay,
+        long sequence,
+        string outerDigest) =>
+        TryBindReplay(replay, 1, sequence, outerDigest);
+
+    internal bool TryExposeReplay(
+        RbpConformanceOmittedOriginReplay replay,
+        long attemptGeneration,
+        long sequence,
+        string outerDigest)
+    {
+        lock (_sync)
+        {
+            if (_marker is not { } marker ||
+                !Same(marker, replay) ||
+                marker.AttemptGeneration != attemptGeneration ||
+                marker.Sequence != sequence ||
+                !string.Equals(marker.OuterDigest, outerDigest,
+                    StringComparison.Ordinal))
+                return false;
+            // A synchronous peer ACK may consume the exact bound marker after
+            // send start but before this continuation exposes it. Consumed is
+            // stronger proof than Exposed, so preserve the terminal state and
+            // treat the exact tuple as idempotent success.
+            if (marker.State == MarkerState.Consumed) return true;
+            if (marker.State != MarkerState.BoundUnexposed) return false;
+            _marker = marker with
+            {
+                Version = checked(++_markerVersion),
+                State = MarkerState.Exposed,
+            };
+            return true;
+        }
+    }
+
+    internal bool AbortBoundReplay(
+        RbpConformanceOmittedOriginReplay replay,
+        long attemptGeneration,
+        long sequence,
+        string outerDigest)
+    {
+        lock (_sync)
+        {
+            if (_lastAbort is { } prior && prior.Matches(
+                    replay, attemptGeneration, sequence, outerDigest))
+                return true;
+            if (_marker is not
+                    { State: MarkerState.BoundUnexposed } marker ||
+                !Same(marker, replay) ||
+                marker.AttemptGeneration != attemptGeneration ||
+                marker.Sequence != sequence ||
+                !string.Equals(marker.OuterDigest, outerDigest,
+                    StringComparison.Ordinal))
+                return false;
+            _lastAbort = new AbortedReplay(
+                replay, attemptGeneration, sequence, outerDigest);
+            long nextReservation = checked(++_markerVersion);
+            _marker = marker with
+            {
+                ReservationGeneration = nextReservation,
+                Version = nextReservation,
+                State = MarkerState.Armed,
+                AttemptGeneration = 0,
+                Sequence = 0,
+                OuterDigest = null,
+            };
             return true;
         }
     }
@@ -131,13 +227,19 @@ internal sealed class RbpConformanceOmittedOriginObservation
     {
         lock (_sync)
         {
-            if (_marker is not { Bound: true } marker ||
+            if (_marker is not
+                    { State: MarkerState.BoundUnexposed or MarkerState.Exposed }
+                    marker ||
                 !string.Equals(marker.Rsid, rsid, StringComparison.Ordinal) ||
                 marker.Sequence != sequence || marker.OuterDigest is null)
             {
                 return false;
             }
-            _marker = null;
+            _marker = marker with
+            {
+                Version = checked(++_markerVersion),
+                State = MarkerState.Consumed,
+            };
             return true;
         }
     }
@@ -151,7 +253,7 @@ internal sealed class RbpConformanceOmittedOriginObservation
             RbpInvocationIdentity identity = request.ToIdentity();
             lock (_sync)
             {
-                return _marker is { Bound: false } marker &&
+                return _marker is { State: MarkerState.Armed } marker &&
                     IsFixtureRequest(request) &&
                     string.Equals(marker.Rsid, identity.Rsid, StringComparison.Ordinal) &&
                     string.Equals(marker.IdempotencyKey, identity.IdempotencyKey, StringComparison.Ordinal) &&
@@ -203,19 +305,41 @@ internal sealed class RbpConformanceOmittedOriginObservation
     }
 
     private static bool Same(Marker marker, RbpConformanceOmittedOriginReplay replay) =>
+        marker.ReservationGeneration == replay.MarkerVersion &&
         string.Equals(marker.Rsid, replay.Rsid, StringComparison.Ordinal) &&
         string.Equals(marker.IdempotencyKey, replay.IdempotencyKey, StringComparison.Ordinal) &&
         string.Equals(marker.OriginInvocationId, replay.OriginInvocationId, StringComparison.Ordinal) &&
         string.Equals(marker.ResultDigest, replay.ResultDigest, StringComparison.Ordinal);
 
-    private sealed record Marker(string Rsid, string IdempotencyKey,
+    private sealed record Marker(
+        long ReservationGeneration,
+        long Version,
+        string Rsid, string IdempotencyKey,
         string OriginInvocationId, string ResultDigest,
-        AddinProcessAttestation Attestation, bool Bound = false,
+        AddinProcessAttestation Attestation,
+        MarkerState State = MarkerState.Armed,
+        long AttemptGeneration = 0,
         long Sequence = 0, string? OuterDigest = null);
+
+    private sealed record AbortedReplay(
+        RbpConformanceOmittedOriginReplay Replay,
+        long AttemptGeneration,
+        long Sequence,
+        string OuterDigest)
+    {
+        internal bool Matches(
+            RbpConformanceOmittedOriginReplay replay,
+            long attemptGeneration,
+            long sequence,
+            string outerDigest) =>
+            Replay == replay && AttemptGeneration == attemptGeneration &&
+            Sequence == sequence &&
+            string.Equals(OuterDigest, outerDigest, StringComparison.Ordinal);
+    }
 }
 
 internal sealed record RbpConformanceOmittedOriginReplay(
-    string Rsid, string IdempotencyKey, string OriginInvocationId,
+    long MarkerVersion, string Rsid, string IdempotencyKey, string OriginInvocationId,
     string ResultDigest);
 
 internal sealed class RbpConformanceOriginSuppressedException : Exception
