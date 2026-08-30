@@ -14,6 +14,7 @@ import {
   createConnectionLifecycle,
   createSessionLifecycle,
   handleJournalSessionUnregister,
+  journalRecordIsIntact,
   markJournalExecuting,
   markJournalIndeterminate,
   queueOutboundData,
@@ -11309,6 +11310,35 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         ),
       );
     const noSend = evidence.noSendReceipt ?? null;
+    const exactJournalBindings = evidence.journal !== null &&
+      evidence.journal.rsid === expected.rsid &&
+      evidence.journal.sessionBindingId === expected.sessionBindingId &&
+      evidence.journal.envelopeDigest === expected.envelopeDigest &&
+      evidence.journal.journalRecords.length === expected.invocationBindings.length &&
+      evidence.journal.journalRecords.every((record) => journalRecordIsIntact(record)) &&
+      expected.invocationBindings.every((binding) =>
+        evidence.journal!.journalRecords.some((record) =>
+          record.bindingDigest === binding.bindingDigest &&
+          `${record.binding.rsid}/${record.binding.invocationId}` === binding.idempotencyKey));
+    const acceptance = evidence.acceptance ?? (
+      noSend === null && exactJournalBindings &&
+      session.sequence.lastPeerAck >= expected.gatewaySequence
+        ? {
+            source: "durable_rbp_sequence" as const,
+            receiptVersion: 1 as const,
+            tenantId: session.tenantId,
+            rsid: session.rsid,
+            sessionBindingId: session.sessionBindingId,
+            acceptedConnectionId: session.connectionId,
+            authorizedSessionVersion: session.sessionVersion,
+            gatewaySequence: expected.gatewaySequence,
+            cumulativeAck: session.sequence.lastPeerAck,
+            envelopeDigest: expected.envelopeDigest,
+            durableSequenceVersion: session.sessionVersion,
+            acceptedAtMs: session.updatedAtMs,
+          }
+        : null
+    );
     if (noSend !== null) {
       // No-send is a distinct terminal proof, not an ACK with a null value.
       // It must bind the exact public recovery coordinates and retain the
@@ -11340,7 +11370,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         return { kind: "protocol_fault", reason: "no_send_authority_mismatch" };
       }
     } else if (
-      evidence.acceptance?.gatewaySequence !== expected.gatewaySequence ||
+      acceptance?.gatewaySequence !== expected.gatewaySequence ||
       !expectedJournalBindingsPresent
     ) {
       return { kind: "protocol_fault", reason: "dispatch_evidence_mismatch" };
@@ -11348,7 +11378,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     return {
       kind: "found",
       observation: {
-        acceptance: evidence.acceptance,
+        acceptance,
         journal: evidence.journal,
         noSend: evidence.noSendReceipt ?? null,
       },
