@@ -40,6 +40,7 @@ import type {
   GatewayExpectedMutationDispatch,
   GatewayRecoveryAuthority,
   GatewayRecoveryPendingDispatch,
+  GatewayRecoveryReconcileResult,
 } from "./recoveryAuthority.js";
 import {
   isMutationProbeVerificationWorkflow,
@@ -725,6 +726,41 @@ function outcomeFromDurableTerminal(input: {
       message: `durable Bridge journal recorded ${terminal.status}`,
     },
   };
+}
+
+const MUTATION_PROBE_ORIGIN_RECONCILE_ATTEMPTS = 24;
+const MUTATION_PROBE_ORIGIN_RECONCILE_DEADLINE_MS = 5_000;
+const MUTATION_PROBE_ORIGIN_RECONCILE_DELAY_MS = 100;
+
+function isMutationProbeOriginEvidenceRace(
+  result: GatewayRecoveryReconcileResult,
+): boolean {
+  return result.kind === "protocol_fault" &&
+    result.reason === "bridge_evidence_dispatch_evidence_mismatch";
+}
+
+/** @internal Exact pending-read retry; it has deliberately no send/execute input. */
+export async function retryMutationProbeOriginReconcile(input: {
+  readonly initial: GatewayRecoveryReconcileResult;
+  readonly reconcile: () => Promise<GatewayRecoveryReconcileResult>;
+  readonly revalidateCurrentOwner: () => Promise<boolean>;
+  readonly now?: () => number;
+  readonly delay?: (milliseconds: number) => Promise<void>;
+}): Promise<GatewayRecoveryReconcileResult> {
+  let result = input.initial;
+  if (!isMutationProbeOriginEvidenceRace(result)) return result;
+  const now = input.now ?? Date.now;
+  const delay = input.delay ?? (async (milliseconds: number) =>
+    await new Promise<void>((resolve) => setTimeout(resolve, milliseconds)));
+  const deadline = now() + MUTATION_PROBE_ORIGIN_RECONCILE_DEADLINE_MS;
+  for (let attempt = 0; attempt < MUTATION_PROBE_ORIGIN_RECONCILE_ATTEMPTS; attempt += 1) {
+    if (now() >= deadline) return result;
+    await delay(MUTATION_PROBE_ORIGIN_RECONCILE_DELAY_MS);
+    if (now() > deadline || !await input.revalidateCurrentOwner()) return result;
+    result = await input.reconcile();
+    if (!isMutationProbeOriginEvidenceRace(result)) return result;
+  }
+  return result;
 }
 
 export interface GatewayDispatcherOptions {
@@ -2192,11 +2228,29 @@ export class GatewayDispatcher {
           // A transport/parser exception cannot overwrite a persisted terminal.
         }
 
-        const reconciled = await recovery.reconcilePendingDispatch({
+        let reconciled = await recovery.reconcilePendingDispatch({
           tenantId: auth.actor.tenantId,
           rsid: context.rsid,
           envelopeDigest: pending.envelopeDigest,
         });
+        if (tool.name === "conformance.fixture.mutation_probe_origin") {
+          const workflow = this.#mutationProbeVerification!;
+          reconciled = await retryMutationProbeOriginReconcile({
+            initial: reconciled,
+            reconcile: async () => await recovery.reconcilePendingDispatch({
+              tenantId: auth.actor.tenantId,
+              rsid: context.rsid,
+              envelopeDigest: pending.envelopeDigest,
+            }),
+            revalidateCurrentOwner: async () => await workflow.revalidateOriginPending({
+              context,
+              attemptId,
+              sessionBindingId: pending.sessionBindingId,
+              connectionId: pending.preparedConnectionId,
+              envelopeDigest: pending.envelopeDigest,
+            }),
+          });
+        }
         if (reconciled.kind === "indeterminate_recorded") {
           return finishFailure({
             code: "recovery_blocked",

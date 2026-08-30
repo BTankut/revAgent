@@ -103,6 +103,13 @@ export interface MutationProbeVerificationWorkflow {
   readonly profile: typeof MUTATION_PROBE_VERIFICATION_PROFILE;
   readonly evidenceDecision: GatewayAuditedRecoveryDecisionPort;
   recordOrigin(input: MutationProbeOriginAdmission): Promise<boolean>;
+  revalidateOriginPending(input: {
+    readonly context: GatewayInvocationContext;
+    readonly attemptId: string;
+    readonly sessionBindingId: string;
+    readonly connectionId: string;
+    readonly envelopeDigest: string;
+  }): Promise<boolean>;
   prepareVerification(input: {
     readonly context: GatewayInvocationContext;
     readonly sessionBindingId: string;
@@ -483,6 +490,35 @@ export function createMutationProbeVerificationWorkflow(input: {
         tx.stage({ namespace: MUTATION_PROBE_OWNER_NAMESPACE, key: ownerKey(input.runId, context.rsid),
           value: record as unknown as GatewayJsonValue, expect: { kind: "absent" } });
         return true;
+      });
+      return outcome.ok && outcome.value;
+    },
+    async revalidateOriginPending(
+      pendingInput: Parameters<MutationProbeVerificationWorkflow["revalidateOriginPending"]>[0],
+    ) {
+      const { context } = pendingInput;
+      if (!DIGEST.test(pendingInput.envelopeDigest)) return false;
+      const outcome = await input.protocolStore.transact({ tenantId: context.actor.tenantId }, async (tx) => {
+        const stored = await tx.read<GatewayJsonValue>(MUTATION_PROBE_OWNER_NAMESPACE,
+          ownerKey(input.runId, context.rsid));
+        const owner = ownerRecord(stored?.value);
+        const session = owner === null ? null : await readCurrentSessionAuthority(tx, owner.tenantId, owner.rsid);
+        const recovery = recoveryValue((await tx.read<GatewayJsonValue>(GATEWAY_RECOVERY_NAMESPACE, context.rsid))?.value);
+        const window = recovery?.invocationWindow;
+        const pending = recovery?.pendingDispatch;
+        const entries = isRecord(pending) && Array.isArray(pending.mutationEntries)
+          ? pending.mutationEntries
+          : [];
+        const entry = entries[0];
+        return owner !== null && owner.phase === "origin_admitted" && owner.expiresAtMs > now() &&
+          contextMatches(owner, context) && owner.originEnvelopeDigest === pendingInput.envelopeDigest &&
+          currentSessionMatches(session, owner, pendingInput.sessionBindingId, pendingInput.connectionId) &&
+          isRecord(window) && window.attemptId === pendingInput.attemptId && isRecord(pending) &&
+          pending.kind === "mutation" && pending.envelopeDigest === pendingInput.envelopeDigest &&
+          pending.sessionBindingId === owner.sessionBindingId &&
+          pending.authorizedSessionVersion === owner.sessionBindingVersion &&
+          pending.preparedConnectionId === owner.connectionId && entries.length === 1 && isRecord(entry) &&
+          entry.invocationId === owner.originInvocationId && entry.idempotencyKey === owner.originIdempotencyKey;
       });
       return outcome.ok && outcome.value;
     },

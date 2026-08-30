@@ -24,6 +24,7 @@ import {
 } from "./authContext.js";
 import {
   GatewayDispatcher,
+  retryMutationProbeOriginReconcile,
   type GatewayDispatcherOptions,
   type GatewayExecutor,
   type GatewayExecutorOutcome,
@@ -902,6 +903,52 @@ function deferred<T>() {
 }
 
 describe("GatewayDispatcher fail-closed boundaries", () => {
+  it("retries only the exact origin journal-before-ACK race without another send and times out closed", async () => {
+    const mismatch = { kind: "protocol_fault" as const,
+      reason: "bridge_evidence_dispatch_evidence_mismatch" };
+    let sends = 1;
+    let reads = 0;
+    let validations = 0;
+    let clock = 0;
+    const recovered = await retryMutationProbeOriginReconcile({
+      initial: mismatch,
+      now: () => clock,
+      delay: async (milliseconds) => { clock += milliseconds; },
+      revalidateCurrentOwner: async () => { validations += 1; return true; },
+      reconcile: async () => {
+        reads += 1;
+        return reads === 1 ? mismatch : {
+          kind: "indeterminate_recorded" as const,
+          installedHoldIds: ["vh:test"],
+          clearedHoldIds: [],
+        };
+      },
+    });
+    expect(recovered).toMatchObject({ kind: "indeterminate_recorded" });
+    expect({ sends, reads, validations }).toEqual({ sends: 1, reads: 2, validations: 2 });
+
+    reads = 0;
+    validations = 0;
+    clock = 0;
+    const timedOut = await retryMutationProbeOriginReconcile({
+      initial: mismatch,
+      now: () => clock,
+      delay: async () => { clock = 5_001; },
+      revalidateCurrentOwner: async () => { validations += 1; return true; },
+      reconcile: async () => { reads += 1; return mismatch; },
+    });
+    expect(timedOut).toEqual(mismatch);
+    expect({ sends, reads, validations }).toEqual({ sends: 1, reads: 0, validations: 0 });
+
+    const foreignFault = { kind: "protocol_fault" as const, reason: "journal_binding_mismatch" };
+    expect(await retryMutationProbeOriginReconcile({
+      initial: foreignFault,
+      reconcile: async () => { reads += 1; return mismatch; },
+      revalidateCurrentOwner: async () => true,
+    })).toEqual(foreignFault);
+    expect(reads).toBe(0);
+  });
+
   it("rejects a branded verification workflow bound to a different recovery authority", () => {
     const durable = createRestartableTestStore();
     const evidence = new DispatchBridgeEvidence();
