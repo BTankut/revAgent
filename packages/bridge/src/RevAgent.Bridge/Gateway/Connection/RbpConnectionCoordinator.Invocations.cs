@@ -87,7 +87,8 @@ internal sealed partial class RbpConnectionCoordinator
             CurrentOperationResult<bool> sent =
                 await TryRunCurrentOperationAsync(
                         context,
-                        () => SendDataAsync(context, envelope.Rsid, answer))
+                        () => SendDataAsync(
+                            context, envelope.Rsid, envelope.Sequence, answer))
                     .ConfigureAwait(false);
             if (!sent.Started) return;
         }
@@ -152,7 +153,8 @@ internal sealed partial class RbpConnectionCoordinator
             CurrentOperationResult<bool> sent =
                 await TryRunCurrentOperationAsync(
                         context,
-                        () => SendDataAsync(context, envelope.Rsid, answer))
+                        () => SendDataAsync(
+                            context, envelope.Rsid, envelope.Sequence, answer))
                     .ConfigureAwait(false);
             if (!sent.Started) return;
             Diagnose("batch sent");
@@ -216,6 +218,7 @@ internal sealed partial class RbpConnectionCoordinator
                     () => SendDataAsync(
                         context,
                         envelope.Rsid,
+                        envelope.Sequence,
                         RbpBatchCoordinator.RejectConcurrent(envelope.Payload)))
                 .ConfigureAwait(false);
         }
@@ -257,6 +260,7 @@ internal sealed partial class RbpConnectionCoordinator
                     () => SendDataAsync(
                         context,
                         envelope.Rsid,
+                        envelope.Sequence,
                         _invocationDispatcher.RejectConcurrent(invocationId)))
                 .ConfigureAwait(false);
         }
@@ -317,6 +321,7 @@ internal sealed partial class RbpConnectionCoordinator
     private async Task SendDataAsync(
         ConnectionCycleContext context,
         string rsid,
+        long inboundSequence,
         RbpInvocationAnswer answer)
     {
         CurrentOperationResult<bool> gate =
@@ -347,7 +352,7 @@ internal sealed partial class RbpConnectionCoordinator
                         await TryRunCurrentOperationAsync(
                                 context,
                                 () => QueueAndSendDataAsync(
-                                    context, rsid, prefix))
+                                    context, rsid, inboundSequence, prefix))
                             .ConfigureAwait(false);
                     if (!prefixSent.Started) return;
                 }
@@ -355,7 +360,8 @@ internal sealed partial class RbpConnectionCoordinator
 
             _ = await TryRunCurrentOperationAsync(
                     context,
-                    () => QueueAndSendDataAsync(context, rsid, answer))
+                    () => QueueAndSendDataAsync(
+                        context, rsid, inboundSequence, answer))
                 .ConfigureAwait(false);
         }
         finally
@@ -367,18 +373,33 @@ internal sealed partial class RbpConnectionCoordinator
     private async Task QueueAndSendDataAsync(
         ConnectionCycleContext context,
         string rsid,
+        long inboundSequence,
         RbpInvocationAnswer answer)
     {
         CurrentOperationResult<RbpQueueOutboundResult> queue =
             await TryRunCurrentOperationAsync(
                     context,
-                    () => _journal.QueueOutboundDataAsync(
-                        rsid,
-                        new RbpOutboundDataDraft(
-                            answer.Type,
-                            _identifiers.NewId(),
-                            answer.Payload),
-                        context.Token))
+                    async () =>
+                    {
+                        IReadOnlyList<RbpSessionAcknowledgement>
+                            acknowledgements = await _journal
+                                .LoadJournaledAcknowledgementsAsync(
+                                    new[] { rsid }, context.Token)
+                                .ConfigureAwait(false);
+                        RbpSessionAcknowledgement acknowledgement =
+                            RequireTerminalAcknowledgement(
+                                acknowledgements, rsid, inboundSequence);
+                        return await _journal.QueueOutboundDataAsync(
+                                rsid,
+                                new RbpOutboundDataDraft(
+                                    answer.Type,
+                                    _identifiers.NewId(),
+                                    answer.Payload,
+                                    Acknowledgement:
+                                        acknowledgement.Sequence),
+                                context.Token)
+                            .ConfigureAwait(false);
+                    })
                 .ConfigureAwait(false);
         if (!queue.Started) return;
         RbpQueueOutboundResult queued = queue.Value;
@@ -518,6 +539,29 @@ internal sealed partial class RbpConnectionCoordinator
             _ = TryCommitCurrent(context, () =>
                 context.CompletePreparedInvocationSend(prepared));
         }
+    }
+
+    internal static RbpSessionAcknowledgement
+        RequireTerminalAcknowledgement(
+        IReadOnlyList<RbpSessionAcknowledgement>? acknowledgements,
+        string rsid,
+        long inboundSequence)
+    {
+        if (acknowledgements is null || acknowledgements.Count != 1 ||
+            !string.Equals(
+                acknowledgements[0].Rsid, rsid, StringComparison.Ordinal) ||
+            acknowledgements[0].Sequence < inboundSequence ||
+            acknowledgements[0].Sequence < 0 ||
+            acknowledgements[0].Sequence >
+                RbpProtocolLimits.MaximumSafeInteger)
+        {
+            throw new RbpCoordinatorException(
+                RbpCoordinatorErrorCode.SequenceFault,
+                "The terminal answer has no single exact durable journal " +
+                "acknowledgement frontier.");
+        }
+
+        return acknowledgements[0];
     }
 
     private async Task<bool> SendCurrentPreparedAsync(
