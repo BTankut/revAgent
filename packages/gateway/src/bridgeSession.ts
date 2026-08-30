@@ -117,6 +117,7 @@ import {
   buildSessionHistoryPagePlan,
   planSessionMigrationCapacity,
   sessionCanonicalDigest,
+  sessionPrivateStorageKey,
   sessionRecordValueBytes,
   stageMigrationReservationBatch,
   stageMigrationSlotSwaps,
@@ -4317,6 +4318,114 @@ class SessionAggregateRepository {
     };
   }
 
+  async #retentionDependencyInventory(
+    tx: Pick<StoreTransaction, "list">,
+    tenantId: string,
+    rsid: string,
+  ): Promise<Readonly<{
+    refs: readonly SessionRetentionDependencyRef[];
+    valid: boolean;
+  }>> {
+    const namespaces = [
+      GATEWAY_MUTATION_HOLD_NAMESPACE,
+      GATEWAY_MUTATION_CONFLICT_NAMESPACE,
+      GATEWAY_MUTATION_RESOLUTION_NAMESPACE,
+      GATEWAY_HOLD_CUTOVER_NAMESPACE,
+      "gateway.resource-receipt/v1",
+      "gateway.recovery-carrier/v1",
+      "gateway.recovery-chunk/v1",
+      "gateway.recovery-completion/v1",
+      "gateway.omitted-payload-recovery/v1",
+      "gateway.omitted-payload-recovery-invocation/v1",
+      "gateway.protected-object-intent/v1",
+      GATEWAY_RECOVERY_NAMESPACE,
+      GATEWAY_SESSION_MIGRATION_V3_NAMESPACE,
+      GATEWAY_RBP_SESSION_MIGRATION_NAMESPACE,
+    ] as const;
+    const refs: SessionRetentionDependencyRef[] = [];
+    let valid = true;
+    for (const namespace of namespaces) {
+      const rows = await tx.list(namespace);
+      for (const row of rows) {
+        const serialized = JSON.stringify(row.value);
+        if (row.key !== rsid && !row.key.startsWith(`${rsid}/`) &&
+            !serialized.includes(rsid)) continue;
+        if (row.tenantId !== tenantId || row.version < 1 || !Number.isSafeInteger(row.version) ||
+            !isRecord(row.value)) {
+          valid = false;
+          continue;
+        }
+        const rawState = typeof row.value.state === "string"
+          ? row.value.state
+          : namespace === GATEWAY_MUTATION_CONFLICT_NAMESPACE && row.value.active === false
+            ? "cleared"
+            : namespace === GATEWAY_MUTATION_CONFLICT_NAMESPACE && row.value.active === true
+              ? "active"
+              : null;
+        const state = namespace === GATEWAY_RBP_SESSION_MIGRATION_NAMESPACE
+          ? "deny_pinned"
+          : rawState ?? "unknown";
+        refs.push(Object.freeze({
+          role: namespace,
+          namespace,
+          key: row.key,
+          version: row.version,
+          digest: sessionCanonicalDigest(row.value),
+          state,
+        }));
+      }
+    }
+    refs.sort((left, right) => left.role.localeCompare(right.role) ||
+      left.namespace.localeCompare(right.namespace) || left.key.localeCompare(right.key));
+    if (refs.some((ref, index) => index > 0 && ref.role === refs[index - 1]!.role &&
+        ref.namespace === refs[index - 1]!.namespace && ref.key === refs[index - 1]!.key)) {
+      valid = false;
+    }
+    return Object.freeze({ refs: Object.freeze(refs), valid });
+  }
+
+  #retentionUnregisterRef(
+    stored: StoredRecord<GatewayJsonValue> | null,
+    tenantId: string,
+    rsid: string,
+  ): SessionRetentionDependencyRef | null {
+    if (stored === null) return null;
+    if (!isRecord(stored.value) || stored.value.schema !== GATEWAY_RBP_UNREGISTER_NAMESPACE ||
+        stored.value.tenantId !== tenantId || stored.value.rsid !== rsid ||
+        stored.key !== rsid || stored.version < 1) return null;
+    return Object.freeze({
+      role: "unregister",
+      namespace: stored.namespace,
+      key: stored.key,
+      version: stored.version,
+      digest: sessionCanonicalDigest(stored.value),
+      state: "complete",
+    });
+  }
+
+  #retentionRootMatchesFrozenAuthority(
+    root: DurableRbpSessionV3,
+    closure: NonNullable<DurableRbpSessionV3["retentionClosure"]>,
+  ): boolean {
+    const binding = isRecord(root.binding) ? root.binding : null;
+    const lifecycle = isRecord(root.lifecycle) ? root.lifecycle : null;
+    const sessionLifecycle = lifecycle !== null && isRecord(lifecycle.sessionLifecycle)
+      ? lifecycle.sessionLifecycle
+      : lifecycle;
+    const frozen = closure.frozenAuthority;
+    const lifecyclePhase = sessionLifecycle?.phase === "unregistered"
+      ? "unregistered"
+      : sessionLifecycle?.phase;
+    return binding !== null && lifecycle !== null && sessionLifecycle !== null &&
+      binding.sessionBindingId === frozen.sessionBindingId &&
+      binding.sessionVersion === frozen.sessionBindingVersion &&
+      binding.resumeExpiresAtMs === frozen.resumeExpiresAtMs &&
+      lifecyclePhase === frozen.lifecyclePhase &&
+      sessionLifecycle.dispatchAllowed === frozen.dispatchAllowed &&
+      sessionLifecycle.resumeAllowed === frozen.resumable &&
+      lifecycle.updatedAtMs === frozen.retirementAnchorMs;
+  }
+
   async runMaintenanceStep(input: {
     readonly cursor: GatewayMaintenanceCursor;
     readonly remainingOperations: number;
@@ -4387,36 +4496,13 @@ class SessionAggregateRepository {
           roots: current.value.trees,
         });
         const tombstone = await tx.read<GatewayJsonValue>(GATEWAY_RBP_UNREGISTER_NAMESPACE, rsid);
-        const dependencyNamespaces = [
-          GATEWAY_MUTATION_HOLD_NAMESPACE,
-          GATEWAY_MUTATION_CONFLICT_NAMESPACE,
-          "gateway.resource-receipt/v1",
-          "gateway.recovery-carrier/v1",
-          "gateway.omitted-payload-recovery/v1",
-          "gateway.protected-object-intent/v1",
-          GATEWAY_SESSION_BLOB_INTENT_NAMESPACE,
-        ];
-        const dependencyRefs: SessionRetentionDependencyRef[] = [];
-        for (const namespace of dependencyNamespaces) {
-          const rows = await tx.list(namespace);
-          for (const row of rows) {
-            const serialized = JSON.stringify(row.value);
-            if (!serialized.includes(rsid)) continue;
-            dependencyRefs.push(Object.freeze({
-              role: namespace,
-              namespace,
-              key: row.key,
-              version: row.version,
-              digest: sessionCanonicalDigest(row.value),
-              state: isRecord(row.value) && typeof row.value.state === "string"
-                ? row.value.state
-                : "unknown",
-            }));
-          }
-        }
-        const activeDependencies = dependencyRefs.filter((dependency) =>
-          dependency.state !== "cleared" && dependency.state !== "complete" &&
-          dependency.state !== "deleted" && dependency.state !== "closed");
+        const dependencies = await this.#retentionDependencyInventory(tx, tenantId, rsid);
+        const safeDependencyStates = new Set([
+          "cleared", "complete", "deleted", "closed", "retired",
+          "source_retired", "normalized_authoritative", "deny_pinned",
+        ]);
+        const activeDependencies = dependencies.refs.filter((dependency) =>
+          !safeDependencyStates.has(dependency.state));
         const privateObjects: SessionRetentionObjectIntentRef[] = [];
         let privateInventoryValid = true;
         for (const row of await tx.list(GATEWAY_SESSION_BLOB_INTENT_NAMESPACE)) {
@@ -4466,18 +4552,14 @@ class SessionAggregateRepository {
             value.namespace === GATEWAY_MUTATION_CONFLICT_NAMESPACE),
           c39Dependency: activeDependencies.some((value) =>
             value.namespace.includes("recovery") || value.namespace.includes("protected")),
-          migrationDependency: false,
+          migrationDependency: activeDependencies.some((value) =>
+            value.namespace === GATEWAY_SESSION_MIGRATION_V3_NAMESPACE ||
+            value.namespace === GATEWAY_RBP_SESSION_MIGRATION_NAMESPACE),
           indicesComplete: sessionConflictIndex(record).state === "complete",
-          dependencyInventoryComplete: privateInventoryValid,
-          unregisterRef: tombstone === null ? null : Object.freeze({
-            role: "unregister",
-            namespace: tombstone.namespace,
-            key: tombstone.key,
-            version: tombstone.version,
-            digest: sessionCanonicalDigest(tombstone.value),
-            state: "complete",
-          }),
-          dependencyRefs,
+          dependencyInventoryComplete: privateInventoryValid && dependencies.valid &&
+            (tombstone === null || this.#retentionUnregisterRef(tombstone, tenantId, rsid) !== null),
+          unregisterRef: this.#retentionUnregisterRef(tombstone, tenantId, rsid),
+          dependencyRefs: dependencies.refs,
           treeRoots: current.value.trees,
           privateObjects,
           plannedEntries: current.value.trees.reduce((sum, tree) => sum + tree.entryCount, 0),
@@ -4586,22 +4668,37 @@ class SessionAggregateRepository {
         if (!objects.ok || objects.value.length !== 0) {
           return Object.freeze({ operations: 0, progressed: false, retryNeeded: true });
         }
-        const stored = await this.#loadV3(tx, current.root, current.value, tenantId, rsid);
-        const record = parseStoredSession(stored, tenantId, rsid);
+        const dependencies = await this.#retentionDependencyInventory(tx, tenantId, rsid);
+        const tombstone = await tx.read<GatewayJsonValue>(GATEWAY_RBP_UNREGISTER_NAMESPACE, rsid);
+        const unregisterRef = this.#retentionUnregisterRef(tombstone, tenantId, rsid);
+        if (!dependencies.valid ||
+            !this.#retentionRootMatchesFrozenAuthority(current.value, closure) ||
+            (tombstone !== null && unregisterRef === null) ||
+            JSON.stringify(unregisterRef) !== JSON.stringify(closure.unregisterRef) ||
+            JSON.stringify(dependencies.refs) !== JSON.stringify(closure.dependencyRefs)) {
+          return Object.freeze({ operations: 0, progressed: false, retryNeeded: true });
+        }
+        const frozen = closure.frozenAuthority;
         const candidate: SessionRetentionCandidate = {
-          tenantId, rsid, sessionBindingId: record.sessionBindingId,
-          sessionBindingVersion: record.sessionVersion,
-          lifecyclePhase: record.sessionLifecycle.phase,
-          dispatchAllowed: record.sessionLifecycle.dispatchAllowed,
-          resumable: record.sessionLifecycle.resumeAllowed,
-          resumeExpiresAtMs: record.resumeExpiresAtMs,
-          retirementAnchorMs: record.updatedAtMs,
-          lastObservedNowMs: record.updatedAtMs,
-          producerState: "settled", pendingDispatch: false, unfinishedBatch: false,
-          activeEgressLease: false, unresolvedHold: false, c39Dependency: false,
-          migrationDependency: false, indicesComplete: true,
-          dependencyInventoryComplete: true, unregisterRef: null,
-          dependencyRefs: [], treeRoots: closure.roots,
+          tenantId, rsid, sessionBindingId: frozen.sessionBindingId,
+          sessionBindingVersion: frozen.sessionBindingVersion,
+          lifecyclePhase: frozen.lifecyclePhase,
+          dispatchAllowed: frozen.dispatchAllowed,
+          resumable: frozen.resumable,
+          resumeExpiresAtMs: frozen.resumeExpiresAtMs,
+          retirementAnchorMs: frozen.retirementAnchorMs,
+          lastObservedNowMs: frozen.lastObservedNowMs,
+          producerState: frozen.producerState,
+          pendingDispatch: frozen.pendingDispatch,
+          unfinishedBatch: frozen.unfinishedBatch,
+          activeEgressLease: frozen.activeEgressLease,
+          unresolvedHold: frozen.unresolvedHold,
+          c39Dependency: frozen.c39Dependency,
+          migrationDependency: frozen.migrationDependency,
+          indicesComplete: frozen.indicesComplete,
+          dependencyInventoryComplete: frozen.dependencyInventoryComplete && dependencies.valid,
+          unregisterRef,
+          dependencyRefs: dependencies.refs, treeRoots: closure.roots,
           privateObjects: closure.objectIntents,
           plannedEntries: closure.counts.plannedEntries,
           plannedRecords: closure.counts.plannedRecords,
@@ -4611,7 +4708,8 @@ class SessionAggregateRepository {
           nowMs,
           retentionMs: DEFAULT_SESSION_RETENTION_MS,
         });
-        if (decision.kind !== "eligible") {
+        if (decision.kind !== "eligible" ||
+            decision.dependencyClosureDigest !== closure.dependencyClosureDigest) {
           return Object.freeze({ operations: 0, progressed: false, retryNeeded: true });
         }
         const completion = completeSessionRetention({
@@ -4630,6 +4728,7 @@ class SessionAggregateRepository {
           retiredLifecycle: completion.retiredLifecycle,
           retiredSequenceHead: completion.retiredSequenceHead,
           closureReceipt: completion.closureReceipt,
+          dependencyClosureDigest: decision.dependencyClosureDigest,
           retiredAuthorityDigest: completion.retiredAuthorityDigest,
           completionDigest: completion.completionDigest,
           completedAtMs: nowMs,
@@ -13589,6 +13688,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       const sessionStored = await tx.read<GatewayJsonValue>(GATEWAY_RBP_SESSION_NAMESPACE, rsid);
       const recovery = await tx.read<GatewayJsonValue>(GATEWAY_RECOVERY_NAMESPACE, rsid);
       const capacityParent = await tx.read<GatewayJsonValue>(GATEWAY_SESSION_MIGRATION_V3_NAMESPACE, rsid);
+      const universalDeny = await tx.read<GatewayJsonValue>(GATEWAY_RBP_SESSION_MIGRATION_NAMESPACE, rsid);
       if (!sameMigrationSource(sessionStored, legacyPlan.sessionSource) ||
           (legacyPlan.recoverySource === null
             ? recovery !== null
@@ -13597,6 +13697,11 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         throw new Error("legacy migration source drift before capacity reservation");
       }
       const session = parseStoredSession(sessionStored, tenantId, rsid);
+      if (universalDeny !== null &&
+          !sameJson(parseSessionMigrationPlan(universalDeny, tenantId, rsid) as unknown as JsonValue,
+            legacyPlan as unknown as JsonValue)) {
+        throw new Error("universal migration deny row changed before capacity reservation");
+      }
       const holds = recovery === null ? [] : parseLegacyRecoveryHolds(recovery.value, rsid);
       const facts = legacyCutoverFacts(session, holds);
       const nextSession: DurableRbpSession = {
@@ -13608,6 +13713,15 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         },
       };
       const targets: SessionMigrationTargetRecord[] = [];
+      targets.push(Object.freeze({
+        namespace: GATEWAY_RBP_SESSION_MIGRATION_NAMESPACE,
+        key: rsid,
+        expect: universalDeny === null
+          ? { kind: "absent" as const }
+          : { kind: "version" as const, version: universalDeny.version },
+        value: asJson(legacyPlan),
+        role: "target_record" as const,
+      }));
       const source = legacyPlan.recoverySource ?? legacyPlan.sessionSource;
       const holdCutover: DurableHoldCutover = Object.freeze({
         schema: GATEWAY_HOLD_CUTOVER_NAMESPACE,
@@ -13735,11 +13849,17 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     }
     const sourceBytes = Buffer.from(canonicalizeJson(prepared.value.sourceSnapshot as JsonValue), "utf8");
     const sourceDigest = `sha256:${createHash("sha256").update(sourceBytes).digest("hex")}` as const;
+    const sourceStorageKey = sessionPrivateStorageKey({
+      tenantId,
+      rsid,
+      purpose: "migration-source-snapshot",
+      digest: sourceDigest,
+    });
     const sourceBinding: GatewayPrivateObjectBinding = Object.freeze({
       tenantId,
       rsid,
       purpose: "migration-source-snapshot",
-      storageKey: sourceDigest,
+      storageKey: sourceStorageKey,
       byteLength: sourceBytes.byteLength,
       digest: sourceDigest,
       contentType: "application/vnd.revagent.gateway.session-migration-source+json",
@@ -13787,8 +13907,10 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       privateObjects: [privatePlan],
     });
     try {
-    const sourceOrdinal = capacity.orderedTargets.find((target) =>
-      target.namespace === sourceIntentTarget.namespace && target.key === sourceIntentTarget.key)!.ordinal;
+    const sourcePlanned = capacity.orderedTargets.find((target) =>
+      target.namespace === sourceIntentTarget.namespace && target.key === sourceIntentTarget.key);
+    if (sourcePlanned === undefined) throw new Error("migration source intent lacks capacity");
+    const sourceOrdinal = sourcePlanned.ordinal;
     const parentValue = (state: string, cursor: number): GatewayJsonValue => asJson({
       schema: GATEWAY_SESSION_MIGRATION_V3_NAMESPACE,
       tenantId,
@@ -13943,6 +14065,13 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       parentVersion += 1;
       parentState = "preflight_verified";
     }
+    const denyTarget = migrationTargets.find((target) =>
+      target.namespace === GATEWAY_RBP_SESSION_MIGRATION_NAMESPACE && target.key === rsid);
+    if (denyTarget === undefined) throw new Error("universal migration deny target is absent");
+    const denyPlanned = capacity.orderedTargets.find((target) =>
+      target.namespace === denyTarget.namespace && target.key === denyTarget.key);
+    if (denyPlanned === undefined) throw new Error("universal migration deny target lacks capacity");
+    const denyOrdinal = denyPlanned.ordinal;
     const barrier = parentState !== "preflight_verified"
       ? Object.freeze({ ok: true as const, value: undefined })
       : await this.store.transact({ tenantId }, async (tx) => {
@@ -13950,6 +14079,8 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       const recovery = await tx.read<GatewayJsonValue>(GATEWAY_RECOVERY_NAMESPACE, rsid);
       const currentParent = await tx.read<GatewayJsonValue>(GATEWAY_SESSION_MIGRATION_V3_NAMESPACE, rsid);
       const sourceIntentStored = await tx.read<GatewayJsonValue>(GATEWAY_SESSION_BLOB_INTENT_NAMESPACE, sourceIntentKey);
+      const denySlotKey = `${rsid}/${legacyPlan.migrationId}/${String(denyOrdinal).padStart(4, "0")}`;
+      const denySlot = await tx.read<GatewayJsonValue>(GATEWAY_SESSION_MIGRATION_RESERVATION_NAMESPACE, denySlotKey);
       if (!sameMigrationSource(session, legacyPlan.sessionSource) ||
           (legacyPlan.recoverySource === null
             ? recovery !== null
@@ -13957,15 +14088,28 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
           currentParent === null || currentParent.version !== parentVersion ||
           !isRecord(currentParent.value) || currentParent.value.state !== "preflight_verified" ||
           sourceIntentStored === null || !isRecord(sourceIntentStored.value) ||
-          sourceIntentStored.value.state !== "active") {
+          sourceIntentStored.value.state !== "active" || denySlot === null ||
+          JSON.stringify(denySlot.value) !== JSON.stringify(capacity.slots[denyOrdinal])) {
         throw new Error("legacy source drifted at the universal barrier");
       }
       const deny = await tx.read<GatewayJsonValue>(GATEWAY_RBP_SESSION_MIGRATION_NAMESPACE, rsid);
+      if ((denyTarget.expect.kind === "absent" && deny !== null) ||
+          (denyTarget.expect.kind === "version" && (deny === null ||
+            deny.version !== denyTarget.expect.version ||
+            sessionCanonicalDigest(deny.value) !== sessionCanonicalDigest(denyTarget.value)))) {
+        throw new Error("universal migration deny reservation changed");
+      }
       tx.stage({
-        namespace: GATEWAY_RBP_SESSION_MIGRATION_NAMESPACE,
-        key: rsid,
-        value: asJson(legacyPlan),
-        expect: deny === null ? { kind: "absent" } : { kind: "version", version: deny.version },
+        namespace: GATEWAY_SESSION_MIGRATION_RESERVATION_NAMESPACE,
+        key: denySlotKey,
+        value: null,
+        expect: { kind: "version", version: denySlot.version },
+      });
+      tx.stage({
+        namespace: denyTarget.namespace,
+        key: denyTarget.key,
+        value: denyTarget.value,
+        expect: denyTarget.expect,
       });
       tx.stage({
         namespace: GATEWAY_SESSION_MIGRATION_V3_NAMESPACE,
@@ -13980,12 +14124,15 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       parentState = "barrier_pinned";
     }
     const markerTarget = migrationTargets.find((target) =>
-      target.namespace === GATEWAY_RBP_SESSION_CUTOVER_V3_NAMESPACE)!;
+      target.namespace === GATEWAY_RBP_SESSION_CUTOVER_V3_NAMESPACE);
+    if (markerTarget === undefined) throw new Error("migration cutover marker target is absent");
     const ordinaryTargets = migrationTargets.filter((target) =>
-      target !== markerTarget && target !== sourceIntentTarget);
+      target !== markerTarget && target !== sourceIntentTarget && target !== denyTarget);
     let swapCursor = parentState === "consuming" ? parent.value.cursor : -1;
-    const markerOrdinal = capacity.orderedTargets.find((target) =>
-      target.namespace === markerTarget.namespace && target.key === markerTarget.key)!.ordinal;
+    const markerPlanned = capacity.orderedTargets.find((target) =>
+      target.namespace === markerTarget.namespace && target.key === markerTarget.key);
+    if (markerPlanned === undefined) throw new Error("migration cutover marker lacks capacity");
+    const markerOrdinal = markerPlanned.ordinal;
     while (ordinaryTargets.some((target) => {
       const ordinal = capacity.orderedTargets.find((planned) =>
         planned.namespace === target.namespace && planned.key === target.key)!.ordinal;
@@ -13998,7 +14145,8 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         }
         const eligibleOrdinals = capacity.orderedTargets
           .filter((target) => target.ordinal > swapCursor &&
-            target.ordinal !== markerOrdinal && target.ordinal !== sourceOrdinal)
+            target.ordinal !== markerOrdinal && target.ordinal !== sourceOrdinal &&
+            target.ordinal !== denyOrdinal)
           .slice(0, SESSION_MIGRATION_SWAP_BATCH);
         for (const planned of eligibleOrdinals) {
           const target = ordinaryTargets.find((value) =>

@@ -1415,6 +1415,20 @@ describe("GatewayBridgeSessionAuthority durable unregister", () => {
     expect(records.some((record) =>
       record.namespace === GATEWAY_RBP_SESSION_MIGRATION_NAMESPACE && record.key === session.rsid,
     )).toBe(true);
+    const barrierCommit = store.commits.find((writes) => writes.some((write) =>
+      write.namespace === GATEWAY_SESSION_MIGRATION_V3_NAMESPACE &&
+      (write.value as GatewayJsonObject | null)?.state === "barrier_pinned"));
+    expect(barrierCommit).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        namespace: GATEWAY_RBP_SESSION_MIGRATION_NAMESPACE,
+        key: session.rsid,
+        value: expect.objectContaining({ migrationId: expect.any(String) }),
+      }),
+      expect.objectContaining({
+        namespace: GATEWAY_SESSION_MIGRATION_RESERVATION_NAMESPACE,
+        value: null,
+      }),
+    ]));
     expect(records.find((record) =>
       record.namespace === "gateway.rbp-session/v1" && record.key === session.rsid,
     )?.value).toMatchObject({

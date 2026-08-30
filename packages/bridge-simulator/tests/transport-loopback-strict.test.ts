@@ -739,7 +739,7 @@ describe("strict Gateway transport boundaries", () => {
     expect(eventReaderCancelled).toBe(true);
   });
 
-  it("retains an early HTTP chunk fault and leaves ordinary sends fail-closed", async () => {
+  it("retains the singular HTTP chunk fault and leaves ordinary sends fail-closed", async () => {
     const sentBodies: JsonObject[] = [];
     let eventReaderCancelled = false;
     let call = 0;
@@ -760,7 +760,6 @@ describe("strict Gateway transport boundaries", () => {
         });
       }
       sentBodies.push(JSON.parse(String(init.body)) as JsonObject);
-      if (sentBodies.length === 1) return new Response(null, { status: 202 });
       return new Response(JSON.stringify({ error: "authenticated early HTTP chunk fault" }), {
         status: 400,
         headers: { "Content-Type": "application/json" },
@@ -774,11 +773,9 @@ describe("strict Gateway transport boundaries", () => {
     });
     try {
       await binding.open(hello());
-      await expect(binding.sendChunkConformanceFrames?.([
-        { type: "partial", vector: "valid-prefix" },
-        { type: "result", vector: "invalid-target" },
-        { type: "result", vector: "must-not-send" },
-      ])).resolves.toEqual({
+      await expect(binding.sendChunkConformanceFrame?.({
+        type: "result", vector: "invalid-target",
+      })).resolves.toEqual({
         binding: "streamable_http_sse",
         accepted: false,
         source: "authenticated_http_response",
@@ -788,10 +785,7 @@ describe("strict Gateway transport boundaries", () => {
         closeReason: null,
         message: "authenticated early HTTP chunk fault",
       });
-      expect(sentBodies).toEqual([
-        { type: "partial", vector: "valid-prefix" },
-        { type: "result", vector: "invalid-target" },
-      ]);
+      expect(sentBodies).toEqual([{ type: "result", vector: "invalid-target" }]);
 
       await expect(binding.send({
         v: 1,
@@ -803,7 +797,7 @@ describe("strict Gateway transport boundaries", () => {
         faultClass: "protocol",
         httpStatus: 400,
       });
-      expect(sentBodies).toHaveLength(3);
+      expect(sentBodies).toHaveLength(2);
     } finally {
       await binding.close();
     }

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import Database from "better-sqlite3";
@@ -29,12 +29,19 @@ describe("conformance ephemeral adapters", () => {
       tenantId: "tenant_a",
       rsid: "rsid-a",
       purpose: "terminal-payload" as const,
-      storageKey: digest,
+      storageKey: `sha256:${"b".repeat(64)}`,
       byteLength: bytes.byteLength,
       digest,
       contentType: "application/json",
     });
     await expect(store.putOwned({ binding, bytes })).resolves.toMatchObject({ ok: true });
+    await expect(store.putOwned({
+      binding: { ...binding, rsid: "rsid-b" },
+      bytes,
+    })).resolves.toMatchObject({ ok: false });
+    await expect(store.getOwnedOptional({ binding })).resolves.toMatchObject({
+      ok: true, value: { bytes },
+    });
     await expect(store.scanOwned({
       tenantId: "tenant_a", rsid: "rsid-a", afterKey: null, limit: 64,
     })).resolves.toMatchObject({ ok: true, value: [binding] });
@@ -214,6 +221,52 @@ describe("conformance ephemeral adapters", () => {
       bytes: Buffer.from("RAPO-protected"),
       contentType: "application/vnd.revagent.c39.protected-object",
     })).resolves.toMatchObject({ ok: false });
+  });
+
+  it("pins the opened ordinary-object physical root across a later junction swap", async () => {
+    const location = await root();
+    const outside = await root();
+    const store = new DigestFileConformanceObjectStore(location);
+    const bytes = Buffer.from("physical-root", "utf8");
+    const key = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+    await expect(store.put({
+      tenantId: "tenant_a", storageKey: key, bytes, contentType: "text/plain",
+    })).resolves.toMatchObject({ ok: true });
+    await rename(path.join(location, "objects"), path.join(location, "objects-original"));
+    await mkdir(path.join(outside, "tenant_a"), { recursive: true });
+    const outsideFile = path.join(outside, "tenant_a", key.slice(7));
+    await writeFile(outsideFile, "outside-must-survive", "utf8");
+    await symlink(outside, path.join(location, "objects"), "junction");
+    await expect(store.get({ tenantId: "tenant_a", storageKey: key }))
+      .resolves.toMatchObject({ ok: false });
+    await expect(store.delete({ tenantId: "tenant_a", storageKey: key }))
+      .resolves.toMatchObject({ ok: false });
+    await expect(readFile(outsideFile, "utf8")).resolves.toBe("outside-must-survive");
+  });
+
+  it("pins the opened protected-object physical root across a later junction swap", async () => {
+    const location = await root();
+    const outside = await root();
+    const store = new ProtectedConformanceObjectStore(location);
+    const key = `sha256:${"c".repeat(64)}`;
+    const bytes = Buffer.from("RAPO-protected-root", "utf8");
+    await expect(store.put({
+      tenantId: "tenant_a", storageKey: key, bytes,
+      contentType: "application/vnd.revagent.c39.protected-object",
+    })).resolves.toMatchObject({ ok: true });
+    await rename(
+      path.join(location, "protected-objects"),
+      path.join(location, "protected-objects-original"),
+    );
+    await mkdir(path.join(outside, "tenant_a"), { recursive: true });
+    const outsideFile = path.join(outside, "tenant_a", key.slice(7));
+    await writeFile(outsideFile, "outside-must-survive", "utf8");
+    await symlink(outside, path.join(location, "protected-objects"), "junction");
+    await expect(store.get({ tenantId: "tenant_a", storageKey: key }))
+      .resolves.toMatchObject({ ok: false });
+    await expect(store.delete({ tenantId: "tenant_a", storageKey: key }))
+      .resolves.toMatchObject({ ok: false });
+    await expect(readFile(outsideFile, "utf8")).resolves.toBe("outside-must-survive");
   });
 
   it("stores a C39 AES-GCM envelope under its opaque AAD key without changing ordinary digest validation", async () => {

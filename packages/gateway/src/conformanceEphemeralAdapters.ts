@@ -436,6 +436,7 @@ export class SqliteConformanceProtocolStore implements GatewayProtocolStore {
 export class DigestFileConformanceObjectStore implements PrivateObjectStoreBackendPort {
   readonly kind = "conformance" as const;
   readonly #root: string;
+  #physicalRoot: string | null = null;
   #ready: Promise<void> | null = null;
   public constructor(root: string) { this.#root = path.resolve(root, "objects"); }
 
@@ -470,12 +471,25 @@ export class DigestFileConformanceObjectStore implements PrivateObjectStoreBacke
   }
 
   async #assertContained(candidate: string): Promise<void> {
-    const root = await realpath(this.#root);
+    const root = await this.#assertPhysicalRootCurrent();
     const resolved = await realpath(candidate);
     const relative = path.relative(root, resolved);
     if (relative.startsWith("..") || path.isAbsolute(relative)) {
       throw new Error("conformance object path escaped root");
     }
+  }
+
+  async #assertPhysicalRootCurrent(): Promise<string> {
+    if (this.#physicalRoot === null) throw new Error("conformance object root is not opened");
+    const current = await realpath(this.#root);
+    const normalize = (value: string): string => process.platform === "win32"
+      ? path.resolve(value).toLowerCase()
+      : path.resolve(value);
+    if (normalize(current) !== normalize(this.#physicalRoot) ||
+        (await lstat(this.#root)).isSymbolicLink()) {
+      throw new Error("conformance object physical root changed");
+    }
+    return this.#physicalRoot;
   }
 
   async #open(): Promise<void> {
@@ -495,12 +509,15 @@ export class DigestFileConformanceObjectStore implements PrivateObjectStoreBacke
           throw new Error("conformance object root is unowned");
         }
       }
+      this.#physicalRoot = await realpath(this.#root);
+      await this.#assertPhysicalRootCurrent();
     })();
     return this.#ready;
   }
 
   async #ensureTenant(tenantId: string): Promise<void> {
     await this.#open();
+    await this.#assertPhysicalRootCurrent();
     const tenant = path.join(this.#root, tenantId);
     try { await mkdir(tenant, { recursive: false, mode: 0o700 }); }
     catch (error) {
@@ -518,6 +535,7 @@ export class DigestFileConformanceObjectStore implements PrivateObjectStoreBacke
   }
 
   async #writeAtomic(file: string, bytes: Uint8Array): Promise<void> {
+    if (this.#physicalRoot !== null) await this.#assertPhysicalRootCurrent();
     const temporary = path.join(
       path.dirname(file),
       `.${path.basename(file)}.${randomBytes(12).toString("hex")}.tmp`,
@@ -525,7 +543,33 @@ export class DigestFileConformanceObjectStore implements PrivateObjectStoreBacke
     const handle = await open(temporary, "wx", 0o600);
     try { await handle.writeFile(bytes); await handle.sync(); }
     finally { await handle.close(); }
+    if (this.#physicalRoot !== null) await this.#assertPhysicalRootCurrent();
     await rename(temporary, file);
+  }
+
+  async #writeExclusive(file: string, bytes: Uint8Array): Promise<boolean> {
+    if (this.#physicalRoot !== null) await this.#assertPhysicalRootCurrent();
+    const temporary = path.join(
+      path.dirname(file),
+      `.${path.basename(file)}.${randomBytes(12).toString("hex")}.tmp`,
+    );
+    const handle = await open(temporary, "wx", 0o600);
+    try {
+      await handle.writeFile(bytes);
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    try {
+      if (this.#physicalRoot !== null) await this.#assertPhysicalRootCurrent();
+      await link(temporary, file);
+      return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
+      throw error;
+    } finally {
+      await rm(temporary, { force: true });
+    }
   }
 
   async #readContainer(tenantId: string, storageKey: string): Promise<{
@@ -544,15 +588,22 @@ export class DigestFileConformanceObjectStore implements PrivateObjectStoreBacke
       const header = JSON.parse(container.subarray(9, 9 + headerLength).toString("utf8")) as {
         v: number;
         digest: string;
+        storageKey?: string;
         length: number;
         contentType: string;
         owner?: GatewayPrivateObjectBinding;
       };
       const bytes = container.subarray(9 + headerLength);
-      if ((header.v !== 1 && header.v !== 2) || header.digest !== storageKey ||
-          header.length !== bytes.byteLength || header.contentType.length === 0 ||
-          header.contentType.length > 256 ||
-          `sha256:${createHash("sha256").update(bytes).digest("hex")}` !== storageKey) {
+      const byteDigest = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+      const ordinary = header.v === 1 && header.owner === undefined &&
+        header.storageKey === undefined && header.digest === storageKey && byteDigest === storageKey;
+      const owned = header.v === 2 && header.owner !== undefined &&
+        header.storageKey === storageKey && header.digest === header.owner.digest &&
+        header.owner.tenantId === tenantId && header.owner.storageKey === storageKey &&
+        header.owner.byteLength === bytes.byteLength &&
+        header.owner.contentType === header.contentType && byteDigest === header.owner.digest;
+      if ((!ordinary && !owned) || header.length !== bytes.byteLength ||
+          header.contentType.length === 0 || header.contentType.length > 256) {
         throw new Error("container integrity");
       }
       return { bytes, contentType: header.contentType, owner: header.owner ?? null };
@@ -570,16 +621,23 @@ export class DigestFileConformanceObjectStore implements PrivateObjectStoreBacke
     readonly owner: GatewayPrivateObjectBinding | null;
   }): Promise<GatewayPortResult<{ readonly storageKey: string }>> {
     const file = this.#file(input.tenantId, input.storageKey);
+    const byteDigest = `sha256:${createHash("sha256").update(input.bytes).digest("hex")}`;
+    const identityValid = input.owner === null
+      ? byteDigest === input.storageKey
+      : input.owner.tenantId === input.tenantId &&
+        input.owner.storageKey === input.storageKey &&
+        input.owner.byteLength === input.bytes.byteLength &&
+        input.owner.digest === byteDigest && input.owner.contentType === input.contentType;
     if (file === null || input.bytes.byteLength > GATEWAY_PRIVATE_OBJECT_MAX_BYTES ||
-        `sha256:${createHash("sha256").update(input.bytes).digest("hex")}` !== input.storageKey ||
-        input.contentType.length === 0 || input.contentType.length > 256) {
+        !identityValid || input.contentType.length === 0 || input.contentType.length > 256) {
       return this.#objectFailure("conformance object digest rejected");
     }
     try {
       await this.#ensureTenant(input.tenantId);
       const header = Buffer.from(JSON.stringify({
         v: input.owner === null ? 1 : 2,
-        digest: input.storageKey,
+        digest: input.owner?.digest ?? input.storageKey,
+        ...(input.owner === null ? {} : { storageKey: input.storageKey }),
         length: input.bytes.byteLength,
         contentType: input.contentType,
         ...(input.owner === null ? {} : { owner: input.owner }),
@@ -590,7 +648,17 @@ export class DigestFileConformanceObjectStore implements PrivateObjectStoreBacke
         header,
         input.bytes,
       ]);
-      await this.#writeAtomic(file, container);
+      if (input.owner === null) {
+        await this.#writeAtomic(file, container);
+      } else if (!await this.#writeExclusive(file, container)) {
+        const prior = await this.#readContainer(input.tenantId, input.storageKey);
+        if (prior === null || prior.owner === null ||
+            JSON.stringify(prior.owner) !== JSON.stringify(input.owner) ||
+            prior.contentType !== input.contentType ||
+            !Buffer.from(prior.bytes).equals(input.bytes)) {
+          return this.#objectFailure("owned conformance object key is already bound");
+        }
+      }
       return Object.freeze({ ok: true as const, value: { storageKey: input.storageKey } });
     } catch {
       return this.#objectFailure("conformance object write refused");
@@ -641,8 +709,7 @@ export class DigestFileConformanceObjectStore implements PrivateObjectStoreBacke
     readonly binding: GatewayPrivateObjectBinding;
     readonly bytes: Uint8Array;
   }): Promise<GatewayPortResult<{ readonly storageKey: string }>> {
-    if (input.binding.byteLength !== input.bytes.byteLength ||
-        input.binding.digest !== input.binding.storageKey) {
+    if (input.binding.byteLength !== input.bytes.byteLength) {
       return this.#objectFailure("owned conformance object descriptor rejected");
     }
     return await this.#putContainer({
@@ -689,6 +756,7 @@ export class DigestFileConformanceObjectStore implements PrivateObjectStoreBacke
     }
     try {
       await this.#open();
+      await this.#assertPhysicalRootCurrent();
       const tenantRoot = path.join(this.#root, input.tenantId);
       let names: string[];
       try { names = await readdir(tenantRoot); }
@@ -725,6 +793,7 @@ export class DigestFileConformanceObjectStore implements PrivateObjectStoreBacke
 export class ProtectedConformanceObjectStore implements ObjectStorePort {
   readonly kind = "conformance" as const;
   readonly #root: string;
+  #physicalRoot: string | null = null;
   #ready: Promise<void> | null = null;
 
   public constructor(root: string) {
@@ -751,10 +820,23 @@ export class ProtectedConformanceObjectStore implements ObjectStorePort {
   }
 
   async #assertContained(candidate: string): Promise<void> {
-    const root = await realpath(this.#root);
+    const root = await this.#assertPhysicalRootCurrent();
     const resolved = await realpath(candidate);
     const relative = path.relative(root, resolved);
     if (relative.startsWith("..") || path.isAbsolute(relative)) throw new Error("protected conformance object escaped root");
+  }
+
+  async #assertPhysicalRootCurrent(): Promise<string> {
+    if (this.#physicalRoot === null) throw new Error("protected conformance root is not opened");
+    const current = await realpath(this.#root);
+    const normalize = (value: string): string => process.platform === "win32"
+      ? path.resolve(value).toLowerCase()
+      : path.resolve(value);
+    if (normalize(current) !== normalize(this.#physicalRoot) ||
+        (await lstat(this.#root)).isSymbolicLink()) {
+      throw new Error("protected conformance physical root changed");
+    }
+    return this.#physicalRoot;
   }
 
   async #open(): Promise<void> {
@@ -771,12 +853,15 @@ export class ProtectedConformanceObjectStore implements ObjectStorePort {
         if ((await lstat(this.#root)).isSymbolicLink()) throw new Error("protected conformance root is a link");
         if ((await readFile(marker, "utf8")) !== "revagent-protected-conformance-owner/v1") throw new Error("protected conformance root is unowned");
       }
+      this.#physicalRoot = await realpath(this.#root);
+      await this.#assertPhysicalRootCurrent();
     })();
     return this.#ready;
   }
 
   async #ensureTenant(tenantId: string): Promise<void> {
     await this.#open();
+    await this.#assertPhysicalRootCurrent();
     const tenant = path.join(this.#root, tenantId);
     try { await mkdir(tenant, { recursive: false, mode: 0o700 }); } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
@@ -791,13 +876,16 @@ export class ProtectedConformanceObjectStore implements ObjectStorePort {
   }
 
   async #writeAtomic(file: string, bytes: Uint8Array): Promise<void> {
+    if (this.#physicalRoot !== null) await this.#assertPhysicalRootCurrent();
     const temporary = path.join(path.dirname(file), `.${path.basename(file)}.${randomBytes(12).toString("hex")}.tmp`);
     const handle = await open(temporary, "wx", 0o600);
     try { await handle.writeFile(bytes); await handle.sync(); } finally { await handle.close(); }
+    if (this.#physicalRoot !== null) await this.#assertPhysicalRootCurrent();
     await rename(temporary, file);
   }
 
   async #writeExclusive(file: string, bytes: Uint8Array): Promise<boolean> {
+    if (this.#physicalRoot !== null) await this.#assertPhysicalRootCurrent();
     const temporary = path.join(path.dirname(file), `.${path.basename(file)}.${randomBytes(12).toString("hex")}.tmp`);
     const handle = await open(temporary, "wx", 0o600);
     try {
@@ -807,6 +895,7 @@ export class ProtectedConformanceObjectStore implements ObjectStorePort {
       await handle.close();
     }
     try {
+      if (this.#physicalRoot !== null) await this.#assertPhysicalRootCurrent();
       await link(temporary, file);
       return true;
     } catch (error) {

@@ -124,6 +124,43 @@ describe("session retention v6", () => {
     expect(first).toStrictEqual(second);
   });
 
+  it("keeps private-object ordering outside the frozen canonical plan digest", () => {
+    const nowMs = 10_000 + DEFAULT_SESSION_RETENTION_MS;
+    const firstCandidate = candidate();
+    const secondCandidate = candidate({
+      privateObjects: firstCandidate.privateObjects.map((value) => ({
+        ...value,
+        key: `${value.key}-different`,
+        binding: {
+          ...value.binding,
+          storageKey: `sha256:${"3".repeat(64)}`,
+        },
+      })),
+    });
+    const firstDecision = evaluateSessionRetention(firstCandidate, { nowMs });
+    const secondDecision = evaluateSessionRetention(secondCandidate, { nowMs });
+    if (firstDecision.kind !== "eligible" || secondDecision.kind !== "eligible") {
+      throw new Error("plan digest fixture is not eligible");
+    }
+    const common = {
+      owner: { identity: "owner-a", epoch: 1 },
+      preClaimRootRef: asJson({ version: 1, digest: "root" }),
+      preClaimMarkerRef: asJson({ version: 1, digest: "marker" }),
+      closureId: "closure-a",
+      claimExpiresAtMs: nowMs + 1_000,
+    } as const;
+    const first = createSessionRetentionClosure({
+      ...common, candidate: firstCandidate, decision: firstDecision,
+    });
+    const second = createSessionRetentionClosure({
+      ...common, candidate: secondCandidate, decision: secondDecision,
+    });
+    expect(first.planDigest).toBe(second.planDigest);
+    expect(first.objectIntents).not.toStrictEqual(second.objectIntents);
+    expect(first.dependencyClosureDigest).toBe(firstDecision.dependencyClosureDigest);
+    expect(first.dependencyRefs).toStrictEqual(firstCandidate.dependencyRefs);
+  });
+
   it("keeps creator provenance immutable while a newer inactive-owner claim takes over", () => {
     const decision = evaluateSessionRetention(candidate(), {
       nowMs: 10_000 + DEFAULT_SESSION_RETENTION_MS,

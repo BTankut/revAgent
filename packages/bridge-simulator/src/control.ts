@@ -1619,8 +1619,8 @@ export class BridgeDaemonRuntime {
       throw new Error("chunk conformance requires the current steady Gateway binding");
     }
     const connectionId = binding.connectionId;
-    if (binding.sendChunkConformanceFrames === undefined) {
-      throw new Error("current Gateway binding lacks the chunk conformance sequence seam");
+    if (binding.sendChunkConformanceFrame === undefined) {
+      throw new Error("current Gateway binding lacks the chunk conformance simulator seam");
     }
     const localSession = this.#simulator.registeredSessions().find(
       (candidate) => candidate.rsid === rsid,
@@ -1663,10 +1663,10 @@ export class BridgeDaemonRuntime {
       id: () => this.#ids.next(),
       ts: new Date(this.#clockMs).toISOString(),
     });
-    const fault = await binding.sendChunkConformanceFrames([
-      ...plan.prefixFrames,
-      plan.targetFrame,
-    ]);
+    for (const prefixFrame of plan.prefixFrames) {
+      await binding.send(prefixFrame);
+    }
+    const fault = await binding.sendChunkConformanceFrame(plan.targetFrame);
     const frames = [...plan.prefixFrames, plan.targetFrame].map(chunkConformanceFrameEvidence);
     return {
       schemaVersion: "bridge-chunk-conformance-evidence/v1",

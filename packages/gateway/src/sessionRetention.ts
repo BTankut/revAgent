@@ -7,6 +7,7 @@ import type {
   DurableRbpSessionV3,
   SessionHistoryTreeRef,
   SessionRetentionClosureV1,
+  SessionRetentionClosureDependencyRef,
   SessionRetentionObjectIntentRef,
 } from "./sessionHistoryStore.js";
 
@@ -28,14 +29,7 @@ export type SessionRetentionPinReason =
   | "missing_or_malformed_index"
   | "dependency_inventory_incomplete";
 
-export interface SessionRetentionDependencyRef {
-  readonly role: string;
-  readonly namespace: string;
-  readonly key: string;
-  readonly version: number;
-  readonly digest: `sha256:${string}`;
-  readonly state: string;
-}
+export type SessionRetentionDependencyRef = SessionRetentionClosureDependencyRef;
 
 export interface SessionRetentionCandidate {
   readonly tenantId: string;
@@ -191,6 +185,7 @@ export function createSessionRetentionClosure(input: {
   readonly owner: SessionRetentionOwner;
   readonly preClaimRootRef: GatewayJsonValue;
   readonly preClaimMarkerRef: GatewayJsonValue;
+  readonly closureId?: string;
   readonly claimToken?: string;
   readonly claimExpiresAtMs: number;
 }): SessionRetentionClosureV1 {
@@ -202,7 +197,7 @@ export function createSessionRetentionClosure(input: {
       index > 0 && value.key === orderedPrivateObjects[index - 1]!.key)) {
     throw new Error("retention private object inventory is duplicated");
   }
-  const closureId = randomUUID();
+  const closureId = input.closureId ?? randomUUID();
   const planDigest = retentionDigest(asJson({
     domain: "revagent/gateway/session-gc-plan/v1",
     tenantId: input.candidate.tenantId,
@@ -215,7 +210,6 @@ export function createSessionRetentionClosure(input: {
     preClaimRootRef: input.preClaimRootRef,
     preClaimMarkerRef: input.preClaimMarkerRef,
     orderedTreeRoots,
-    orderedPrivateObjects,
     dependencyClosureDigest: input.decision.dependencyClosureDigest,
     plannedEntries: input.candidate.plannedEntries,
     plannedRecords: input.candidate.plannedRecords,
@@ -229,6 +223,31 @@ export function createSessionRetentionClosure(input: {
     eligibilityCutoffMs: input.decision.eligibilityCutoffMs,
     roots: Object.freeze(orderedTreeRoots),
     objectIntents: Object.freeze(orderedPrivateObjects),
+    dependencyClosureDigest: input.decision.dependencyClosureDigest,
+    unregisterRef: input.candidate.unregisterRef === null
+      ? null
+      : Object.freeze({ ...input.candidate.unregisterRef }),
+    dependencyRefs: Object.freeze(orderedDependencies(input.candidate.dependencyRefs)
+      .map((value) => Object.freeze({ ...value }))),
+    frozenAuthority: Object.freeze({
+      sessionBindingId: input.candidate.sessionBindingId,
+      sessionBindingVersion: input.candidate.sessionBindingVersion,
+      lifecyclePhase: input.candidate.lifecyclePhase,
+      dispatchAllowed: input.candidate.dispatchAllowed,
+      resumable: input.candidate.resumable,
+      resumeExpiresAtMs: input.candidate.resumeExpiresAtMs,
+      retirementAnchorMs: input.candidate.retirementAnchorMs,
+      lastObservedNowMs: input.candidate.lastObservedNowMs,
+      producerState: "settled" as const,
+      pendingDispatch: false as const,
+      unfinishedBatch: false as const,
+      activeEgressLease: false as const,
+      unresolvedHold: false as const,
+      c39Dependency: false as const,
+      migrationDependency: false as const,
+      indicesComplete: true as const,
+      dependencyInventoryComplete: true as const,
+    }),
     creator: Object.freeze({
       ownerIdentity: input.owner.identity,
       ownerEpoch: input.owner.epoch,

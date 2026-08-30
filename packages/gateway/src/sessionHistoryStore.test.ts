@@ -291,8 +291,10 @@ describe("SessionHistoryStore v3", () => {
       tenantId: "tenant-a",
       rsid: "rsid-a",
       identity: asJson({ userId: "user-a" }),
-      binding: asJson({ sessionBindingId: "binding-a", resumeExpiresAtMs: 10_000 }),
-      lifecycle: asJson({ phase: "terminal_retained", dispatchAllowed: false, resumable: false }),
+      binding: asJson({ sessionBindingId: "binding-a", sessionVersion: 1, resumeExpiresAtMs: 10_000 }),
+      lifecycle: asJson({
+        phase: "terminal_retained", dispatchAllowed: false, resumeAllowed: false, updatedAtMs: 10_000,
+      }),
       sequenceHead: asJson({ nextTxSeq: 4_161 }),
       migrationProof: {
         sourceGeneration: 2,
@@ -401,6 +403,7 @@ describe("SessionHistoryStore v3", () => {
         retiredLifecycle: completion.retiredLifecycle,
         retiredSequenceHead: completion.retiredSequenceHead,
         closureReceipt: completion.closureReceipt,
+        dependencyClosureDigest: (decision as Extract<typeof decision, { kind: "eligible" }>).dependencyClosureDigest,
         retiredAuthorityDigest: completion.retiredAuthorityDigest,
         completionDigest: completion.completionDigest,
         completedAtMs: completion.completedAtMs,
@@ -413,6 +416,103 @@ describe("SessionHistoryStore v3", () => {
     expect(retiredAudit).toMatchObject({
       ok: true,
       value: { status: "candidate", retired: true },
+    });
+  });
+
+  it.each(["leaf", "dependency"] as const)(
+    "stops before deleting any page when a captured %s is already missing",
+    async (missingKind) => {
+    const restartable = createRestartableTestStore();
+    await restartable.store.open();
+    const store = new SessionHistoryStore(restartable.store);
+    const plan = buildSessionHistoryPagePlan({
+      tenantId: "tenant-a", rsid: "rsid-missing", treeKind: "outbox",
+      entries: entries(SESSION_HISTORY_LEAF_MAX_ENTRIES + 1),
+    });
+    const root: DurableRbpSessionV3 = {
+      schema: GATEWAY_RBP_SESSION_V3_NAMESPACE, generation: 3, rootVersion: 1,
+      tenantId: "tenant-a", rsid: "rsid-missing", identity: asJson({ userId: "user-a" }),
+      binding: asJson({ sessionBindingId: "binding-a", sessionVersion: 1, resumeExpiresAtMs: 10_000 }),
+      lifecycle: asJson({
+        phase: "terminal_retained", dispatchAllowed: false, resumeAllowed: false, updatedAtMs: 10_000,
+      }),
+      sequenceHead: asJson({ nextTxSeq: 66 }),
+      migrationProof: {
+        sourceGeneration: 2, sourceDigest: digest("source-missing"),
+        equivalenceDigest: digest("equivalence-missing"), targetPlanDigest: digest("plan-missing"),
+        sourceCleanupReceiptDigest: digest("cleanup-missing"),
+      },
+      durabilityProfile: asJson({ mode: "private_object" }), trees: [plan.tree],
+      singletonRefs: [], antiDowngradeRefs: [], retentionClosure: null,
+      retiredAuthorityDigest: null, completionDigest: null,
+    };
+    await restartable.store.transact({ tenantId: "tenant-a" }, async (tx) => {
+      await store.stageNew(tx, { root, pagePlans: [plan], migratedAtMs: 1 });
+      tx.stage({
+        namespace: "gateway.retention-dependency-test/v1",
+        key: "rsid-missing/dependency",
+        value: asJson({ rsid: "rsid-missing", state: "complete" }),
+        expect: { kind: "absent" },
+      });
+    });
+    const dependency = restartable.snapshot().records.find((record) =>
+      record.namespace === "gateway.retention-dependency-test/v1")!;
+    const nowMs = 10_000 + DEFAULT_SESSION_RETENTION_MS;
+    const candidate = {
+      tenantId: "tenant-a", rsid: "rsid-missing", sessionBindingId: "binding-a",
+      sessionBindingVersion: 1, lifecyclePhase: "terminal_retained", dispatchAllowed: false,
+      resumable: false, resumeExpiresAtMs: 10_000, retirementAnchorMs: 10_000,
+      lastObservedNowMs: 10_000, producerState: "settled" as const,
+      pendingDispatch: false, unfinishedBatch: false, activeEgressLease: false,
+      unresolvedHold: false, c39Dependency: false, migrationDependency: false,
+      indicesComplete: true, dependencyInventoryComplete: true, unregisterRef: null,
+      dependencyRefs: [{
+        role: "test", namespace: dependency.namespace, key: dependency.key,
+        version: dependency.version, digest: sessionCanonicalDigest(dependency.value), state: "complete",
+      }], treeRoots: [plan.tree], privateObjects: [],
+      plannedEntries: plan.tree.entryCount, plannedRecords: plan.pages.length, plannedObjects: 0,
+    };
+    const decision = evaluateSessionRetention(candidate, { nowMs });
+    if (decision.kind !== "eligible") throw new Error("missing-leaf fixture is not eligible");
+    const closure = createSessionRetentionClosure({
+      candidate, decision, owner: { identity: "owner-a", epoch: 1 },
+      preClaimRootRef: asJson({ version: 1 }), preClaimMarkerRef: asJson({ version: 1 }),
+      claimToken: "claim-missing", claimExpiresAtMs: nowMs + 1_000,
+    });
+    await restartable.store.transact({ tenantId: "tenant-a" }, async (tx) => {
+      await store.claimRetention(tx, {
+        tenantId: "tenant-a", rsid: "rsid-missing", closure, updatedAtMs: nowMs,
+      });
+    });
+    const missing = plan.pages.find((page) => "entries" in page.value)!;
+    await restartable.store.transact({ tenantId: "tenant-a" }, async (tx) => {
+      const namespace = missingKind === "leaf"
+        ? GATEWAY_SESSION_HISTORY_PAGE_NAMESPACE
+        : dependency.namespace;
+      const key = missingKind === "leaf" ? missing.key : dependency.key;
+      const current = await tx.read<GatewayJsonValue>(namespace, key);
+      if (current === null) throw new Error("missing retention fixture record was not stored");
+      tx.stage({
+        namespace,
+        key,
+        value: null,
+        expect: { kind: "version", version: current.version },
+      });
+    });
+    const pagesBefore = restartable.snapshot().records.filter((record) =>
+      record.namespace === GATEWAY_SESSION_HISTORY_PAGE_NAMESPACE).length;
+    const attempted = await restartable.store.transact({ tenantId: "tenant-a" }, async (tx) =>
+      await store.deleteRetentionPageBatch(tx, {
+        tenantId: "tenant-a", rsid: "rsid-missing", claimToken: "claim-missing",
+        ownerIdentity: "owner-a", ownerEpoch: 1, updatedAtMs: nowMs + 1, maxOperations: 64,
+      }));
+    expect(attempted.ok).toBe(false);
+    expect(restartable.snapshot().records.filter((record) =>
+      record.namespace === GATEWAY_SESSION_HISTORY_PAGE_NAMESPACE)).toHaveLength(pagesBefore);
+    const retained = await restartable.store.transact({ tenantId: "tenant-a" }, async (tx) =>
+      await store.readAuthoritative(tx, "tenant-a", "rsid-missing"));
+    expect(retained.ok && retained.value?.value.retentionClosure?.counts).toMatchObject({
+      processedEntries: 0, deletedRecords: 0,
     });
   });
 
@@ -448,7 +548,20 @@ describe("SessionHistoryStore v3", () => {
         tenantId: "tenant-a", rsid: "rsid-a", afterKey: null, limit: 64,
       })).resolves.toMatchObject({ ok: true, value: [descriptor.binding] });
 
+      const secondDescriptor = await blobs.spill({
+        tenantId: "tenant-a",
+        rsid: "rsid-b",
+        purpose: "terminal-payload",
+        bytes,
+        contentType: "application/json",
+      });
+      expect(secondDescriptor.binding.digest).toBe(descriptor.binding.digest);
+      expect(secondDescriptor.binding.storageKey).not.toBe(descriptor.binding.storageKey);
+      await expect(blobs.hydrate(descriptor)).resolves.toStrictEqual(bytes);
+      await expect(blobs.hydrate(secondDescriptor)).resolves.toStrictEqual(bytes);
+
       await blobs.delete(descriptor, "claim-a");
+      await blobs.delete(secondDescriptor, "claim-b");
       await expect(privateObjects!.getOptional(descriptor.binding)).resolves.toStrictEqual({
         ok: true,
         value: null,
@@ -492,7 +605,11 @@ describe("SessionHistoryStore v3", () => {
         }),
         lifecycle: asJson({
           connectionLifecycle: { grantedCapabilities: [] },
-          sessionLifecycle: { localSessionKey: "local-a", phase: "unregistered", dispatchAllowed: false },
+          sessionLifecycle: {
+            localSessionKey: "local-a", phase: "unregistered", dispatchAllowed: false,
+            resumeAllowed: false,
+          },
+          updatedAtMs: 10_000,
           liveDocumentRoute: null,
         }),
         sequenceHead: asJson({ sequence: {

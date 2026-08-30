@@ -122,6 +122,10 @@ export interface SessionRetentionClosureV1 {
   readonly eligibilityCutoffMs: number;
   readonly roots: readonly SessionHistoryTreeRef[];
   readonly objectIntents: readonly SessionRetentionObjectIntentRef[];
+  readonly dependencyClosureDigest: `sha256:${string}`;
+  readonly unregisterRef: SessionRetentionClosureDependencyRef | null;
+  readonly dependencyRefs: readonly SessionRetentionClosureDependencyRef[];
+  readonly frozenAuthority: SessionRetentionFrozenAuthority;
   readonly creator: {
     readonly ownerIdentity: string;
     readonly ownerEpoch: number;
@@ -152,6 +156,35 @@ export interface SessionRetentionClosureV1 {
     readonly positiveAbsences: number;
   };
   readonly completionDigest: `sha256:${string}` | null;
+}
+
+export interface SessionRetentionClosureDependencyRef {
+  readonly role: string;
+  readonly namespace: string;
+  readonly key: string;
+  readonly version: number;
+  readonly digest: `sha256:${string}`;
+  readonly state: string;
+}
+
+export interface SessionRetentionFrozenAuthority {
+  readonly sessionBindingId: string;
+  readonly sessionBindingVersion: number;
+  readonly lifecyclePhase: string;
+  readonly dispatchAllowed: boolean;
+  readonly resumable: boolean;
+  readonly resumeExpiresAtMs: number;
+  readonly retirementAnchorMs: number;
+  readonly lastObservedNowMs: number;
+  readonly producerState: "settled";
+  readonly pendingDispatch: false;
+  readonly unfinishedBatch: false;
+  readonly activeEgressLease: false;
+  readonly unresolvedHold: false;
+  readonly c39Dependency: false;
+  readonly migrationDependency: false;
+  readonly indicesComplete: true;
+  readonly dependencyInventoryComplete: true;
 }
 
 export interface SessionRetentionObjectIntentRef {
@@ -325,6 +358,25 @@ export function sessionCanonicalDigest(value: GatewayJsonValue): `sha256:${strin
   return `sha256:${createHash("sha256")
     .update(canonicalizeJson(value as JsonValue))
     .digest("hex")}`;
+}
+
+export function sessionPrivateStorageKey(input: {
+  readonly tenantId: string;
+  readonly rsid: string;
+  readonly purpose: GatewayPrivateObjectBinding["purpose"];
+  readonly digest: `sha256:${string}`;
+}): `sha256:${string}` {
+  if (!boundedToken(input.tenantId) || !boundedToken(input.rsid) ||
+      !DIGEST_PATTERN.test(input.digest)) {
+    throw new Error("private session storage identity is invalid");
+  }
+  return sessionCanonicalDigest(asJson({
+    domain: "revagent/gateway/session-private-object-storage-key/v1",
+    tenantId: input.tenantId,
+    rsid: input.rsid,
+    purpose: input.purpose,
+    digest: input.digest,
+  }));
 }
 
 function boundedToken(value: string, maxBytes = 512): boolean {
@@ -705,11 +757,17 @@ export class SessionPrivateBlobStore {
     readonly contentType: string;
   }): Promise<SessionBlobDescriptorV1> {
     const digest = `sha256:${createHash("sha256").update(input.bytes).digest("hex")}` as const;
+    const storageKey = sessionPrivateStorageKey({
+      tenantId: input.tenantId,
+      rsid: input.rsid,
+      purpose: input.purpose,
+      digest,
+    });
     const binding: GatewayPrivateObjectBinding = Object.freeze({
       tenantId: input.tenantId,
       rsid: input.rsid,
       purpose: input.purpose,
-      storageKey: digest,
+      storageKey,
       byteLength: input.bytes.byteLength,
       digest,
       contentType: input.contentType,
@@ -1172,6 +1230,41 @@ export class SessionHistoryStore {
         input.maxOperations > SESSION_MAINTENANCE_MAX_WRITES) {
       throw new Error("v3 retention operation budget is invalid");
     }
+    const binding = isRecord(current.value.binding) ? current.value.binding : null;
+    const lifecycle = isRecord(current.value.lifecycle) ? current.value.lifecycle : null;
+    const sessionLifecycle = lifecycle !== null && isRecord(lifecycle.sessionLifecycle)
+      ? lifecycle.sessionLifecycle
+      : lifecycle;
+    const frozen = closure.frozenAuthority;
+    const lifecyclePhase = sessionLifecycle?.phase === "unregistered"
+      ? "unregistered"
+      : sessionLifecycle?.phase;
+    if (binding === null || lifecycle === null || sessionLifecycle === null ||
+        binding.sessionBindingId !== frozen.sessionBindingId ||
+        binding.sessionVersion !== frozen.sessionBindingVersion ||
+        binding.resumeExpiresAtMs !== frozen.resumeExpiresAtMs ||
+        lifecyclePhase !== frozen.lifecyclePhase ||
+        sessionLifecycle.dispatchAllowed !== frozen.dispatchAllowed ||
+        sessionLifecycle.resumeAllowed !== frozen.resumable ||
+        lifecycle.updatedAtMs !== frozen.retirementAnchorMs) {
+      throw new Error("retention frozen root authority changed before deletion");
+    }
+    const verifyDependency = async (
+      ref: SessionRetentionClosureDependencyRef,
+      label: string,
+    ): Promise<void> => {
+      const stored = await tx.read<GatewayJsonValue>(ref.namespace, ref.key);
+      if (stored === null || stored.version !== ref.version ||
+          sessionCanonicalDigest(stored.value) !== ref.digest) {
+        throw new Error(`retention captured ${label} changed or disappeared`);
+      }
+    };
+    if (closure.unregisterRef !== null) {
+      await verifyDependency(closure.unregisterRef, "unregister dependency");
+    }
+    for (const ref of closure.dependencyRefs) {
+      await verifyDependency(ref, "dependency");
+    }
     if (closure.cursor.blobSlotIndex < closure.objectIntents.length) {
       if (input.servingOwnership === undefined || input.privateObjects === undefined) {
         throw new Error("retention private object owner is unavailable");
@@ -1294,6 +1387,12 @@ export class SessionHistoryStore {
       if (stored === null) missingLeaves.push(ref);
       else presentLeaves.push(Object.freeze({ ref, stored }));
     }
+    const deletedPageRecords = closure.counts.deletedRecords - closure.counts.deletedObjects;
+    const deletedPageEntries = missingLeaves.reduce((sum, ref) => sum + ref.count, 0);
+    if (deletedPageRecords < 0 || missingLeaves.length !== deletedPageRecords ||
+        deletedPageEntries !== closure.counts.processedEntries) {
+      throw new Error("captured leaf absence is outside the durable completed prefix");
+    }
     let deletedRecords = 0;
     let processedEntries = 0;
     let lastProcessedKey = closure.cursor.lastProcessedKey;
@@ -1369,6 +1468,7 @@ export class SessionHistoryStore {
       readonly retiredLifecycle: GatewayJsonValue;
       readonly retiredSequenceHead: GatewayJsonValue;
       readonly closureReceipt: GatewayJsonValue;
+      readonly dependencyClosureDigest: `sha256:${string}`;
       readonly retiredAuthorityDigest: `sha256:${string}`;
       readonly completionDigest: `sha256:${string}`;
       readonly completedAtMs: number;
@@ -1378,9 +1478,11 @@ export class SessionHistoryStore {
     const closure = current?.value.retentionClosure;
     if (current === null || closure == null || closure.state !== "proving_empty" ||
         closure.claim.token !== input.claimToken ||
+        closure.dependencyClosureDigest !== input.dependencyClosureDigest ||
         closure.counts.plannedEntries !== closure.counts.processedEntries ||
         closure.counts.plannedRecords !== closure.counts.deletedRecords ||
-        closure.counts.plannedObjects !== closure.counts.deletedObjects) {
+        closure.counts.plannedObjects !== closure.counts.deletedObjects ||
+        closure.counts.positiveAbsences !== closure.counts.plannedObjects) {
       throw new Error("v3 retention final proof is incomplete");
     }
     const nextClosure: SessionRetentionClosureV1 = Object.freeze({

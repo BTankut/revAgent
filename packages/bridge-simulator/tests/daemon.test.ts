@@ -495,7 +495,7 @@ describe("long-lived Bridge JSONL daemon", () => {
     expect(existsSync(stateRoot)).toBe(false);
   });
 
-  it("returns the authenticated WSS prefix fault from the chunk conformance sequence", async () => {
+  it("sends a valid WSS prefix ordinarily before the singular invalid target fault", async () => {
     const gateway = new WebSocketServer({ host: "127.0.0.1", port: 0 });
     await once(gateway, "listening");
     const gatewayPort = (gateway.address() as AddressInfo).port;
@@ -553,7 +553,7 @@ describe("long-lived Bridge JSONL daemon", () => {
         }
         if (envelope.type !== "partial" && envelope.type !== "result") return;
         conformanceFrameCount += 1;
-        if (conformanceFrameCount !== 1) return;
+        if (conformanceFrameCount !== 2) return;
         socket.send(JSON.stringify({
           v: 1,
           type: "error",
@@ -660,7 +660,7 @@ describe("long-lived Bridge JSONL daemon", () => {
           },
         },
       });
-      expect(conformanceFrameCount).toBeGreaterThanOrEqual(1);
+      expect(conformanceFrameCount).toBe(2);
     } finally {
       if (stallPlanned) {
         await fixtureChannel.send(control("release-chunk-stall", "release_stall", {
