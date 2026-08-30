@@ -13,6 +13,7 @@ import {
 import {
   parseOmittedPayloadCoordinateCarrier,
   RealTrioNorthMcpError,
+  RealTrioNorthToolResultError,
   RealTrioOmittedPayloadCoordinateError,
   withRealTrioNorthMcpClient,
   type RealTrioNorthMcpClient,
@@ -346,10 +347,9 @@ describe.sequential("WP-12 direct real trio runtime fixture", () => {
             ["conformance.fixture.mutation_probe_verify", { conclusive: true }, "verify"],
             ["conformance.fixture.mutation_probe_next", { clearances: [] }, "next"],
           ] as const) {
-            const denied = await client.toolCall({ name, arguments: args,
-              requestId: `wp12-verification-extra-${label}-${binding}` });
-            expect(denied.content).toMatchObject({ state: "failed", executorReached: false,
-              error: { code: "invalid_arguments" } });
+            await expect(client.toolCall({ name, arguments: args,
+              requestId: `wp12-verification-extra-${label}-${binding}` }))
+              .rejects.toBeInstanceOf(RealTrioNorthToolResultError);
           }
 
           await runtime.verifyNorthDispatchFence();
