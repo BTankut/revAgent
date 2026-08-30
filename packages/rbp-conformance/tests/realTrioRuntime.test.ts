@@ -317,6 +317,7 @@ describe.sequential("WP-12 direct real trio runtime fixture", () => {
       const runtime = launched.result;
       try {
         expect(runtime.supervisor.bridgeReadiness.c39Profile).toBe("none");
+        expect(runtime.supervisor.sessionReadiness.authorityFingerprint).toMatch(SHA256);
         const tool = realTrioNorthToolForCase("O1-C38");
         const result = await callRealTrioNorthTool({
           endpoint: runtime.endpoint,
@@ -352,6 +353,7 @@ describe.sequential("WP-12 direct real trio runtime fixture", () => {
       const runtime = launched.result;
       try {
         expect(runtime.supervisor.bridgeReadiness.c39Profile).toBe("c39_terminal_prepeer_once");
+        expect(runtime.supervisor.sessionReadiness.authorityFingerprint).toMatch(SHA256);
         expect((await runtime.supervisor.readRecoveryCarrierObservationState()).routeRebindProofGranted).toBe(true);
         await withRealTrioNorthMcpClient({
           endpoint: runtime.endpoint,
@@ -485,7 +487,10 @@ describe.sequential("WP-12 direct real trio runtime fixture", () => {
           );
           await waitForC39RouteRebindCurrent(runtime, 45_000);
 
-          await runtime.supervisor.restartBridge();
+          const beforeRestartFingerprint = runtime.supervisor.sessionReadiness.authorityFingerprint;
+          const restartReadiness = await runtime.supervisor.restartBridge();
+          expect(restartReadiness.authorityFingerprint).toMatch(SHA256);
+          expect(restartReadiness.authorityFingerprint).not.toBe(beforeRestartFingerprint);
           expect((await runtime.supervisor.readRecoveryCarrierObservationState()).routeRebindProofGranted).toBe(true);
           // Bridge restart establishes a fresh route-proof epoch.  Its
           // current tuple is independently required before denial checks, but

@@ -4,7 +4,7 @@ import { lstat, open } from "node:fs/promises";
 import path from "node:path";
 
 const MAX_KEY_FILE_BYTES = 8_192;
-const MAX_KEY_COUNT = 16;
+export const MAX_PROTECTED_OBJECT_KEY_COUNT = 16;
 const KEY_BYTES = 32;
 const KID = /^[A-Za-z0-9._-]{1,64}$/u;
 const BASE64_32 = /^[A-Za-z0-9+/]{43}=$/u;
@@ -43,7 +43,7 @@ function parseCanonicalKeyFile(source: Buffer): ParsedKeyFile | null {
   const candidate = parsed as { v?: unknown; active_kid?: unknown; keys?: unknown };
   if (candidate.v !== 1 || typeof candidate.active_kid !== "string" || !KID.test(candidate.active_kid) || candidate.keys === null || typeof candidate.keys !== "object" || Array.isArray(candidate.keys)) return null;
   const entries = Object.entries(candidate.keys as Record<string, unknown>);
-  if (entries.length === 0 || entries.length > MAX_KEY_COUNT || !entries.every(([kid, value]) => KID.test(kid) && typeof value === "string" && BASE64_32.test(value))) return null;
+  if (entries.length === 0 || entries.length > MAX_PROTECTED_OBJECT_KEY_COUNT || !entries.every(([kid, value]) => KID.test(kid) && typeof value === "string" && BASE64_32.test(value))) return null;
   const sorted = [...entries].sort(([left], [right]) => left.localeCompare(right));
   if (!sorted.some(([kid]) => kid === candidate.active_kid)) return null;
   const canonical = `{"v":1,"active_kid":${JSON.stringify(candidate.active_kid)},"keys":{${sorted.map(([kid, value]) => `${JSON.stringify(kid)}:${JSON.stringify(value)}`).join(",")}}}`;
@@ -58,7 +58,7 @@ function immutableSnapshot(parsed: ParsedKeyFile): ProtectedObjectKeySnapshot {
 }
 async function liveKids(inventory: ProtectedObjectLiveKeyInventoryPort): Promise<ReadonlySet<string> | null> {
   const values = await inventory.listLiveKids();
-  if (values === null || values.length > MAX_KEY_COUNT || values.some((kid) => !KID.test(kid)) || new Set(values).size !== values.length) return null;
+  if (values === null || values.length > MAX_PROTECTED_OBJECT_KEY_COUNT || values.some((kid) => !KID.test(kid)) || new Set(values).size !== values.length) return null;
   return new Set(values);
 }
 
@@ -97,7 +97,7 @@ export class LinuxFileProtectedObjectKeyProvider implements ProtectedObjectKeyPr
 /** Fixture-only provider; production config has no selector for `conformance`. */
 export class ConformanceProtectedObjectKeyProvider implements ProtectedObjectKeyProvider {
   readonly kind = "conformance" as const; readonly inventory: ProtectedObjectLiveKeyInventoryPort; readonly #snapshot: ProtectedObjectKeySnapshot;
-  public constructor(activeKid: string, keys: ReadonlyMap<string, Uint8Array>, inventory: ProtectedObjectLiveKeyInventoryPort) { if (inventory.kind !== "conformance" || !KID.test(activeKid) || !keys.has(activeKid) || keys.size === 0 || keys.size > MAX_KEY_COUNT) throw new Error("invalid conformance protected key fixture"); const copied = new Map<string, Buffer>(); for (const [kid, key] of keys) { if (!KID.test(kid) || key.byteLength !== KEY_BYTES) throw new Error("invalid conformance protected key fixture"); copied.set(kid, Buffer.from(key)); } this.#snapshot = immutableSnapshot({ activeKid, keys: copied }); for (const value of copied.values()) zero(value); this.inventory = inventory; }
+  public constructor(activeKid: string, keys: ReadonlyMap<string, Uint8Array>, inventory: ProtectedObjectLiveKeyInventoryPort) { if (inventory.kind !== "conformance" || !KID.test(activeKid) || !keys.has(activeKid) || keys.size === 0 || keys.size > MAX_PROTECTED_OBJECT_KEY_COUNT) throw new Error("invalid conformance protected key fixture"); const copied = new Map<string, Buffer>(); for (const [kid, key] of keys) { if (!KID.test(kid) || key.byteLength !== KEY_BYTES) throw new Error("invalid conformance protected key fixture"); copied.set(kid, Buffer.from(key)); } this.#snapshot = immutableSnapshot({ activeKid, keys: copied }); for (const value of copied.values()) zero(value); this.inventory = inventory; }
   async readiness(): Promise<ProtectedObjectKeyReadiness> { return (await this.snapshot()) === null ? "key_unavailable" : "ready"; }
   async snapshot(): Promise<ProtectedObjectKeySnapshot | null> { const required = await liveKids(this.inventory); return required === null || [...required].some((kid) => !this.#snapshot.kids.includes(kid)) ? null : this.#snapshot; }
   async selfTest(): Promise<boolean> { return (await this.snapshot()) !== null; }

@@ -1001,6 +1001,11 @@ export interface ReadyProcessOptions extends ProcessEvidenceDirectoryOptions {
   taskkillForceZeroRemainingAfterSpawnForTest?: boolean;
   taskkillSpawnObserverForTest?: () => void;
   taskkillCloseObserverForTest?: () => void;
+  readonly preReadyBootstrap?: Readonly<{
+    readonly request: JsonObject;
+    readonly timeoutMs: number;
+    validateResponse(value: JsonObject): void;
+  }>;
   validateReadiness(value: JsonObject): void;
 }
 
@@ -1154,7 +1159,7 @@ export class StrictReadyProcess {
         ...(options.useTestSignalProxy === true ? { NODE_ENV: "test" } : {}),
       }),
       shell: false,
-      stdio: options.useTestSignalProxy === true
+      stdio: options.useTestSignalProxy === true || options.preReadyBootstrap !== undefined
         ? ["pipe", "pipe", "pipe", "ipc"]
         : ["pipe", "pipe", "pipe"],
       windowsHide: true,
@@ -1168,6 +1173,32 @@ export class StrictReadyProcess {
       throw new Error(`${options.componentId} did not receive a process id`);
     }
     const transcript: ProcessTranscriptRecord[] = [];
+    let bootstrapComplete = options.preReadyBootstrap === undefined;
+    const bootstrap = options.preReadyBootstrap === undefined
+      ? Promise.resolve()
+      : new Promise<void>((resolve, reject) => {
+          const timer = setTimeout(() => {
+            reject(new Error(`${options.componentId} pre-READY bootstrap timed out`));
+          }, options.preReadyBootstrap!.timeoutMs);
+          timer.unref();
+          const onMessage = (message: unknown): void => {
+            if (message === null || typeof message !== "object" || Array.isArray(message)) return;
+            try {
+              options.preReadyBootstrap!.validateResponse(message as JsonObject);
+              bootstrapComplete = true;
+              clearTimeout(timer);
+              child.off("message", onMessage);
+              resolve();
+            } catch (error) {
+              clearTimeout(timer);
+              child.off("message", onMessage);
+              reject(error instanceof Error ? error : new Error(String(error)));
+            }
+          };
+          child.on("message", onMessage);
+          child.send?.(options.preReadyBootstrap!.request);
+        });
+    void bootstrap.catch(() => undefined);
     let observedExitCode: number | null = null;
     child.once("exit", (code, signal) => {
       observedExitCode = code ?? (signal === null ? 1 : 128);
@@ -1208,6 +1239,9 @@ export class StrictReadyProcess {
         if (line.at(-1) === 0x0d) line = line.subarray(0, line.length - 1);
         try {
           const value = parseJsonObject(line, `${options.componentId} readiness`);
+          if (!bootstrapComplete) {
+            throw new Error(`${options.componentId} published READY before storage bootstrap`);
+          }
           options.validateReadiness(value);
           settled = true;
           clearTimeout(timer);
@@ -1246,6 +1280,7 @@ export class StrictReadyProcess {
         }),
       );
     }
+    await bootstrap;
     return new StrictReadyProcess(
       options.componentId,
       child,

@@ -1818,15 +1818,15 @@ export function hasRealTrioLiveDocumentRoute(
   snapshot: Record<string, unknown>,
   expectedDocumentId = REAL_TRIO_FIXTURE_DOCUMENT_ID,
 ): boolean {
-  const sessions = snapshot.sessions;
-  if (!Array.isArray(sessions) || sessions.length !== 1) return false;
-  const row = sessions[0];
-  if (row === null || typeof row !== "object" || Array.isArray(row)) return false;
-  const value = (row as Record<string, unknown>).value;
-  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
-  const lifecycle = (value as Record<string, unknown>).lifecycle;
-  if (lifecycle === null || typeof lifecycle !== "object" || Array.isArray(lifecycle)) return false;
-  const route = (lifecycle as Record<string, unknown>).liveDocumentRoute;
+  const audit = snapshot.sessionAudit;
+  if (audit === null || typeof audit !== "object" || Array.isArray(audit) ||
+      (audit as Record<string, unknown>).status !== "candidate" ||
+      (audit as Record<string, unknown>).candidateCount !== 1) return false;
+  const projection = (audit as Record<string, unknown>).projection;
+  if (projection === null || typeof projection !== "object" || Array.isArray(projection)) return false;
+  const readiness = (projection as Record<string, unknown>).readiness;
+  if (readiness === null || typeof readiness !== "object" || Array.isArray(readiness)) return false;
+  const route = (readiness as Record<string, unknown>).liveDocumentRoute;
   return route !== null && typeof route === "object" && !Array.isArray(route) &&
     (route as Record<string, unknown>).sessionDocumentId === expectedDocumentId;
 }

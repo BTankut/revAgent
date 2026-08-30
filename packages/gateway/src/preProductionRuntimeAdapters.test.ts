@@ -138,6 +138,17 @@ describe("M4 pre-production runtime adapters", () => {
         (limit) => Number.isSafeInteger(limit) && limit > 0,
       ),
     ).toBe(true);
+    await expect(adapters.servingOwnership.open()).resolves.toMatchObject({ ok: true });
+    expect(adapters.servingOwnership.durabilityProfile()).toMatchObject({
+      mode: "private_object",
+      maxParamsBytes: 4_194_304,
+      maxOutboundWireBytes: 50_331_648,
+      maxResultBytes: 33_554_432,
+      maxPartialBytes: 1,
+      privateObjectMaxBytes: 50_331_648,
+      resourceCarrierReady: false,
+    });
+    await expect(adapters.servingOwnership.close()).resolves.toMatchObject({ ok: true });
   });
 
   it("defaults entitlement to deny and grants only exact caller-supplied sets", async () => {

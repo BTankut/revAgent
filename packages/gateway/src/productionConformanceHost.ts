@@ -12,6 +12,8 @@ import {
 import type { FastifyInstance } from "fastify";
 import type { NorthMcpEndpointOptions } from "./northMcpEndpoint.js";
 
+export const PRODUCTION_CONFORMANCE_HOST_PROFILE = "production_conformance" as const;
+
 /**
  * The only D2b-capable policy factory. It is intentionally not configurable:
  * productionConformanceHost owns the fixed C39 fixture identity, while every
@@ -86,9 +88,9 @@ export async function startProductionGatewayHost(input: {
    */
   readonly northMcp?: NorthMcpEndpointOptions;
   /** Deliberate, value-free admission token. No other host profile may use conformance ports. */
-  readonly hostProfile: "production_conformance";
+  readonly hostProfile: typeof PRODUCTION_CONFORMANCE_HOST_PROFILE;
 }): Promise<GatewayServerHandle & { readonly ingress: ConformanceRbpIngressHost }> {
-  if (input.hostProfile !== "production_conformance") {
+  if (input.hostProfile !== PRODUCTION_CONFORMANCE_HOST_PROFILE) {
     throw new Error("productionGatewayHost requires production_conformance host profile");
   }
   if (input.server.config.nodeEnv === "production") {

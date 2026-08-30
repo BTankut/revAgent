@@ -12,12 +12,12 @@ import {
   hasOrderedDocumentContextStages,
   issueDeviceCredentialControlPayload,
   persistedBindingForReadiness,
-  pollRbpSessionV2Readiness,
+  pollRbpSessionV3Readiness,
   realTrioFailureDiagnostics,
   RealTrioSessionReadinessPollError,
   RealTrioDocumentContextCursorJournal,
   MAX_REAL_TRIO_DOCUMENT_CONTEXT_ROWS,
-  readRbpSessionV2Readiness,
+  readRbpSessionV3Readiness,
   realTrioCredentialRequest,
   redactBridgeTranscript,
   REAL_TRIO_TEST_HEARTBEAT_INTERVAL_MS,
@@ -389,58 +389,60 @@ describe("WP-12 fixture attestation supervisor configuration", () => {
   });
 });
 
-describe("WP-12 real-trio v2 session smoke reader", () => {
+describe("WP-12 real-trio v3 session smoke reader", () => {
   const WSS_CONNECTION_GRANTS = ["artifact_result_v1", "chunked_results", "journal_v1", "route_rebind_proof_v1"];
   const HTTP_CONNECTION_GRANTS = [...WSS_CONNECTION_GRANTS, "transport_streamable_http"];
-  const v2Snapshot = {
-    sessions: [{
-      namespace: "gateway.rbp-session/v2",
-      value: {
-        schema: "gateway.rbp-session/v2",
+  const v3Snapshot = {
+    ok: true,
+    action: "snapshot_audit",
+    sessionAudit: {
+      status: "candidate",
+      candidateCount: 1,
+      projection: {
+        status: "candidate",
+        candidateCount: 1,
+        tenantId: "conformance",
         rsid: "018f7f7e-1234-7abc-8def-1234567890ab",
-        binding: { binding: "wss", grantedCapabilities: ["batch_atomic", "doc_context_cached_v1"] },
-        lifecycle: {
-          connectionLifecycle: {
-            phase: "steady",
-            nextAttemptIndex: 0,
-            selectedProtocol: 1,
-            grantedCapabilities: WSS_CONNECTION_GRANTS,
-            retryPauseReason: null,
-            lastRetryDecision: null,
-          },
-          sessionLifecycle: {
-            localSessionKey: "port:8080:pid:42:started:99",
-            phase: "registered",
-            dispatchAllowed: true,
-            rsid: "018f7f7e-1234-7abc-8def-1234567890ab",
-          },
+        rootVersion: 7,
+        rootDigest: `sha256:${"a".repeat(64)}`,
+        treesDigest: `sha256:${"b".repeat(64)}`,
+        retired: false,
+        readiness: {
+          binding: "wss",
+          sessionBindingId: "018f7f7e-1234-7abc-8def-1234567890ac",
+          sessionVersion: 1,
+          connectionId: "018f7f7e-1234-7abc-8def-1234567890ad",
+          localSessionKey: "port:8080:pid:42:started:99",
+          phase: "registered",
+          dispatchAllowed: true,
+          liveDocumentRoute: null,
+          sessionGrantedCapabilities: ["batch_atomic", "doc_context_cached_v1"],
+          connectionGrantedCapabilities: WSS_CONNECTION_GRANTS,
         },
       },
-    }],
+    },
   };
 
   const snapshotForPersistedBinding = (binding: "wss" | "http_sse") => {
-    const snapshot = structuredClone(v2Snapshot);
-    snapshot.sessions[0]!.value.binding.binding = binding;
-    snapshot.sessions[0]!.value.lifecycle.connectionLifecycle.grantedCapabilities =
+    const snapshot = structuredClone(v3Snapshot);
+    snapshot.sessionAudit.projection.readiness.binding = binding;
+    snapshot.sessionAudit.projection.readiness.connectionGrantedCapabilities =
       binding === "http_sse" ? [...HTTP_CONNECTION_GRANTS] : [...WSS_CONNECTION_GRANTS];
     return snapshot;
   };
 
-  it("reads only split v2 session and hello_ack grants before STOP", () => {
-    expect(readRbpSessionV2Readiness(v2Snapshot, "wss")).toMatchObject({
+  it("reads only the strict v3 root-marker readiness projection before STOP", () => {
+    expect(readRbpSessionV3Readiness(v3Snapshot, "wss")).toMatchObject({
       rsid: "018f7f7e-1234-7abc-8def-1234567890ab",
       localSessionKey: "port:8080:pid:42:started:99",
       grantedCapabilities: ["batch_atomic", "doc_context_cached_v1"],
     });
-    expect(readRbpSessionV2Readiness(v2Snapshot, "wss").connectionGrantOrderHash).toMatch(/^sha256:[0-9a-f]{64}$/u);
+    expect(readRbpSessionV3Readiness(v3Snapshot, "wss").connectionGrantOrderHash).toMatch(/^sha256:[0-9a-f]{64}$/u);
   });
 
-  it("accepts the canonical nested HTTP lifecycle row without using timestamps as readiness", () => {
+  it("accepts the canonical HTTP projection without raw lifecycle timestamps", () => {
     const snapshot = snapshotForPersistedBinding("http_sse");
-    const value = snapshot.sessions[0]!.value;
-    value.lifecycle = { ...value.lifecycle, createdAtMs: 100, updatedAtMs: 200 };
-    expect(readRbpSessionV2Readiness(snapshot, "http_sse")).toMatchObject({
+    expect(readRbpSessionV3Readiness(snapshot, "http_sse")).toMatchObject({
       rsid: "018f7f7e-1234-7abc-8def-1234567890ab",
       localSessionKey: "port:8080:pid:42:started:99",
       grantedCapabilities: ["batch_atomic", "doc_context_cached_v1"],
@@ -448,14 +450,14 @@ describe("WP-12 real-trio v2 session smoke reader", () => {
   });
 
   it.each(["wss", "http_sse"] as const)("requires canonical persisted split grants for %s", (binding) => {
-    const readiness = readRbpSessionV2Readiness(snapshotForPersistedBinding(binding), binding);
+    const readiness = readRbpSessionV3Readiness(snapshotForPersistedBinding(binding), binding);
     expect(readiness.grantedCapabilities).toEqual(["batch_atomic", "doc_context_cached_v1"]);
     expect(readiness.connectionGrantOrderHash).toMatch(/^sha256:[0-9a-f]{64}$/u);
   });
 
   it("returns a full redacted connection-grant admission fence for each persisted binding", () => {
-    const wss = readRbpSessionV2Readiness(snapshotForPersistedBinding("wss"), "wss");
-    const http = readRbpSessionV2Readiness(snapshotForPersistedBinding("http_sse"), "http_sse");
+    const wss = readRbpSessionV3Readiness(snapshotForPersistedBinding("wss"), "wss");
+    const http = readRbpSessionV3Readiness(snapshotForPersistedBinding("http_sse"), "http_sse");
     expect(wss.connectionGrantOrderHash).toMatch(/^sha256:[0-9a-f]{64}$/u);
     expect(http.connectionGrantOrderHash).toMatch(/^sha256:[0-9a-f]{64}$/u);
     expect(wss.connectionGrantOrderHash).not.toBe(http.connectionGrantOrderHash);
@@ -464,17 +466,17 @@ describe("WP-12 real-trio v2 session smoke reader", () => {
 
   it("rejects a route proof capability placed only in session grants", () => {
     const snapshot = snapshotForPersistedBinding("wss");
-    snapshot.sessions[0]!.value.binding.grantedCapabilities.push("route_rebind_proof_v1");
-    snapshot.sessions[0]!.value.lifecycle.connectionLifecycle.grantedCapabilities = [...WSS_CONNECTION_GRANTS];
-    expect(() => readRbpSessionV2Readiness(snapshot, "wss")).toThrow(/nested grants/u);
+    snapshot.sessionAudit.projection.readiness.sessionGrantedCapabilities.push("route_rebind_proof_v1");
+    snapshot.sessionAudit.projection.readiness.connectionGrantedCapabilities = [...WSS_CONNECTION_GRANTS];
+    expect(() => readRbpSessionV3Readiness(snapshot, "wss")).toThrow(/session grants/u);
   });
 
   it("traces a route proof capability placed only in session grants as redacted missing-route readiness", async () => {
     let time = 0;
     const snapshot = snapshotForPersistedBinding("wss");
-    snapshot.sessions[0]!.value.binding.grantedCapabilities.push("route_rebind_proof_v1");
-    snapshot.sessions[0]!.value.lifecycle.connectionLifecycle.grantedCapabilities = [];
-    await expect(pollRbpSessionV2Readiness({
+    snapshot.sessionAudit.projection.readiness.sessionGrantedCapabilities.push("route_rebind_proof_v1");
+    snapshot.sessionAudit.projection.readiness.connectionGrantedCapabilities = [];
+    await expect(pollRbpSessionV3Readiness({
       expectedBinding: "wss",
       isBridgeExited: () => false,
       readSnapshot: async () => snapshot,
@@ -492,8 +494,8 @@ describe("WP-12 real-trio v2 session smoke reader", () => {
   it("traces an absent session batch grant distinctly from a connection route grant", async () => {
     let time = 0;
     const snapshot = snapshotForPersistedBinding("wss");
-    snapshot.sessions[0]!.value.binding.grantedCapabilities = ["doc_context_cached_v1"];
-    await expect(pollRbpSessionV2Readiness({
+    snapshot.sessionAudit.projection.readiness.sessionGrantedCapabilities = ["doc_context_cached_v1"];
+    await expect(pollRbpSessionV3Readiness({
       expectedBinding: "wss",
       isBridgeExited: () => false,
       readSnapshot: async () => snapshot,
@@ -509,46 +511,48 @@ describe("WP-12 real-trio v2 session smoke reader", () => {
   });
 
   it.each([
-    { connectionLifecycle: null },
-    { connectionLifecycle: { grantedCapabilities: "route_rebind_proof_v1" } },
-    { connectionLifecycle: { grantedCapabilities: ["route_rebind_proof_v1", 7] } },
-  ])("rejects malformed connection lifecycle %#", ({ connectionLifecycle }) => {
+    null,
+    "route_rebind_proof_v1",
+    ["route_rebind_proof_v1", 7],
+  ])("rejects malformed projected connection grants %#", (connectionGrants) => {
     const snapshot = snapshotForPersistedBinding("wss");
-    (snapshot.sessions[0]!.value.lifecycle as { connectionLifecycle: unknown }).connectionLifecycle = connectionLifecycle;
-    expect(() => readRbpSessionV2Readiness(snapshot, "wss")).toThrow(/v2 session row is malformed|nested grants/u);
+    (snapshot.sessionAudit.projection.readiness as { connectionGrantedCapabilities: unknown })
+      .connectionGrantedCapabilities = connectionGrants;
+    expect(() => readRbpSessionV3Readiness(snapshot, "wss")).toThrow(/v3 readiness fields/u);
   });
 
   it.each([
-    ["wss duplicate connection grant", "wss", (snapshot: ReturnType<typeof snapshotForPersistedBinding>) => snapshot.sessions[0]!.value.lifecycle.connectionLifecycle.grantedCapabilities.push("route_rebind_proof_v1")],
-    ["http reordered connection grant", "http_sse", (snapshot: ReturnType<typeof snapshotForPersistedBinding>) => snapshot.sessions[0]!.value.lifecycle.connectionLifecycle.grantedCapabilities.reverse()],
-    ["wss missing connection grant", "wss", (snapshot: ReturnType<typeof snapshotForPersistedBinding>) => { snapshot.sessions[0]!.value.lifecycle.connectionLifecycle.grantedCapabilities = [...WSS_CONNECTION_GRANTS.slice(1)]; }],
-    ["http extra session grant", "http_sse", (snapshot: ReturnType<typeof snapshotForPersistedBinding>) => snapshot.sessions[0]!.value.binding.grantedCapabilities.push("route_rebind_proof_v1")],
-    ["wss batch in connection grants", "wss", (snapshot: ReturnType<typeof snapshotForPersistedBinding>) => snapshot.sessions[0]!.value.lifecycle.connectionLifecycle.grantedCapabilities.push("batch_atomic")],
-    ["http route in session grants", "http_sse", (snapshot: ReturnType<typeof snapshotForPersistedBinding>) => snapshot.sessions[0]!.value.binding.grantedCapabilities.push("route_rebind_proof_v1")],
+    ["wss duplicate connection grant", "wss", (snapshot: ReturnType<typeof snapshotForPersistedBinding>) => snapshot.sessionAudit.projection.readiness.connectionGrantedCapabilities.push("route_rebind_proof_v1")],
+    ["http reordered connection grant", "http_sse", (snapshot: ReturnType<typeof snapshotForPersistedBinding>) => snapshot.sessionAudit.projection.readiness.connectionGrantedCapabilities.reverse()],
+    ["wss missing connection grant", "wss", (snapshot: ReturnType<typeof snapshotForPersistedBinding>) => { snapshot.sessionAudit.projection.readiness.connectionGrantedCapabilities = [...WSS_CONNECTION_GRANTS.slice(1)]; }],
+    ["http extra session grant", "http_sse", (snapshot: ReturnType<typeof snapshotForPersistedBinding>) => snapshot.sessionAudit.projection.readiness.sessionGrantedCapabilities.push("route_rebind_proof_v1")],
+    ["wss batch in connection grants", "wss", (snapshot: ReturnType<typeof snapshotForPersistedBinding>) => snapshot.sessionAudit.projection.readiness.connectionGrantedCapabilities.push("batch_atomic")],
+    ["http route in session grants", "http_sse", (snapshot: ReturnType<typeof snapshotForPersistedBinding>) => snapshot.sessionAudit.projection.readiness.sessionGrantedCapabilities.push("route_rebind_proof_v1")],
   ] as const)("rejects noncanonical exact-domain grant lists: %s", (_label, binding, mutate) => {
     const snapshot = snapshotForPersistedBinding(binding);
     mutate(snapshot);
-    expect(() => readRbpSessionV2Readiness(snapshot, binding)).toThrow(/nested grants/u);
+    expect(() => readRbpSessionV3Readiness(snapshot, binding)).toThrow(/grants/u);
   });
 
   it.each([
-    [{ sessions: [] }, /lacks one normalized v2/u],
-    [{ sessions: [{ namespace: "gateway.rbp-session/v1", value: { grantedCapabilities: ["batch_atomic"] } }] }, /legacy or malformed/u],
-    [{ sessions: [{ namespace: "gateway.rbp-session/v2", value: { schema: "gateway.rbp-session/v2", rsid: "r", binding: { binding: "wss", grantedCapabilities: ["batch_atomic"] }, lifecycle: { sessionLifecycle: { localSessionKey: "k" } }, grantedCapabilities: ["batch_atomic"] } }] }, /v2 session row is malformed/u],
-    [{ sessions: [{ namespace: "gateway.rbp-session/v2", value: { schema: "gateway.rbp-session/v2", rsid: "r", binding: { binding: "streamable_http_sse", grantedCapabilities: ["batch_atomic"] }, lifecycle: { createdAtMs: 1, updatedAtMs: 2 } } }] }, /v2 session row is malformed/u],
-    [{ sessions: [{ namespace: "gateway.rbp-session/v2", value: { schema: "gateway.rbp-session/v2", rsid: "r", binding: { binding: "wss", grantedCapabilities: [] }, lifecycle: { sessionLifecycle: { localSessionKey: "k", phase: "registered", dispatchAllowed: true, rsid: "r" } } } }] }, /v2 session row is malformed/u],
-    [{ sessions: [{ namespace: "gateway.rbp-session/v2", value: { schema: "gateway.rbp-session/v2", rsid: "r", binding: { binding: "wss", grantedCapabilities: ["batch_atomic"] }, lifecycle: { sessionLifecycle: { localSessionKey: "k", phase: "registered", dispatchAllowed: true, rsid: "r" } } } }] }, /v2 session row is malformed/u],
-  ] as const)("rejects absent, legacy, or non-nested v2 session readiness %#", (snapshot, expected) => {
-    expect(() => readRbpSessionV2Readiness(snapshot, "wss")).toThrow(expected);
+    [{ sessionAudit: { status: "no_candidate", candidateCount: 0, projection: null } }, /no candidate/u],
+    [{ sessions: [{ namespace: "gateway.rbp-session/v2", value: {} }] }, /not v3/u],
+    [{ sessionAudit: { status: "multiple", candidateCount: 2, projection: null } }, /multiple/u],
+    [{ sessionAudit: { status: "not_current", candidateCount: 1, projection: null } }, /not current/u],
+    [{ sessionAudit: { status: "candidate", candidateCount: 1, projection: {} } }, /projection is malformed/u],
+  ] as const)("rejects absent, legacy, multiple, or malformed v3 readiness %#", (snapshot, expected) => {
+    expect(() => readRbpSessionV3Readiness(snapshot, "wss")).toThrow(expected);
   });
 
-  it("polls no-row then two identical active v2 observations", async () => {
+  it("polls no-candidate then two identical active v3 observations", async () => {
     let time = 0;
     let reads = 0;
-    const readiness = await pollRbpSessionV2Readiness({
+    const readiness = await pollRbpSessionV3Readiness({
       expectedBinding: "wss",
       isBridgeExited: () => false,
-      readSnapshot: async () => (++reads === 1 ? { sessions: [] } : v2Snapshot),
+      readSnapshot: async () => (++reads === 1
+        ? { sessionAudit: { status: "no_candidate", candidateCount: 0, projection: null } }
+        : v3Snapshot),
       timeoutMs: 1_000,
       intervalMs: 100,
       now: () => time,
@@ -563,17 +567,18 @@ describe("WP-12 real-trio v2 session smoke reader", () => {
       let flip = false;
       return async () => {
         flip = !flip;
-        return { sessions: [{ ...v2Snapshot.sessions[0]!, value: {
-          ...v2Snapshot.sessions[0]!.value,
-          lifecycle: { sessionLifecycle: { ...v2Snapshot.sessions[0]!.value.lifecycle.sessionLifecycle, localSessionKey: flip ? "a" : "b" } },
-        } }] };
+        const snapshot = structuredClone(v3Snapshot);
+        snapshot.sessionAudit.projection.readiness.localSessionKey = flip ? "a" : "b";
+        return snapshot;
       };
     }],
-    ["multiple", () => async () => ({ sessions: [v2Snapshot.sessions[0]!, v2Snapshot.sessions[0]!] })],
+    ["multiple", () => async () => ({ sessionAudit: {
+      status: "multiple", candidateCount: 2, projection: null,
+    } })],
     ["legacy", () => async () => ({ sessions: [{ namespace: "gateway.rbp-session/v1", value: {} }] })],
   ] as const)("retains audits and times out on %s rows", async (_label, createReader) => {
     let time = 0;
-    await expect(pollRbpSessionV2Readiness({
+    await expect(pollRbpSessionV3Readiness({
       expectedBinding: "wss",
       isBridgeExited: () => false,
       readSnapshot: createReader(),
@@ -589,10 +594,10 @@ describe("WP-12 real-trio v2 session smoke reader", () => {
   });
 
   it("aborts polling when the real worker exits", async () => {
-    await expect(pollRbpSessionV2Readiness({
+    await expect(pollRbpSessionV3Readiness({
       expectedBinding: "wss",
       isBridgeExited: () => true,
-      readSnapshot: async () => v2Snapshot,
+      readSnapshot: async () => v3Snapshot,
       timeoutMs: 200,
       intervalMs: 100,
     })).rejects.toMatchObject({ message: expect.stringMatching(/bridge exited/u), audits: [] });
@@ -601,14 +606,14 @@ describe("WP-12 real-trio v2 session smoke reader", () => {
   it("does not admit two reads when the persisted connection-grant order drifts", async () => {
     let time = 0;
     let reads = 0;
-    await expect(pollRbpSessionV2Readiness({
+    await expect(pollRbpSessionV3Readiness({
       expectedBinding: "wss",
       isBridgeExited: () => false,
       readSnapshot: async () => {
         reads += 1;
         const snapshot = snapshotForPersistedBinding("wss");
         if (reads === 2) {
-          snapshot.sessions[0]!.value.lifecycle.connectionLifecycle.grantedCapabilities.reverse();
+          snapshot.sessionAudit.projection.readiness.connectionGrantedCapabilities.reverse();
         }
         return snapshot;
       },
@@ -628,16 +633,18 @@ describe("WP-12 real-trio v2 session smoke reader", () => {
   it("traces an invalid poll then records the reset without exposing values", async () => {
     let time = 0;
     let reads = 0;
-    await expect(pollRbpSessionV2Readiness({
+    await expect(pollRbpSessionV3Readiness({
       expectedBinding: "wss",
       isBridgeExited: () => false,
       readSnapshot: async () => {
         reads += 1;
-        if (reads === 1) return { sessions: [] };
-        const snapshot = structuredClone(v2Snapshot);
+        if (reads === 1) {
+          return { sessionAudit: { status: "no_candidate", candidateCount: 0, projection: null } };
+        }
+        const snapshot = structuredClone(v3Snapshot);
         if (reads % 2 === 1) {
-          snapshot.sessions[0]!.value.binding.grantedCapabilities.reverse();
-          snapshot.sessions[0]!.value.lifecycle.connectionLifecycle.grantedCapabilities.reverse();
+          snapshot.sessionAudit.projection.readiness.sessionGrantedCapabilities.reverse();
+          snapshot.sessionAudit.projection.readiness.connectionGrantedCapabilities.reverse();
         }
         return snapshot;
       },
@@ -653,19 +660,14 @@ describe("WP-12 real-trio v2 session smoke reader", () => {
   });
 
   it("retains only bounded value-free worker observations and reduced Gateway audit on failure", () => {
+    const gatewayAudit = structuredClone(v3Snapshot);
+    gatewayAudit.sessionAudit.projection.readiness.localSessionKey = "must-not-leak";
+    (gatewayAudit.sessionAudit.projection.readiness as Record<string, unknown>).deviceToken =
+      "must-not-leak";
     const error = new RealTrioSessionReadinessPollError(
       "readiness failed",
       [],
-      {
-        sessions: [{
-          namespace: "gateway.rbp-session/v2",
-          value: {
-            localSessionKey: "must-not-leak",
-            deviceToken: "must-not-leak",
-            lifecycle: { createdAtMs: 100, updatedAtMs: 200 },
-          },
-        }],
-      },
+      gatewayAudit,
       [
         {
           stream: "stderr",
@@ -688,14 +690,15 @@ describe("WP-12 real-trio v2 session smoke reader", () => {
       schemaVersion: "rbp-real-trio-failure-diagnostics/v1",
       gatewayAudits: [{
         sessionCount: 1,
-        namespaces: ["gateway.rbp-session/v2"],
+        namespaces: ["gateway.rbp-session/v3"],
         sessions: [{
-          binding: "unknown",
-          lifecyclePhase: "unknown",
-          dispatchAllowed: false,
-          localKeyPresent: false,
-          created: true,
-          updated: true,
+          binding: "wss",
+          lifecyclePhase: "registered",
+          dispatchAllowed: true,
+          localKeyPresent: true,
+          rootDigestPresent: true,
+          treesDigestPresent: true,
+          retired: false,
         }],
       }],
       bridgeTranscript: [{ stream: "stderr", at: "" }],

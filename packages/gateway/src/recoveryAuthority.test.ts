@@ -3193,10 +3193,10 @@ async function createRealNoSendContext(input: {
   // through the public build surface after discovering the sole real session.
   const snapshot = store.snapshot();
   const root = snapshot.records.find(
-    (record) => record.tenantId === tenantId && record.namespace === "gateway.rbp-session/v2",
+    (record) => record.tenantId === tenantId && record.namespace === "gateway.rbp-session/v3",
   );
   if (root === undefined || typeof root.value !== "object" || root.value === null || !("rsid" in root.value)) {
-    throw new Error("real bridge registration did not create a v2 session root");
+    throw new Error("real bridge registration did not create a v3 session root");
   }
   const rsid = root.value.rsid;
   if (typeof rsid !== "string") throw new Error("registered rsid is invalid");

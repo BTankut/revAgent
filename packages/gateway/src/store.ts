@@ -69,6 +69,19 @@ export interface StoreTransaction {
 }
 
 /**
+ * One immutable proof for the store-global startup/serving owner.  The proof is
+ * deliberately behaviour-bearing rather than a caller-authored tuple: a stale
+ * epoch can be compared for diagnostics, but only `isCurrent()` authorizes new
+ * backend IO.
+ */
+export interface GatewayStartupLease {
+  readonly contractVersion: "revagent.protocol-store-startup-lease/v1";
+  readonly identity: string;
+  readonly epoch: number;
+  isCurrent(): boolean;
+}
+
+/**
  * Adapter-owned, store-global startup fence.  It deliberately exposes only
  * bounded inventory and a serialized callback: migrations cannot substitute a
  * lazy request-path scan or assume a particular backing-store implementation.
@@ -76,7 +89,7 @@ export interface StoreTransaction {
 export interface GatewayStartupCoordinator {
   readonly contractVersion: "revagent.protocol-store-startup/v1";
   runExclusive<T>(
-    work: () => Promise<StoreOutcome<T>>,
+    work: (lease: GatewayStartupLease) => Promise<StoreOutcome<T>>,
   ): Promise<StoreOutcome<T>>;
   listTenantIds(limit: number): Promise<StoreOutcome<readonly string[]>>;
   listKeys(
@@ -84,6 +97,103 @@ export interface GatewayStartupCoordinator {
     namespace: string,
     limit: number,
   ): Promise<StoreOutcome<readonly string[]>>;
+}
+
+export const GATEWAY_PRIVATE_OBJECT_MAX_BYTES = 48 * 1024 * 1024;
+
+export type GatewayPrivateObjectPurpose =
+  | "pending-envelope"
+  | "outbound-envelope"
+  | "terminal-payload"
+  | "migration-source-snapshot";
+
+export interface GatewayPrivateObjectBinding {
+  readonly tenantId: string;
+  readonly rsid: string;
+  readonly purpose: GatewayPrivateObjectPurpose;
+  readonly storageKey: string;
+  readonly byteLength: number;
+  readonly digest: `sha256:${string}`;
+  readonly contentType: string;
+}
+
+/** Opaque in practice: only gatewayServingOwnership can mint accepted tickets. */
+export interface GatewayPrivateObjectIntentTicket {
+  readonly binding: GatewayPrivateObjectBinding;
+  readonly intentNamespace: string;
+  readonly intentKey: string;
+  readonly intentVersion: number;
+}
+
+export interface GatewayOwnedPrivateObjectMetadata
+  extends GatewayPrivateObjectBinding {}
+
+/**
+ * Adapter-internal extension used only by the nominal serving owner.  It is
+ * never installed in GatewayServerPorts and exposes metadata rather than
+ * object bytes during bounded physical inventory.
+ */
+export interface OwnedPrivateObjectStorePort {
+  readonly kind: GatewayPortAdapterKind;
+  readonly contractVersion: "revagent.gateway-owned-private-object-store/v1";
+  readonly maxObjectBytes: typeof GATEWAY_PRIVATE_OBJECT_MAX_BYTES;
+  readonly ownerIdentity: string;
+  readonly ownerEpoch: number;
+  isCurrent(): boolean;
+  put(
+    ticket: GatewayPrivateObjectIntentTicket,
+    bytes: Uint8Array,
+  ): Promise<GatewayPortResult<{ readonly storageKey: string }>>;
+  get(
+    binding: GatewayPrivateObjectBinding,
+  ): Promise<
+    GatewayPortResult<{ readonly bytes: Uint8Array; readonly contentType: string }>
+  >;
+  getOptional(
+    binding: GatewayPrivateObjectBinding,
+  ): Promise<
+    GatewayPortResult<
+      { readonly bytes: Uint8Array; readonly contentType: string } | null
+    >
+  >;
+  delete(
+    ticket: GatewayPrivateObjectIntentTicket,
+  ): Promise<GatewayPortResult<{ readonly state: "deleted" | "missing" }>>;
+  scanOwned(input: {
+    readonly tenantId: string;
+    readonly rsid: string;
+    readonly purpose?: GatewayPrivateObjectPurpose;
+    readonly afterKey: string | null;
+    readonly limit: number;
+  }): Promise<GatewayPortResult<readonly GatewayOwnedPrivateObjectMetadata[]>>;
+}
+
+/**
+ * Optional raw-adapter seam consumed only by GatewayServingOwnership.  Public
+ * ObjectStorePort callers cannot name an intent ticket or enumerate ownership.
+ */
+export interface PrivateObjectStoreBackendPort extends ObjectStorePort {
+  putOwned(input: {
+    readonly binding: GatewayPrivateObjectBinding;
+    readonly bytes: Uint8Array;
+  }): Promise<GatewayPortResult<{ readonly storageKey: string }>>;
+  getOwnedOptional(input: {
+    readonly binding: GatewayPrivateObjectBinding;
+  }): Promise<
+    GatewayPortResult<
+      { readonly bytes: Uint8Array; readonly contentType: string } | null
+    >
+  >;
+  deleteOwned(input: {
+    readonly binding: GatewayPrivateObjectBinding;
+  }): Promise<GatewayPortResult<{ readonly state: "deleted" | "missing" }>>;
+  scanOwned(input: {
+    readonly tenantId: string;
+    readonly rsid: string;
+    readonly purpose?: GatewayPrivateObjectPurpose;
+    readonly afterKey: string | null;
+    readonly limit: number;
+  }): Promise<GatewayPortResult<readonly GatewayOwnedPrivateObjectMetadata[]>>;
 }
 
 export interface GatewayProtocolStore {

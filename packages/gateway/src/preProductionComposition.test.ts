@@ -13,6 +13,7 @@ import {
 } from "./preProductionComposition.js";
 import { GatewayToolRegistry } from "./registry.js";
 import { createFailClosedPorts, startGatewayServer } from "./server.js";
+import { createPreProductionRuntimeAdapters } from "./preProductionRuntimeAdapters.js";
 import {
   createCapturingEventSink,
   createReadOnlyRecoveryAuthorityFixture,
@@ -202,6 +203,21 @@ describe("M4-02 pre-production LAN/test composition", () => {
       composition.bridgeAuthority.store,
     );
     expect(composition.rbpIngress.kind).toBe("preproduction");
+  });
+
+  it("binds the private session view without creating a public carrier graph", async () => {
+    const adapters = createPreProductionRuntimeAdapters();
+    const composition = createPreProductionLanTestComposition(options({
+      protocolStore: adapters.protocolStore,
+      servingOwnership: adapters.servingOwnership,
+    }));
+    await composition.bridgeAuthority.open();
+    expect(composition.ports.protocolStore).toBe(adapters.servingOwnership.protocolStore);
+    expect(adapters.servingOwnership.durabilityProfile()).toMatchObject({
+      mode: "private_object", maxPartialBytes: 1, resourceCarrierReady: false,
+    });
+    expect(composition.ports.objectStore.kind).toBe("unavailable");
+    await composition.bridgeAuthority.close();
   });
 
   it("refuses mixed pre-production authority graphs before ingress or listener side effects", async () => {

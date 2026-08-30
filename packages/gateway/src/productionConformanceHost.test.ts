@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   createProductionConformanceC39OriginResendPolicy,
+  PRODUCTION_CONFORMANCE_HOST_PROFILE,
   startProductionGatewayHost,
 } from "./productionConformanceHost.js";
 import { conformanceConnectionCapabilitiesForBinding, validateConformanceDeviceProvision } from "./productionConformanceHostCli.js";
@@ -59,11 +60,13 @@ describe("productionGatewayHost", () => {
     })).toBe(false);
   });
   it("requires the one public provisioning contract to name the selected carrier explicitly", () => {
+    expect(PRODUCTION_CONFORMANCE_HOST_PROFILE).toBe("production_conformance");
     expect(conformanceConnectionCapabilitiesForBinding("wss")).toEqual([
-      "journal_v1", "chunked_results", "artifact_result_v1",
+      "journal_v1", "chunked_results", "artifact_result_v1", "route_rebind_proof_v1",
     ]);
     expect(conformanceConnectionCapabilitiesForBinding("streamable_http_sse")).toEqual([
-      "journal_v1", "chunked_results", "artifact_result_v1", "transport_streamable_http",
+      "journal_v1", "chunked_results", "artifact_result_v1", "route_rebind_proof_v1",
+      "transport_streamable_http",
     ]);
     for (const binding of ["wss", "streamable_http_sse"] as const) {
       const connectionCapabilities = conformanceConnectionCapabilitiesForBinding(binding);

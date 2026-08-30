@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import {
   GATEWAY_AUTH_CONTRACT_VERSION,
   type AuthContext,
@@ -11,10 +13,16 @@ import {
   type GatewayEventSink,
 } from "./events.js";
 import type { GatewayPortResult } from "./gatewayPorts.js";
+import { GatewayServingOwnership } from "./gatewayServingOwnership.js";
 import {
+  GATEWAY_PRIVATE_OBJECT_MAX_BYTES,
   GATEWAY_STORE_CONTRACT_VERSION,
+  type GatewayOwnedPrivateObjectMetadata,
+  type GatewayPrivateObjectBinding,
   type GatewayProtocolStore,
   type GatewayStartupCoordinator,
+  type GatewayStartupLease,
+  type PrivateObjectStoreBackendPort,
   type StoreErrorCode,
   type StoreExpectation,
   type StoreOutcome,
@@ -95,6 +103,10 @@ export interface PreProductionRuntimeAdapters {
   };
   readonly events: PreProductionEventSink;
   readonly entitlement: PreProductionEntitlementPort;
+  readonly privateObjectStore: PrivateObjectStoreBackendPort & {
+    readonly kind: "preproduction";
+  };
+  readonly servingOwnership: GatewayServingOwnership;
 }
 
 interface InternalStoredRecord {
@@ -198,6 +210,91 @@ function storeFailure<T>(
 
 function storeSuccess<T>(value: T): StoreOutcome<T> {
   return Object.freeze({ ok: true as const, value });
+}
+
+function privateObjectFailure<T>(message: string): GatewayPortResult<T> {
+  return Object.freeze({
+    ok: false as const,
+    port: "object_store" as const,
+    code: "unavailable" as const,
+    message,
+  });
+}
+
+function privateObjectSuccess<T>(value: T): GatewayPortResult<T> {
+  return Object.freeze({ ok: true as const, value });
+}
+
+function privateDigest(bytes: Uint8Array): `sha256:${string}` {
+  return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+}
+
+function createPreProductionPrivateObjectStore(): PrivateObjectStoreBackendPort & {
+  readonly kind: "preproduction";
+} {
+  const objects = new Map<string, {
+    readonly binding: GatewayPrivateObjectBinding;
+    readonly bytes: Uint8Array;
+  }>();
+  const composite = (tenantId: string, storageKey: string): string =>
+    `${tenantId}\u0000${storageKey}`;
+  const unavailable = <T>(): GatewayPortResult<T> =>
+    privateObjectFailure("pre-production private object capability is not public");
+  const port: PrivateObjectStoreBackendPort & { readonly kind: "preproduction" } = {
+    kind: "preproduction" as const,
+    async put() { return unavailable(); },
+    async get() { return unavailable(); },
+    async getOptional() { return unavailable(); },
+    async head() { return unavailable(); },
+    async delete() { return unavailable(); },
+    async putOwned(input) {
+      if (input.bytes.byteLength !== input.binding.byteLength ||
+          input.bytes.byteLength > GATEWAY_PRIVATE_OBJECT_MAX_BYTES ||
+          privateDigest(input.bytes) !== input.binding.digest) {
+        return privateObjectFailure("pre-production private object bytes were rejected");
+      }
+      objects.set(composite(input.binding.tenantId, input.binding.storageKey), {
+        binding: Object.freeze({ ...input.binding }),
+        bytes: new Uint8Array(input.bytes),
+      });
+      return privateObjectSuccess({ storageKey: input.binding.storageKey });
+    },
+    async getOwnedOptional(input) {
+      const found = objects.get(composite(input.binding.tenantId, input.binding.storageKey));
+      if (found === undefined) return privateObjectSuccess(null);
+      if (found.binding.rsid !== input.binding.rsid ||
+          found.binding.purpose !== input.binding.purpose) {
+        return privateObjectFailure("pre-production private object owner mismatch");
+      }
+      return privateObjectSuccess({
+        bytes: new Uint8Array(found.bytes),
+        contentType: found.binding.contentType,
+      });
+    },
+    async deleteOwned(input) {
+      const key = composite(input.binding.tenantId, input.binding.storageKey);
+      const found = objects.get(key);
+      if (found === undefined) return privateObjectSuccess({ state: "missing" as const });
+      if (found.binding.rsid !== input.binding.rsid ||
+          found.binding.purpose !== input.binding.purpose) {
+        return privateObjectFailure("pre-production private object owner mismatch");
+      }
+      objects.delete(key);
+      return privateObjectSuccess({ state: "deleted" as const });
+    },
+    async scanOwned(input) {
+      const values: GatewayOwnedPrivateObjectMetadata[] = [...objects.values()]
+        .map((value) => value.binding)
+        .filter((value) => value.tenantId === input.tenantId &&
+          value.rsid === input.rsid &&
+          (input.purpose === undefined || value.purpose === input.purpose) &&
+          (input.afterKey === null || value.storageKey > input.afterKey))
+        .sort((left, right) => left.storageKey.localeCompare(right.storageKey))
+        .slice(0, input.limit);
+      return privateObjectSuccess(Object.freeze(values));
+    },
+  };
+  return Object.freeze(port);
 }
 
 function eventSuccess(): GatewayPortResult<void> {
@@ -388,6 +485,7 @@ function createPreProductionProtocolStore(
   let recordCount = 0;
   let totalValueBytes = 0;
   let startupTail = Promise.resolve();
+  let startupEpoch = 0;
 
   function recordFor(
     tenantId: string,
@@ -433,12 +531,20 @@ function createPreProductionProtocolStore(
     contractVersion: GATEWAY_STORE_CONTRACT_VERSION,
     startupCoordinator: Object.freeze({
       contractVersion: "revagent.protocol-store-startup/v1" as const,
-      async runExclusive<T>(work: () => Promise<StoreOutcome<T>>): Promise<StoreOutcome<T>> {
+      async runExclusive<T>(work: (lease: GatewayStartupLease) => Promise<StoreOutcome<T>>): Promise<StoreOutcome<T>> {
         const prior = startupTail;
         let release!: () => void;
         startupTail = new Promise<void>((resolve) => { release = resolve; });
         await prior;
-        try { return await work(); } finally { release(); }
+        startupEpoch += 1;
+        let current = true;
+        const lease: GatewayStartupLease = Object.freeze({
+          contractVersion: "revagent.protocol-store-startup-lease/v1" as const,
+          identity: `preproduction:${startupEpoch}`,
+          epoch: startupEpoch,
+          isCurrent: () => current,
+        });
+        try { return await work(lease); } finally { current = false; release(); }
       },
       async listTenantIds(limit: number): Promise<StoreOutcome<readonly string[]>> {
         if (!opened || !Number.isSafeInteger(limit) || limit < 1 || limit > 10_000) {
@@ -732,8 +838,17 @@ export function createPreProductionRuntimeAdapters(options: {
     ...options.protocolStore,
     ...(options.clock === undefined ? {} : { clock: options.clock }),
   };
+  const protocolStore = createPreProductionProtocolStore(protocolStoreOptions);
+  const privateObjectStore = createPreProductionPrivateObjectStore();
+  const servingOwnership = new GatewayServingOwnership({
+    protocolStore,
+    privateObjectStore,
+    profile: "preproduction_private",
+  });
   return Object.freeze({
-    protocolStore: createPreProductionProtocolStore(protocolStoreOptions),
+    protocolStore,
+    privateObjectStore,
+    servingOwnership,
     events: createPreProductionEventSink(options.events),
     entitlement: createPreProductionEntitlementPort(options.entitlement),
   });

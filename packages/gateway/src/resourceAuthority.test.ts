@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
 
 import type { ArtifactDescriptor, RbpStreamChunk } from "@revagent/protocol";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -137,6 +138,13 @@ function expectResourceError(
 }
 
 describe("GW-9 scoped artifact and result authority", () => {
+  it("pins protected keys through every live and deletion state", async () => {
+    const source = await readFile(new URL("./resourceAuthority.ts", import.meta.url), "utf8");
+    expect(source).toContain('chunk.state === "writing" || chunk.state === "active" || chunk.state === "deleting"');
+    expect(source).toContain('["allocating", "active", "deleting", "claimed"]');
+    expect(source).not.toContain("expiresAtMs > this.#now()");
+  });
+
   let now: number;
   let restartableStore: RestartableTestStore;
   let protocolStore: GatewayProtocolStore;

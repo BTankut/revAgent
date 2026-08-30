@@ -35,6 +35,27 @@ describe("C39 recovery resource authority", () => {
     return { state, objects, authority };
   }
 
+  it("accepts the exact 1 MiB decoded partial and rejects the next byte before durable state", async () => {
+    const exact = Buffer.alloc(1_048_576, 7);
+    const accepted = subject();
+    await accepted.state.store.open();
+    await expect(accepted.authority.stageRecoveryChunk({
+      scope, effectiveMcpRequestScope: effective, owner: owner(exact),
+      bridgeSequence: 1, chunkIndex: 0, data: exact.toString("base64"),
+      contentType: "application/json", expiresAtMs: now + 60_000,
+    })).resolves.toBeUndefined();
+    const oversized = Buffer.alloc(1_048_577, 8);
+    const refused = subject();
+    await refused.state.store.open();
+    await expect(refused.authority.stageRecoveryChunk({
+      scope, effectiveMcpRequestScope: effective, owner: owner(oversized),
+      bridgeSequence: 1, chunkIndex: 0, data: oversized.toString("base64"),
+      contentType: "application/json", expiresAtMs: now + 60_000,
+    })).rejects.toMatchObject({ code: "protocol_fault" });
+    expect(refused.state.snapshot().records).toHaveLength(0);
+    expect(refused.objects.keys()).toHaveLength(0);
+  });
+
   it("encrypts staged bytes and returns only a scoped result reference after current-scope reauth", async () => {
     const raw = Buffer.from('{"recovered":true}', "utf8");
     const { state, objects, authority } = subject();

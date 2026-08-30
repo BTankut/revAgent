@@ -8,8 +8,9 @@ const MAGIC = Buffer.from("RAPO", "ascii");
 const VERSION = 1;
 const NONCE_BYTES = 12;
 const TAG_BYTES = 16;
-const MAX_ENVELOPE_BYTES = 32 * 1024 * 1024;
 export const C39_MAX_PLAINTEXT_BYTES = 32 * 1024 * 1024;
+export const C39_PROTECTED_OBJECT_MAX_ENVELOPE_BYTES =
+  C39_MAX_PLAINTEXT_BYTES + MAGIC.byteLength + 2 + 64 + NONCE_BYTES + TAG_BYTES;
 const DIGEST = /^sha256:[0-9a-f]{64}$/u;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const TOKEN = /^[A-Za-z0-9._:-]{1,256}$/u;
@@ -39,13 +40,13 @@ function digest(bytes: Uint8Array): string { return `sha256:${createHash("sha256
 
 function encode(kid: string, nonce: Buffer, tag: Buffer, ciphertext: Buffer): Buffer | null {
   const kidBytes = Buffer.from(kid, "ascii");
-  if (kidBytes.byteLength === 0 || kidBytes.byteLength > 64 || nonce.byteLength !== NONCE_BYTES || tag.byteLength !== TAG_BYTES || ciphertext.byteLength > MAX_ENVELOPE_BYTES) return null;
+  if (kidBytes.byteLength === 0 || kidBytes.byteLength > 64 || nonce.byteLength !== NONCE_BYTES || tag.byteLength !== TAG_BYTES || ciphertext.byteLength > C39_MAX_PLAINTEXT_BYTES) return null;
   return Buffer.concat([MAGIC, Buffer.from([VERSION, kidBytes.byteLength]), kidBytes, nonce, tag, ciphertext]);
 }
 
 function decode(value: Uint8Array): { readonly kid: string; readonly nonce: Buffer; readonly tag: Buffer; readonly ciphertext: Buffer } | null {
   const bytes = Buffer.from(value);
-  if (bytes.byteLength < MAGIC.byteLength + 2 + 1 + NONCE_BYTES + TAG_BYTES || bytes.byteLength > MAX_ENVELOPE_BYTES + 96 || !bytes.subarray(0, MAGIC.byteLength).equals(MAGIC) || bytes[MAGIC.byteLength] !== VERSION) { zero(bytes); return null; }
+  if (bytes.byteLength < MAGIC.byteLength + 2 + 1 + NONCE_BYTES + TAG_BYTES || bytes.byteLength > C39_PROTECTED_OBJECT_MAX_ENVELOPE_BYTES || !bytes.subarray(0, MAGIC.byteLength).equals(MAGIC) || bytes[MAGIC.byteLength] !== VERSION) { zero(bytes); return null; }
   const kidLength = bytes[MAGIC.byteLength + 1]!;
   const start = MAGIC.byteLength + 2;
   const cipherStart = start + kidLength + NONCE_BYTES + TAG_BYTES;

@@ -68,6 +68,11 @@ export class RealTrioProcessHarness {
     readonly componentId: RealTrioProcessComponent;
     readonly command: RealTrioProcessCommand;
     readonly validateReadiness: (value: JsonObject) => void;
+    readonly preReadyBootstrap?: Readonly<{
+      readonly request: JsonObject;
+      readonly timeoutMs: number;
+      validateResponse(value: JsonObject): void;
+    }>;
   }): Promise<RealTrioReadyChild> {
     const child = await StrictReadyProcess.start({
       // Strict process primitives are shared mechanics only.  The cast keeps
@@ -77,6 +82,9 @@ export class RealTrioProcessHarness {
       absoluteWorkingDirectory: input.command.workingDirectory,
       useTestSignalProxy: true,
       evidenceDirectory: this.options.evidenceDirectory,
+      ...(input.preReadyBootstrap === undefined
+        ? {}
+        : { preReadyBootstrap: input.preReadyBootstrap }),
       validateReadiness: input.validateReadiness,
     });
     return Object.freeze({

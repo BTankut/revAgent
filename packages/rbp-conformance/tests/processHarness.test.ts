@@ -61,6 +61,36 @@ function testIpcSend(child: StrictReadyProcess): { send: TestIpcSend } {
 }
 
 describe("strict JSONL process control", () => {
+  it("requires the exact IPC storage grant before accepting READY", async () => {
+    const nonce = "a".repeat(64);
+    const script = `process.on('message',(m)=>{if(m.action==='bootstrap_storage_v1'){process.send({action:'storage_owned_v1',nonce:m.nonce,ownerEpoch:7,profileDigest:'sha256:'+('${"b".repeat(64)}')});process.stdout.write(JSON.stringify({ready:true,component:'fixture-test'})+'\\n');}else if(m.action==='shutdown'){process.send({action:'shutdown_complete',nonce:m.nonce,status:'closed'});process.exit(0);}});`;
+    const child = await StrictReadyProcess.start({
+      componentId: "addin_loopback_fixture",
+      command: { ...command(), args: ["--eval", script] },
+      absoluteWorkingDirectory: here,
+      useTestSignalProxy: true,
+      preReadyBootstrap: {
+        request: { action: "bootstrap_storage_v1", nonce },
+        timeoutMs: 2_000,
+        validateResponse(value) {
+          expect(value).toStrictEqual({
+            action: "storage_owned_v1",
+            nonce,
+            ownerEpoch: 7,
+            profileDigest: `sha256:${"b".repeat(64)}`,
+          });
+        },
+      },
+      validateReadiness(value) {
+        expect(value).toMatchObject({ ready: true, component: "fixture-test" });
+      },
+    });
+    await expect(child.stop("SIGTERM", 2_000)).resolves.toMatchObject({
+      exitCode: 0,
+      killEscalated: false,
+    });
+  });
+
   it.each(["stop", "terminate"] as const)(
     "bounds inherited-pipe drain after a real clean child exit during %s without false kill escalation",
     async (mode) => {

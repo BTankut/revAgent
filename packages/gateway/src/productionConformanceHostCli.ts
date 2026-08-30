@@ -32,6 +32,14 @@ import {
 } from "./productionConformanceHost.js";
 import { ConformanceProtectedObjectKeyProvider } from "./protectedObjectKeyProvider.js";
 import { EncryptedProtectedObjectStore } from "./protectedObjectStore.js";
+import { GatewayServingOwnership } from "./gatewayServingOwnership.js";
+import type { GatewayProtocolStore } from "./store.js";
+import {
+  GATEWAY_RBP_SESSION_CUTOVER_V3_NAMESPACE,
+  GATEWAY_RBP_SESSION_V3_NAMESPACE,
+  GATEWAY_SESSION_HISTORY_PAGE_NAMESPACE,
+  SessionHistoryStore,
+} from "./sessionHistoryStore.js";
 import { createConformanceRbpIngressHost } from "./rbpIngress.js";
 import type { AuthorizedNorthMcpRequest, NorthMcpEndpointOptions } from "./northMcpEndpoint.js";
 import type { EffectiveMcpRequestScopeV1 } from "./invocationContext.js";
@@ -60,7 +68,7 @@ export interface OrderedConformanceHostShutdown {
  * mutation path.
  */
 export function createProductionConformanceRecoveryAuthority(input: {
-  readonly protocolStore: SqliteConformanceProtocolStore;
+  readonly protocolStore: GatewayProtocolStore;
   readonly bridgeEvidence: GatewayBridgeSessionAuthority;
 }): GatewayRecoveryAuthority {
   return new GatewayRecoveryAuthority(input.protocolStore, {
@@ -184,7 +192,7 @@ type C39AuditRecord = Readonly<{
   readonly namespace: string;
   readonly key: string;
   readonly value: unknown;
-  /** Store version is part of a normalized-v2 child reference proof. */
+  /** Store version is part of the v3 root/marker/page reference proof. */
   readonly version: number;
 }>;
 
@@ -230,6 +238,104 @@ function c39CarrierObservationRecoveryHash(value: string): `sha256:${string}` {
   return `sha256:${createHash("sha256").update("revagent/c39-carrier-observation/v1\0", "utf8").update(value, "utf8").digest("hex")}`;
 }
 
+type C39V3Session = Readonly<{
+  readonly root: Record<string, unknown>;
+  readonly identity: Record<string, unknown>;
+  readonly binding: Record<string, unknown>;
+  readonly sequence: Record<string, unknown>;
+  readonly acceptedInbound: readonly Record<string, unknown>[];
+  readonly evidence: readonly Record<string, unknown>[];
+}>;
+
+function c39V3Session(
+  records: readonly C39AuditRecord[],
+  session: C39AuditRecord,
+): C39V3Session | null {
+  const root = c39Object(session.value);
+  const identity = c39Object(root?.identity);
+  const binding = c39Object(root?.binding);
+  const sequenceHead = c39Object(root?.sequenceHead);
+  const sequence = c39Object(sequenceHead?.sequence);
+  const trees = Array.isArray(root?.trees) ? root.trees : null;
+  if (root === null || identity === null || binding === null || sequenceHead === null ||
+      sequence === null || trees === null || session.namespace !== GATEWAY_RBP_SESSION_V3_NAMESPACE ||
+      root.schema !== GATEWAY_RBP_SESSION_V3_NAMESPACE || root.generation !== 3 ||
+      root.tenantId !== "conformance" || root.rsid !== session.key ||
+      !c39Positive(root.rootVersion) || !c39Positive(session.version)) return null;
+  const markers = records.filter((row) =>
+    row.namespace === GATEWAY_RBP_SESSION_CUTOVER_V3_NAMESPACE && row.key === session.key);
+  const marker = markers.length === 1 ? c39Object(markers[0]!.value) : null;
+  if (marker === null || marker.schema !== GATEWAY_RBP_SESSION_CUTOVER_V3_NAMESPACE ||
+      marker.generation !== 3 || marker.tenantId !== "conformance" || marker.rsid !== session.key ||
+      marker.rootVersion !== root.rootVersion || marker.rootDigest !== c39StoredValueDigest(root) ||
+      marker.treesDigest !== c39StoredValueDigest(trees)) return null;
+
+  const pageRows = records.filter((row) => row.namespace === GATEWAY_SESSION_HISTORY_PAGE_NAMESPACE);
+  const visited = new Set<string>();
+  const readRef = (
+    candidate: unknown,
+    treeKind: string,
+    depth: number,
+  ): readonly Readonly<{ readonly key: string; readonly value: Record<string, unknown> }>[] | null => {
+    const ref = c39Object(candidate);
+    if (ref === null || ref.namespace !== GATEWAY_SESSION_HISTORY_PAGE_NAMESPACE ||
+        typeof ref.key !== "string" || !c39Positive(ref.version) || !c39Digest(ref.digest) ||
+        typeof ref.firstKey !== "string" || typeof ref.lastKey !== "string" ||
+        !c39Positive(ref.count) || !c39Positive(ref.height) || depth > 4 || visited.has(ref.key)) return null;
+    const matches = pageRows.filter((row) => row.key === ref.key && row.version === ref.version);
+    if (matches.length !== 1 || c39StoredValueDigest(matches[0]!.value) !== ref.digest) return null;
+    const page = c39Object(matches[0]!.value);
+    if (page === null || page.schema !== GATEWAY_SESSION_HISTORY_PAGE_NAMESPACE || page.generation !== 1 ||
+        page.tenantId !== "conformance" || page.rsid !== session.key || page.treeKind !== treeKind ||
+        page.height !== ref.height || typeof page.pageId !== "string" ||
+        ref.key !== `${session.key}/${treeKind}/${page.pageId}`) return null;
+    visited.add(ref.key);
+    if (page.height === 1) {
+      if (!Array.isArray(page.entries) || page.entries.length !== ref.count || page.entries.length === 0) return null;
+      const entries: Array<Readonly<{ readonly key: string; readonly value: Record<string, unknown> }>> = [];
+      for (const candidateEntry of page.entries) {
+        const entry = c39Object(candidateEntry);
+        const value = c39Object(entry?.value);
+        if (entry === null || value === null || typeof entry.key !== "string" ||
+            !c39Digest(entry.digest) || entry.digest !== c39StoredValueDigest(entry.value) ||
+            (entries.length > 0 && entries.at(-1)!.key >= entry.key)) return null;
+        entries.push(Object.freeze({ key: entry.key, value }));
+      }
+      if (entries[0]!.key !== ref.firstKey || entries.at(-1)!.key !== ref.lastKey) return null;
+      return Object.freeze(entries);
+    }
+    if (!Array.isArray(page.children) || page.children.length === 0) return null;
+    const entries: Array<Readonly<{ readonly key: string; readonly value: Record<string, unknown> }>> = [];
+    for (const child of page.children) {
+      const values = readRef(child, treeKind, depth + 1);
+      if (values === null) return null;
+      entries.push(...values);
+    }
+    if (entries.length !== ref.count || entries[0]!.key !== ref.firstKey ||
+        entries.at(-1)!.key !== ref.lastKey) return null;
+    return Object.freeze(entries);
+  };
+  const lanes = new Map<string, readonly Record<string, unknown>[]>();
+  for (const candidate of trees) {
+    const tree = c39Object(candidate);
+    if (tree === null || typeof tree.treeKind !== "string" || lanes.has(tree.treeKind) ||
+        !c39NonNegative(tree.entryCount)) return null;
+    if (tree.root === null) {
+      if (tree.entryCount !== 0) return null;
+      lanes.set(tree.treeKind, Object.freeze([]));
+      continue;
+    }
+    const entries = readRef(tree.root, tree.treeKind, 1);
+    if (entries === null || entries.length !== tree.entryCount) return null;
+    lanes.set(tree.treeKind, Object.freeze(entries.map((entry) => entry.value)));
+  }
+  const ownedPages = pageRows.filter((row) => c39Object(row.value)?.rsid === session.key);
+  if (ownedPages.length !== visited.size || !lanes.has("evidence") || !lanes.has("receipts")) return null;
+  const acceptedInbound = lanes.get("receipts")!;
+  const evidence = lanes.get("evidence")!;
+  return Object.freeze({ root, identity, binding, sequence, acceptedInbound, evidence });
+}
+
 /**
  * Fixed, value-free C39 projection.  It is deliberately all-or-nothing per
  * origin: malformed, duplicate, expired, partial, or cross-owner evidence is
@@ -247,8 +353,7 @@ export function coherentC39RecoveryAudit(input: {
   const chunks = byNamespace("gateway.recovery-chunk/v1");
   const completions = byNamespace("gateway.recovery-completion/v1");
   const resources = byNamespace("gateway_resource_v1");
-  const sessions = byNamespace("gateway.rbp-session/v2");
-  const evidenceChildren = byNamespace("gateway.rbp-session-evidence/v2");
+  const sessions = byNamespace(GATEWAY_RBP_SESSION_V3_NAMESPACE);
   const rows: Record<string, unknown>[] = [];
   for (const source of omitted) {
     const record = c39Object(source.value);
@@ -299,35 +404,18 @@ export function coherentC39RecoveryAudit(input: {
         c39Digest(value.plainDigest) && value.resultRefDigest === record.resultReferenceDigest &&
         c39OwnerMatches(candidateOwner, fullOwner);
     });
-    const matchingSessions = sessions.filter((row) => {
-      const value = c39Object(row.value);
-      const identity = c39Object(value?.identity);
-      const binding = c39Object(value?.binding);
-      const sequence = c39Object(value?.sequence);
-      const nestedSequence = c39Object(sequence?.sequence);
-      const childRefs = Array.isArray(value?.childRefs) ? value.childRefs : null;
-      if (value === null || identity === null || binding === null || sequence === null || nestedSequence === null ||
-        childRefs === null || row.key !== fullOwner.rsid || !c39Positive(row.version) ||
-        value.schema !== "gateway.rbp-session/v2" || value.generation !== 2 || value.tenantId !== "conformance" ||
-        value.rsid !== fullOwner.rsid || identity.userId !== fullOwner.userId ||
-        !C39_UUID.test(String(binding.sessionBindingId)) || !c39Positive(binding.sessionVersion) ||
-        nestedSequence.rsid !== fullOwner.rsid || !c39NonNegative(nestedSequence.lastRxSeq) ||
-        !Array.isArray(nestedSequence.acceptedInbound) || !c39Digest(value.childrenDigest) ||
-        c39StoredValueDigest(childRefs) !== value.childrenDigest) return false;
-      const refIds = new Set<string>();
+    const matchingSessions = sessions.map((row) => c39V3Session(input.records, row)).filter(
+      (value): value is C39V3Session => value !== null && value.root.rsid === fullOwner.rsid &&
+        value.identity.userId === fullOwner.userId &&
+        C39_UUID.test(String(value.binding.sessionBindingId)) &&
+        c39Positive(value.binding.sessionVersion) && value.sequence.rsid === fullOwner.rsid &&
+        c39NonNegative(value.sequence.lastRxSeq),
+    ).filter((value) => {
       const inboundSequences = new Set<number>();
-      return childRefs.every((entry) => {
-        const ref = c39Object(entry);
-        if (ref === null || typeof ref.namespace !== "string" || typeof ref.key !== "string" ||
-          !c39Positive(ref.version) || !c39Digest(ref.digest)) return false;
-        const id = `${ref.namespace}\u0000${ref.key}`;
-        if (refIds.has(id)) return false;
-        refIds.add(id);
-        return true;
-      }) && nestedSequence.acceptedInbound.every((entry) => {
-        const accepted = c39Object(entry);
-        if (accepted === null || !c39Positive(accepted.seq) || !c39Digest(accepted.immutableDigest) || inboundSequences.has(accepted.seq)) return false;
-        inboundSequences.add(accepted.seq);
+      return value.acceptedInbound.every((accepted) => {
+        if (!c39Positive(accepted.seq) || !c39Digest(accepted.immutableDigest) ||
+            inboundSequences.has(accepted.seq)) return false;
+        inboundSequences.add(Number(accepted.seq));
         return true;
       });
     });
@@ -339,25 +427,12 @@ export function coherentC39RecoveryAudit(input: {
     const resource = matchingResources[0]!;
     const protectedRecovery = c39Object(resource.protectedRecovery);
     const session = matchingSessions[0]!;
-    const root = c39Object(session.value)!;
-    const sequence = c39Object(root.sequence)!;
-    const nestedSequence = c39Object(sequence.sequence)!;
-    const childRefs = root.childRefs as unknown[];
-    const evidenceFor = (invocationId: unknown, requireOmitted: boolean, requireC39Authority: boolean): readonly C39AuditRecord[] => evidenceChildren.filter((child) => {
-      const value = c39Object(child.value);
-      const entry = c39Object(value?.entry);
+    const nestedSequence = session.sequence;
+    const evidenceFor = (invocationId: unknown, requireOmitted: boolean, requireC39Authority: boolean): readonly Record<string, unknown>[] => session.evidence.filter((entry) => {
       const truth = c39Object(entry?.terminalTruth);
       const routeAuthority = c39Object(entry?.c39RouteAuthority);
-      const matchingRefs = childRefs.filter((candidate) => {
-        const ref = c39Object(candidate);
-        return ref !== null && ref.namespace === child.namespace && ref.key === child.key &&
-          ref.version === child.version && ref.digest === c39StoredValueDigest(child.value);
-      });
-      return value !== null && entry !== null && truth !== null && child.namespace === "gateway.rbp-session-evidence/v2" &&
-        c39Positive(child.version) && value.schema === "gateway.rbp-session-evidence/v2" &&
-        value.tenantId === "conformance" && value.rsid === fullOwner.rsid && c39Digest(value.invocationId) &&
-        child.key === `${fullOwner.rsid}/${value.invocationId}` &&
-        entry.terminalInvocationId === invocationId && entry.terminalSessionBindingId === fullOwner.sessionBindingId &&
+      return truth !== null && entry.terminalInvocationId === invocationId &&
+        entry.terminalSessionBindingId === fullOwner.sessionBindingId &&
         entry.terminalSessionVersion === fullOwner.sessionBindingVersion &&
         entry.effectiveMcpSessionId === fullOwner.effectiveMcpSessionId && c39Digest(entry.terminalDigest) &&
         c39Digest(entry.terminalCarrierDigest) && truth.state === "completed" &&
@@ -367,43 +442,39 @@ export function coherentC39RecoveryAudit(input: {
           c39Digest(routeAuthority.serverProofDigest) && c39Digest(routeAuthority.authorityGenerationDigest) &&
           C39_UUID.test(String(routeAuthority.resultantSessionBindingId)) &&
           c39Positive(routeAuthority.resultantSessionVersion) && c39Positive(routeAuthority.proofCasRecordVersion))) &&
-        truth.resultDigest === fullOwner.originResultDigest && matchingRefs.length === 1 &&
+        truth.resultDigest === fullOwner.originResultDigest &&
         (requireOmitted
           ? entry.payloadOmittedRecoveryEvidenceVersion === 1 && entry.payloadOmittedRecoveryEligible === true && truth.payloadRetained === false
           : true);
     });
-    // The v2 root's binding is deliberately *not* matched to fullOwner: it can
+    // The v3 root's binding is deliberately *not* matched to fullOwner: it can
     // advance after the immutable historical terminal evidence was committed.
     const originEvidence = evidenceFor(fullOwner.originInvocationId, true, false);
     const recoveryEvidence = evidenceFor(fullOwner.recoveryInvocationId, false, true);
-    const evidenceRowsFor = (invocationId: unknown) => evidenceChildren.filter((child) => {
-      const value = c39Object(child.value);
-      const entry = c39Object(value?.entry);
-      return value !== null && entry !== null && value.rsid === fullOwner.rsid &&
-        entry.terminalInvocationId === invocationId;
-    });
+    const evidenceRowsFor = (invocationId: unknown) => session.evidence.filter((entry) =>
+      entry.terminalInvocationId === invocationId);
     const partials = [...matchingChunks].sort((left, right) => Number(left.chunkIndex) - Number(right.chunkIndex));
-    const acceptedInbound = nestedSequence.acceptedInbound as unknown[];
+    const acceptedInbound = session.acceptedInbound;
     const inboundAt = (seq: unknown): Record<string, unknown> | null => {
-      const candidates = acceptedInbound.map(c39Object).filter((accepted): accepted is Record<string, unknown> =>
-        accepted !== null && accepted.seq === seq && c39Digest(accepted.immutableDigest));
+      const candidates = acceptedInbound.filter((accepted) =>
+        accepted.seq === seq && c39Digest(accepted.immutableDigest));
       return candidates.length === 1 ? candidates[0]! : null;
     };
     const partialEvidenceValid = partials.every((partial) => inboundAt(partial.bridgeSequence) !== null);
     const contiguous = partials.every((partial, index) => Number(partial.chunkIndex) === index &&
       (index === 0 || Number(partial.bridgeSequence) > Number(partials[index - 1]!.bridgeSequence)));
     const byteLength = partials.reduce((total, partial) => total + Number(partial.plainLength), 0);
-    const recoveryEntry = c39Object(recoveryEvidence[0]?.value)?.entry;
-    const originEntry = c39Object(originEvidence[0]?.value)?.entry;
-    const terminalCarrierDigest = c39Object(recoveryEntry)?.terminalCarrierDigest;
-    const routeAuthority = c39Object(c39Object(recoveryEntry)?.c39RouteAuthority);
-    const terminalCandidates = acceptedInbound.map(c39Object).filter((accepted): accepted is Record<string, unknown> =>
-      accepted !== null && c39Digest(accepted.immutableDigest) && accepted.immutableDigest === terminalCarrierDigest);
+    const recoveryEntry = recoveryEvidence[0];
+    const originEntry = originEvidence[0];
+    const terminalCarrierDigest = recoveryEntry?.terminalCarrierDigest;
+    const routeAuthority = c39Object(recoveryEntry?.c39RouteAuthority);
+    const terminalCandidates = acceptedInbound.filter((accepted) =>
+      c39Digest(accepted.immutableDigest) && accepted.immutableDigest === terminalCarrierDigest);
     const terminalSequence = terminalCandidates.length === 1 ? terminalCandidates[0]!.seq : null;
     if (completion.refId !== resource.refId || protectedRecovery === null ||
       originEvidence.length !== 1 || recoveryEvidence.length !== 1 ||
       evidenceRowsFor(fullOwner.originInvocationId).length !== 1 || evidenceRowsFor(fullOwner.recoveryInvocationId).length !== 1 ||
-      c39Object(originEntry)?.terminalDigest !== record.terminalEvidenceDigest || !partialEvidenceValid || !contiguous ||
+      originEntry?.terminalDigest !== record.terminalEvidenceDigest || !partialEvidenceValid || !contiguous ||
       !c39Positive(terminalSequence) || Number(terminalSequence) <= Number(partials.at(-1)!.bridgeSequence) ||
       Number(nestedSequence.lastRxSeq) < Number(terminalSequence) ||
       completion.expiresAtMs !== resource.expiresAtMs ||
@@ -762,6 +833,25 @@ function constantTokenEquals(actual: unknown, expected: string): boolean {
  */
 export async function runProductionConformanceHostCli(args: readonly string[]): Promise<void> {
   const options = parse(args);
+  type StorageBootstrapRequest = Readonly<{
+    readonly action: "bootstrap_storage_v1";
+    readonly nonce: string;
+    readonly rootDigest: string;
+    readonly launchDigest: string;
+    readonly generation: 1;
+  }>;
+  const bootstrapRequest = process.connected
+    ? new Promise<StorageBootstrapRequest>((resolve) => {
+        const onMessage = (message: unknown): void => {
+          if (message === null || typeof message !== "object" || Array.isArray(message)) return;
+          const value = message as Partial<StorageBootstrapRequest>;
+          if (value.action !== "bootstrap_storage_v1") return;
+          process.off("message", onMessage);
+          resolve(value as StorageBootstrapRequest);
+        };
+        process.on("message", onMessage);
+      })
+    : null;
   const [cert, key] = await Promise.all([readFile(options.certificate), readFile(options.key)]);
   const credentials = [
     { tenantId: "conformance", userId: "conformance", deviceId: "wp12-device", token: "wp12-device-token" },
@@ -788,9 +878,15 @@ export async function runProductionConformanceHostCli(args: readonly string[]): 
       identityContract: "revagent.auth-context/v1" as const,
     });
   };
-  const protocolStore = new SqliteConformanceProtocolStore(options.root);
-  const opened = await protocolStore.open();
-  if (!opened.ok) throw new Error("conformance protocol store did not open");
+  const rawProtocolStore = new SqliteConformanceProtocolStore(options.root);
+  const rawObjectStore = new DigestFileConformanceObjectStore(options.root);
+  const servingOwnership = new GatewayServingOwnership({
+    protocolStore: rawProtocolStore,
+    privateObjectStore: rawObjectStore,
+    profile: "production_conformance",
+  });
+  const protocolStore = servingOwnership.protocolStore;
+  const objectStore = servingOwnership.resourceObjectStore!;
   let storeClose: Promise<void> | null = null;
   const closeProtocolStore = (): Promise<void> => {
     if (storeClose !== null) return storeClose;
@@ -809,12 +905,14 @@ export async function runProductionConformanceHostCli(args: readonly string[]): 
   // The carrier and the host ports must use one exact durable pair.  This is
   // deliberately composed before ingress so carrier capability grants cannot
   // pass a readiness check against an unrelated object store.
-  const objectStore = new DigestFileConformanceObjectStore(options.root);
   // C39 envelopes are keyed by their authority-bound opaque storage key, not
   // the ciphertext hash.  Keep that isolated from the ordinary content-
   // addressed C38 conformance store and its `key === sha256(bytes)` rule.
   const protectedConformanceObjectStore = new ProtectedConformanceObjectStore(
     options.root,
+  );
+  const ownedProtectedConformanceObjectStore = servingOwnership.bindObjectStore(
+    protectedConformanceObjectStore,
   );
   // This inventory reads the same durable recovery rows as production C2b;
   // only its wrapper/provider are conformance-only and have no config/env
@@ -832,7 +930,7 @@ export async function runProductionConformanceHostCli(args: readonly string[]): 
     conformanceKeyInventory,
   );
   const protectedObjectStore = new EncryptedProtectedObjectStore(
-    protectedConformanceObjectStore,
+    ownedProtectedConformanceObjectStore,
     protectedKeys,
   );
   let authority: GatewayBridgeSessionAuthority | null = null;
@@ -873,6 +971,7 @@ export async function runProductionConformanceHostCli(args: readonly string[]): 
     );
   authority = new GatewayBridgeSessionAuthority(protocolStore, identity, {
     resourceAuthority,
+    servingOwnership,
     internalConformanceOriginResendPolicy:
       createProductionConformanceC39OriginResendPolicy(),
     onConformancePartialCarrierCommitFailure(failure) {
@@ -923,6 +1022,30 @@ export async function runProductionConformanceHostCli(args: readonly string[]): 
     recoveryAuthority,
   });
   const auditAccesses: Array<{ readonly atMs: number; readonly tenantId: string; readonly action: string }> = [];
+  const bootstrap = bootstrapRequest === null ? null : await bootstrapRequest;
+  if (bootstrap !== null) {
+    const expectedRootDigest = `sha256:${createHash("sha256").update(options.root).digest("hex")}`;
+    const expectedLaunchDigest = `sha256:${createHash("sha256").update(JSON.stringify(args)).digest("hex")}`;
+    if (!/^[0-9a-f]{64}$/u.test(bootstrap.nonce) ||
+        bootstrap.rootDigest !== expectedRootDigest ||
+        bootstrap.launchDigest !== expectedLaunchDigest ||
+        bootstrap.generation !== 1 || Object.keys(bootstrap).sort().join(",") !==
+          "action,generation,launchDigest,nonce,rootDigest") {
+      throw new Error("production conformance storage bootstrap is invalid");
+    }
+  }
+  await authority.open();
+  if (bootstrap !== null && process.send !== undefined) {
+    const profileDigest = `sha256:${createHash("sha256")
+      .update(JSON.stringify(servingOwnership.durabilityProfile()))
+      .digest("hex")}`;
+    process.send(Object.freeze({
+      action: "storage_owned_v1",
+      nonce: bootstrap.nonce,
+      ownerEpoch: servingOwnership.ownerEpoch,
+      profileDigest,
+    }));
+  }
   const protectedReady = (await protectedObjectStore.checkReadiness()).ready;
   if (!protectedReady || authority === null) {
     throw new Error("production conformance C39 protected recovery did not become ready");
@@ -1085,14 +1208,42 @@ export async function runProductionConformanceHostCli(args: readonly string[]): 
             return reply.send({ ok: true, action, revoked, audit: identity.audit() });
           }
           if (action === "snapshot_audit") {
-            const sessions = await protocolStore.transact(
-              { tenantId: "conformance" },
-              async (tx) => await tx.list("gateway.rbp-session/v2"),
+            const keys = await protocolStore.startupCoordinator.listKeys(
+              "conformance",
+              GATEWAY_RBP_SESSION_CUTOVER_V3_NAMESPACE,
+              1_024,
             );
-            if (!sessions.ok) {
+            if (!keys.ok) {
               return reply.code(503).send({ ok: false, action, error: "session_audit_unavailable" });
             }
-            return reply.send({ ok: true, action, audit: identity.audit(), sessions: sessions.value });
+            const history = new SessionHistoryStore(protocolStore);
+            const projections = [];
+            for (const rsid of keys.value.slice(0, 2)) {
+              const projection = await history.snapshotAudit(
+                "conformance",
+                rsid,
+                authority?.isCurrentV3AuditCandidate(rsid) === true,
+              );
+              if (!projection.ok) {
+                return reply.code(503).send({ ok: false, action, error: "session_audit_unavailable" });
+              }
+              projections.push(projection.value);
+            }
+            const status = keys.value.length === 0
+              ? "no_candidate"
+              : keys.value.length > 1
+                ? "multiple"
+                : projections[0]?.status ?? "not_current";
+            return reply.send({
+              ok: true,
+              action,
+              audit: identity.audit(),
+              sessionAudit: {
+                status,
+                candidateCount: Math.min(keys.value.length, 2),
+                projection: keys.value.length === 1 ? projections[0] : null,
+              },
+            });
           }
           if (action === "read_real_case_audit") {
             if (body?.tenantId !== "conformance" || Object.keys(body ?? {}).length !== 2) {
@@ -1100,7 +1251,9 @@ export async function runProductionConformanceHostCli(args: readonly string[]): 
             }
             auditAccesses.push(Object.freeze({ atMs: Date.now(), tenantId: "conformance", action: "read_real_case_audit" }));
             const namespaces = [
-              "gateway.rbp-session/v2",
+              GATEWAY_RBP_SESSION_V3_NAMESPACE,
+              GATEWAY_RBP_SESSION_CUTOVER_V3_NAMESPACE,
+              GATEWAY_SESSION_HISTORY_PAGE_NAMESPACE,
               "gateway.mutation-hold/v1",
               "gateway.invocation-outcome/v1",
               "gateway.resource-carrier/v1",
@@ -1108,7 +1261,6 @@ export async function runProductionConformanceHostCli(args: readonly string[]): 
               "gateway.recovery-chunk/v1",
               "gateway.recovery-completion/v1",
               "gateway_resource_v1",
-              "gateway.rbp-session-evidence/v2",
             ];
             const readSnapshot = async (): Promise<readonly C39AuditRecord[] | null> => {
               const records: C39AuditRecord[] = [];
