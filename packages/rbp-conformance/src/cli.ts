@@ -468,11 +468,14 @@ export async function runFinalEvidenceAsyncCli(
     soakResult.report,
   );
 
-  // Reopen producer-owned retained outputs after the one-hour boundary. The
-  // aggregate remains bound to the exact path, bytes, hash, and parsed value
-  // accepted by the publisher callback; a pathname reread cannot replace that
-  // authority. A plan or producer-output mutation still invalidates the set.
+  // Reopen retained outputs after the one-hour boundary. The aggregate reread
+  // is liveness/integrity evidence only: callback-accepted path, bytes, hash,
+  // and parsed value remain the sole decision authority.
   assertFinalPlanSnapshotsCurrent(context);
+  assertAcceptedAggregateRetainedAfterSoak(
+    context.artifactRoot,
+    acceptedAggregate,
+  );
   for (const input of runInputs) {
     readExactRetainedJson(
       context.artifactRoot,
@@ -1050,6 +1053,37 @@ function readExactRetainedJson<T>(
     bytes,
     sha256: createHash("sha256").update(bytes).digest("hex"),
   };
+}
+
+function assertAcceptedAggregateRereadMatches(
+  accepted: { readonly bytes: Buffer; readonly sha256: string },
+  reread: { readonly bytes: Buffer; readonly sha256: string },
+): void {
+  if (
+    !reread.bytes.equals(accepted.bytes) ||
+    reread.sha256 !== accepted.sha256
+  ) {
+    throw new Error("retained aggregate JSON changed after the one-hour boundary");
+  }
+}
+
+/** @internal Final-evidence liveness check; accepted evidence remains authoritative. */
+export function assertAcceptedAggregateRetainedAfterSoak<T>(
+  artifactRoot: string,
+  accepted: {
+    readonly absolutePath: string;
+    readonly bytes: Buffer;
+    readonly sha256: string;
+    readonly parsed: T;
+  },
+): void {
+  const reread = readExactRetainedJson(
+    artifactRoot,
+    path.relative(artifactRoot, accepted.absolutePath),
+    accepted.parsed,
+    "aggregate report",
+  );
+  assertAcceptedAggregateRereadMatches(accepted, reread);
 }
 
 function assertAggregateAndSoakShareExactCandidate(

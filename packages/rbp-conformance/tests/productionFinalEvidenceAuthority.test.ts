@@ -1,8 +1,19 @@
-import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
+
+import { assertAcceptedAggregateRetainedAfterSoak } from "../src/cli.js";
+import { stableJson } from "../src/stableJson.js";
 
 const packageRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -30,6 +41,28 @@ const acceptedAggregateEnd = finalWorkflow.indexOf(
 const acceptedAggregateFlow = finalWorkflow.slice(
   acceptedAggregateStart,
   acceptedAggregateEnd,
+);
+const postSoakAggregateReadStart = finalWorkflow.indexOf(
+  "assertAcceptedAggregateRetainedAfterSoak(",
+);
+const postSoakAggregateReadEnd = finalWorkflow.indexOf(
+  "for (const input of runInputs)",
+  postSoakAggregateReadStart,
+);
+const postSoakAggregateReadFlow = finalWorkflow.slice(
+  postSoakAggregateReadStart,
+  postSoakAggregateReadEnd,
+);
+const retainedAggregateHelperStart = cliSource.indexOf(
+  "export function assertAcceptedAggregateRetainedAfterSoak",
+);
+const retainedAggregateHelperEnd = cliSource.indexOf(
+  "\nfunction assertAggregateAndSoakShareExactCandidate(",
+  retainedAggregateHelperStart,
+);
+const retainedAggregateHelperFlow = cliSource.slice(
+  retainedAggregateHelperStart,
+  retainedAggregateHelperEnd,
 );
 
 describe("authoritative final-evidence composition", () => {
@@ -74,6 +107,7 @@ describe("authoritative final-evidence composition", () => {
   it("uses returned objects and exact retained bytes without production seams", () => {
     expect(finalWorkflow).toContain("result.report");
     expect(finalWorkflow).toContain("soakResult.report");
+    expect(cliSource.match(/readExactRetainedJson\(/gu)).toHaveLength(5);
     expect(finalWorkflow.match(/readExactRetainedJson/gu)).toHaveLength(4);
     expect([
       ...finalWorkflow.matchAll(
@@ -117,9 +151,31 @@ describe("authoritative final-evidence composition", () => {
       "assertPassingAggregateReport(acceptedAggregate.parsed, context.options)",
     );
     expect(acceptedAggregateFlow).not.toContain("readExactRetainedJson(");
-    expect(finalWorkflow).not.toMatch(
-      /readExactRetainedJson\(\s*context\.artifactRoot,\s*aggregate\.reportPath/gu,
+    expect(postSoakAggregateReadStart).toBeGreaterThan(acceptedAggregateEnd);
+    expect(postSoakAggregateReadEnd).toBeGreaterThan(postSoakAggregateReadStart);
+    expect(postSoakAggregateReadStart).toBeLessThan(
+      finalWorkflow.indexOf("RBP FINAL EVIDENCE: PASS"),
     );
+    expect(postSoakAggregateReadFlow).toContain(
+      "assertAcceptedAggregateRetainedAfterSoak(\n    context.artifactRoot,\n    acceptedAggregate,\n  )",
+    );
+    expect(postSoakAggregateReadFlow).not.toContain("=");
+    expect(retainedAggregateHelperStart).toBeGreaterThanOrEqual(0);
+    expect(retainedAggregateHelperEnd).toBeGreaterThan(retainedAggregateHelperStart);
+    expect(retainedAggregateHelperFlow).toContain(
+      "path.relative(artifactRoot, accepted.absolutePath)",
+    );
+    expect(retainedAggregateHelperFlow).toContain("accepted.parsed");
+    expect(retainedAggregateHelperFlow).toContain(
+      "assertAcceptedAggregateRereadMatches(accepted, reread)",
+    );
+    expect(retainedAggregateHelperFlow).toContain("): void {");
+    expect(finalWorkflow.match(
+      /assertPassingAggregateReport\(acceptedAggregate\.parsed, context\.options\)/gu,
+    )).toHaveLength(2);
+    expect(finalWorkflow.match(
+      /assertAggregateMatchesPlans\(acceptedAggregate\.parsed, context\.runPlans\)/gu,
+    )).toHaveLength(2);
     expect(finalWorkflow.match(/assertFinalPlanSnapshotsCurrent/gu)?.length)
       .toBeGreaterThanOrEqual(4);
     expect(finalWorkflow).not.toContain("readJson(");
@@ -132,6 +188,57 @@ describe("authoritative final-evidence composition", () => {
       "oracle:",
     ]) {
       expect(finalWorkflow).not.toContain(forbidden);
+    }
+  });
+
+  it.each([
+    ["removal", /missing from retained evidence/u],
+    ["replacement", /bytes differ from the returned in-memory result/u],
+  ] as const)("blocks final PASS after aggregate %s during soak", (mutation, expectedFailure) => {
+    const artifactRoot = mkdtempSync(path.join(tmpdir(), "rbp-final-aggregate-live-"));
+    const absolutePath = path.join(
+      artifactRoot,
+      "artifacts",
+      "conformance",
+      "rbp-v1",
+      "1.0",
+      "aggregate",
+      "aggregate.json",
+    );
+    const parsed = { schemaVersion: "aggregate-liveness-test/v1", state: "accepted" };
+    const bytes = Buffer.from(stableJson(parsed), "utf8");
+    const acceptedAggregate = {
+      absolutePath,
+      bytes,
+      sha256: createHash("sha256").update(bytes).digest("hex"),
+      parsed,
+    };
+    try {
+      mkdirSync(path.dirname(absolutePath), { recursive: true });
+      writeFileSync(absolutePath, bytes);
+      expect(() =>
+        assertAcceptedAggregateRetainedAfterSoak(
+          artifactRoot,
+          acceptedAggregate,
+        )).not.toThrow();
+      if (mutation === "removal") {
+        rmSync(absolutePath);
+      } else {
+        const replacement = Buffer.from(
+          stableJson({ ...parsed, state: "replaced" }),
+          "utf8",
+        );
+        expect(replacement).toHaveLength(bytes.length);
+        writeFileSync(absolutePath, replacement);
+      }
+
+      expect(() =>
+        assertAcceptedAggregateRetainedAfterSoak(
+          artifactRoot,
+          acceptedAggregate,
+        )).toThrow(expectedFailure);
+    } finally {
+      rmSync(artifactRoot, { recursive: true, force: true });
     }
   });
 });
