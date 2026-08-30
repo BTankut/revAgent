@@ -498,7 +498,11 @@ export class SecureEvidenceStore {
     const identity = verifyPowerShellIdentityCurrent(this.#powerShellIdentity);
     const timeoutMs = Math.max(1, this.#test?.timeoutMs ?? NATIVE_HELPER_TIMEOUT_MS);
     const lifecycleDeadlineMs = Date.now() + timeoutMs;
-    const deadlineMs = lifecycleDeadlineMs - Math.min(250, Math.max(1, Math.floor(timeoutMs / 4)));
+    const helperJoinReserveMs = Math.min(
+      Math.max(0, timeoutMs - 1),
+      Math.min(1_000, Math.max(1, Math.floor(timeoutMs / 2))),
+    );
+    const deadlineMs = lifecycleDeadlineMs - helperJoinReserveMs;
     const request = Buffer.from(`${JSON.stringify({
       operation: "write",
       rootPath: this.artifactRoot,
@@ -544,7 +548,12 @@ export class SecureEvidenceStore {
       });
     });
     const reader = createInterface({ input: child.stdout, crlfDelay: Infinity })[Symbol.asyncIterator]();
-    const stopHelper = (): void => { if (child.exitCode === null) child.kill("SIGKILL"); };
+    let helperStopRequested = false;
+    const stopHelper = (): void => {
+      if (helperStopRequested) return;
+      helperStopRequested = true;
+      if (child.exitCode === null) child.kill("SIGKILL");
+    };
     const nextRecord = async (): Promise<Record<string, unknown>> => {
       const next = await beforeDeadline(reader.next(), deadlineMs, stopHelper);
       if (next.done || typeof next.value !== "string" || Buffer.byteLength(next.value, "utf8") > MAX_NATIVE_HELPER_OUTPUT_BYTES) {
@@ -612,7 +621,15 @@ export class SecureEvidenceStore {
       return await this.#acceptPublished(logicalPath, target, bytes, consume, published, finalize, undefined, deadlineMs);
     } finally {
       if (!helperClosed) stopHelper();
-      try { await beforeDeadline(exit, lifecycleDeadlineMs, stopHelper); } catch { /* caller receives the primary bounded error */ }
+      try {
+        await beforeDeadline(exit, lifecycleDeadlineMs, stopHelper);
+      } catch (error) {
+        throw evidenceError(
+          "EVIDENCE_HELPER_REAP_UNCERTAIN",
+          "evidence helper reap is uncertain at the fixed lifecycle deadline",
+          error,
+        );
+      }
     }
   }
 

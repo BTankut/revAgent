@@ -124,26 +124,29 @@ describe("secure retained-evidence store", () => {
     }
   });
 
-  it.runIf(process.platform === "win32")("reaps async direct-root helpers on malformed, crash, and timeout failures", async () => {
-    for (const helperFault of ["malformed_output", "invalid_ready", "crash", "timeout"] as const) {
-      const root = mkdtempSync(path.join(tmpdir(), `rbp-secure-direct-fault-${helperFault}-`));
-      try {
-        const lifecycle = { leasesOpened: 0, leasesDisposed: 0, helpersSpawned: 0, helpersClosed: 0 };
-        const store = new SecureEvidenceStore(root, { directRootOnly: true, test: { helperFault, timeoutMs: 500, lifecycle } });
-        const bytes = Buffer.from("fault-bytes");
-        const sha256 = createHash("sha256").update(bytes).digest("hex");
-        await expect(store.writeDirectAccepted("fault.json", bytes, (candidate) => candidate.acceptExact({
-          logicalPath: "fault.json",
-          absolutePath: path.join(root, "fault.json"),
-          bytes,
-          sha256,
-        }, undefined))).rejects.toBeInstanceOf(Error);
-        expect(lifecycle.helpersSpawned).toBe(1);
-        expect(lifecycle.helpersClosed).toBe(1);
-        expect(lifecycle.leasesDisposed).toBe(lifecycle.leasesOpened);
-      } finally {
-        rmSync(root, { recursive: true, force: true });
-      }
+  it.runIf(process.platform === "win32").each([
+    "malformed_output",
+    "invalid_ready",
+    "crash",
+    "timeout",
+  ] as const)("reaps the async direct-root helper after %s", async (helperFault) => {
+    const root = mkdtempSync(path.join(tmpdir(), `rbp-secure-direct-fault-${helperFault}-`));
+    try {
+      const lifecycle = { leasesOpened: 0, leasesDisposed: 0, helpersSpawned: 0, helpersClosed: 0 };
+      const store = new SecureEvidenceStore(root, { directRootOnly: true, test: { helperFault, timeoutMs: 500, lifecycle } });
+      const bytes = Buffer.from("fault-bytes");
+      const sha256 = createHash("sha256").update(bytes).digest("hex");
+      await expect(store.writeDirectAccepted("fault.json", bytes, (candidate) => candidate.acceptExact({
+        logicalPath: "fault.json",
+        absolutePath: path.join(root, "fault.json"),
+        bytes,
+        sha256,
+      }, undefined))).rejects.toBeInstanceOf(Error);
+      expect(lifecycle.helpersSpawned).toBe(1);
+      expect(lifecycle.helpersClosed).toBe(1);
+      expect(lifecycle.leasesDisposed).toBe(lifecycle.leasesOpened);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
     }
   }, 15_000);
 
