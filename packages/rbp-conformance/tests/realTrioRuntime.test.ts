@@ -1861,7 +1861,9 @@ async function callConfirmedTool(
   readonly commit: Record<string, unknown>;
 }>> {
   const preview = await callToolOutcome(client, { name, arguments: args, requestId });
-  expect(preview).toMatchObject({ state: "confirmation_required" });
+  if (preview.state !== "confirmation_required") {
+    throw new Error(`confirmation preview failed: ${JSON.stringify(preview)}`);
+  }
   const confirmation = object(preview.confirmation);
   if (typeof confirmation?.confirmToken !== "string" ||
       typeof confirmation.originatingPreviewInvocationId !== "string") {
