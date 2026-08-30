@@ -1344,8 +1344,10 @@ export async function startRealTrioSupervisor(input: RealTrioSupervisorLaunch): 
     .update(input.gateway.workingDirectory)
     .update(JSON.stringify(input.gateway.args))
     .digest("hex");
-  const rootIndex = input.gateway.args.indexOf("--root");
-  const gatewayRoot = rootIndex >= 0 ? input.gateway.args[rootIndex + 1] : undefined;
+  // Node exposes the script as argv[1]; the CLI validates only argv.slice(2).
+  const gatewayCliArguments = input.gateway.args.slice(1);
+  const rootIndex = gatewayCliArguments.indexOf("--root");
+  const gatewayRoot = rootIndex >= 0 ? gatewayCliArguments[rootIndex + 1] : undefined;
   if (gatewayRoot === undefined) throw new Error("real trio Gateway command lacks a storage root");
   const canonicalGatewayRoot = path.resolve(input.gateway.workingDirectory, gatewayRoot);
   const gateway = await harness.startReady({
@@ -1356,7 +1358,7 @@ export async function startRealTrioSupervisor(input: RealTrioSupervisorLaunch): 
         action: "bootstrap_storage_v1",
         nonce: bootstrapNonce,
         rootDigest: `sha256:${createHash("sha256").update(canonicalGatewayRoot).digest("hex")}`,
-        launchDigest: `sha256:${createHash("sha256").update(JSON.stringify(input.gateway.args)).digest("hex")}`,
+        launchDigest: `sha256:${createHash("sha256").update(JSON.stringify(gatewayCliArguments)).digest("hex")}`,
         generation: 1,
       }),
       timeoutMs: 30_000,
