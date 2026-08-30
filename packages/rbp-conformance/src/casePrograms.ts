@@ -880,6 +880,13 @@ interface ProgramDefinition {
   };
 }
 
+const CARRIER_CASE_CONNECTION_CAPABILITIES = Object.freeze([
+  "journal_v1",
+  "chunked_results",
+  "artifact_result_v1",
+  "transport_streamable_http",
+]);
+
 const CASE_DEFINITIONS: ProgramDefinition[] = [
   {
     caseId: "O1-C01",
@@ -1097,6 +1104,9 @@ const CASE_DEFINITIONS: ProgramDefinition[] = [
   },
   {
     caseId: "O1-C15",
+    startupOverrides: {
+      connectionCapabilities: [...CARRIER_CASE_CONNECTION_CAPABILITIES],
+    },
     controls: [
       ...sessionSetup("O1-C15"),
       ...sessionSetupDrain("O1-C15"),
@@ -2230,6 +2240,9 @@ const CASE_DEFINITIONS: ProgramDefinition[] = [
   },
   {
     caseId: "O1-C32",
+    startupOverrides: {
+      connectionCapabilities: [...CARRIER_CASE_CONNECTION_CAPABILITIES],
+    },
     controls: c32Controls(),
     initialStackTimeoutMs: C32_STACK_LIFECYCLE_TIMEOUT_MS,
     requiredHarnessCapabilities: [
@@ -2668,6 +2681,9 @@ const CASE_DEFINITIONS: ProgramDefinition[] = [
   },
   {
     caseId: "O1-C39",
+    startupOverrides: {
+      connectionCapabilities: [...CARRIER_CASE_CONNECTION_CAPABILITIES],
+    },
     controls: [
       ...sessionSetup("O1-C39"),
       harness("o1-c39.await-initial-context", "await_condition", args({
@@ -2807,6 +2823,9 @@ const CASE_DEFINITIONS: ProgramDefinition[] = [
   },
   {
     caseId: "O1-C40",
+    startupOverrides: {
+      connectionCapabilities: [...CARRIER_CASE_CONNECTION_CAPABILITIES],
+    },
     controls: [
       ...sessionSetup("O1-C40"),
       ...[

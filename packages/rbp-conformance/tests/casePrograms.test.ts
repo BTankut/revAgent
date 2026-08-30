@@ -156,6 +156,23 @@ describe("exact forty-case control and observation catalog", () => {
     expect(JSON.stringify(probes)).not.toContain("passed");
   });
 
+  it("grants carriers only to the four cases that exercise chunk or artifact bytes", () => {
+    const carrierCases = new Set(["O1-C15", "O1-C32", "O1-C39", "O1-C40"]);
+    const expected = [
+      "journal_v1", "chunked_results", "artifact_result_v1", "transport_streamable_http",
+    ];
+    for (const program of CASE_CONTROL_OBSERVATION_MAP.values()) {
+      const startup = (program.steps[0]!.arguments as {
+        readonly common?: { readonly startupOverrides?: { readonly connectionCapabilities?: readonly string[] } };
+      }).common?.startupOverrides?.connectionCapabilities;
+      if (carrierCases.has(program.caseId)) {
+        expect(startup, program.caseId).toEqual(expected);
+      } else {
+        expect(startup, program.caseId).toBeUndefined();
+      }
+    }
+  });
+
   it("uses only exact T3/T4/T5 controls and has resolvable same-case observation sources", () => {
     for (const program of CASE_CONTROL_OBSERVATION_MAP.values()) {
       const stepIds = program.steps.map(({ stepId }) => stepId);
