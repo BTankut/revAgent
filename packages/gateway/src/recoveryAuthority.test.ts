@@ -580,6 +580,29 @@ function receiptFor(
   };
 }
 
+function reconstructedReceiptFor(
+  pending: GatewayRecoveryPendingDispatch,
+): GatewayBridgeCumulativeAckReceipt {
+  const {
+    invocationId,
+    correlationId,
+    proofDigest,
+    routeSnapshotDigest,
+    egressEpoch,
+    leaseTicket,
+    intent,
+    ...base
+  } = receiptFor(pending);
+  void invocationId;
+  void correlationId;
+  void proofDigest;
+  void routeSnapshotDigest;
+  void egressEpoch;
+  void leaseTicket;
+  void intent;
+  return base;
+}
+
 function noSendFor(
   pending: GatewayRecoveryPendingDispatch,
 ): NonNullable<GatewayDurableDispatchObservation["noSend"]> {
@@ -2127,6 +2150,36 @@ describe("GatewayRecoveryAuthority durable safety", () => {
     }
   });
 
+  it("accepts only the closed reconstructed base receipt from the durable Bridge port", async () => {
+    const { authority, bridgeEvidence } = await createHarness();
+    const pending = requirePending(await prepareMutation(authority, {
+      tenantId: TENANT_A,
+      sessionBindingId: SESSION_BINDING,
+      connectionId: CONNECTION,
+      envelope: mutationEnvelope({
+        seq: 199,
+        invocationId: uuid7(749_999),
+        scope: SESSION_SCOPE,
+      }),
+    }));
+    const journal = completedJournal(pending.journalRecords[0]!, "reconstructed-base");
+    const receipt = reconstructedReceiptFor(pending);
+    bridgeEvidence.observe(pending, {
+      acceptance: receipt,
+      journalKind: "known_terminal",
+      journalRecords: [journal],
+    });
+    await expect(authority.reconcilePendingDispatch({
+      tenantId: TENANT_A,
+      rsid: RSID_A,
+      envelopeDigest: pending.envelopeDigest,
+    })).resolves.toMatchObject({ kind: "terminal_recorded" });
+    for (const field of ["invocationId", "correlationId", "proofDigest", "routeSnapshotDigest",
+      "egressEpoch", "leaseTicket", "intent"] as const) {
+      expect(receipt).not.toHaveProperty(field);
+    }
+  });
+
   it("clears every-and-only resolved hold only after the exact durable cumulative ACK", async () => {
     const { authority, bridgeEvidence } = await createHarness();
     const { plan } = await twoEvidenceRecordedHolds(authority, bridgeEvidence);
@@ -2182,6 +2235,20 @@ describe("GatewayRecoveryAuthority durable safety", () => {
       ).ledger.holds.map((hold) => hold.state),
     ).toEqual(["resolved_pending_bridge", "resolved_pending_bridge"]);
 
+    const reconstructed = reconstructedReceiptFor(pending);
+    const full = receiptFor(pending);
+    const partialReceipts = ([
+      "invocationId",
+      "correlationId",
+      "proofDigest",
+      "routeSnapshotDigest",
+      "egressEpoch",
+      "leaseTicket",
+      "intent",
+    ] as const).map((field) => ({
+      ...reconstructed,
+      [field]: full[field],
+    }) as GatewayBridgeCumulativeAckReceipt);
     const wrongAcks: readonly GatewayBridgeCumulativeAckReceipt[] = [
       receiptFor(pending, {
         cumulativeAck: pending.gatewaySequence - 1,
@@ -2204,6 +2271,7 @@ describe("GatewayRecoveryAuthority durable safety", () => {
       receiptFor(pending, {
         proofDigest: `sha256:${"z".repeat(64)}` as `sha256:${string}`,
       }),
+      ...partialReceipts,
     ];
     for (const receipt of wrongAcks) {
       bridgeEvidence.observe(pending, { acceptance: receipt });
