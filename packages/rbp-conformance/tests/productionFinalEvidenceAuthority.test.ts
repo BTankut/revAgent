@@ -20,6 +20,17 @@ const finalWorkflowEnd = cliSource.indexOf(
   finalWorkflowStart,
 );
 const finalWorkflow = cliSource.slice(finalWorkflowStart, finalWorkflowEnd);
+const acceptedAggregateStart = finalWorkflow.indexOf(
+  "const acceptedAggregate = await store.writeAccepted(",
+);
+const acceptedAggregateEnd = finalWorkflow.indexOf(
+  "assertFinalPlanSnapshotsCurrent(context);",
+  acceptedAggregateStart,
+);
+const acceptedAggregateFlow = finalWorkflow.slice(
+  acceptedAggregateStart,
+  acceptedAggregateEnd,
+);
 
 describe("authoritative final-evidence composition", () => {
   it("has one literal PASS source and routes it only through the final command", () => {
@@ -63,8 +74,52 @@ describe("authoritative final-evidence composition", () => {
   it("uses returned objects and exact retained bytes without production seams", () => {
     expect(finalWorkflow).toContain("result.report");
     expect(finalWorkflow).toContain("soakResult.report");
-    expect(finalWorkflow.match(/readExactRetainedJson/gu)?.length)
-      .toBeGreaterThanOrEqual(6);
+    expect(finalWorkflow.match(/readExactRetainedJson/gu)).toHaveLength(4);
+    expect([
+      ...finalWorkflow.matchAll(
+        /readExactRetainedJson\(\s*context\.artifactRoot,\s*(\w+\.reportPath)/gu,
+      ),
+    ].map((match) => match[1])).toEqual([
+      "result.reportPath",
+      "soakResult.reportPath",
+      "input.reportPath",
+      "soakResult.reportPath",
+    ]);
+    expect(acceptedAggregateStart).toBeGreaterThanOrEqual(0);
+    expect(acceptedAggregateEnd).toBeGreaterThan(acceptedAggregateStart);
+    expect(acceptedAggregateFlow).toContain("candidate.acceptExact({");
+    expect(acceptedAggregateFlow).toContain(
+      "logicalPath: aggregate.reportPath",
+    );
+    expect(acceptedAggregateFlow).toContain(
+      "absolutePath: store.resolve(aggregate.reportPath)",
+    );
+    expect(acceptedAggregateFlow).toContain("bytes: aggregateBytes");
+    expect(acceptedAggregateFlow).toContain("sha256: aggregateSha256");
+    expect(acceptedAggregateFlow).toContain(
+      "absolutePath: candidate.absolutePath",
+    );
+    expect(acceptedAggregateFlow).toContain("bytes: candidate.bytes");
+    expect(acceptedAggregateFlow).toContain("sha256: candidate.sha256");
+    expect(acceptedAggregateFlow).toContain(
+      'parsed: JSON.parse(candidate.bytes.toString("utf8")) as typeof aggregate',
+    );
+    expect(acceptedAggregateFlow).toContain(
+      "acceptedAggregate.bytes.equals(aggregateBytes)",
+    );
+    expect(acceptedAggregateFlow).toContain(
+      "acceptedAggregate.sha256 !== aggregateSha256",
+    );
+    expect(acceptedAggregateFlow).toContain(
+      "context.options.aggregateReportFile = acceptedAggregate.absolutePath",
+    );
+    expect(acceptedAggregateFlow).toContain(
+      "assertPassingAggregateReport(acceptedAggregate.parsed, context.options)",
+    );
+    expect(acceptedAggregateFlow).not.toContain("readExactRetainedJson(");
+    expect(finalWorkflow).not.toMatch(
+      /readExactRetainedJson\(\s*context\.artifactRoot,\s*aggregate\.reportPath/gu,
+    );
     expect(finalWorkflow.match(/assertFinalPlanSnapshotsCurrent/gu)?.length)
       .toBeGreaterThanOrEqual(4);
     expect(finalWorkflow).not.toContain("readJson(");

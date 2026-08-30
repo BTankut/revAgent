@@ -463,17 +463,16 @@ export async function runFinalEvidenceAsyncCli(
   );
   context.options.soakReportFile = retainedSoak.absolutePath;
   assertPassingSoakReport(soakResult.report, context.options);
-  assertAggregateAndSoakShareExactCandidate(aggregate, soakResult.report);
-
-  // Reopen and revalidate the entire evidence set after the one-hour boundary.
-  // A plan or retained-output mutation during the soak invalidates the set.
-  assertFinalPlanSnapshotsCurrent(context);
-  readExactRetainedJson(
-    context.artifactRoot,
-    aggregate.reportPath,
-    aggregate,
-    "aggregate report",
+  assertAggregateAndSoakShareExactCandidate(
+    acceptedAggregate.parsed,
+    soakResult.report,
   );
+
+  // Reopen producer-owned retained outputs after the one-hour boundary. The
+  // aggregate remains bound to the exact path, bytes, hash, and parsed value
+  // accepted by the publisher callback; a pathname reread cannot replace that
+  // authority. A plan or producer-output mutation still invalidates the set.
+  assertFinalPlanSnapshotsCurrent(context);
   for (const input of runInputs) {
     readExactRetainedJson(
       context.artifactRoot,
@@ -488,12 +487,15 @@ export async function runFinalEvidenceAsyncCli(
     soakResult.report,
     "one-hour soak report",
   );
-  assertPassingAggregateReport(aggregate, context.options);
-  assertAggregateMatchesPlans(aggregate, context.runPlans);
+  assertPassingAggregateReport(acceptedAggregate.parsed, context.options);
+  assertAggregateMatchesPlans(acceptedAggregate.parsed, context.runPlans);
   assertPassingSoakReport(soakResult.report, context.options);
   assertFinalSoakReportMode(soakResult.report);
   assertSoakMatchesPlan(soakResult.report, context.soakPlan);
-  assertAggregateAndSoakShareExactCandidate(aggregate, soakResult.report);
+  assertAggregateAndSoakShareExactCandidate(
+    acceptedAggregate.parsed,
+    soakResult.report,
+  );
 
   process.stdout.write("RBP FINAL EVIDENCE: PASS\n");
 }
