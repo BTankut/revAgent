@@ -68,6 +68,11 @@ jobs:
             installer/runtime-mcp-server/package-lock.json
             installer/revit-api-docs-mcp/package-lock.json
 
+      - name: Setup .NET 9 SDK
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          dotnet-version: 9.0.x
+
       - name: Run CI-safe gates
         shell: pwsh
         run: .\scripts\test-ci.ps1
