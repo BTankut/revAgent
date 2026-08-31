@@ -464,6 +464,19 @@ public sealed partial class RbpConnectionCoordinatorTests
             }
         }
 
+        internal int OutstandingDelayCountDueIn(TimeSpan delay)
+        {
+            lock (_sync)
+            {
+                long due = checked(
+                    _monotonicMilliseconds +
+                    (long)Math.Ceiling(delay.TotalMilliseconds));
+                return _delays.Count(item =>
+                    item.DueMilliseconds == due &&
+                    !item.Completion.Task.IsCompleted);
+            }
+        }
+
         private sealed record ScheduledDelay(
             long DueMilliseconds,
             TaskCompletionSource Completion);

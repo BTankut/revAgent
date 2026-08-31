@@ -437,7 +437,7 @@ public sealed partial class RbpConnectionCoordinatorTests
         await EventuallyAsync(
             () => harness.SentDocContextUpdates().Length == 1);
 
-        harness.Clock.Advance(TimeSpan.FromSeconds(15));
+        await AdvanceDocumentContextPollAsync(harness);
         await EventuallyAsync(() => harness.Channel.CallCount >= 2);
         await Task.Delay(30);
 
@@ -452,7 +452,7 @@ public sealed partial class RbpConnectionCoordinatorTests
         await EventuallyAsync(() => harness.SentDocContextUpdates().Length == 1);
 
         harness.Channel.SetSnapshot(revision: 2, title: "Project A");
-        harness.Clock.Advance(TimeSpan.FromSeconds(15));
+        await AdvanceDocumentContextPollAsync(harness);
         await EventuallyAsync(() => harness.Channel.CallCount >= 2);
         await Task.Delay(30);
 
@@ -469,11 +469,11 @@ public sealed partial class RbpConnectionCoordinatorTests
         await EventuallyAsync(() => harness.SentDocContextUpdates().Length == 1);
 
         harness.Channel.SetSnapshot(revision: 2, title: "Project A", incarnation);
-        harness.Clock.Advance(TimeSpan.FromSeconds(15));
+        await AdvanceDocumentContextPollAsync(harness);
         await EventuallyAsync(() => harness.SentDocContextUpdates().Length == 2);
 
         harness.Channel.SetSnapshot(revision: 3, title: "Project A", incarnation);
-        harness.Clock.Advance(TimeSpan.FromSeconds(15));
+        await AdvanceDocumentContextPollAsync(harness);
         await EventuallyAsync(() => harness.Channel.CallCount >= 3);
         await Task.Delay(30);
 
@@ -489,7 +489,7 @@ public sealed partial class RbpConnectionCoordinatorTests
             () => harness.SentDocContextUpdates().Length == 1);
 
         harness.Channel.SetSnapshot(revision: 2, title: "Project B");
-        harness.Clock.Advance(TimeSpan.FromSeconds(15));
+        await AdvanceDocumentContextPollAsync(harness);
 
         await EventuallyAsync(
             () => harness.SentDocContextUpdates().Length == 2);
@@ -514,7 +514,7 @@ public sealed partial class RbpConnectionCoordinatorTests
         RbpEnvelope first = harness.SentDocContextUpdates()[0];
 
         harness.Channel.SetSnapshot(revision: 1, title: "Project A", incarnation);
-        harness.Clock.Advance(TimeSpan.FromSeconds(15));
+        await AdvanceDocumentContextPollAsync(harness);
         await EventuallyAsync(() => harness.SentDocContextUpdates().Length == 2);
 
         RbpEnvelope second = harness.SentDocContextUpdates()[1];
@@ -528,7 +528,7 @@ public sealed partial class RbpConnectionCoordinatorTests
             observation.CacheIncarnationDigest == incarnation);
 
         // Same process/cache incarnation on the next poll stays deduped.
-        harness.Clock.Advance(TimeSpan.FromSeconds(15));
+        await AdvanceDocumentContextPollAsync(harness);
         await EventuallyAsync(() => harness.Channel.CallCount >= 3);
         await Task.Delay(30);
         Assert.Equal(2, harness.SentDocContextUpdates().Length);
@@ -945,7 +945,7 @@ public sealed partial class RbpConnectionCoordinatorTests
         await EventuallyAsync(
             () => harness.SentDocContextUpdates().Length == 1);
         harness.Channel.SetSnapshot(revision: 2, title: "Project C");
-        harness.Clock.Advance(TimeSpan.FromSeconds(15));
+        await AdvanceDocumentContextPollAsync(harness);
         await EventuallyAsync(() => harness.Channel.CallCount >= 2);
 
         string[] methods = harness.Channel.Methods;
@@ -955,6 +955,15 @@ public sealed partial class RbpConnectionCoordinatorTests
             method => Assert.Equal("get_document_context", method));
         Assert.DoesNotContain("get_current_view_info", methods);
         Assert.DoesNotContain("list_open_views", methods);
+    }
+
+    private static async Task AdvanceDocumentContextPollAsync(
+        DocContextHarness harness)
+    {
+        await EventuallyAsync(() =>
+            harness.Clock.OutstandingDelayCountDueIn(
+                TimeSpan.FromSeconds(15)) >= 2);
+        harness.Clock.Advance(TimeSpan.FromSeconds(15));
     }
 
     private static RbpLocalSessionSnapshot DocContextLocalSession(
