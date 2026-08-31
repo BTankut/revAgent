@@ -410,6 +410,11 @@ public sealed partial class RbpConnectionCoordinatorTests
             async () =>
                 (await store.GetUnregisterTombstoneAsync("rs-8081")) is
                 { Phase: RbpUnregisterPhase.Pending });
+        await EventuallyAsync(
+            () => first.Sent.Count(
+                item => item.Type == "session_unregister" &&
+                    item.Payload.GetProperty("rsid").GetString() ==
+                        "rs-8081") == 1);
         RbpEnvelope firstUnregister = Assert.Single(
             first.Sent,
             item =>
@@ -425,6 +430,11 @@ public sealed partial class RbpConnectionCoordinatorTests
             () => coordinator.GetSnapshot().ConnectionGeneration == 2 &&
                 coordinator.GetSnapshot().ActiveRsids.SequenceEqual(
                     new[] { "rs-8080" }));
+        await EventuallyAsync(
+            () => second.Sent.Count(
+                item => item.Type == "session_unregister" &&
+                    item.Payload.GetProperty("rsid").GetString() ==
+                        "rs-8081") == 1);
 
         RbpEnvelope replay = Assert.Single(
             second.Sent,
