@@ -13,6 +13,7 @@
     "packages/gateway/src/rbpIngress.test.ts",
     "packages/gateway/src/recoveryAuthority.test.ts",
     "packages/gateway/src/resourceAuthority.test.ts",
+    "packages/gateway/src/resourceAuthorityGc.test.ts",
     "packages/gateway/src/toolBindings.test.ts"
   ],
   "cases": [
@@ -77,7 +78,11 @@
     {
       "id": "C10",
       "serverObservable": "Binary resource bytes are authorized by actor/session scope and denied after expiry or integrity mismatch.",
-      "tests": ["enforces actor, principal, tenant, session, expiry, and stored-byte integrity"]
+      "tests": [
+        "hash-prefixes durable keys and rejects foreign effective scopes before metadata or object lookup",
+        "fails closed on raw paths, denied types, oversize, and expected digest mismatch",
+        "keeps 2MiB-1, rejects 2MiB+1, and reclaims expired object plus metadata"
+      ]
     },
     {
       "id": "C11",
