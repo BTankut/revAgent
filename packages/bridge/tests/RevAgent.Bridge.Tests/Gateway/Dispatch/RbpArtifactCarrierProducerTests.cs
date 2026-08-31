@@ -376,7 +376,8 @@ public sealed class RbpArtifactCarrierProducerTests
                 producer.RecordTerminalQueued(emission.CarrierKey, "rs-swap", 4);
                 producer.ApplyDurableAcknowledgements(new[] { new RbpSessionAcknowledgement("rs-swap", 4) });
                 Assert.Equal("do-not-touch", File.ReadAllText(sentinel));
-                Assert.False(Directory.Exists(Path.Combine(retained, emission.CarrierKey)));
+                await AssertDirectoryEventuallyAbsentAsync(
+                    Path.Combine(retained, emission.CarrierKey));
             }
             finally
             {
@@ -489,6 +490,17 @@ public sealed class RbpArtifactCarrierProducerTests
         Assert.DoesNotContain(directory.Path, error.Message,
             StringComparison.OrdinalIgnoreCase);
         Assert.Equal("unchanged", File.ReadAllText(sentinel));
+    }
+
+    private static async Task AssertDirectoryEventuallyAbsentAsync(string path)
+    {
+        for (int attempt = 0; attempt < 100; attempt++)
+        {
+            if (!Directory.Exists(path)) return;
+            await Task.Delay(20);
+        }
+
+        Assert.False(Directory.Exists(path));
     }
 
     private static RbpJournalStore OpenStore(RbpJournalTestDirectory directory) =>
