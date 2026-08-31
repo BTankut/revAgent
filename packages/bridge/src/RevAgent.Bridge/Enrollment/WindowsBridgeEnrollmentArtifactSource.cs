@@ -584,8 +584,7 @@ internal sealed class WindowsBridgeEnrollmentArtifactSource :
                     }
 
                     _afterReleaseBeforeDelete?.Invoke(_filePath);
-                    _sourceAbsent =
-                        _fileSystem.Classify(_filePath) ==
+                    _sourceAbsent = ClassifyAfterDeleteWithRetry() ==
                         BridgePathEntryKind.Missing;
                     if (!_sourceAbsent)
                     {
@@ -607,6 +606,25 @@ internal sealed class WindowsBridgeEnrollmentArtifactSource :
                         sourceAbsent: false);
                 }
             }
+        }
+
+        private BridgePathEntryKind ClassifyAfterDeleteWithRetry()
+        {
+            for (int attempt = 0; attempt < 20; attempt++)
+            {
+                try
+                {
+                    return _fileSystem.Classify(_filePath);
+                }
+                catch (Exception exception) when (
+                    attempt < 19 &&
+                    exception is IOException or UnauthorizedAccessException)
+                {
+                    Thread.Sleep(25);
+                }
+            }
+
+            return _fileSystem.Classify(_filePath);
         }
 
         public void Dispose()

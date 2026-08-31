@@ -125,7 +125,7 @@ public sealed class RbpArtifactCarrierProducerTests
         Assert.True(Directory.Exists(carrierRoot));
         producer.ApplyDurableAcknowledgements(
             new[] { new RbpSessionAcknowledgement("rs-ack", 7) });
-        Assert.False(Directory.Exists(carrierRoot));
+        await AssertDirectoryEventuallyAbsentAsync(carrierRoot);
     }
 
     [Fact]

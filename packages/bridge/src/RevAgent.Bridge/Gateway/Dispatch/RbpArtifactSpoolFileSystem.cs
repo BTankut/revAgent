@@ -144,7 +144,7 @@ internal sealed class WindowsRelativeSpoolNative : IRelativeSpoolNative
             }
             // No enumeration: any undeclared residue causes this opened,
             // root-relative directory disposition to refuse.
-            SetDeleteDisposition(carrier);
+            SetDirectoryDeleteDispositionWithRetry(carrier);
         }
         catch (RbpArtifactCarrierException) { throw; }
         catch { throw Refused("carrier_spool_cleanup_refused"); }
@@ -285,7 +285,18 @@ internal sealed class WindowsRelativeSpoolNative : IRelativeSpoolNative
         finally { if (unicodeMemory != IntPtr.Zero) Marshal.FreeHGlobal(unicodeMemory); if (value != IntPtr.Zero) Marshal.FreeHGlobal(value); }
     }
 
-    private static void SetDeleteDisposition(SafeFileHandle handle) { var disposition = new FileDispositionInformation { DeleteFile = true }; if (!SetFileInformationByHandle(handle, FileDispositionInformationClass, ref disposition, (uint)Marshal.SizeOf<FileDispositionInformation>())) throw Refused("carrier_spool_cleanup_refused"); }
+    private static void SetDeleteDisposition(SafeFileHandle handle) { if (!TrySetDeleteDisposition(handle)) throw Refused("carrier_spool_cleanup_refused"); }
+    private static void SetDirectoryDeleteDispositionWithRetry(SafeFileHandle handle)
+    {
+        for (int attempt = 0; attempt < 20; attempt++)
+        {
+            if (TrySetDeleteDisposition(handle)) return;
+            int error = Marshal.GetLastWin32Error();
+            if (error is not (32 or 145) || attempt == 19) throw Refused("carrier_spool_cleanup_refused");
+            Thread.Sleep(25);
+        }
+    }
+    private static bool TrySetDeleteDisposition(SafeFileHandle handle) { var disposition = new FileDispositionInformation { DeleteFile = true }; return SetFileInformationByHandle(handle, FileDispositionInformationClass, ref disposition, (uint)Marshal.SizeOf<FileDispositionInformation>()); }
     private static FileState VerifyDirectory(SafeFileHandle handle) { FileState state = ReadState(handle); if (!state.IsDirectory || state.IsReparsePoint) throw Refused("carrier_spool_path_refused"); return state; }
     private static FileState VerifyFile(SafeFileHandle handle, int maximum, int? expected = null) { FileState state = ReadState(handle); if (state.IsDirectory || state.IsReparsePoint || state.Length < 0 || state.Length > maximum || (expected.HasValue && state.Length != expected.Value)) throw Refused("carrier_spool_file_refused"); return state; }
     private static FileState ReadState(SafeFileHandle handle) { if (!GetFileInformationByHandle(handle, out ByHandleFileInformation info)) throw Refused("carrier_spool_handle_refused"); return new(info.FileAttributes, ((long)info.FileSizeHigh << 32) | info.FileSizeLow, ((ulong)info.FileIndexHigh << 32) | info.FileIndexLow); }
