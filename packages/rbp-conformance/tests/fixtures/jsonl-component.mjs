@@ -1,5 +1,14 @@
 const mode = process.argv[2] ?? "good";
-if (mode === "stderr-exit" || mode === "stderr-eacces-exit") {
+if (mode === "stderr-exit" || mode === "stderr-eacces-exit" || mode === "stderr-json-eacces-exit") {
+  if (mode === "stderr-json-eacces-exit") {
+    await new Promise((resolve) => {
+      process.stderr.write(
+        `${JSON.stringify({ code: "EACCES", message: "SECRET_CANARY" })}\n`,
+        resolve,
+      );
+    });
+    process.exit(1);
+  }
   const code = mode === "stderr-eacces-exit" ? "EACCES" : "EADDRINUSE";
   const message = code === "EACCES" ? "permission denied" : "address already in use";
   await new Promise((resolve) => {

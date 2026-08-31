@@ -468,9 +468,10 @@ class ProductionRuntimeLaunchGuardError extends Error {
  * exists to survive, so treating only `EADDRINUSE` as retryable made that loop
  * unreachable for the dominant Windows failure mode.
  *
- * The message branch carries the load here: the failure arrives as the child
- * fixture's stderr text relayed through `readinessExitError`, which has no
- * errno to inspect. The errno branch still matters for in-process bind probes.
+ * The message branch carries a value-safe `bind_error=<code>` marker emitted
+ * only when the child's stderr contained both a listen/bind context and the
+ * canonical code. The errno branch also requires listen/bind context so a
+ * file or process permission failure cannot be mistaken for a port race.
  */
 export function retryableFixtureBindError(error: unknown): boolean {
   if (error instanceof AggregateError) {
@@ -478,9 +479,21 @@ export function retryableFixtureBindError(error: unknown): boolean {
   }
   if (!(error instanceof Error)) return false;
   const code = (error as NodeJS.ErrnoException).code;
-  if (code === "EADDRINUSE" || code === "EACCES" || code === "EADDRNOTAVAIL") return true;
+  const syscall = (error as NodeJS.ErrnoException).syscall;
+  const hasBindContext = syscall === "listen" || syscall === "bind" ||
+    /\b(?:listen|bind)\b/iu.test(error.message);
   if (
-    /\bEADDRINUSE\b|\bEACCES\b|\bWSAEACCES\b|\bEADDRNOTAVAIL\b|address already in use|permission denied/iu.test(
+    hasBindContext &&
+    (
+      code === "EADDRINUSE" || code === "EACCES" || code === "WSAEACCES" ||
+      code === "EADDRNOTAVAIL" ||
+      /\b(?:EADDRINUSE|EACCES|WSAEACCES|EADDRNOTAVAIL)\b/u.test(error.message)
+    )
+  ) {
+    return true;
+  }
+  if (
+    /\bbind_error=(?:EADDRINUSE|EACCES|WSAEACCES|EADDRNOTAVAIL)\b/u.test(
       error.message,
     )
   ) {

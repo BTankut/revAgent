@@ -708,6 +708,16 @@ describe("strict JSONL process control", () => {
     })).rejects.toThrow(
       /exited before readiness \(1\).*EACCES/u,
     );
+
+    await expect(StrictJsonlProcess.start({
+      componentId: "addin_loopback_fixture",
+      command: command("stderr-json-eacces-exit"),
+      absoluteWorkingDirectory: here,
+      expectedReadinessFields: { component: "fixture-test" },
+      requiredActions: ["shutdown"],
+    })).rejects.toThrow(
+      /exited before readiness \(1\).*\{"code":"EACCES"\}/u,
+    );
   });
 
   it("persists redacted start evidence before a caller catches and re-wraps the failure", async () => {

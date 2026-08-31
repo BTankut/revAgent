@@ -196,7 +196,7 @@ const RETAINED_DIAGNOSTIC_KEYS = new Set([
 
 const RETAINED_DIAGNOSTIC_VALUES: Readonly<Record<string, ReadonlySet<string>>> = Object.freeze({
   actions: new Set(["apply_document_context", "fail", "ping", "poll_document_context", "read_c39_origin_provenance", "read_recovery_observations", "release", "shutdown", "snapshot_evidence", "stall"]),
-  code: new Set(["EADDRINUSE", "planned_error"]),
+  code: new Set(["EADDRINUSE", "EACCES", "WSAEACCES", "EADDRNOTAVAIL", "planned_error"]),
   component: new Set(["addin_loopback_fixture", "bridge_simulator", "fixture-test", "gateway_stub"]),
   event: new Set(["terminal_persisted"]),
   phase: new Set(["pre_ready", "ready", "stdio_closed"]),
@@ -247,10 +247,13 @@ function redactDiagnosticLine(input: string): string {
   } catch {
     const tokens: string[] = [];
     if (/Authorization:\s*(?:Bearer|Basic)\s+/iu.test(input)) tokens.push("Authorization=[redacted]");
-    const retryableBindCode = input.match(
-      /\b(?:EADDRINUSE|EACCES|WSAEACCES|EADDRNOTAVAIL)\b/u,
-    )?.[0];
-    if (retryableBindCode !== undefined) tokens.push(retryableBindCode);
+    const retryableBindMatch = input.match(
+      /\b(?:listen|bind)\b[^\r\n]{0,160}?\b(EADDRINUSE|EACCES|WSAEACCES|EADDRNOTAVAIL)\b|\b(EADDRINUSE|EACCES|WSAEACCES|EADDRNOTAVAIL)\b[^\r\n]{0,160}?\b(?:listen|bind)\b/iu,
+    );
+    const retryableBindCode = retryableBindMatch?.[1] ?? retryableBindMatch?.[2];
+    if (retryableBindCode !== undefined) {
+      tokens.push(`bind_error=${retryableBindCode.toUpperCase()}`);
+    }
     if (input === "early stderr tail") tokens.push(input);
     redacted = tokens.length === 0 ? "[diagnostic omitted]" : tokens.join(" ");
   }
