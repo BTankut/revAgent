@@ -28,6 +28,7 @@ public sealed partial class RbpConnectionCoordinatorTests
         var cycle = new FakeConnectionCycle(responder.Respond,
             grantedConnectionCapabilities: RouteProofCapabilities(),
             connectionId: "019f9add-7a83-7d11-a6a9-d2f8108c0101");
+        var factory = new FakeConnectionCycleFactory(cycle);
         RbpRecoveryCarrierReservation reservation =
             await PrepareRecoveryReservationAsync(store);
         using (RbpRecoveredPayload? initial =
@@ -39,7 +40,7 @@ public sealed partial class RbpConnectionCoordinatorTests
             Assert.NotNull(initial);
         }
         var coordinator = Coordinator(
-            new FakeConnectionCycleFactory(cycle),
+            factory,
             store,
             new MutableSessionCatalog(LocalSession(8080, 1000)),
             clock,
@@ -84,15 +85,29 @@ public sealed partial class RbpConnectionCoordinatorTests
         await EventuallyAsync(async () =>
             (await store.GetReceiveFrontierAsync(reservation.Rsid))
                 .LastJournaledSequence == 2);
-        await EventuallyAsync(() =>
-            coordinator.GetSnapshot().ActiveInvocationCount == 0 &&
-            AttemptStopState(coordinator) is 2 or 5);
         _ = Assert.Single(cycle.Sent, item =>
             item.Scope == RbpEnvelopeScope.Data &&
             item.Id == reservation.RecoveryInvocationId);
-
-        Task<RbpCoordinatorTeardownResult> teardown =
-            coordinator.RequestStopTeardown();
+        object coordinatorSync = typeof(RbpConnectionCoordinator).GetField(
+            "_sync", BindingFlags.Instance | BindingFlags.NonPublic)?
+            .GetValue(coordinator) ?? throw new InvalidOperationException(
+                "Coordinator synchronization root was unavailable.");
+        Task<RbpCoordinatorTeardownResult>? teardown = null;
+        for (int attempt = 0; attempt < 1_000 && teardown is null; attempt++)
+        {
+            lock (coordinatorSync)
+            {
+                RbpConnectionCoordinatorSnapshot current =
+                    coordinator.GetSnapshot();
+                if (current.ActiveInvocationCount == 0 &&
+                    AttemptStopState(coordinator) is 2 or 5)
+                {
+                    teardown = coordinator.RequestStopTeardown();
+                }
+            }
+            if (teardown is null) await Task.Delay(5);
+        }
+        Assert.NotNull(teardown);
         stop.Cancel();
         RbpCoordinatorTeardownResult result = await teardown.WaitAsync(
             TimeSpan.FromSeconds(5));
