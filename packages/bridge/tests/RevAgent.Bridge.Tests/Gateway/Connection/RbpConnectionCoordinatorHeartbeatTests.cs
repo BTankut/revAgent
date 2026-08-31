@@ -328,7 +328,7 @@ public sealed partial class RbpConnectionCoordinatorTests
             store,
             new MutableSessionCatalog(),
             clock,
-            closeTimeout: TimeSpan.FromMilliseconds(20));
+            closeTimeout: TimeSpan.FromMilliseconds(200));
         using var stop = new CancellationTokenSource();
         Task run = coordinator.RunAsync(stop.Token);
 
