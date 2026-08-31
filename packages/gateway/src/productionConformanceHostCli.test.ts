@@ -634,9 +634,10 @@ describe("WP-12 conformance host shutdown", () => {
           else reject(new Error("unexpected child readiness message"));
         });
       });
+      const exitedPromise = childExit(child);
       child.send({ action: "STOP" });
       child.send({ action: "STOP" });
-      const exited = await childExit(child);
+      const exited = await exitedPromise;
       expect(exited).toEqual({ code: 0, signal: null });
       expect(stderr).not.toContain("RemoveEnvironmentCleanupHook");
       expect(stderr).not.toMatch(/native abort|assertion failed/i);
