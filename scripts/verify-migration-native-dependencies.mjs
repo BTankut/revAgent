@@ -1,4 +1,9 @@
-import Database from "better-sqlite3";
+import { createRequire } from "node:module";
+
+const gatewayRequire = createRequire(
+  new URL("../packages/gateway/package.json", import.meta.url),
+);
+const Database = gatewayRequire("better-sqlite3");
 
 const database = new Database(":memory:");
 try {
