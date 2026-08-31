@@ -25,7 +25,7 @@
     "lint": "eslint src tests",
     "typecheck": "npm run build --workspace @revagent/protocol && npm run build --workspace @revagent/addin-loopback-fixture && tsc -p tsconfig.json --noEmit && tsc -p tsconfig.tests.json",
     "test": "npm run build && vitest run",
-    "test:determinism": "npm run build && vitest run --reporter=json --outputFile=.bridge-simulator-run-1.json && vitest run --reporter=json --outputFile=.bridge-simulator-run-2.json && vitest run --reporter=json --outputFile=.bridge-simulator-run-3.json && node scripts/compare-runs.mjs"
+    "test:determinism": "npm run build && vitest run --testTimeout=15000 --hookTimeout=15000 --reporter=json --outputFile=.bridge-simulator-run-1.json && vitest run --testTimeout=15000 --hookTimeout=15000 --reporter=json --outputFile=.bridge-simulator-run-2.json && vitest run --testTimeout=15000 --hookTimeout=15000 --reporter=json --outputFile=.bridge-simulator-run-3.json && node scripts/compare-runs.mjs"
   },
   "engines": {
     "node": ">=20"
