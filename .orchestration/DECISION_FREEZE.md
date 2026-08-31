@@ -3,7 +3,7 @@
 Status: RECOVERED CONTROL PLANE / DESIGN-FROZEN / NOT ACCEPTED
 Control-plane authority: local operator-approved orchestration state
 Canonical path:
-C:\Users\BT\Projects\revAgent\.orchestration\DECISION_FREEZE.md
+.orchestration/DECISION_FREEZE.md
 
 This file is the first recovered authoritative local Decision Freeze instance.
 The original orchestration bundle required WP-01 to create this file but did not
@@ -152,16 +152,14 @@ implementation stops at a new exact-scope gate.
 ### Design-package provenance
 
 Design package:
-C:\Users\BT\Projects\revAgent\.orchestration\artifacts\WP-12\
-recovery-incident-audit\
+.orchestration/artifacts/WP-12/recovery-incident-audit/
 20260826T073324Z-c39-route-rebind-protocol-design.md
 
 Design-package SHA-256:
 7415b3d8ccf100a80bb65ed006c03605041182afb77fbe5f851b021392eece75
 
 Handoff:
-C:\Users\BT\Projects\revAgent\.orchestration\artifacts\WP-12\
-recovery-incident-audit\
+.orchestration/artifacts/WP-12/recovery-incident-audit/
 20260826T073324Z-c39-route-rebind-design-handoff.json
 
 Handoff SHA-256:
