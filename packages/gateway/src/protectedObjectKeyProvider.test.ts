@@ -42,6 +42,6 @@ describe("C39 protected object key providers", () => {
   it.runIf(process.platform === "linux")("keeps prior snapshot internally and fails closed on durable live-key removal", async () => {
     const directory = await root(); const file = path.join(directory, "c39.json"); const previous = Buffer.alloc(32, 2).toString("base64"); await writeFile(file, document("current", { current: key64, old: previous })); await chmod(file, 0o400);
     const required = inventory(["old"]); const provider = new LinuxFileProtectedObjectKeyProvider({ keyFilePath: file, inventory: required }); expect(await provider.snapshot()).not.toBeNull();
-    await writeFile(file, document("current", { current: key64 })); await chmod(file, 0o400); expect(await provider.snapshot()).toBeNull();
+    await chmod(file, 0o600); await writeFile(file, document("current", { current: key64 })); await chmod(file, 0o400); expect(await provider.snapshot()).toBeNull();
   });
 });
