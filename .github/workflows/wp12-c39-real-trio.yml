@@ -94,13 +94,19 @@ jobs:
             throw "Isolated C39 source mismatch: $actualHead"
           }
           [IO.File]::AppendAllText($env:GITHUB_ENV, "C39_SOURCE_ROOT=$sourceRoot`n", [Text.UTF8Encoding]::new($false))
-      - name: Install and build workspace
+      - name: Install, verify shipped native tools, and build workspace
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           Set-Location -LiteralPath $env:C39_SOURCE_ROOT
-          npm ci
+          npm ci --ignore-scripts
           if ($LASTEXITCODE -ne 0) { throw "npm ci failed with exit code $LASTEXITCODE" }
+          npm run verify:native-dependencies
+          if ($LASTEXITCODE -ne 0) { throw "Gateway native verification failed with exit code $LASTEXITCODE" }
+          node -e "const D=require('./packages/bridge-simulator/node_modules/better-sqlite3');const d=new D(':memory:');d.exec('create table t(v integer);insert into t values(39)');if(d.prepare('select v from t').get().v!==39)process.exit(2);d.close();"
+          if ($LASTEXITCODE -ne 0) { throw "Bridge Simulator native verification failed with exit code $LASTEXITCODE" }
+          node -e "const e=require('esbuild');const r=e.transformSync('const value: number = 39',{loader:'ts'});if(!r.code.includes('value = 39'))process.exit(3);"
+          if ($LASTEXITCODE -ne 0) { throw "esbuild verification failed with exit code $LASTEXITCODE" }
           npm run build --workspace @revagent/protocol
           if ($LASTEXITCODE -ne 0) { throw "Protocol build failed with exit code $LASTEXITCODE" }
           npm run build --workspace @revagent/addin-loopback-fixture
