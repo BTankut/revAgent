@@ -78,24 +78,6 @@ jobs:
           node-version: 24.14.1
           cache: npm
           cache-dependency-path: package-lock.json
-      - name: Prepare bounded Python for native Node modules
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $pythonVersion = '3.12.10'
-          $expectedSha256 = '4acbed6dd1c744b0376e3b1cf57ce906f9dc9e95e68824584c8099a63025a3c3'
-          $archive = Join-Path $env:RUNNER_TEMP "python-$pythonVersion-embed-amd64.zip"
-          $pythonRoot = Join-Path $env:RUNNER_TEMP "python-$pythonVersion-embed-amd64"
-          Invoke-WebRequest -Uri "https://www.python.org/ftp/python/$pythonVersion/python-$pythonVersion-embed-amd64.zip" -OutFile $archive
-          $actualSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash.ToLowerInvariant()
-          if (-not [string]::Equals($actualSha256, $expectedSha256, [StringComparison]::Ordinal)) {
-            throw "Portable Python archive digest mismatch: $actualSha256"
-          }
-          Expand-Archive -LiteralPath $archive -DestinationPath $pythonRoot -Force
-          $python = Join-Path $pythonRoot 'python.exe'
-          & $python --version
-          if ($LASTEXITCODE -ne 0) { throw 'Portable Python failed its version probe.' }
-          [IO.File]::AppendAllText($env:GITHUB_ENV, "PYTHON=$python`n", [Text.UTF8Encoding]::new($false))
       - name: Install and build workspace
         shell: pwsh
         run: |
