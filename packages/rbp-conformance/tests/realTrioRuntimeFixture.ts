@@ -1326,14 +1326,12 @@ function preControlWatcherSnapshotState(
   // A new process may expose an exact empty genesis ring before its first
   // watcher probe. This is a wait-only state, never a usable route seed.
   if (snapshot.rows.length === 0 && lowWater === 0n && highWater === 0n) {
-    return Object.freeze({ kind: "bootstrap_pending" });
+    return snapshot.seedStatus === "pending" && pendingNoProbe &&
+      (compact === undefined || compact === null)
+      ? Object.freeze({ kind: "bootstrap_pending" })
+      : Object.freeze({ kind: "invalid" });
   }
   if (lowWater > 1n) {
-    if (snapshot.seedStatus === "pending" && (pendingOpenCycle || pendingNoProbe || pendingUnacknowledged) &&
-        (compact === undefined || compact === null)) {
-      return Object.freeze({ kind: pendingOpenCycle ? "cycle_pending" :
-        pendingUnacknowledged ? "ack_pending" : "bootstrap_pending" });
-    }
     return compactValid ? Object.freeze({ kind: "seed", seed: compact! }) : Object.freeze({ kind: "invalid" });
   }
   if (snapshot.rows.length === 0 || snapshot.rows.some((row) => !/^[1-9][0-9]*$/u.test(row.cursor)) ||
@@ -1351,7 +1349,10 @@ function preControlWatcherSnapshotState(
       : Object.freeze({ kind: "invalid" });
   }
   if (parsed.currentWatcher === null || parsed.currentWatcher.watcherOrdinal < 1) {
-    return pendingNoProbe ? Object.freeze({ kind: "bootstrap_pending" }) : Object.freeze({ kind: "invalid" });
+    return snapshot.seedStatus === "pending" && pendingNoProbe &&
+      (compact === undefined || compact === null)
+      ? Object.freeze({ kind: "bootstrap_pending" })
+      : Object.freeze({ kind: "invalid" });
   }
   // A seed is valid only after every retained watcher history has settled.
   // In particular, a later empty probe cannot erase an unacknowledged send in
@@ -1377,7 +1378,8 @@ function preControlWatcherSnapshotState(
   if (unacknowledged.length === 1 && outstanding !== undefined &&
       outstanding.watcherOrdinal === parsed.currentWatcher.watcherOrdinal &&
       outstanding.sequence === parsed.currentWatcher.lastSentSequence) {
-    return snapshot.seedStatus === undefined || pendingUnacknowledged
+    return snapshot.seedStatus === "pending" && pendingUnacknowledged &&
+      (compact === undefined || compact === null)
       ? Object.freeze({ kind: "ack_pending" })
       : Object.freeze({ kind: "invalid" });
   }
@@ -1392,8 +1394,19 @@ function snapshotsAreSameCompleteGeneration(
     const candidate = second.rows[index];
     return candidate !== undefined && candidate.cursor === row.cursor && candidate.at === row.at && candidate.line === row.line;
   });
+  const firstSeed = first.settledWatcherSeed;
+  const secondSeed = second.settledWatcherSeed;
+  const sameSeed = firstSeed === secondSeed ||
+    (firstSeed !== undefined && firstSeed !== null && secondSeed !== undefined && secondSeed !== null &&
+     firstSeed.generation === secondSeed.generation &&
+     firstSeed.highWaterCursor === secondSeed.highWaterCursor &&
+     firstSeed.watcherOrdinal === secondSeed.watcherOrdinal &&
+     firstSeed.rsidHash === secondSeed.rsidHash &&
+     firstSeed.lastSentSequence === secondSeed.lastSentSequence &&
+     firstSeed.lastAckSequence === secondSeed.lastAckSequence);
   return first.generation === second.generation && first.highWaterCursor === second.highWaterCursor &&
-    first.lowWaterCursor === second.lowWaterCursor && sameRows;
+    first.lowWaterCursor === second.lowWaterCursor && first.seedStatus === second.seedStatus &&
+    first.seedReason === second.seedReason && sameSeed && sameRows;
 }
 
 interface CurrentRouteAuditIdentity {

@@ -575,8 +575,14 @@ describe("WP-12 real-trio fixture document route gate", () => {
       cursorRow("3", "queue", "durably_queued", 1, hash), cursorRow("4", "send", "sent", 1, hash),
       ...(ack ? [cursorRow("5", "ack", "durably_acknowledged", 1, hash)] : []),
     ];
-    const snapshot = (values: readonly ReturnType<typeof cursorRow>[]) => ({ generation: 1, lowWaterCursor: "1",
-      highWaterCursor: values.at(-1)!.cursor, rows: values });
+    const snapshot = (values: readonly ReturnType<typeof cursorRow>[]) => {
+      const acknowledged = values.length === 5;
+      return { generation: 1, lowWaterCursor: "1", highWaterCursor: values.at(-1)!.cursor, rows: values,
+        seedStatus: acknowledged ? "valid" as const : "pending" as const,
+        seedReason: acknowledged ? null : "unacked" as const,
+        settledWatcherSeed: acknowledged ? { generation: 1, highWaterCursor: "5", watcherOrdinal: 1,
+          rsidHash: hash, lastSentSequence: 1, lastAckSequence: 1 } : null };
+    };
     const route = { processEpoch: epoch, rsidHash: hash, observedSequence: 1, contextDigest: "d".repeat(64),
       routeDigest: `sha256:${"e".repeat(64)}`, recordDigest: `sha256:${"f".repeat(64)}`,
       sessionBindingDigest: `sha256:${"1".repeat(64)}`, connectionDigest: `sha256:${"2".repeat(64)}`,
@@ -600,10 +606,7 @@ describe("WP-12 real-trio fixture document route gate", () => {
         const value = now < 100
           ? { ...snapshot(rows(false).slice(0, 2)), seedStatus: "pending" as const,
             seedReason: "open_cycle" as const, settledWatcherSeed: null }
-          : { ...snapshot(rows(now >= 300)), seedStatus: now >= 300 ? "valid" as const : "pending" as const,
-            seedReason: now >= 300 ? null : "unacked" as const,
-            settledWatcherSeed: now >= 300 ? { generation: 1, highWaterCursor: "5", watcherOrdinal: 1,
-              rsidHash: hash, lastSentSequence: 1, lastAckSequence: 1 } : null };
+          : snapshot(rows(now >= 300));
         return reads === 2 ? { ...value, rows: value.rows.map((row, index) => index === 0 ? { ...row, at: "churn" } : row) } : value;
       } } as never,
       readGatewayAuditOutcome: async () => {
@@ -616,6 +619,20 @@ describe("WP-12 real-trio fixture document route gate", () => {
     });
     expect(bundle.seed).toMatchObject({ generation: 1, rsidHash: hash, lastSentSequence: 1, lastAckSequence: 1 });
     expect(now).toBe(300);
+    // A/B equality also binds the reducer-authored seed metadata, not just the
+    // retained rows. A metadata transition forces a fresh complete bundle.
+    now = 0;
+    let metadataReads = 0;
+    const complete = snapshot(rows(true));
+    const withoutSeedMetadata = { generation: complete.generation, lowWaterCursor: complete.lowWaterCursor,
+      highWaterCursor: complete.highWaterCursor, rows: complete.rows };
+    const rebound = await capturePreControlDocumentContextBundle({
+      supervisor: { readDocumentContextSnapshot: () => metadataReads++ === 0 ? withoutSeedMetadata : complete } as never,
+      readGatewayAuditOutcome: async () => ({ outcome: "success", audit } as const),
+      timeoutMs: 200, pollIntervalMs: 100, now: () => now, sleep,
+    });
+    expect(rebound.seed.lastAckSequence).toBe(1);
+    expect(now).toBe(100);
     // An ACK one poll before the deadline remains admissible.
     now = 0;
     const nearBound = await capturePreControlDocumentContextBundle({
@@ -652,13 +669,40 @@ describe("WP-12 real-trio fixture document route gate", () => {
       cursorRow("3", "queue", "durably_queued", 1, hash), cursorRow("4", "send", "sent", 1, hash),
       cursorRow("5", "ack", "durably_acknowledged", 2, hash),
     ];
-    const snapshot = (generation: number, rows = wrongAckRows) => ({ generation, lowWaterCursor: "1",
-      highWaterCursor: rows.at(-1)!.cursor, rows });
+    const snapshot = (generation: number, rows = wrongAckRows) => {
+      const malformed = rows.length === wrongAckRows.length;
+      return { generation, lowWaterCursor: "1", highWaterCursor: rows.at(-1)!.cursor, rows,
+        seedStatus: malformed ? "invalid" as const : "pending" as const,
+        seedReason: malformed ? "ack_unbacked" as const : "unacked" as const,
+        settledWatcherSeed: null };
+    };
     let sleeps = 0;
     const sleep = async (): Promise<void> => { sleeps += 1; };
     await expect(capturePreControlDocumentContextBundle({
       supervisor: { readDocumentContextSnapshot: () => snapshot(1) } as never,
       readGatewayAuditOutcome: async () => ({ outcome: "success", audit } as const), timeoutMs: 1_000, now: () => 0, sleep,
+    })).rejects.toMatchObject({ reason: "invalid_history" } satisfies Partial<RealTrioPreControlCaptureError>);
+    expect(sleeps).toBe(0);
+    await expect(capturePreControlDocumentContextBundle({
+      supervisor: { readDocumentContextSnapshot: () => ({ generation: 1, lowWaterCursor: "0", highWaterCursor: "0",
+        rows: [], seedStatus: "valid", seedReason: null, settledWatcherSeed: null }) } as never,
+      readGatewayAuditOutcome: async () => ({ outcome: "success", audit } as const),
+      timeoutMs: 1_000, now: () => 0, sleep,
+    })).rejects.toMatchObject({ reason: "invalid_history" } satisfies Partial<RealTrioPreControlCaptureError>);
+    await expect(capturePreControlDocumentContextBundle({
+      supervisor: { readDocumentContextSnapshot: () => ({ ...snapshot(1, wrongAckRows.slice(1, 4)),
+        lowWaterCursor: "2", seedStatus: "pending", seedReason: "unacked" }) } as never,
+      readGatewayAuditOutcome: async () => ({ outcome: "success", audit } as const),
+      timeoutMs: 1_000, now: () => 0, sleep,
+    })).rejects.toMatchObject({ reason: "invalid_history" } satisfies Partial<RealTrioPreControlCaptureError>);
+    await expect(capturePreControlDocumentContextBundle({
+      supervisor: { readDocumentContextSnapshot: () => {
+        const pending = snapshot(1, wrongAckRows.slice(0, 4));
+        return { generation: pending.generation, lowWaterCursor: pending.lowWaterCursor,
+          highWaterCursor: pending.highWaterCursor, rows: pending.rows };
+      } } as never,
+      readGatewayAuditOutcome: async () => ({ outcome: "success", audit } as const),
+      timeoutMs: 1_000, now: () => 0, sleep,
     })).rejects.toMatchObject({ reason: "invalid_history" } satisfies Partial<RealTrioPreControlCaptureError>);
     expect(sleeps).toBe(0);
     const snapshots = [snapshot(1, wrongAckRows.slice(0, 4)), snapshot(2, wrongAckRows.slice(0, 4))];
