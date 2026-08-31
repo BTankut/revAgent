@@ -247,7 +247,10 @@ function redactDiagnosticLine(input: string): string {
   } catch {
     const tokens: string[] = [];
     if (/Authorization:\s*(?:Bearer|Basic)\s+/iu.test(input)) tokens.push("Authorization=[redacted]");
-    if (/EADDRINUSE/u.test(input)) tokens.push("EADDRINUSE");
+    const retryableBindCode = input.match(
+      /\b(?:EADDRINUSE|EACCES|WSAEACCES|EADDRNOTAVAIL)\b/u,
+    )?.[0];
+    if (retryableBindCode !== undefined) tokens.push(retryableBindCode);
     if (input === "early stderr tail") tokens.push(input);
     redacted = tokens.length === 0 ? "[diagnostic omitted]" : tokens.join(" ");
   }
