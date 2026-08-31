@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -172,6 +173,33 @@ public sealed partial class RbpConnectionCoordinatorTests
         }
 
         Assert.Fail("The deterministic coordinator condition was not met.");
+    }
+
+    private static async Task<Task<RbpCoordinatorTeardownResult>>
+        RequestNormalStopTeardownWhenReadyAsync(
+            RbpConnectionCoordinator coordinator)
+    {
+        object coordinatorSync = typeof(RbpConnectionCoordinator).GetField(
+            "_sync", BindingFlags.Instance | BindingFlags.NonPublic)?
+            .GetValue(coordinator) ?? throw new InvalidOperationException(
+                "Coordinator synchronization root was unavailable.");
+        for (int attempt = 0; attempt < 1_000; attempt++)
+        {
+            lock (coordinatorSync)
+            {
+                RbpConnectionCoordinatorSnapshot current =
+                    coordinator.GetSnapshot();
+                if (current.ActiveInvocationCount == 0 &&
+                    AttemptStopState(coordinator) is 2 or 5)
+                {
+                    return coordinator.RequestStopTeardown();
+                }
+            }
+            await Task.Delay(5);
+        }
+
+        Assert.Fail("The coordinator never reached a normal-stop state.");
+        throw new InvalidOperationException("Unreachable normal-stop path.");
     }
 
     private sealed class MutableSessionCatalog : IRbpLocalSessionCatalog

@@ -88,26 +88,8 @@ public sealed partial class RbpConnectionCoordinatorTests
         _ = Assert.Single(cycle.Sent, item =>
             item.Scope == RbpEnvelopeScope.Data &&
             item.Id == reservation.RecoveryInvocationId);
-        object coordinatorSync = typeof(RbpConnectionCoordinator).GetField(
-            "_sync", BindingFlags.Instance | BindingFlags.NonPublic)?
-            .GetValue(coordinator) ?? throw new InvalidOperationException(
-                "Coordinator synchronization root was unavailable.");
-        Task<RbpCoordinatorTeardownResult>? teardown = null;
-        for (int attempt = 0; attempt < 1_000 && teardown is null; attempt++)
-        {
-            lock (coordinatorSync)
-            {
-                RbpConnectionCoordinatorSnapshot current =
-                    coordinator.GetSnapshot();
-                if (current.ActiveInvocationCount == 0 &&
-                    AttemptStopState(coordinator) is 2 or 5)
-                {
-                    teardown = coordinator.RequestStopTeardown();
-                }
-            }
-            if (teardown is null) await Task.Delay(5);
-        }
-        Assert.NotNull(teardown);
+        Task<RbpCoordinatorTeardownResult> teardown =
+            await RequestNormalStopTeardownWhenReadyAsync(coordinator);
         stop.Cancel();
         RbpCoordinatorTeardownResult result = await teardown.WaitAsync(
             TimeSpan.FromSeconds(5));

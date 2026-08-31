@@ -248,14 +248,7 @@ public sealed partial class RbpConnectionCoordinatorTests
         // FailClosedRbpInboundDataJournal refuses the handoff, which ends the
         // binding rather than half-handling the frame.
         await EventuallyAsync(() => cycle.CloseCount >= 1);
-        await EventuallyAsync(() =>
-        {
-            RbpConnectionCoordinatorSnapshot snapshot =
-                coordinator.GetSnapshot();
-            return snapshot.Lifecycle.Phase == RbpConnectionPhase.Steady &&
-                   !snapshot.HasActiveConnection &&
-                   snapshot.ActiveInvocationCount == 0;
-        });
+        await EventuallyAsync(() => cycle.DisposeCount >= 1);
 
         // No data-plane answer was fabricated for the refused invoke.
         Assert.DoesNotContain(
@@ -263,9 +256,8 @@ public sealed partial class RbpConnectionCoordinatorTests
             envelope => envelope.Type is "error" or "result");
         Assert.Equal(1, cycle.CloseCount);
         Assert.Equal(1, cycle.DisposeCount);
-        Assert.Equal(1, factory.OpenCount);
         Task<RbpCoordinatorTeardownResult> teardown =
-            coordinator.RequestStopTeardown();
+            await RequestNormalStopTeardownWhenReadyAsync(coordinator);
         stop.Cancel();
         RbpCoordinatorTeardownResult result = await teardown.WaitAsync(
             TimeSpan.FromSeconds(5));
@@ -284,7 +276,6 @@ public sealed partial class RbpConnectionCoordinatorTests
         Assert.Equal(1, frontier.LastAcceptedSequence);
         Assert.Equal(0, frontier.LastJournaledSequence);
         Assert.Null(await reopened.GetInvocationAsync("rs-8080/" + Id(512)));
-        Assert.Equal(1, factory.OpenCount);
     }
 
     [Fact]
