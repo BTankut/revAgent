@@ -2337,3 +2337,16 @@ and this record makes no such claim.
 The remaining work is tracked as the `S1`..`S6` post-session slice queue above,
 with `S5` strictly before `S6`. The product requirements raised by the live
 sessions — including the `R1` proxy reality — remain open in their own namespace.
+
+## WP-12 / WP-13 remediation forward pointer
+
+The bounded WP-12 and WP-13 engineering-evidence closure is recorded in
+[WP12_WP13_REMEDIATION_CLOSURE.md](WP12_WP13_REMEDIATION_CLOSURE.md). That
+record anchors the final product SHA/tree, all thirteen finding dispositions,
+the independent engineering reviews, the reversible disposable-model write,
+the two-binding commit-then-throw proof, and the revoke/session proof.
+
+This forward pointer submits the remediation evidence for protected delivery
+review. It does not alter this milestone ledger: M4 remains
+`in_progress / not_submitted` until the milestone owner explicitly changes
+its state.

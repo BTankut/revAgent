@@ -44,7 +44,10 @@ this repository keeps them apart deliberately.
    `M4_GATE_EVIDENCE.md`; it must never be edited in place.
 7. Earlier milestones: `M1_O1_FREEZE_EVIDENCE.md`, `M2_GATE_EVIDENCE.md`,
    `M3_BRIDGE_GATE_EVIDENCE.md`.
-8. **`AGENTS.md`** — the working discipline, including the slice ritual every
+8. **[WP-12 / WP-13 remediation closure](WP12_WP13_REMEDIATION_CLOSURE.md)**
+   — the durable final engineering-evidence record and its explicit
+   non-acceptance boundary.
+9. **`AGENTS.md`** — the working discipline, including the slice ritual every
    change here follows.
 
 ---
