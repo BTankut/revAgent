@@ -515,6 +515,8 @@ public sealed partial class RbpConnectionCoordinatorTests
             faults.Arm(RbpJournalFaultPoint.BeforeCommit);
             clock.Advance(TimeSpan.FromSeconds(15));
             await faults.Entered.WaitAsync(TimeSpan.FromSeconds(2));
+            await EventuallyAsync(
+                () => clock.HasDelayDueIn(TimeSpan.FromSeconds(65)));
 
             clock.Advance(TimeSpan.FromSeconds(65));
             RbpCoordinatorException failure =

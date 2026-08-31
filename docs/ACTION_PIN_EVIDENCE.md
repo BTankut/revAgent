@@ -53,6 +53,7 @@ rejected forms.
 | --- | --- |
 | `actions/checkout@v6` | `d23441a48e516b6c34aea4fa41551a30e30af803` |
 | `actions/setup-node@v6` | `249970729cb0ef3589644e2896645e5dc5ba9c38` |
+| `actions/setup-dotnet@v5` | `26b0ec14cb23fa6904739307f278c14f94c95bf1` |
 | `actions/setup-python@v6` | `ece7cb06caefa5fff74198d8649806c4678c61a1` |
 | `actions/upload-artifact@v7` | `043fb46d1a93c77aae656e7c1c64a875d1fc6a0a` |
 | `actions/download-artifact@v8` | `3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c` |
@@ -75,8 +76,9 @@ while the approved historical commit remains available. The workflow therefore
 keeps the reviewed immutable commit rather than following the moving tag.
 
 On 2026-09-01, the same REST git-ref resolution admitted
-`actions/setup-python@v6` for the exact delivery CI toolchain gap. The tag
-resolved directly to the immutable commit tabled above.
+`actions/setup-dotnet@v5` and `actions/setup-python@v6` for the exact
+delivery CI toolchain gaps. Both tags resolved directly to the immutable
+commits tabled above.
 
 ## Runner and review boundaries
 

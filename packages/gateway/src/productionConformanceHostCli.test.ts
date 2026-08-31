@@ -606,8 +606,11 @@ describe("WP-12 conformance host shutdown", () => {
         },
         releaseIpc() {
           order.push("ipc");
-          process.stdout.write(JSON.stringify({ order, stops }) + "\\n");
           if (process.connected) process.disconnect();
+          process.stdout.write(
+            JSON.stringify({ order, stops }) + "\\n",
+            () => process.exit(0),
+          );
         },
       });
       process.on("message", (message) => {
