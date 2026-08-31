@@ -620,23 +620,31 @@ describe("WP-12 conformance host shutdown", () => {
           process.exitCode = 1;
         });
       });
-      process.send?.({ ready: true });
+      setImmediate(() => process.send?.({ ready: true }));
     `;
     try {
       await writeFile(childFile, childSource, "utf8");
       const child = fork(childFile, [root], { silent: true });
+      const exitedPromise = childExit(child);
       let stdout = "";
       let stderr = "";
       child.stdout?.on("data", (chunk: Buffer) => { stdout += chunk.toString("utf8"); });
       child.stderr?.on("data", (chunk: Buffer) => { stderr += chunk.toString("utf8"); });
-      await new Promise<void>((resolve, reject) => {
-        child.once("error", reject);
-        child.once("message", (message: unknown) => {
-          if ((message as { readonly ready?: unknown }).ready === true) resolve();
-          else reject(new Error("unexpected child readiness message"));
-        });
-      });
-      const exitedPromise = childExit(child);
+      await Promise.race([
+        new Promise<void>((resolve, reject) => {
+          child.once("error", reject);
+          child.once("message", (message: unknown) => {
+            if ((message as { readonly ready?: unknown }).ready === true) resolve();
+            else reject(new Error("unexpected child readiness message"));
+          });
+        }),
+        exitedPromise.then(({ code, signal }) => {
+          throw new Error(
+            "shutdown child exited before readiness: code=" + String(code) +
+              " signal=" + String(signal) + " stderr=" + stderr,
+          );
+        }),
+      ]);
       child.send({ action: "STOP" });
       child.send({ action: "STOP" });
       const exited = await exitedPromise;
