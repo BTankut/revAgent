@@ -597,7 +597,13 @@ describe("WP-12 real-trio fixture document route gate", () => {
     const bundle = await capturePreControlDocumentContextBundle({
       supervisor: { readDocumentContextSnapshot: () => {
         reads += 1;
-        const value = snapshot(rows(now >= 300));
+        const value = now < 100
+          ? { ...snapshot(rows(false).slice(0, 2)), seedStatus: "pending" as const,
+            seedReason: "open_cycle" as const, settledWatcherSeed: null }
+          : { ...snapshot(rows(now >= 300)), seedStatus: now >= 300 ? "valid" as const : "pending" as const,
+            seedReason: now >= 300 ? null : "unacked" as const,
+            settledWatcherSeed: now >= 300 ? { generation: 1, highWaterCursor: "5", watcherOrdinal: 1,
+              rsidHash: hash, lastSentSequence: 1, lastAckSequence: 1 } : null };
         return reads === 2 ? { ...value, rows: value.rows.map((row, index) => index === 0 ? { ...row, at: "churn" } : row) } : value;
       } } as never,
       readGatewayAuditOutcome: async () => {

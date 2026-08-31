@@ -1102,6 +1102,7 @@ interface ParsedDocumentContextGrammar {
   readonly acknowledgements: ReadonlyMap<string, number>;
   readonly currentWatcherOrdinal: number;
   readonly currentWatcher: RealTrioPreControlWatcherSeed | null;
+  readonly currentCycleOpen: boolean;
 }
 
 function candidateKey(watcherOrdinal: number, rsidHash: `sha256:${string}`, sequence: number): string {
@@ -1119,6 +1120,7 @@ function parseDocumentContextGrammar(input: {
   readonly controlCursor: string;
   readonly precedingProbe: RealTrioDocumentContextCursorRow | null;
   readonly precedingSeed?: RealTrioPreControlWatcherSeed | null;
+  readonly allowOpenCurrentCycle?: boolean;
 }): ParsedDocumentContextGrammar | null {
   if (!Number.isSafeInteger(input.generation) || input.generation < 1 ||
       !/^(?:0|[1-9][0-9]*)$/u.test(input.controlCursor)) return null;
@@ -1260,9 +1262,11 @@ function parseDocumentContextGrammar(input: {
     watcher.cycle = null;
     candidates.push(candidate);
   }
-  if (watcher !== null && watcher.cycle !== null) return null;
+  const currentCycleOpen = watcher !== null && watcher.cycle !== null;
+  if (currentCycleOpen && input.allowOpenCurrentCycle !== true) return null;
   return Object.freeze({ candidates: Object.freeze(candidates), acknowledgements,
     currentWatcherOrdinal: watcher?.ordinal ?? 0,
+    currentCycleOpen,
     currentWatcher: watcher === null ? null : Object.freeze({
       generation: input.generation,
       highWaterCursor: previous.toString(),
@@ -1289,6 +1293,7 @@ type PreControlWatcherSnapshotState =
   | Readonly<{ readonly kind: "seed"; readonly seed: RealTrioPreControlWatcherSeed }>
   | Readonly<{ readonly kind: "ack_pending" }>
   | Readonly<{ readonly kind: "bootstrap_pending" }>
+  | Readonly<{ readonly kind: "cycle_pending" }>
   | Readonly<{ readonly kind: "invalid" }>;
 
 function preControlWatcherSnapshotState(
@@ -1299,8 +1304,20 @@ function preControlWatcherSnapshotState(
       !/^(?:0|[1-9][0-9]*)$/u.test(snapshot.highWaterCursor)) return Object.freeze({ kind: "invalid" });
   const lowWater = BigInt(snapshot.lowWaterCursor);
   const highWater = BigInt(snapshot.highWaterCursor);
+  const pendingReason = snapshot.seedStatus === "pending" ? snapshot.seedReason : null;
+  const pendingOpenCycle = pendingReason === "open_cycle";
+  const pendingNoProbe = pendingReason === "no_probe" || pendingReason === "restart_reset";
+  const pendingUnacknowledged = pendingReason === "unacked";
+  if (snapshot.seedStatus === "invalid" ||
+      (snapshot.seedStatus === "valid" && snapshot.seedReason !== null && snapshot.seedReason !== undefined) ||
+      (snapshot.seedStatus === "pending" &&
+       !pendingOpenCycle && !pendingNoProbe && !pendingUnacknowledged)) {
+    return Object.freeze({ kind: "invalid" });
+  }
   const compact = snapshot.settledWatcherSeed;
   const compactValid = compact !== undefined && compact !== null &&
+    (snapshot.seedStatus === undefined || snapshot.seedStatus === "valid") &&
+    (snapshot.seedReason === undefined || snapshot.seedReason === null) &&
     compact.generation === snapshot.generation && compact.highWaterCursor === snapshot.highWaterCursor &&
     Number.isSafeInteger(compact.watcherOrdinal) && compact.watcherOrdinal >= 1 && isSha256(compact.rsidHash) &&
     ((compact.lastSentSequence === null && compact.lastAckSequence === null) ||
@@ -1312,6 +1329,11 @@ function preControlWatcherSnapshotState(
     return Object.freeze({ kind: "bootstrap_pending" });
   }
   if (lowWater > 1n) {
+    if (snapshot.seedStatus === "pending" && (pendingOpenCycle || pendingNoProbe || pendingUnacknowledged) &&
+        (compact === undefined || compact === null)) {
+      return Object.freeze({ kind: pendingOpenCycle ? "cycle_pending" :
+        pendingUnacknowledged ? "ack_pending" : "bootstrap_pending" });
+    }
     return compactValid ? Object.freeze({ kind: "seed", seed: compact! }) : Object.freeze({ kind: "invalid" });
   }
   if (snapshot.rows.length === 0 || snapshot.rows.some((row) => !/^[1-9][0-9]*$/u.test(row.cursor)) ||
@@ -1319,9 +1341,17 @@ function preControlWatcherSnapshotState(
       BigInt(snapshot.rows[0]!.cursor) !== lowWater ||
       BigInt(snapshot.rows.at(-1)!.cursor) !== highWater) return Object.freeze({ kind: "invalid" });
   const parsed = parseDocumentContextGrammar({ rows: snapshot.rows, generation: snapshot.generation,
-    controlCursor: "0", precedingProbe: null });
-  if (parsed === null || parsed.currentWatcher === null || parsed.currentWatcher.watcherOrdinal < 1) {
+    controlCursor: "0", precedingProbe: null, allowOpenCurrentCycle: pendingOpenCycle });
+  if (parsed === null) {
     return Object.freeze({ kind: "invalid" });
+  }
+  if (parsed.currentCycleOpen) {
+    return pendingOpenCycle && (compact === undefined || compact === null)
+      ? Object.freeze({ kind: "cycle_pending" })
+      : Object.freeze({ kind: "invalid" });
+  }
+  if (parsed.currentWatcher === null || parsed.currentWatcher.watcherOrdinal < 1) {
+    return pendingNoProbe ? Object.freeze({ kind: "bootstrap_pending" }) : Object.freeze({ kind: "invalid" });
   }
   // A seed is valid only after every retained watcher history has settled.
   // In particular, a later empty probe cannot erase an unacknowledged send in
@@ -1335,6 +1365,9 @@ function preControlWatcherSnapshotState(
     return acknowledgedAt === undefined || acknowledgedAt <= candidate.sendTranscriptIndex;
   });
   if (unacknowledged.length === 0) {
+    if (snapshot.seedStatus !== undefined && snapshot.seedStatus !== "valid") {
+      return Object.freeze({ kind: "invalid" });
+    }
     if (compact !== undefined && (!compactValid || compact!.watcherOrdinal !== parsed.currentWatcher.watcherOrdinal ||
         compact!.rsidHash !== parsed.currentWatcher.rsidHash || compact!.lastSentSequence !== parsed.currentWatcher.lastSentSequence ||
         compact!.lastAckSequence !== parsed.currentWatcher.lastAckSequence)) return Object.freeze({ kind: "invalid" });
@@ -1344,7 +1377,9 @@ function preControlWatcherSnapshotState(
   if (unacknowledged.length === 1 && outstanding !== undefined &&
       outstanding.watcherOrdinal === parsed.currentWatcher.watcherOrdinal &&
       outstanding.sequence === parsed.currentWatcher.lastSentSequence) {
-    return Object.freeze({ kind: "ack_pending" });
+    return snapshot.seedStatus === undefined || pendingUnacknowledged
+      ? Object.freeze({ kind: "ack_pending" })
+      : Object.freeze({ kind: "invalid" });
   }
   return Object.freeze({ kind: "invalid" });
 }
