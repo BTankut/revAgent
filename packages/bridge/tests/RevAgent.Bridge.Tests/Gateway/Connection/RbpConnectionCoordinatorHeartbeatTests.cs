@@ -525,7 +525,9 @@ public sealed partial class RbpConnectionCoordinatorTests
             Assert.Equal(
                 RbpCoordinatorErrorCode.NonDrainingConnectionAuthority,
                 failure.ErrorCode);
-            Assert.Equal(0, first.CloseCount);
+            // The bounded deadline may expire before the retained close wins
+            // the scheduler. It may be skipped or start once, never twice.
+            Assert.InRange(first.CloseCount, 0, 1);
             Assert.Equal(0, first.DisposeCount);
             Assert.Equal(1, factory.OpenCount);
             Assert.Empty(second.Sent);
@@ -557,6 +559,8 @@ public sealed partial class RbpConnectionCoordinatorTests
 
         await EventuallyAsync(
             () => coordinator.GetSnapshot().OwnedBackgroundTaskCount == 0);
+        Assert.InRange(first.CloseCount, 0, 1);
+        Assert.Equal(0, first.DisposeCount);
     }
 
     [Fact]
