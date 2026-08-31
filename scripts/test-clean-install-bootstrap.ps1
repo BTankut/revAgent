@@ -15,9 +15,9 @@ if ([string]::IsNullOrWhiteSpace($RepoRoot)) {
 }
 $RepoRoot = [IO.Path]::GetFullPath($RepoRoot)
 . (Join-Path $RepoRoot 'scripts\test-desktop-launcher-evidence.ps1') -RepoRoot $RepoRoot -LibraryOnly
-$fixtureExpectedHostSha256 = '9305492a80f2ef82f8ceae9ac2ec3fb1dc5b6f686f46555253c385a2034a49f7'
+$fixtureExpectedHostSha256 = '2c6ab614fc33c1bed2e878c8f3a6c6fcfdc10176aa7470b0703f49519c3d646c'
 $fixtureExpectedModuleSha256 = 'b21d81ae3ad015b82535ce449454b89ad5cc2fc1d8c9cd0a47820c4a5d6293cc'
-$fixtureExpectedGuiSha256 = '2d92fc06fd192789420d6ec630d35548a835762e823c3a27998e9e0d35b4e2b2'
+$fixtureExpectedGuiSha256 = 'e63f5db6828396a2bfb035c3b789e53a58b27955aef795c5323b2db8b6238553'
 
 function Assert-True {
     param([bool]$Condition, [string]$Message)

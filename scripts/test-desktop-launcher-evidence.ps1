@@ -13,9 +13,9 @@ $publisherPath = Join-Path $RepoRoot 'scripts\publish-desktop-launcher-evidence.
 $hostPath = Join-Path $RepoRoot 'scripts\Invoke-RevAgentUpdaterGuiTestHost.ps1'
 $modulePath = Join-Path $RepoRoot 'scripts\RevAgent.TestFixtureAuthority.psm1'
 $pwshPath = [IO.Path]::GetFullPath((Join-Path $PSHOME 'pwsh.exe'))
-$expectedHostSha256 = '9305492a80f2ef82f8ceae9ac2ec3fb1dc5b6f686f46555253c385a2034a49f7'
+$expectedHostSha256 = '2c6ab614fc33c1bed2e878c8f3a6c6fcfdc10176aa7470b0703f49519c3d646c'
 $expectedModuleSha256 = 'b21d81ae3ad015b82535ce449454b89ad5cc2fc1d8c9cd0a47820c4a5d6293cc'
-$expectedPublisherSha256 = '3104da0dc5754e8f28d91e72919fd7c3d3dba97ce52a7c63f12ff20863163e99'
+$expectedPublisherSha256 = '762a84a595c8b2a630c1010b7e2af50a03f707fb8e1985e50542caf8db240d91'
 
 function Assert-True { param([bool]$Condition,[string]$Message) if (-not $Condition) { throw $Message } }
 function Assert-Equal { param([object]$Actual,[object]$Expected,[string]$Message) if (-not [object]::Equals($Actual,$Expected)) { throw "$Message Expected '$Expected', got '$Actual'." } }
