@@ -78,7 +78,9 @@ public sealed partial class RbpConnectionCoordinatorTests
         // reservation and cannot emit a second byte-identical carrier frame.
         cycle.Deliver(DataEnvelope(
             "invoke", Id(9704), reservation.Rsid, 2,
-            Json($$"""{"invocation_id":"{{reservation.RecoveryInvocationId}}"}""")));
+            Json($$"""{"invocation_id":"{{reservation.RecoveryInvocationId}}"}"""))
+            with
+        { Acknowledgement = reservation.CurrentReservedSequence });
         await EventuallyAsync(async () =>
             (await store.GetReceiveFrontierAsync(reservation.Rsid))
                 .LastJournaledSequence == 2);
@@ -94,7 +96,7 @@ public sealed partial class RbpConnectionCoordinatorTests
             return snapshot.HasActiveConnection &&
                    snapshot.ActiveInvocationCount == 0 &&
                    snapshot.Lifecycle.Phase == RbpConnectionPhase.Steady;
-        }, attempts: 2_000);
+        });
         Task<RbpCoordinatorTeardownResult> teardown =
             coordinator.RequestStopTeardown();
         stop.Cancel();
