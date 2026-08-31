@@ -200,7 +200,7 @@ internal sealed class RbpConformanceOmittedOriginObservation
                     replay, attemptGeneration, sequence, outerDigest))
                 return true;
             if (_marker is not
-                    { State: MarkerState.BoundUnexposed } marker ||
+                { State: MarkerState.BoundUnexposed } marker ||
                 !Same(marker, replay) ||
                 marker.AttemptGeneration != attemptGeneration ||
                 marker.Sequence != sequence ||
@@ -228,7 +228,7 @@ internal sealed class RbpConformanceOmittedOriginObservation
         lock (_sync)
         {
             if (_marker is not
-                    { State: MarkerState.BoundUnexposed or MarkerState.Exposed }
+                { State: MarkerState.BoundUnexposed or MarkerState.Exposed }
                     marker ||
                 !string.Equals(marker.Rsid, rsid, StringComparison.Ordinal) ||
                 marker.Sequence != sequence || marker.OuterDigest is null)

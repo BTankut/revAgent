@@ -319,7 +319,7 @@ public sealed class RbpJournalUnregisterTests
 
             Assert.IsAssignableFrom<OperationCanceledException>(failure);
             Assert.False(failure is RbpJournalException
-                { DurableStateObserved: true });
+            { DurableStateObserved: true });
             Assert.True(cancellation.IsCancellationRequested);
         }
 

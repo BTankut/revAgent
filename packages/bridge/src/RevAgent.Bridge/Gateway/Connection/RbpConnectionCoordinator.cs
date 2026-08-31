@@ -1328,7 +1328,8 @@ internal sealed partial class RbpConnectionCoordinator
         internal AttemptLeafRegistry Registry { get; } = registry;
         internal long AttemptGeneration { get; } = attemptGeneration;
         internal TaskCompletionSource<RbpCoordinatorTeardownResult>
-            TeardownResult { get; } = teardownResult;
+            TeardownResult
+        { get; } = teardownResult;
         internal bool TrySignal() =>
             Interlocked.Exchange(ref _signalled, 1) == 0;
     }

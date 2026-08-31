@@ -455,7 +455,8 @@ public sealed partial class RbpConnectionCoordinatorTests
             cycle.Deliver(DataEnvelope(
                     "invoke", Id(923), "rs-8080", 2,
                     Json($$"""{"invocation_id":"{{secondId}}"}"""))
-                with { Acknowledgement = 1 });
+                with
+            { Acknowledgement = 1 });
             await EventuallyAsync(() => dispatcher.DispatchCalls == 2);
             RbpReceiveFrontier secondFrontier =
                 await store.GetReceiveFrontierAsync("rs-8080");
