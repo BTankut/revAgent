@@ -78,18 +78,40 @@ jobs:
           node-version: 24.14.1
           cache: npm
           cache-dependency-path: package-lock.json
+      - name: Materialize isolated exact C39 source
+        shell: pwsh
+        env:
+          EXPECTED_HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $sourceRoot = Join-Path $env:RUNNER_TEMP ("wp12-c39-source-" + [Guid]::NewGuid().ToString('N'))
+          git -c core.longpaths=true clone --no-hardlinks --no-checkout -- $env:GITHUB_WORKSPACE $sourceRoot
+          if ($LASTEXITCODE -ne 0) { throw 'Could not clone the isolated C39 source.' }
+          git -C $sourceRoot -c advice.detachedHead=false checkout --detach $env:EXPECTED_HEAD_SHA
+          if ($LASTEXITCODE -ne 0) { throw 'Could not check out the exact C39 head.' }
+          $actualHead = (git -C $sourceRoot rev-parse HEAD).Trim()
+          if (-not [string]::Equals($actualHead, $env:EXPECTED_HEAD_SHA, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Isolated C39 source mismatch: $actualHead"
+          }
+          [IO.File]::AppendAllText($env:GITHUB_ENV, "C39_SOURCE_ROOT=$sourceRoot`n", [Text.UTF8Encoding]::new($false))
       - name: Install and build workspace
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          Set-Location -LiteralPath $env:C39_SOURCE_ROOT
           npm ci
+          if ($LASTEXITCODE -ne 0) { throw "npm ci failed with exit code $LASTEXITCODE" }
           npm run build --workspace @revagent/protocol
+          if ($LASTEXITCODE -ne 0) { throw "Protocol build failed with exit code $LASTEXITCODE" }
           npm run build --workspace @revagent/addin-loopback-fixture
+          if ($LASTEXITCODE -ne 0) { throw "Fixture build failed with exit code $LASTEXITCODE" }
           npm run build --workspace @revagent/gateway
+          if ($LASTEXITCODE -ne 0) { throw "Gateway build failed with exit code $LASTEXITCODE" }
       - name: Restore, build, and publish the real C# worker
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          Set-Location -LiteralPath $env:C39_SOURCE_ROOT
           $project = 'packages/bridge/tests/RevAgent.Bridge.RealWorkerHost/RevAgent.Bridge.RealWorkerHost.csproj'
           $artifacts = Join-Path $env:RUNNER_TEMP 'wp12-c39-real-trio-dotnet'
           dotnet restore $project --locked-mode --runtime win-x64 --artifacts-path $artifacts
@@ -99,6 +121,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          Set-Location -LiteralPath $env:C39_SOURCE_ROOT
           $artifactRoot = '.orchestration/artifacts/WP-12/C39/e-real-trio/${{ matrix.binding }}'
           New-Item -ItemType Directory -Force -Path $artifactRoot | Out-Null
           $log = Join-Path $artifactRoot 'real-trio.log'
