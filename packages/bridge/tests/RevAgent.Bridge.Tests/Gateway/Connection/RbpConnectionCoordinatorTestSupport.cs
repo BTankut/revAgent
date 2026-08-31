@@ -12,6 +12,13 @@ using RevAgent.Bridge.Tests.Gateway.Storage;
 
 namespace RevAgent.Bridge.Tests.Gateway.Connection;
 
+[CollectionDefinition(Name, DisableParallelization = true)]
+public sealed class RbpConnectionCoordinatorCollection
+{
+    public const string Name = "RbpConnectionCoordinator";
+}
+
+[Collection(RbpConnectionCoordinatorCollection.Name)]
 public sealed partial class RbpConnectionCoordinatorTests
 {
     private static RbpConnectionCoordinator Coordinator(
