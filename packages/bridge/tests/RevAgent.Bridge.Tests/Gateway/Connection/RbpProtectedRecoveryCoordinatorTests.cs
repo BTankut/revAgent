@@ -94,7 +94,7 @@ public sealed partial class RbpConnectionCoordinatorTests
             return snapshot.HasActiveConnection &&
                    snapshot.ActiveInvocationCount == 0 &&
                    snapshot.Lifecycle.Phase == RbpConnectionPhase.Steady;
-        });
+        }, attempts: 2_000);
         Task<RbpCoordinatorTeardownResult> teardown =
             coordinator.RequestStopTeardown();
         stop.Cancel();
