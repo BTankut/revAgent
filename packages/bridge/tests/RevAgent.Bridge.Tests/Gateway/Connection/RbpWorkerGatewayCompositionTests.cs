@@ -248,21 +248,6 @@ public sealed partial class RbpConnectionCoordinatorTests
         // FailClosedRbpInboundDataJournal refuses the handoff, which ends the
         // binding rather than half-handling the frame.
         await EventuallyAsync(() => cycle.CloseCount >= 1);
-
-        // Accepted but never journaled: the frontier proves the fail-closed
-        // default engaged, so no acknowledgement can ever cover the envelope
-        // and the Gateway keeps retransmission authority.
-        RbpReceiveFrontier frontier =
-            await store.GetReceiveFrontierAsync("rs-8080");
-        Assert.Equal(1, frontier.LastAcceptedSequence);
-        Assert.Equal(0, frontier.LastJournaledSequence);
-
-        // No data-plane answer was fabricated for the refused invoke.
-        Assert.DoesNotContain(
-            cycle.Sent,
-            envelope => envelope.Type is "error" or "result");
-        Assert.Null(await store.GetInvocationAsync("rs-8080/" + Id(512)));
-
         await EventuallyAsync(() =>
         {
             RbpConnectionCoordinatorSnapshot snapshot =
@@ -271,6 +256,11 @@ public sealed partial class RbpConnectionCoordinatorTests
                    !snapshot.HasActiveConnection &&
                    snapshot.ActiveInvocationCount == 0;
         });
+
+        // No data-plane answer was fabricated for the refused invoke.
+        Assert.DoesNotContain(
+            cycle.Sent,
+            envelope => envelope.Type is "error" or "result");
         Assert.Equal(1, cycle.CloseCount);
         Assert.Equal(1, cycle.DisposeCount);
         Assert.Equal(1, factory.OpenCount);
@@ -283,6 +273,17 @@ public sealed partial class RbpConnectionCoordinatorTests
             RbpCoordinatorTeardownDisposition.NormalStopped,
             result.Disposition);
         await run.WaitAsync(TimeSpan.FromSeconds(5));
+        await store.DisposeAsync();
+
+        await using RbpJournalStore reopened = OpenStore(directory, clock);
+        // Accepted but never journaled: reopening the physical journal proves
+        // the fail-closed frontier survived teardown without a fabricated
+        // invocation terminal or acknowledgement.
+        RbpReceiveFrontier frontier =
+            await reopened.GetReceiveFrontierAsync("rs-8080");
+        Assert.Equal(1, frontier.LastAcceptedSequence);
+        Assert.Equal(0, frontier.LastJournaledSequence);
+        Assert.Null(await reopened.GetInvocationAsync("rs-8080/" + Id(512)));
         Assert.Equal(1, factory.OpenCount);
     }
 

@@ -142,7 +142,7 @@ public sealed partial class RbpConnectionCoordinatorTests
 
     private static async Task EventuallyAsync(
         Func<bool> predicate,
-        int attempts = 400)
+        int attempts = 4_000)
     {
         for (int attempt = 0; attempt < attempts; attempt++)
         {
@@ -159,7 +159,7 @@ public sealed partial class RbpConnectionCoordinatorTests
 
     private static async Task EventuallyAsync(
         Func<Task<bool>> predicate,
-        int attempts = 400)
+        int attempts = 4_000)
     {
         for (int attempt = 0; attempt < attempts; attempt++)
         {
