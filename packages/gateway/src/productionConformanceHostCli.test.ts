@@ -583,6 +583,7 @@ describe("WP-12 conformance host shutdown", () => {
     const childSource = `
       import { createOrderedConformanceHostShutdown } from ${JSON.stringify(cliUrl)};
       import { SqliteConformanceProtocolStore } from ${JSON.stringify(adaptersUrl)};
+      import { writeSync } from "node:fs";
       const root = process.argv[2];
       const store = new SqliteConformanceProtocolStore(root);
       const opened = await store.open();
@@ -606,11 +607,9 @@ describe("WP-12 conformance host shutdown", () => {
         },
         releaseIpc() {
           order.push("ipc");
+          writeSync(1, JSON.stringify({ order, stops }) + "\\n");
           if (process.connected) process.disconnect();
-          process.stdout.write(
-            JSON.stringify({ order, stops }) + "\\n",
-            () => process.exit(0),
-          );
+          process.exit(0);
         },
       });
       process.on("message", (message) => {
