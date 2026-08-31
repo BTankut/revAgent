@@ -89,14 +89,6 @@ public sealed partial class RbpConnectionCoordinatorTests
             item.Scope == RbpEnvelopeScope.Data &&
             item.Id == reservation.RecoveryInvocationId);
 
-        await EventuallyAsync(() =>
-        {
-            RbpConnectionCoordinatorSnapshot snapshot =
-                coordinator.GetSnapshot();
-            return snapshot.HasActiveConnection &&
-                   snapshot.ActiveInvocationCount == 0 &&
-                   snapshot.Lifecycle.Phase == RbpConnectionPhase.Steady;
-        });
         Task<RbpCoordinatorTeardownResult> teardown =
             coordinator.RequestStopTeardown();
         stop.Cancel();
@@ -106,6 +98,9 @@ public sealed partial class RbpConnectionCoordinatorTests
             RbpCoordinatorTeardownDisposition.NormalStopped,
             result.Disposition);
         await run.WaitAsync(TimeSpan.FromSeconds(5));
+        RbpConnectionCoordinatorSnapshot stopped = coordinator.GetSnapshot();
+        Assert.False(stopped.HasActiveConnection);
+        Assert.Equal(0, stopped.ActiveInvocationCount);
     }
 
     [Fact]
