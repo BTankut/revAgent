@@ -84,7 +84,9 @@ public sealed partial class RbpConnectionCoordinatorTests
         await EventuallyAsync(async () =>
             (await store.GetReceiveFrontierAsync(reservation.Rsid))
                 .LastJournaledSequence == 2);
-        await Task.Delay(25);
+        await EventuallyAsync(() =>
+            coordinator.GetSnapshot().ActiveInvocationCount == 0 &&
+            AttemptStopState(coordinator) is 2 or 5);
         _ = Assert.Single(cycle.Sent, item =>
             item.Scope == RbpEnvelopeScope.Data &&
             item.Id == reservation.RecoveryInvocationId);
