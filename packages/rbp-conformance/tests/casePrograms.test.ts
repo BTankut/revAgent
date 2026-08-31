@@ -119,6 +119,16 @@ describe("exact forty-case control and observation catalog", () => {
     }
   });
 
+  it("lets C12 observe terminals through the invocation timeout boundary", () => {
+    const program = earlyProductionCaseProgram("O1-C12");
+    for (const stepId of ["o1-c12.await-cross-rsid", "o1-c12.await-first"]) {
+      expect(program.steps.find((step) => step.stepId === stepId)).toMatchObject({
+        action: "await_condition",
+        arguments: { common: { timeoutMs: 35_000 } },
+      });
+    }
+  });
+
   it("pins C29 to an exact atomic-session capability grant before dispatch", () => {
     const program = CASE_CONTROL_OBSERVATION_MAP.get("O1-C29");
     expect(program).toBeDefined();
