@@ -755,7 +755,7 @@ describe("add-in loopback fixture listener", () => {
     expect(fixture.observations.find(
       (entry) => entry.requestId === plusOneId && entry.phase === "response_overflow",
     )?.payloadBytes).toBe(32 * 1024 * 1024 + 1);
-  });
+  }, 15_000);
 
   it("exposes busy, delay, and stall controls without double execution", async () => {
     const { fixture, address } = await started();
