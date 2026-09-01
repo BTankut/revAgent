@@ -1,0 +1,96 @@
+{
+  "schema": "revagent.autopilot.eu10-final-rework-classification/v1",
+  "evaluatedProductHead": "ab5addf1c89f92f274ea13d1192d13acad44e2da",
+  "evaluatedProductTree": "4546e2959d8b3b3640fc02bd1ab06437fece6c6f",
+  "scopeProof": {
+    "base": "14b1a7b0a2ec5ecf90068d16a3867d19dacc95ea",
+    "doesNotTouchGlobalRbpPolicyAnchorOrTests": true,
+    "excludedPrefixesAbsent": [
+      "packages/rbp-conformance/",
+      "packages/protocol/",
+      "packages/bridge/",
+      "src/revit-plugin/",
+      "installer/"
+    ],
+    "changedPathRoots": [
+      ".github/workflows/gateway-ci.yml",
+      ".orchestration/autopilot-v2/artifacts/EU-10/20260901T193735Z/",
+      "deploy/phase1/",
+      "package-lock.json",
+      "packages/gateway/"
+    ]
+  },
+  "focusedAcceptance": {
+    "artifact": "focused-security-final.json",
+    "artifactSha256": "99d131b1a75e55d7aa10131303cb3fd53fe05134cd2373bfd47ec4d220e1cb94",
+    "success": true,
+    "testsPassed": 20,
+    "testsFailed": 0,
+    "testsPending": 0,
+    "includes": [
+      "blank Postgres 16 migration and separate non-owner LOGIN",
+      "two-tenant RLS read/write and composite-FK negatives",
+      "immutable idempotent replay drift rejection",
+      "real Keycloak discovery and PKCE login",
+      "real Keycloak bearer through north MCP",
+      "wrong issuer and audience denial",
+      "ephemeral CI and Compose credential wiring"
+    ]
+  },
+  "externalBaseMismatch": {
+    "classification": "environment/base RBP plan-runtime identity mismatch",
+    "eu10ScopeRepairAuthorized": false,
+    "cachedPlanRuntimeNode": {
+      "path": "C:/Users/BT/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node.exe",
+      "version": "v24.19.0",
+      "sha256": "3602f2bb1a10f2cbab4c36886218a33c1ab3db87290e73b033c46c77147d0237"
+    },
+    "protectedBootstrapProgramFilesNode": {
+      "path": "C:/Program Files/nodejs/node.exe",
+      "version": "v22.22.2",
+      "sha256": "ae1a50511be58e987483fdbc12125407443926d2d394669ade2352776e920dd3"
+    },
+    "guardLocations": [
+      "packages/rbp-conformance/src/productionExecutionPlan.ts:376",
+      "packages/rbp-conformance/scripts/production-launch-bootstrap.mjs:110"
+    ],
+    "unchangedFailures": [
+      "tests/cliAggregate.test.ts > aggregate CLI retained-evidence flow > validates and summarizes aggregate bytes without writing any output",
+      "tests/productionBootstrapLauncher.test.ts > canonical production bootstrap and external launcher > rejects effective Git filters before any filter command can execute",
+      "tests/productionValidationProvenance.test.ts > PASS-capable validator production identity > clears hostile parent NODE_OPTIONS before every validator loads JavaScript",
+      "tests/productionValidationProvenance.test.ts > PASS-capable validator production identity > does not consult hostile npm script-shell, user config, or node.cmd"
+    ]
+  },
+  "broadTerminalRecords": [
+    {
+      "startedAtUtc": "2026-09-01T20:38:38.0224249Z",
+      "completedAtUtc": "2026-09-01T21:11:55.1370407Z",
+      "durationMs": 1997115,
+      "exitCode": 1,
+      "testsPassed": 2237,
+      "testsFailed": 5,
+      "testsSkipped": 9,
+      "rawLogSha256": "4790885349a9864855b392a53e5c5856b9ac1cad028c01a3299517b09f3125f1",
+      "classification": "four global Node identity guards plus one C28 timeout"
+    },
+    {
+      "startedAtUtc": "2026-09-01T21:12:37.8582219Z",
+      "completedAtUtc": "2026-09-01T21:45:38.9979269Z",
+      "durationMs": 1981140,
+      "exitCode": 1,
+      "testsPassed": 2238,
+      "testsFailed": 4,
+      "testsSkipped": 9,
+      "rawLog": "broad-rework-final.raw.log",
+      "rawLogSha256": "acdff7cae3d2f7d34470d9cb04c1aaf32f445369462651d3572a9fda43478501",
+      "classification": "same four global Node identity guards; C28 timeout absent on rerun"
+    }
+  ],
+  "gitGuardianRemediation": {
+    "currentCandidateContainsReportedLiterals": false,
+    "postgresCi": "ephemeral trust-only service",
+    "keycloakCi": "random masked runtime value written to a temporary credential file",
+    "keycloakCompose": "host-only Docker secret file read by a no-value launcher",
+    "remoteOldCommitIncidentsPendingAfterPush": [35029830, 36787721]
+  }
+}
