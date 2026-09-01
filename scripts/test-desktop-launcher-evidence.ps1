@@ -12,13 +12,64 @@ $RepoRoot = [IO.Path]::GetFullPath($RepoRoot)
 $publisherPath = Join-Path $RepoRoot 'scripts\publish-desktop-launcher-evidence.ps1'
 $hostPath = Join-Path $RepoRoot 'scripts\Invoke-RevAgentUpdaterGuiTestHost.ps1'
 $modulePath = Join-Path $RepoRoot 'scripts\RevAgent.TestFixtureAuthority.psm1'
-$pwshPath = [IO.Path]::GetFullPath((Join-Path $PSHOME 'pwsh.exe'))
+$pwshCandidate = Join-Path $PSHOME 'pwsh.exe'
+if (-not (Test-Path -LiteralPath $pwshCandidate -PathType Leaf)) {
+    $pwshCandidate = (Get-Command pwsh.exe -CommandType Application -ErrorAction Stop |
+        Select-Object -First 1).Source
+}
+$pwshPath = [IO.Path]::GetFullPath($pwshCandidate)
 $expectedHostSha256 = '2c6ab614fc33c1bed2e878c8f3a6c6fcfdc10176aa7470b0703f49519c3d646c'
 $expectedModuleSha256 = 'b21d81ae3ad015b82535ce449454b89ad5cc2fc1d8c9cd0a47820c4a5d6293cc'
 $expectedPublisherSha256 = '762a84a595c8b2a630c1010b7e2af50a03f707fb8e1985e50542caf8db240d91'
 
 function Assert-True { param([bool]$Condition,[string]$Message) if (-not $Condition) { throw $Message } }
 function Assert-Equal { param([object]$Actual,[object]$Expected,[string]$Message) if (-not [object]::Equals($Actual,$Expected)) { throw "$Message Expected '$Expected', got '$Actual'." } }
+
+function Get-Sha256Hex {
+    param([Parameter(Mandatory=$true)][byte[]]$Bytes)
+    $algorithm=[Security.Cryptography.SHA256]::Create()
+    try { return ([BitConverter]::ToString($algorithm.ComputeHash($Bytes))).Replace('-','').ToLowerInvariant() }
+    finally { $algorithm.Dispose() }
+}
+function ConvertTo-PowerShellSingleQuotedLiteral {
+    param([AllowEmptyString()][string]$Value)
+    if ($null -eq $Value) { $Value='' }
+    return "'"+$Value.Replace("'","''")+"'"
+}
+function ConvertTo-WindowsCommandLineArgument {
+    param([AllowEmptyString()][string]$Value)
+    if ($null -eq $Value) { $Value='' }
+    if ($Value.Length -gt 0 -and $Value -notmatch '[\s"]') { return $Value }
+    $builder=New-Object Text.StringBuilder
+    [void]$builder.Append('"')
+    $backslashes=0
+    foreach($character in $Value.ToCharArray()) {
+        if ($character -eq [char]0x5C) { $backslashes++;continue }
+        if ($character -eq [char]0x22) {
+            if ($backslashes -gt 0) { [void]$builder.Append((('\' * ($backslashes*2+1))-join'')) }
+            else { [void]$builder.Append('\') }
+            [void]$builder.Append('"');$backslashes=0;continue
+        }
+        if ($backslashes -gt 0) { [void]$builder.Append((('\' * $backslashes)-join''));$backslashes=0 }
+        [void]$builder.Append($character)
+    }
+    if ($backslashes -gt 0) { [void]$builder.Append((('\' * ($backslashes*2))-join'')) }
+    [void]$builder.Append('"')
+    return $builder.ToString()
+}
+function Set-ProcessArguments {
+    param(
+        [Parameter(Mandatory=$true)][Diagnostics.ProcessStartInfo]$StartInfo,
+        [Parameter(Mandatory=$true)][string[]]$Arguments
+    )
+    $quoted=@($Arguments|ForEach-Object{ConvertTo-WindowsCommandLineArgument $_})
+    $StartInfo.Arguments=[string]::Join(' ',$quoted)
+}
+function Stop-TestProcess {
+    param([Parameter(Mandatory=$true)][Diagnostics.Process]$Process)
+    try { $Process.Kill($true) }
+    catch { try { $Process.Kill() } catch {} }
+}
 
 function Protect-FixtureRoot {
     param([Parameter(Mandatory=$true)][string]$Path)
@@ -27,13 +78,17 @@ function Protect-FixtureRoot {
     $acl.SetOwner($identity.User);$acl.SetAccessRuleProtection($true,$false)
     $inheritance=[Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit
     foreach($sid in @($identity.User,[Security.Principal.SecurityIdentifier]::new('S-1-5-18'),[Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'))){$acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($sid,[Security.AccessControl.FileSystemRights]::FullControl,$inheritance,[Security.AccessControl.PropagationFlags]::None,[Security.AccessControl.AccessControlType]::Allow))}
-    [IO.FileSystemAclExtensions]::SetAccessControl([IO.DirectoryInfo]$item,$acl)
+    if ('System.IO.FileSystemAclExtensions' -as [type]) {
+        [IO.FileSystemAclExtensions]::SetAccessControl([IO.DirectoryInfo]$item,$acl)
+    } else {
+        ([IO.DirectoryInfo]$item).SetAccessControl($acl)
+    }
 }
 
 $parentPinSource=@'
 using System;using System.IO;using System.Linq;using System.Runtime.InteropServices;using System.Security.AccessControl;using System.Security.Principal;using System.Text;using Microsoft.Win32.SafeHandles;
 namespace RevAgent.FixtureParent.Desktop {
-internal sealed class Identity { internal readonly ulong V;internal readonly byte[] I;internal readonly string P;internal readonly uint L;internal Identity(ulong v,byte[] i,string p,uint l){V=v;I=i;P=p;L=l;}internal bool Same(Identity o)=>o!=null&&V==o.V&&I.SequenceEqual(o.I)&&String.Equals(P,o.P,StringComparison.OrdinalIgnoreCase)&&L==o.L; }
+internal sealed class Identity { internal readonly ulong V;internal readonly byte[] I;internal readonly string P;internal readonly uint L;internal Identity(ulong v,byte[] i,string p,uint l){V=v;I=i;P=p;L=l;}internal bool Same(Identity o){return o!=null&&V==o.V&&I.SequenceEqual(o.I)&&String.Equals(P,o.P,StringComparison.OrdinalIgnoreCase)&&L==o.L;} }
 public sealed class Pin:IDisposable { const uint R=0x80000000,S=1,O=3,B=0x02000000,X=0x00200000,RP=0x400;const int SE=1;const uint OWNER=1,DACL=4;SafeFileHandle h;readonly Identity id;readonly string path,sha;readonly bool requireAcl;int disposed;
 [StructLayout(LayoutKind.Sequential)]struct FID128{[MarshalAs(UnmanagedType.ByValArray,SizeConst=16)]public byte[] I;}[StructLayout(LayoutKind.Sequential)]struct FID{public ulong V;public FID128 I;}[StructLayout(LayoutKind.Sequential)]struct TAG{public uint A,T;}[StructLayout(LayoutKind.Sequential)]struct STD{public long A,E;public uint L;[MarshalAs(UnmanagedType.U1)]public bool D;[MarshalAs(UnmanagedType.U1)]public bool Dir;}
 [DllImport("kernel32.dll",CharSet=CharSet.Unicode,SetLastError=true)]static extern SafeFileHandle CreateFileW(string p,uint a,uint s,IntPtr q,uint c,uint f,IntPtr t);[DllImport("kernel32.dll",SetLastError=true)]static extern bool GetFileInformationByHandleEx(SafeFileHandle h,int c,IntPtr p,uint s);[DllImport("kernel32.dll",CharSet=CharSet.Unicode,SetLastError=true)]static extern uint GetFinalPathNameByHandleW(SafeFileHandle h,StringBuilder p,uint n,uint f);[DllImport("kernel32.dll")]static extern IntPtr GetCurrentProcess();[DllImport("kernel32.dll",SetLastError=true)]static extern bool DuplicateHandle(IntPtr a,SafeFileHandle b,IntPtr c,out SafeFileHandle d,uint e,bool f,uint g);[DllImport("advapi32.dll",SetLastError=true)]static extern uint GetSecurityInfo(SafeFileHandle h,int t,uint i,out IntPtr o,out IntPtr g,out IntPtr d,out IntPtr s,out IntPtr x);[DllImport("advapi32.dll",SetLastError=true)]static extern uint GetSecurityDescriptorLength(IntPtr p);[DllImport("kernel32.dll")]static extern IntPtr LocalFree(IntPtr p);
@@ -44,7 +99,7 @@ static void Acl(SafeFileHandle h,Identity expected){if(!expected.Same(Id(h)))thr
 static SafeFileHandle Dup(SafeFileHandle h){SafeFileHandle d;IntPtr p=GetCurrentProcess();if(!DuplicateHandle(p,h,p,out d,0,false,2))throw new IOException("fixture_parent_duplicate_failed",Marshal.GetLastWin32Error());return d;}
 public Pin(string value):this(value,true){}
 public Pin(string value,bool validateAcl){requireAcl=validateAcl;path=Path.GetFullPath(value).TrimEnd('\\');h=CreateFileW(path,R,S,IntPtr.Zero,O,B|X,IntPtr.Zero);if(h.IsInvalid)throw new IOException("fixture_parent_pin_failed",Marshal.GetLastWin32Error());try{TAG t=Read<TAG>(h,9);id=Id(h);if((t.A&RP)!=0||t.T!=0||id.L!=1||!String.Equals(path,id.P,StringComparison.OrdinalIgnoreCase))throw new InvalidOperationException("fixture_parent_pin_refused");if(requireAcl)Acl(h,id);using(SafeFileHandle d=Dup(h))using(FileStream f=new FileStream(d,FileAccess.Read,65536,false))using(System.Security.Cryptography.SHA256 a=System.Security.Cryptography.SHA256.Create()){f.Position=0;sha=BitConverter.ToString(a.ComputeHash(f)).Replace("-","").ToLowerInvariant();}Verify();}catch{h.Dispose();throw;}}
-public string Sha256=>sha;public void Verify(){if(disposed!=0||h==null||h.IsClosed||!id.Same(Id(h)))throw new InvalidOperationException("fixture_parent_pin_drift");if(requireAcl)Acl(h,id);}public void Dispose(){if(System.Threading.Interlocked.Exchange(ref disposed,1)==0&&h!=null){h.Dispose();h=null;}}
+public string Sha256{get{return sha;}}public void Verify(){if(disposed!=0||h==null||h.IsClosed||!id.Same(Id(h)))throw new InvalidOperationException("fixture_parent_pin_drift");if(requireAcl)Acl(h,id);}public void Dispose(){if(System.Threading.Interlocked.Exchange(ref disposed,1)==0&&h!=null){h.Dispose();h=null;}}
 }}
 '@
 if (-not ('RevAgent.FixtureParent.Desktop.Pin' -as [type])) { Add-Type -TypeDefinition $parentPinSource -Language CSharp -ErrorAction Stop }
@@ -83,14 +138,15 @@ function Invoke-CleanFixtureHost {
         }
         $psi=[Diagnostics.ProcessStartInfo]::new();$psi.FileName=$SelectedPwshPath;$psi.UseShellExecute=$false;$psi.RedirectStandardOutput=$true;$psi.RedirectStandardError=$true;$psi.CreateNoWindow=$true;$psi.WorkingDirectory=$WorkingRoot
         $boundedNames=@('APPDATA','COMPUTERNAME','CommonProgramFiles','CommonProgramFiles(x86)','LOCALAPPDATA','OS','ProgramData','ProgramFiles','ProgramFiles(x86)','SystemDrive','SystemRoot','TEMP','TMP','USERPROFILE','WINDIR')
-        $psi.Environment.Clear();foreach($name in $boundedNames){$value=[Environment]::GetEnvironmentVariable($name,'Process');if($null-ne$value){$psi.Environment[$name]=$value}}
-        $boundedText=[string]::Join("`n",@($boundedNames|ForEach-Object{$_+'='+[string]$psi.Environment[$_]}));$boundedHash=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($boundedText))).ToLowerInvariant()
-        foreach($entry in $EnvironmentOverrides.GetEnumerator()){$psi.Environment[[string]$entry.Key]=[string]$entry.Value}
-        foreach($value in @('-NoLogo','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',$SelectedHostPath,'-Operation',$Operation,'-ConsumerScriptPath',$ConsumerPath,'-FixtureRoot',$FixtureRoot,'-ExpectedPwshPath',$SelectedPwshPath,'-ExpectedPwshSha256',$pwshPin.Sha256,'-ExpectedBoundedEnvironmentSha256',$boundedHash,'-ExpectedHostSha256',$hostPin.Sha256,'-ExpectedModuleSha256',$modulePin.Sha256,'-ExpectedConsumerSha256',$consumerPin.Sha256)){[void]$psi.ArgumentList.Add([string]$value)}
-        if($Operation-eq'Publisher'){[void]$psi.ArgumentList.Add('-PublisherArgumentsJson');[void]$psi.ArgumentList.Add(($PublisherArguments|ConvertTo-Json -Compress -Depth 30))}
-        foreach($key in @($HostArguments.Keys|Sort-Object)){if($HostArguments[$key]-is[bool]){if([bool]$HostArguments[$key]){[void]$psi.ArgumentList.Add('-'+$key)}}else{[void]$psi.ArgumentList.Add('-'+$key);[void]$psi.ArgumentList.Add([string]$HostArguments[$key])}}
+        $processEnvironment=$null;if($null-ne$psi.PSObject.Properties['Environment']){$processEnvironment=$psi.Environment}else{$processEnvironment=$psi.EnvironmentVariables};$processEnvironment.Clear();foreach($name in $boundedNames){$value=[Environment]::GetEnvironmentVariable($name,'Process');if($null-ne$value){$processEnvironment[$name]=$value}}
+        $boundedText=[string]::Join("`n",@($boundedNames|ForEach-Object{$_+'='+[string]$processEnvironment[$_]}));$boundedHash=Get-Sha256Hex ([Text.Encoding]::UTF8.GetBytes($boundedText))
+        foreach($entry in $EnvironmentOverrides.GetEnumerator()){$processEnvironment[[string]$entry.Key]=[string]$entry.Value}
+        $childArguments=[Collections.Generic.List[string]]::new();foreach($value in @('-Operation',$Operation,'-ConsumerScriptPath',$ConsumerPath,'-FixtureRoot',$FixtureRoot,'-ExpectedPwshPath',$SelectedPwshPath,'-ExpectedPwshSha256',$pwshPin.Sha256,'-ExpectedBoundedEnvironmentSha256',$boundedHash,'-ExpectedHostSha256',$hostPin.Sha256,'-ExpectedModuleSha256',$modulePin.Sha256,'-ExpectedConsumerSha256',$consumerPin.Sha256)){[void]$childArguments.Add([string]$value)}
+        if($Operation-eq'Publisher'){[void]$childArguments.Add('-PublisherArgumentsJson');[void]$childArguments.Add(($PublisherArguments|ConvertTo-Json -Compress -Depth 30))}
+        foreach($key in @($HostArguments.Keys|Sort-Object)){if($HostArguments[$key]-is[bool]){if([bool]$HostArguments[$key]){[void]$childArguments.Add('-'+$key)}}else{[void]$childArguments.Add('-'+$key);[void]$childArguments.Add([string]$HostArguments[$key])}}
+        $launchArguments=@('-NoLogo','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',$SelectedHostPath)+@($childArguments);Set-ProcessArguments $psi $launchArguments
         $process=[Diagnostics.Process]::new();$process.StartInfo=$psi;[void]$process.Start();$stdoutTask=$process.StandardOutput.ReadToEndAsync();$stderrTask=$process.StandardError.ReadToEndAsync()
-        if(-not$process.WaitForExit($TimeoutSeconds*1000)){try{$process.Kill($true)}catch{};return [pscustomobject]@{state='UNCERTAIN';exitCode=-1;stdout=($stdoutTask.GetAwaiter()).GetResult();stderr=($stderrTask.GetAwaiter()).GetResult();processId=$process.Id}}
+        if(-not$process.WaitForExit($TimeoutSeconds*1000)){Stop-TestProcess $process;return [pscustomobject]@{state='UNCERTAIN';exitCode=-1;stdout=($stdoutTask.GetAwaiter()).GetResult();stderr=($stderrTask.GetAwaiter()).GetResult();processId=$process.Id}}
         $process.WaitForExit();foreach($pin in $pins){$pin.GetType().GetMethod('Verify').Invoke($pin,@())}
         return [pscustomobject]@{state='COMPLETED';exitCode=$process.ExitCode;stdout=($stdoutTask.GetAwaiter()).GetResult();stderr=($stderrTask.GetAwaiter()).GetResult();processId=$process.Id}
     } finally {if($null-ne$process){$process.Dispose()};for($i=$pins.Count-1;$i-ge0;$i--){$pins[$i].Dispose()}}
@@ -103,14 +159,14 @@ function Invoke-HostPreloadProbe {
     try {
         foreach($path in @($pwshPath,$selectedHost,$selectedModule,$consumer)){[void]$pins.Add([RevAgent.FixtureParent.Desktop.Pin]::new($path))}
         if(-not[string]::Equals($pins[1].Sha256,$expectedHostSha256,[StringComparison]::OrdinalIgnoreCase)-or-not[string]::Equals($pins[2].Sha256,$expectedModuleSha256,[StringComparison]::OrdinalIgnoreCase)-or-not[string]::Equals($pins[3].Sha256,$expectedPublisherSha256,[StringComparison]::OrdinalIgnoreCase)){throw'fixture_parent_literal_digest_refused'}
-        $names=@('APPDATA','COMPUTERNAME','CommonProgramFiles','CommonProgramFiles(x86)','LOCALAPPDATA','OS','ProgramData','ProgramFiles','ProgramFiles(x86)','SystemDrive','SystemRoot','TEMP','TMP','USERPROFILE','WINDIR');$environment=@{};foreach($name in $names){$environment[$name]=[string][Environment]::GetEnvironmentVariable($name,'Process')};$text=[string]::Join("`n",@($names|ForEach-Object{$_+'='+$environment[$_]}));$environmentHash=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($text))).ToLowerInvariant()
+        $names=@('APPDATA','COMPUTERNAME','CommonProgramFiles','CommonProgramFiles(x86)','LOCALAPPDATA','OS','ProgramData','ProgramFiles','ProgramFiles(x86)','SystemDrive','SystemRoot','TEMP','TMP','USERPROFILE','WINDIR');$environment=@{};foreach($name in $names){$environment[$name]=[string][Environment]::GetEnvironmentVariable($name,'Process')};$text=[string]::Join("`n",@($names|ForEach-Object{$_+'='+$environment[$_]}));$environmentHash=Get-Sha256Hex ([Text.Encoding]::UTF8.GetBytes($text))
         $quote={param($value)"'"+[string]$value.Replace("'","''")+"'"}
         $discovery=Join-Path $Root 'discovery';$reports=Join-Path $Root 'reports';[void][IO.Directory]::CreateDirectory($discovery);[void][IO.Directory]::CreateDirectory($reports)
         $prefix=if($Kind-eq'Type'){"Add-Type -TypeDefinition 'namespace RevAgent.TestFixtures { public sealed class RevAgentTestFixtureAuthority { } }';"}else{$hostile=Join-Path $Root 'RevAgent.TestFixtureAuthority.Hostile.psm1';[IO.File]::WriteAllText($hostile,'# hostile reserved module preload',[Text.UTF8Encoding]::new($false));"Import-Module -Name $(& $quote $hostile) -Force;"}
         $command=$prefix+" & $(& $quote $selectedHost) -Operation Publisher -ConsumerScriptPath $(& $quote $consumer) -FixtureRoot $(& $quote $Root) -DiscoveryRoot $(& $quote $discovery) -ReportsRoot $(& $quote $reports) -PublisherArgumentsJson '{}' -ExpectedPwshPath $(& $quote $pwshPath) -ExpectedPwshSha256 $(& $quote $pins[0].Sha256) -ExpectedBoundedEnvironmentSha256 $(& $quote $environmentHash) -ExpectedHostSha256 $(& $quote $pins[1].Sha256) -ExpectedModuleSha256 $(& $quote $pins[2].Sha256) -ExpectedConsumerSha256 $(& $quote $pins[3].Sha256)"
-        $psi=[Diagnostics.ProcessStartInfo]::new();$psi.FileName=$pwshPath;$psi.UseShellExecute=$false;$psi.CreateNoWindow=$true;$psi.RedirectStandardOutput=$true;$psi.RedirectStandardError=$true;$psi.WorkingDirectory=$RepoRoot;$psi.Environment.Clear();foreach($name in $names){if($null-ne$environment[$name]){$psi.Environment[$name]=$environment[$name]}}
-        foreach($value in @('-NoLogo','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-Command',$command)){[void]$psi.ArgumentList.Add($value)}
-        $process=[Diagnostics.Process]::new();$process.StartInfo=$psi;[void]$process.Start();$out=$process.StandardOutput.ReadToEndAsync();$err=$process.StandardError.ReadToEndAsync();if(-not$process.WaitForExit(30000)){try{$process.Kill($true)}catch{};throw'fixture_preload_probe_timeout'};$process.WaitForExit();return [pscustomobject]@{exitCode=$process.ExitCode;stdout=($out.GetAwaiter()).GetResult();stderr=($err.GetAwaiter()).GetResult()}
+        $psi=[Diagnostics.ProcessStartInfo]::new();$psi.FileName=$pwshPath;$psi.UseShellExecute=$false;$psi.CreateNoWindow=$true;$psi.RedirectStandardOutput=$true;$psi.RedirectStandardError=$true;$psi.WorkingDirectory=$RepoRoot;$processEnvironment=$null;if($null-ne$psi.PSObject.Properties['Environment']){$processEnvironment=$psi.Environment}else{$processEnvironment=$psi.EnvironmentVariables};$processEnvironment.Clear();foreach($name in $names){if($null-ne$environment[$name]){$processEnvironment[$name]=$environment[$name]}}
+        Set-ProcessArguments $psi @('-NoLogo','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-Command',$command)
+        $process=[Diagnostics.Process]::new();$process.StartInfo=$psi;[void]$process.Start();$out=$process.StandardOutput.ReadToEndAsync();$err=$process.StandardError.ReadToEndAsync();if(-not$process.WaitForExit(30000)){Stop-TestProcess $process;throw'fixture_preload_probe_timeout'};$process.WaitForExit();return [pscustomobject]@{exitCode=$process.ExitCode;stdout=($out.GetAwaiter()).GetResult();stderr=($err.GetAwaiter()).GetResult()}
     }finally{if($null-ne$process){$process.Dispose()};for($i=$pins.Count-1;$i-ge0;$i--){$pins[$i].Dispose()}}
 }
 
