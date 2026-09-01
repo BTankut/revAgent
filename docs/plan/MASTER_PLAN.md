@@ -3,21 +3,24 @@
 **Document state:** living migration tracker
 
 **Current milestone state:** M2 and M3 were accepted by the milestone owner on
-2026-08-11. M4 is `in_progress` under its separately planner-approved slices;
-its evidence remains `not_submitted`, and no milestone acceptance is recorded.
+2026-08-11. The M4 milestone owner accepted M4 on 2026-09-01 with the recorded
+evidence ceiling. The current protected-main acceptance anchor is
+`fcf764e5c1149ebb425553fadef1265137f5d70d`.
+
 The exact M2 code/evidence anchor remains
-`011b17b0095e5190a4347fca81160cbb9138eae0`; the current protected M4 source
-anchor is `b9491e0919db27008f50af2a43bfeccc6f13048b` on `main`
-(the rebuilt source carrying the TLS material timestamp repair, `PR #383`). The first bounded
-M4-04/B live session ran against that anchor and closed `blocked/partial`. A second
-bounded session then ran against the rebuilt source `b9491e0919db` and closed **all
-seven M4-04/B gates**, so `M4-04/B` is `passed` against its own scope. The milestone
-row is unchanged: M4 acceptance names one read **and one confirm-class write**, and
-only the read is proven. Only the milestone decision owner may move a milestone state.
+`011b17b0095e5190a4347fca81160cbb9138eae0`. The M4 acceptance is supported by
+[WP-12 / WP-13 remediation closure](WP12_WP13_REMEDIATION_CLOSURE.md), which
+records the read, confirm-class write, originating preview, confirmation,
+commit, independent readback, restore, and no-persistence predicates as
+satisfied. M5 through M10 remain unchanged.
+
+The accepted evidence retains its stated ceiling: live request-argument
+manifests are not retained, and the installed runtime was not mechanically
+bound to engineering SHA `029a164b8f9395c76052de65717f686b32d83234`.
 
 **Phase-0 exit:** passed on 2026-07-22; milestone-owner acceptance is not yet recorded
 
-**Last updated:** 2026-08-20
+**Last updated:** 2026-09-01
 
 This file is the operational milestone tracker for the migration described by `docs/TARGET_ARCHITECTURE.md` and `docs/implementation-plan/00-INDEX.md`. The index and its RES-* amendments are authoritative when package documents disagree. A draft PR or written artifact is evidence, but it does not close a demo gate by itself.
 
@@ -501,7 +504,7 @@ separately from engineering effort.
 | M1 | O1/RBP v1.0 frozen after conformance review of handshake, auth, resume, invoke/batch, journal, streaming, heartbeat, versioning, and faults; protected merge of PR #290 is the recorded mechanical close and the annotated tag `rbp/v1.0.0` (tag object `77ac4190`, resolving to anchor `a99f6051`) was created and identity-validated on 2026-07-31 under RES-36, closing RES-28 | M0 | WP1 | 3d | not recorded | not calculable | `accepted` |
 | M2 | External-client Gateway core serves a capability index and deferred schemas through `tool_search`/`tool_schema`, exposes a small pinned callable set over north MCP, loads immutable hash-bound runtime/docs handlers without frozen-source relocation, and proves registry/policy/confirmation plus bridge/internal executor dispatch and production RBP ingress; Mode B remains interface stubs only | M1 | WP2 with WP5 P5-T4 and WP6 P6-T1 | 38d | 11.60h recorded for #356–#365; four earlier slices not recorded | not calculable for complete milestone | `accepted` |
 | M3 | Bridge + pre-pilot add-in adaptations connect, journal redelivery, and demonstrate sequential then capability-gated atomic batch behavior | M1 | WP3 | 15d | not recorded | not calculable | `accepted` |
-| M4 | **Pre-production-auth vertical slice:** an external MCP client (WP9 candidate) → Gateway → Bridge → live Revit executes one read and one confirm-class write with originating-preview/approval/commit audit evidence; this slice does not pass DP-10 OAuth or hands-on conformance | M2, M3 | WP1/WP2/WP3/WP5/WP9 | 5d | not recorded | not calculable | `in_progress` |
+| M4 | **Pre-production-auth vertical slice:** an external MCP client (WP9 candidate) → Gateway → Bridge → live Revit executes one read and one confirm-class write with originating-preview/approval/commit audit evidence; this slice does not pass DP-10 OAuth or hands-on conformance | M2, M3 | WP1/WP2/WP3/WP5/WP9 | 5d | not recorded | not calculable | `accepted` |
 | M5 | OIDC, device enrollment, seats, tenant isolation, audit, event schema, and Postgres migrations pass two-tenant tests | M2 | WP4 | 8d | not recorded | not calculable | `not_started` |
 | M6 | Installer/uninstaller and signed bridge/add-in self-update lane pass lab install, update, crash-loop rollback, and signature checks | M3, M5 | WP3 with WP5 conventions | 12d | not recorded | not calculable | `not_started` |
 | M7 | Production Compose/tunnel, warm standby, blank-VM O10 restore drill, and O11 metric-parity gate pass with measured evidence | M4, M5 | WP5/WP7 | 6d | not recorded | not calculable | `not_started` |
