@@ -5,7 +5,7 @@ namespace RevAgent.Bridge.Gateway.Storage;
 
 internal static class RbpJournalSchema
 {
-    internal const int CurrentVersion = 2;
+    internal const int CurrentVersion = 10;
     internal const string StoreFormat = "revagent-rbp-journal";
 
     private const string TransportLifecycleSchema = """
@@ -378,10 +378,237 @@ internal static class RbpJournalSchema
 
     internal static RbpJournalMigration InvocationJournalMigration { get; } =
         new(
-            CurrentVersion,
+            2,
             "P3-T5",
             "rbp_invocation_journal_v1",
             InvocationJournalSchema);
+
+    private const string CarrierPlanSchema = """
+        CREATE TABLE rbp_carrier_plans(
+          plan_id TEXT PRIMARY KEY,
+          idempotency_key TEXT NOT NULL UNIQUE
+            REFERENCES rbp_invocations(idempotency_key) ON DELETE RESTRICT,
+          carrier_key TEXT NOT NULL,
+          prefixes_jcs TEXT NOT NULL,
+          prefix_digest TEXT NOT NULL,
+          terminal_jcs TEXT NOT NULL,
+          terminal_digest TEXT NOT NULL,
+          created_at_ms INTEGER NOT NULL CHECK(created_at_ms >= 0),
+          CHECK(length(plan_id)=71 AND substr(plan_id,1,7)='sha256:' AND
+            substr(plan_id,8) NOT GLOB '*[^0-9a-f]*'),
+          CHECK(length(carrier_key)=64 AND carrier_key NOT GLOB '*[^0-9a-f]*'),
+          CHECK(length(prefixes_jcs)>0),
+          CHECK(length(terminal_jcs)>0),
+          CHECK(length(prefix_digest)=71 AND substr(prefix_digest,1,7)='sha256:' AND
+            substr(prefix_digest,8) NOT GLOB '*[^0-9a-f]*'),
+          CHECK(length(terminal_digest)=71 AND substr(terminal_digest,1,7)='sha256:' AND
+            substr(terminal_digest,8) NOT GLOB '*[^0-9a-f]*')
+        ) STRICT;
+
+        ALTER TABLE rbp_invocations
+          ADD COLUMN carrier_plan_id TEXT
+            REFERENCES rbp_carrier_plans(plan_id) ON DELETE RESTRICT;
+
+        CREATE UNIQUE INDEX ux_rbp_invocations_carrier_plan
+          ON rbp_invocations(carrier_plan_id)
+          WHERE carrier_plan_id IS NOT NULL;
+        """;
+
+    internal static RbpJournalMigration CarrierPlanMigration { get; } = new(
+        3,
+        "WP-12",
+        "rbp_carrier_plan_v1",
+        CarrierPlanSchema);
+
+    private const string CarrierPlanFenceSchema = """
+        ALTER TABLE rbp_carrier_plans
+          ADD COLUMN terminal_rsid TEXT;
+        ALTER TABLE rbp_carrier_plans
+          ADD COLUMN terminal_sequence INTEGER;
+        CREATE UNIQUE INDEX ux_rbp_carrier_plans_terminal_fence
+          ON rbp_carrier_plans(terminal_rsid,terminal_sequence)
+          WHERE terminal_rsid IS NOT NULL;
+        """;
+
+    internal static RbpJournalMigration CarrierPlanFenceMigration { get; } = new(
+        4,
+        "WP-12",
+        "rbp_carrier_plan_terminal_fence_v1",
+        CarrierPlanFenceSchema);
+
+    private const string CarrierPlanAcknowledgementSchema = """
+        ALTER TABLE rbp_carrier_plans
+          ADD COLUMN acknowledged_at_ms INTEGER;
+        CREATE INDEX ix_rbp_carrier_plans_releasable
+          ON rbp_carrier_plans(terminal_rsid,terminal_sequence,acknowledged_at_ms);
+        """;
+
+    internal static RbpJournalMigration CarrierPlanAcknowledgementMigration { get; } = new(
+        5,
+        "WP-12",
+        "rbp_carrier_plan_acknowledgement_v1",
+        CarrierPlanAcknowledgementSchema);
+
+    private const string CarrierPlanSpoolReleaseSchema = """
+        ALTER TABLE rbp_carrier_plans
+          ADD COLUMN spool_release_state TEXT NOT NULL DEFAULT 'none';
+        ALTER TABLE rbp_carrier_plans
+          ADD COLUMN spool_release_token TEXT;
+        ALTER TABLE rbp_carrier_plans
+          ADD COLUMN spool_released_at_ms INTEGER;
+        UPDATE rbp_carrier_plans
+        SET spool_release_state='pending',
+            spool_release_token='v1:' || plan_id || ':' || carrier_key || ':' ||
+              terminal_rsid || ':' || terminal_sequence || ':' || acknowledged_at_ms
+        WHERE acknowledged_at_ms IS NOT NULL
+          AND terminal_rsid IS NOT NULL
+          AND terminal_sequence IS NOT NULL
+          AND spool_release_state='none';
+        CREATE INDEX ix_rbp_carrier_plans_spool_release
+          ON rbp_carrier_plans(spool_release_state,terminal_rsid,terminal_sequence);
+        """;
+
+    internal static RbpJournalMigration CarrierPlanSpoolReleaseMigration { get; } = new(
+        6,
+        "WP-12",
+        "rbp_carrier_plan_spool_release_v1",
+        CarrierPlanSpoolReleaseSchema);
+
+    // C39 deliberately keeps the frozen RBP wire schema unchanged. This is a
+    // local, protected companion relation only: its FK makes a raw response
+    // inseparable from the exact terminal invocation that produced it.
+    private const string RecoveryPayloadSchema = """
+        CREATE TABLE rbp_recovery_payloads(
+          idempotency_key TEXT PRIMARY KEY
+            REFERENCES rbp_invocations(idempotency_key) ON DELETE RESTRICT,
+          rsid TEXT NOT NULL REFERENCES rbp_sessions(rsid) ON DELETE RESTRICT,
+          invocation_id TEXT NOT NULL,
+          result_digest TEXT NOT NULL,
+          protection_scheme TEXT NOT NULL,
+          protected_envelope BLOB NOT NULL,
+          plaintext_length INTEGER NOT NULL,
+          created_at_ms INTEGER NOT NULL CHECK(created_at_ms >= 0),
+          retention_expires_at_ms INTEGER NOT NULL CHECK(retention_expires_at_ms >= created_at_ms),
+          CHECK(length(invocation_id) BETWEEN 1 AND 128),
+          CHECK(length(result_digest)=71 AND substr(result_digest,1,7)='sha256:' AND
+                substr(result_digest,8) NOT GLOB '*[^0-9a-f]*'),
+          CHECK(length(protection_scheme) BETWEEN 1 AND 128),
+          CHECK(length(protected_envelope)>0),
+          CHECK(plaintext_length BETWEEN 1 AND 33554432)
+        ) STRICT;
+        CREATE UNIQUE INDEX ux_rbp_recovery_payload_origin_digest
+          ON rbp_recovery_payloads(rsid,invocation_id,result_digest);
+        CREATE INDEX ix_rbp_recovery_payload_rsid_bytes
+          ON rbp_recovery_payloads(rsid,plaintext_length);
+        """;
+
+    internal static RbpJournalMigration RecoveryPayloadMigration { get; } = new(
+        7,
+        "WP-12",
+        "rbp_correlated_recovery_payload_v7",
+        RecoveryPayloadSchema);
+
+    // C39-v8 is deliberately metadata-only.  It reserves the one current
+    // sequence for a correlated recovery carrier without persisting any
+    // frame, base64, plaintext, or envelope body in the transport outbox.
+    private const string RecoveryCarrierReservationSchema = """
+        CREATE TABLE rbp_recovery_carrier_reservations(
+          recovery_invocation_id TEXT PRIMARY KEY,
+          rsid TEXT NOT NULL REFERENCES rbp_sessions(rsid) ON DELETE RESTRICT,
+          origin_invocation_id TEXT NOT NULL,
+          result_digest TEXT NOT NULL,
+          raw_idempotency_key TEXT NOT NULL,
+          raw_payload_version INTEGER NOT NULL CHECK(raw_payload_version=7),
+          header_jcs TEXT NOT NULL CHECK(length(header_jcs) BETWEEN 1 AND 4096),
+          plaintext_length INTEGER NOT NULL CHECK(plaintext_length BETWEEN 1 AND 33554432),
+          chunk_size INTEGER NOT NULL CHECK(chunk_size BETWEEN 1 AND 33554432),
+          chunk_count INTEGER NOT NULL CHECK(chunk_count BETWEEN 1 AND 33554432),
+          phase TEXT NOT NULL CHECK(phase IN ('reserved','send_started','awaiting_ack','completed','tombstoned')),
+          chunk_index INTEGER NOT NULL CHECK(chunk_index>=0),
+          current_reserved_seq INTEGER NOT NULL CHECK(current_reserved_seq BETWEEN 1 AND 9007199254740991),
+          canonical_envelope_digest TEXT NOT NULL,
+          send_started_at_ms INTEGER,
+          highest_reserved_seq INTEGER NOT NULL CHECK(highest_reserved_seq>=current_reserved_seq),
+          acknowledgement_cursor INTEGER NOT NULL CHECK(acknowledgement_cursor>=0),
+          plan_version INTEGER NOT NULL CHECK(plan_version=1),
+          created_at_ms INTEGER NOT NULL CHECK(created_at_ms>=0),
+          expires_at_ms INTEGER NOT NULL CHECK(expires_at_ms>=created_at_ms),
+          updated_at_ms INTEGER NOT NULL CHECK(updated_at_ms>=created_at_ms),
+          completed_at_ms INTEGER,
+          tombstoned_at_ms INTEGER,
+          tombstone_reason TEXT,
+          UNIQUE(rsid,origin_invocation_id,result_digest),
+          CHECK(length(recovery_invocation_id)=36),
+          CHECK(length(origin_invocation_id)=36),
+          CHECK(length(result_digest)=71 AND substr(result_digest,1,7)='sha256:' AND substr(result_digest,8) NOT GLOB '*[^0-9a-f]*'),
+          CHECK(length(canonical_envelope_digest)=71 AND substr(canonical_envelope_digest,1,7)='sha256:' AND substr(canonical_envelope_digest,8) NOT GLOB '*[^0-9a-f]*'),
+          CHECK((phase='send_started' AND send_started_at_ms IS NOT NULL) OR
+                (phase<>'send_started')),
+          CHECK((phase='tombstoned' AND tombstone_reason IS NOT NULL) OR
+                (phase<>'tombstoned' AND tombstone_reason IS NULL)),
+          CHECK((phase='completed' AND completed_at_ms IS NOT NULL AND tombstoned_at_ms IS NULL) OR
+                (phase='tombstoned' AND tombstoned_at_ms IS NOT NULL AND completed_at_ms IS NULL) OR
+                (phase NOT IN ('completed','tombstoned') AND completed_at_ms IS NULL AND tombstoned_at_ms IS NULL))
+        ) STRICT;
+        CREATE UNIQUE INDEX ux_rbp_recovery_carrier_one_fence
+          ON rbp_recovery_carrier_reservations(rsid)
+          WHERE phase IN ('reserved','send_started','awaiting_ack','tombstoned');
+        CREATE INDEX ix_rbp_recovery_carrier_recovery
+          ON rbp_recovery_carrier_reservations(recovery_invocation_id,phase);
+        CREATE TABLE rbp_recovery_sequence_tombstones(
+          rsid TEXT PRIMARY KEY REFERENCES rbp_sessions(rsid) ON DELETE RESTRICT,
+          format_version INTEGER NOT NULL CHECK(format_version=1),
+          tombstoned_at_ms INTEGER NOT NULL CHECK(tombstoned_at_ms>=0),
+          reason_code TEXT NOT NULL CHECK(reason_code IN ('recovery_fence_fault','session_closed')),
+          sequence_high_water INTEGER NOT NULL CHECK(sequence_high_water>=1 AND sequence_high_water<=9007199254740991)
+        ) STRICT;
+        """;
+
+    internal static RbpJournalMigration RecoveryCarrierReservationMigration { get; } = new(
+        8,
+        "WP-12",
+        "rbp_correlated_recovery_carrier_reservation_v8",
+        RecoveryCarrierReservationSchema);
+
+    private const string RecoveryTerminalPlanSchema = """
+        CREATE TABLE rbp_recovery_terminal_plans(
+          recovery_invocation_id TEXT PRIMARY KEY REFERENCES rbp_recovery_carrier_reservations(recovery_invocation_id) ON DELETE RESTRICT,
+          rsid TEXT NOT NULL REFERENCES rbp_sessions(rsid) ON DELETE RESTRICT,
+          plan_version INTEGER NOT NULL CHECK(plan_version=9),
+          final_sequence INTEGER NOT NULL UNIQUE CHECK(final_sequence>=1 AND final_sequence<=9007199254740991),
+          acknowledgement_baseline INTEGER NOT NULL CHECK(acknowledgement_baseline>=0),
+          terminal_jcs TEXT NOT NULL CHECK(length(terminal_jcs)>0),
+          terminal_digest TEXT NOT NULL CHECK(length(terminal_digest)=71 AND substr(terminal_digest,1,7)='sha256:' AND substr(terminal_digest,8) NOT GLOB '*[^0-9a-f]*'),
+          payload_commitment TEXT NOT NULL CHECK(length(payload_commitment)=71 AND substr(payload_commitment,1,7)='sha256:' AND substr(payload_commitment,8) NOT GLOB '*[^0-9a-f]*'),
+          state TEXT NOT NULL CHECK(state IN ('reserved','confirmed','tombstoned')),
+          created_at_ms INTEGER NOT NULL CHECK(created_at_ms>=0),
+          expires_at_ms INTEGER NOT NULL CHECK(expires_at_ms>=created_at_ms),
+          confirmed_at_ms INTEGER
+        ) STRICT;
+        CREATE UNIQUE INDEX ux_rbp_recovery_terminal_active_rsid
+          ON rbp_recovery_terminal_plans(rsid) WHERE state='reserved';
+        CREATE INDEX ix_rbp_recovery_terminal_recovery_state
+          ON rbp_recovery_terminal_plans(recovery_invocation_id,state);
+        """;
+
+    internal static RbpJournalMigration RecoveryTerminalPlanMigration { get; } = new(
+        9, "WP-12", "rbp_correlated_recovery_terminal_plan_v9", RecoveryTerminalPlanSchema);
+
+    // This is deliberately additive: old v8/v9 recovery rows receive NULL
+    // and are rejected by the recovery readers.  They must never be upgraded
+    // by sampling the current session receive cursor after a restart.
+    private const string RecoveryInboundAcknowledgementBaselineSchema = """
+        ALTER TABLE rbp_recovery_carrier_reservations
+        ADD COLUMN inbound_ack_baseline INTEGER
+          CHECK(inbound_ack_baseline>=0 AND inbound_ack_baseline<=9007199254740991);
+        ALTER TABLE rbp_recovery_terminal_plans
+        ADD COLUMN inbound_ack_baseline INTEGER
+          CHECK(inbound_ack_baseline>=0 AND inbound_ack_baseline<=9007199254740991);
+        """;
+
+    internal static RbpJournalMigration RecoveryInboundAcknowledgementBaselineMigration { get; } = new(
+        CurrentVersion, "WP-12", "rbp_recovery_inbound_ack_baseline_v10",
+        RecoveryInboundAcknowledgementBaselineSchema);
 
     internal static IReadOnlyList<RbpJournalMigration> BuildMigrationChain(
         IReadOnlyList<RbpJournalMigration>? additional)
@@ -390,6 +617,14 @@ internal static class RbpJournalSchema
         {
             BaseMigration,
             InvocationJournalMigration,
+            CarrierPlanMigration,
+            CarrierPlanFenceMigration,
+            CarrierPlanAcknowledgementMigration,
+            CarrierPlanSpoolReleaseMigration,
+            RecoveryPayloadMigration,
+            RecoveryCarrierReservationMigration,
+            RecoveryTerminalPlanMigration,
+            RecoveryInboundAcknowledgementBaselineMigration,
         };
         if (additional is not null)
         {

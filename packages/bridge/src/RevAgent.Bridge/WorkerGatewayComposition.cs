@@ -7,6 +7,7 @@ using RevAgent.Bridge.Gateway.Connection;
 using RevAgent.Bridge.Gateway.Dispatch;
 using RevAgent.Bridge.Gateway.Protocol;
 using RevAgent.Bridge.Gateway.Storage;
+using RevAgent.Bridge.Runtime;
 
 namespace RevAgent.Bridge;
 
@@ -17,7 +18,8 @@ namespace RevAgent.Bridge;
 /// </summary>
 internal sealed record WorkerAddinDispatchSurface(
     AddinSessionRouter SessionRouter,
-    IRbpSessionRouteResolver SessionRoutes);
+    IRbpSessionRouteResolver SessionRoutes,
+    IRbpFreshResumeProofContextReader? FreshResumeProofReader = null);
 
 /// <summary>
 /// Everything the worker host needs before it may own an RBP connection.
@@ -38,7 +40,17 @@ internal sealed record WorkerGatewayServices(
     IRbpRandomSource? Random = null,
     Action<string>? OnDispatchDiagnostic = null,
     Func<RbpConnectionFailureObservation, ValueTask>?
-        OnConnectionFailureObservation = null);
+        OnConnectionFailureObservation = null,
+    RbpArtifactCarrierProducer? CarrierProducer = null,
+    Func<RbpLifecycleTimeoutObservation, ValueTask>?
+        OnLifecycleTimeoutObservation = null,
+    Func<RbpDocumentContextObservation, ValueTask>?
+        OnDocumentContextObservation = null,
+    RbpConformanceOmittedOriginObservation? OmittedOriginObservation = null,
+    IRbpRecoveryCarrierObservationSink? RecoveryCarrierObservationSink = null,
+    IRbpReconnectObservationSink? ReconnectObservationSink = null,
+    Func<CancellationToken, Task>? BeforeRecoveryTerminalWrite = null,
+    Func<CancellationToken, Task>? AfterRecoveryCarrierWriteBeforeAck = null);
 
 /// <summary>
 /// Composes the production RBP data plane inside the worker host: the journal
@@ -80,7 +92,8 @@ internal static class WorkerGatewayComposition
         return RbpJournalStore.Open(
             layout.JournalPath,
             resumeTokenProtector,
-            options);
+            options,
+            WorkerRecoveryPayloadProtector.CreateProduction());
     }
 
     /// <summary>
@@ -183,7 +196,26 @@ internal static class WorkerGatewayComposition
                 services.Clock,
                 services.Random,
                 onConnectionFailureObservation:
-                    services.OnConnectionFailureObservation);
+                    services.OnConnectionFailureObservation,
+                onLifecycleTimeoutObservation:
+                    services.OnLifecycleTimeoutObservation,
+                recoveryCarrierObservationSink:
+                    services.RecoveryCarrierObservationSink,
+                reconnectObservationSink: services.ReconnectObservationSink,
+                beforeRecoveryTerminalWrite:
+                    services.BeforeRecoveryTerminalWrite,
+                afterRecoveryCarrierWriteBeforeAck:
+                    services.AfterRecoveryCarrierWriteBeforeAck);
+        }
+
+        if (services.Options.SessionRouteBindingAuthority is
+                IRbpSessionRouteResolver bindingResolver &&
+            !ReferenceEquals(bindingResolver, surface.SessionRoutes))
+        {
+            throw new ArgumentException(
+                "The registration route-binding authority must be the same " +
+                "authority used by routed invocation dispatch.",
+                nameof(services));
         }
 
         var channel = new RbpRoutedInvocationChannel(
@@ -195,7 +227,9 @@ internal static class WorkerGatewayComposition
             new RbpInFlightGate(),
             new LocalCatalogRevitBusyProbe(
                 services.SessionCatalog,
-                surface.SessionRoutes));
+                surface.SessionRoutes),
+            carrierProducer: services.CarrierProducer,
+            omittedOriginObservation: services.OmittedOriginObservation);
 
         // The P3-T7 standing document-context watcher polls the add-in's
         // cached get_document_context through the same routed channel the
@@ -204,7 +238,10 @@ internal static class WorkerGatewayComposition
         // advertise doc_context_cached_v1 are never polled.
         var docContextWatcher = new RbpDocContextWatcher(
             channel,
-            services.Clock);
+            services.Clock,
+            freshResumeProofReader: surface.FreshResumeProofReader ??
+                surface.SessionRoutes as IRbpFreshResumeProofContextReader,
+            onObservation: services.OnDocumentContextObservation);
 
         // Section 11 execution shares the routed channel and journal with the
         // single-invocation dispatcher; only the capability seam is its own.
@@ -231,7 +268,18 @@ internal static class WorkerGatewayComposition
             docContextWatcher,
             batchCoordinator,
             services.OnDispatchDiagnostic,
-            services.OnConnectionFailureObservation);
+            services.OnConnectionFailureObservation,
+            services.CarrierProducer,
+            services.OnLifecycleTimeoutObservation,
+            services.OnDocumentContextObservation,
+            omittedOriginObservation: services.OmittedOriginObservation,
+            recoveryCarrierObservationSink:
+                services.RecoveryCarrierObservationSink,
+            reconnectObservationSink: services.ReconnectObservationSink,
+            beforeRecoveryTerminalWrite:
+                services.BeforeRecoveryTerminalWrite,
+            afterRecoveryCarrierWriteBeforeAck:
+                services.AfterRecoveryCarrierWriteBeforeAck);
     }
 
     /// <summary>

@@ -8,16 +8,23 @@ import {
   type BatchResult,
   type BatchStep,
   type HoldEvidenceConclusion,
+  type HelloEnvelope,
   type InvocationJournalBinding,
   type InvocationJournalRecord,
   type InvokeBatchEnvelope,
   type InvokeEnvelope,
   type JsonValue,
   type MutationScope,
+  type RbpEnvelope,
   type RecoveryClearance,
 } from "@revagent/protocol";
 import { describe, expect, it } from "vitest";
 
+import type {
+  GatewayConfirmationProof,
+  GatewayConfirmationTransactionAuthority,
+} from "./confirmationAuthority.js";
+import { createEffectiveMcpRequestScopeV1 } from "./invocationContext.js";
 import {
   GATEWAY_RECOVERY_NAMESPACE,
   GatewayRecoveryAuthority,
@@ -40,6 +47,17 @@ import {
   createRestartableTestStore,
   type RestartableTestStore,
 } from "./testAdapters.js";
+import {
+  GatewayBridgeSessionAuthority,
+  type BridgeConnectionChannel,
+  type DispatchTransportHandoff,
+} from "./bridgeSession.js";
+import {
+  GATEWAY_AUTH_CONTRACT_VERSION,
+  type DeviceAuthContext,
+  type IdentityPort,
+} from "./authContext.js";
+import type { GatewayExecutorRequest } from "./dispatch.js";
 
 const NOW = "2026-08-09T12:00:00.000Z";
 const TENANT_A = "tenant-a";
@@ -132,6 +150,7 @@ class TestBridgeEvidence implements GatewayDurableBridgeEvidencePort {
       readonly batchTerminal?: GatewayDurableBatchTerminal | null;
       readonly durableJournalVersion?: number;
       readonly recordedAtMs?: number;
+      readonly noSend?: GatewayDurableDispatchObservation["noSend"];
     },
   ): void {
     const journal: GatewayVerifiedBridgeJournalEvidence | null =
@@ -150,6 +169,7 @@ class TestBridgeEvidence implements GatewayDurableBridgeEvidencePort {
     const observation: GatewayDurableDispatchObservation = {
       acceptance: structuredClone(input.acceptance ?? null),
       journal,
+      ...(input.noSend === undefined ? {} : { noSend: structuredClone(input.noSend) }),
     };
     this.#lookups.set(pending.envelopeDigest, {
       kind: "found",
@@ -533,18 +553,88 @@ function receiptFor(
   pending: GatewayRecoveryPendingDispatch,
   overrides: Partial<GatewayBridgeCumulativeAckReceipt> = {},
 ): GatewayBridgeCumulativeAckReceipt {
+  const correlationId = pending.envelope.type === "invoke"
+    ? pending.envelope.payload.invocation_id
+    : pending.envelope.payload.batch_id;
   return {
     source: "durable_rbp_sequence",
+    receiptVersion: 1,
+    tenantId: TENANT_A,
     rsid: pending.envelope.rsid,
     sessionBindingId: pending.sessionBindingId,
     acceptedConnectionId: pending.preparedConnectionId,
     authorizedSessionVersion: pending.authorizedSessionVersion,
+    invocationId: correlationId,
+    correlationId,
+    proofDigest: `sha256:${"a".repeat(64)}`,
+    routeSnapshotDigest: `sha256:${"b".repeat(64)}`,
+    egressEpoch: 1,
+    leaseTicket: 1,
+    intent: "dispatch",
     gatewaySequence: pending.gatewaySequence,
     cumulativeAck: pending.gatewaySequence,
     envelopeDigest: pending.envelopeDigest,
     durableSequenceVersion: 1,
     acceptedAtMs: 1_775_000_000_500,
     ...overrides,
+  };
+}
+
+function reconstructedReceiptFor(
+  pending: GatewayRecoveryPendingDispatch,
+): GatewayBridgeCumulativeAckReceipt {
+  const {
+    invocationId,
+    correlationId,
+    proofDigest,
+    routeSnapshotDigest,
+    egressEpoch,
+    leaseTicket,
+    intent,
+    ...base
+  } = receiptFor(pending);
+  void invocationId;
+  void correlationId;
+  void proofDigest;
+  void routeSnapshotDigest;
+  void egressEpoch;
+  void leaseTicket;
+  void intent;
+  return base;
+}
+
+function noSendFor(
+  pending: GatewayRecoveryPendingDispatch,
+): NonNullable<GatewayDurableDispatchObservation["noSend"]> {
+  const correlationId = pending.envelope.type === "invoke"
+    ? pending.envelope.payload.invocation_id
+    : pending.envelope.payload.batch_id;
+  return {
+    schema: "gateway.dispatch-no-send/v1",
+    tenantId: TENANT_A,
+    rsid: pending.envelope.rsid,
+    effectiveMcpSessionId: "mcp-no-send",
+    principalKey: "tenant-a:user-a",
+    effectiveScopeDigest: `sha256:${"c".repeat(64)}`,
+    sessionBindingId: pending.sessionBindingId,
+    acceptedConnectionId: pending.preparedConnectionId,
+    durableSessionVersion: pending.authorizedSessionVersion,
+    invocationId: correlationId,
+    correlationId,
+    envelopeDigest: pending.envelopeDigest,
+    gatewaySequence: pending.gatewaySequence,
+    durableSequenceVersion: pending.authorizedSessionVersion,
+    egressEpoch: 1,
+    leaseVersion: 1,
+    leaseTicket: 1,
+    leaseHolderInstanceId: "gateway-instance-no-send",
+    proofDigest: `sha256:${"a".repeat(64)}`,
+    routeSnapshotDigest: `sha256:${"b".repeat(64)}`,
+    intentDigest: `sha256:${"d".repeat(64)}`,
+    authorityDigest: `sha256:${"e".repeat(64)}`,
+    transportStarted: false,
+    cumulativeAck: null,
+    recordedAtMs: 1_775_000_000_700,
   };
 }
 
@@ -778,6 +868,67 @@ async function twoEvidenceRecordedHolds(
 }
 
 describe("GatewayRecoveryAuthority durable safety", () => {
+  it("requires every versioned no-send coordinate before terminalizing a pending dispatch", async () => {
+    const harness = await createHarness();
+    const pending = requirePending(await prepareMutation(harness.authority, {
+      tenantId: TENANT_A,
+      sessionBindingId: SESSION_BINDING,
+      connectionId: CONNECTION,
+      envelope: mutationEnvelope({
+        seq: 701,
+        invocationId: uuid7(701_000),
+        scope: DOC_A,
+      }),
+    }));
+    const journal = completedJournal(pending.journalRecords[0]!, "no-send");
+    const valid = noSendFor(pending);
+    const invalid = [
+      { ...valid, tenantId: TENANT_B },
+      { ...valid, rsid: RSID_B },
+      { ...valid, sessionBindingId: "foreign-binding" },
+      { ...valid, acceptedConnectionId: "foreign-connection" },
+      { ...valid, durableSessionVersion: valid.durableSessionVersion + 1 },
+      { ...valid, gatewaySequence: valid.gatewaySequence + 1 },
+      { ...valid, durableSequenceVersion: valid.durableSequenceVersion + 1 },
+      { ...valid, leaseVersion: 2 as never },
+      { ...valid, leaseTicket: 0 },
+      { ...valid, effectiveMcpSessionId: "" },
+      { ...valid, principalKey: "" },
+      { ...valid, effectiveScopeDigest: "sha256:not-a-digest" as never },
+      { ...valid, proofDigest: "sha256:not-a-digest" as never },
+      { ...valid, routeSnapshotDigest: "sha256:not-a-digest" as never },
+      { ...valid, intentDigest: "sha256:not-a-digest" as never },
+      { ...valid, transportStarted: true as never },
+      { ...valid, cumulativeAck: 701 as never },
+    ];
+    for (const receipt of invalid) {
+      harness.bridgeEvidence.observe(pending, {
+        journalKind: "known_terminal",
+        journalRecords: [journal],
+        noSend: receipt,
+      });
+      await expect(harness.authority.reconcilePendingDispatch({
+        tenantId: TENANT_A,
+        rsid: RSID_A,
+        envelopeDigest: pending.envelopeDigest,
+      })).resolves.toMatchObject({ kind: "protocol_fault" });
+      expect(requireRecord(await harness.authority.snapshot({
+        tenantId: TENANT_A,
+        rsid: RSID_A,
+      })).pendingDispatch?.envelopeDigest).toBe(pending.envelopeDigest);
+    }
+    harness.bridgeEvidence.observe(pending, {
+      journalKind: "known_terminal",
+      journalRecords: [journal],
+      noSend: valid,
+    });
+    await expect(harness.authority.reconcilePendingDispatch({
+      tenantId: TENANT_A,
+      rsid: RSID_A,
+      envelopeDigest: pending.envelopeDigest,
+    })).resolves.toMatchObject({ kind: "terminal_recorded" });
+  });
+
   it("persists one invocation window across restart and acquires the same attempt idempotently", async () => {
     const harness = await createHarness();
     const attemptId = uuid7(900_001);
@@ -1999,6 +2150,36 @@ describe("GatewayRecoveryAuthority durable safety", () => {
     }
   });
 
+  it("accepts only the closed reconstructed base receipt from the durable Bridge port", async () => {
+    const { authority, bridgeEvidence } = await createHarness();
+    const pending = requirePending(await prepareMutation(authority, {
+      tenantId: TENANT_A,
+      sessionBindingId: SESSION_BINDING,
+      connectionId: CONNECTION,
+      envelope: mutationEnvelope({
+        seq: 199,
+        invocationId: uuid7(749_999),
+        scope: SESSION_SCOPE,
+      }),
+    }));
+    const journal = completedJournal(pending.journalRecords[0]!, "reconstructed-base");
+    const receipt = reconstructedReceiptFor(pending);
+    bridgeEvidence.observe(pending, {
+      acceptance: receipt,
+      journalKind: "known_terminal",
+      journalRecords: [journal],
+    });
+    await expect(authority.reconcilePendingDispatch({
+      tenantId: TENANT_A,
+      rsid: RSID_A,
+      envelopeDigest: pending.envelopeDigest,
+    })).resolves.toMatchObject({ kind: "terminal_recorded" });
+    for (const field of ["invocationId", "correlationId", "proofDigest", "routeSnapshotDigest",
+      "egressEpoch", "leaseTicket", "intent"] as const) {
+      expect(receipt).not.toHaveProperty(field);
+    }
+  });
+
   it("clears every-and-only resolved hold only after the exact durable cumulative ACK", async () => {
     const { authority, bridgeEvidence } = await createHarness();
     const { plan } = await twoEvidenceRecordedHolds(authority, bridgeEvidence);
@@ -2054,6 +2235,20 @@ describe("GatewayRecoveryAuthority durable safety", () => {
       ).ledger.holds.map((hold) => hold.state),
     ).toEqual(["resolved_pending_bridge", "resolved_pending_bridge"]);
 
+    const reconstructed = reconstructedReceiptFor(pending);
+    const full = receiptFor(pending);
+    const partialReceipts = ([
+      "invocationId",
+      "correlationId",
+      "proofDigest",
+      "routeSnapshotDigest",
+      "egressEpoch",
+      "leaseTicket",
+      "intent",
+    ] as const).map((field) => ({
+      ...reconstructed,
+      [field]: full[field],
+    }) as GatewayBridgeCumulativeAckReceipt);
     const wrongAcks: readonly GatewayBridgeCumulativeAckReceipt[] = [
       receiptFor(pending, {
         cumulativeAck: pending.gatewaySequence - 1,
@@ -2067,6 +2262,16 @@ describe("GatewayRecoveryAuthority durable safety", () => {
       receiptFor(pending, {
         authorizedSessionVersion: pending.authorizedSessionVersion + 1,
       }),
+      receiptFor(pending, {
+        tenantId: "tenant-foreign",
+      }),
+      receiptFor(pending, {
+        correlationId: uuid7(750_001),
+      }),
+      receiptFor(pending, {
+        proofDigest: `sha256:${"z".repeat(64)}` as `sha256:${string}`,
+      }),
+      ...partialReceipts,
     ];
     for (const receipt of wrongAcks) {
       bridgeEvidence.observe(pending, { acceptance: receipt });
@@ -2735,4 +2940,380 @@ describe("GatewayRecoveryAuthority durable safety", () => {
     expect(mutatedTenant.pendingDispatch).toBeNull();
     expect(mutatedTenant.ledger.holds).toEqual([]);
   });
+
+  it("restores a frozen, field-identical confirmation scope after clone before authority validation", async () => {
+    const durable = createRestartableTestStore();
+    await durable.store.open();
+    const bridgeEvidence = new TestBridgeEvidence();
+    const evidenceDecision = new TestEvidenceDecision();
+    const seen: GatewayConfirmationProof[] = [];
+    const confirmationAuthority: GatewayConfirmationTransactionAuthority = {
+      usesStore: (store) => store === durable.store,
+      async validatePendingAction(_tx, proof) {
+        seen.push(proof);
+        return {
+          kind: "rejected" as const,
+          reason: "not_found" as const,
+          confirmationId: null,
+          pendingAction: null,
+        };
+      },
+      stageConsumption() {
+        throw new Error("rejected proof must not stage consumption");
+      },
+    };
+    const authority = new GatewayRecoveryAuthority(durable.store, {
+      bridgeEvidence,
+      evidenceDecision,
+      confirmationAuthority,
+      clock: () => 1_775_000_000_000,
+      newId: () => uuid7(920_000),
+    });
+    const envelope = mutationEnvelope({
+      seq: 910,
+      invocationId: uuid7(910),
+      scope: SESSION_SCOPE,
+    });
+    const scope = createEffectiveMcpRequestScopeV1({
+      principalKey: "tenant-a:user-a",
+      transportMcpSessionId: "mcp-session-a",
+      identityMcpSessionId: null,
+      nowMs: 1_775_000_000_000,
+    });
+    const confirmationId = envelope.payload.policy.confirmation_id;
+    const proof: GatewayConfirmationProof = {
+      confirmToken: `rvc2.${confirmationId}.${"a".repeat(64)}.${"b".repeat(64)}.${"C".repeat(43)}`,
+      originatingPreviewInvocationId: uuid7(911),
+      commitInvocationId: envelope.payload.invocation_id,
+      binding: {
+        tenantId: TENANT_A,
+        principalKey: "tenant-a:user-a",
+        userId: "user-a",
+        gatewaySessionId: "gateway-session-a",
+        confirmationSessionId: "mcp-session-a",
+        oauthClientId: "codex-desktop-a",
+        rsid: envelope.rsid,
+        toolName: envelope.payload.method,
+        toolVersion: "1.0.0",
+        commitArgsDigest: makeParamsDigest(
+          envelope.payload.params as JsonValue,
+        ),
+        mutationScope: SESSION_SCOPE,
+        documentIdentity: { kind: "live", session_document_id: "doc-a" },
+      },
+      effectiveMcpRequestScope: scope,
+    };
+    const attemptId = uuid7(912);
+    await authority.acquireInvocationWindow({
+      tenantId: TENANT_A,
+      rsid: envelope.rsid,
+      attemptId,
+    });
+    const input = {
+      tenantId: TENANT_A,
+      attemptId,
+      sessionBindingId: SESSION_BINDING,
+      connectionId: CONNECTION,
+      envelope,
+      expected: expectedMutationDispatch(envelope),
+      confirmationProof: proof,
+    };
+    const preparing = authority.prepareMutationDispatch(input);
+    (input.confirmationProof as { effectiveMcpRequestScope: typeof scope })
+      .effectiveMcpRequestScope = createEffectiveMcpRequestScopeV1({
+      principalKey: "tenant-a:user-mutated",
+      transportMcpSessionId: "mcp-session-mutated",
+      identityMcpSessionId: null,
+      nowMs: 1_775_000_000_001,
+    });
+
+    await expect(preparing).resolves.toMatchObject({
+      kind: "confirmation_rejected",
+      reason: "not_found",
+    });
+    expect(seen).toHaveLength(1);
+    const carried = seen[0]!.effectiveMcpRequestScope;
+    expect(carried).toEqual(scope);
+    expect(carried).not.toBe(scope);
+    expect(Object.isFrozen(carried)).toBe(true);
+    expect(() => {
+      (carried as { principalKey: string }).principalKey = "mutated";
+    }).toThrow();
+    expect(carried).toEqual(scope);
+  });
+
+  it.each(["wss", "http_sse"] as const)(
+    "PUBLIC-PORT BLOCKER: exposes its own real reserved-cancellation receipt: %s",
+    async (binding) => {
+      const context = await createRealNoSendContext({
+        binding,
+        principal: `public-${binding}`,
+      });
+      try {
+        const observed = await inspectRealNoSendRaw(context);
+        // Expected: a Gateway-authored reserved cancellation is public
+        // recovery evidence with no ACK and an exact no-send receipt.
+        // Actual on cb48: inspectDispatch returns protocol_fault because it
+        // compares null acceptance.gatewaySequence to the expected sequence.
+        expect(observed).toMatchObject({
+          kind: "found",
+          observation: {
+            acceptance: null,
+            noSend: expect.objectContaining({
+              envelopeDigest: context.pending.envelopeDigest,
+              transportStarted: false,
+              cumulativeAck: null,
+            }),
+          },
+        });
+      } finally {
+        await context.bridge.close();
+      }
+    },
+  );
 });
+
+type RealBinding = "wss" | "http_sse";
+
+interface RealNoSendContext {
+  readonly tenantId: string;
+  readonly rsid: string;
+  readonly store: RestartableTestStore;
+  readonly bridge: GatewayBridgeSessionAuthority;
+  readonly recovery: GatewayRecoveryAuthority;
+  readonly pending: GatewayRecoveryPendingDispatch;
+}
+
+function realIdentity(input: {
+  readonly tenantId: string;
+  readonly principal: string;
+}): IdentityPort {
+  return {
+    kind: "fake" as const,
+    async authenticateNorthRequest() {
+      return {
+        ok: false as const,
+        port: "identity" as const,
+        code: "not_configured" as const,
+        message: "north identity is outside the foreign-receipt fixture",
+      };
+    },
+    async authenticateDevice(request) {
+      const context: DeviceAuthContext = {
+        contractVersion: GATEWAY_AUTH_CONTRACT_VERSION,
+        actor: {
+          type: "device",
+          tenantId: input.tenantId,
+          userId: `user-${input.principal}`,
+          deviceId: `device-${input.principal}`,
+          seatId: `seat-${input.principal}`,
+        },
+        connectionId: request.connectionId,
+        deviceStatus: "active",
+        grantedConnectionCapabilities: ["transport_streamable_http"],
+        grantedSessionCapabilities: [],
+        deviceTokenDigest: `sha256:${(input.principal.endsWith("a") ? "a" : "b").repeat(64)}`,
+      };
+      return { ok: true as const, value: context };
+    },
+  };
+}
+
+function realHello(principal: string): HelloEnvelope {
+  return {
+    type: "hello",
+    id: uuid7(810_000 + principal.length),
+    ts: NOW,
+    payload: {
+      min_protocol: 1,
+      max_protocol: 1,
+      capabilities: ["transport_streamable_http"],
+      bridge_version: "foreign-receipt-fixture",
+      device_id: `device-${principal}`,
+      machine: { hostname: `host-${principal}`, os: "windows" },
+      addin_versions: ["foreign-receipt-fixture"],
+    },
+  };
+}
+
+function realRegistration(principal: string): Extract<RbpEnvelope, { type: "session_register" }> {
+  return {
+    v: 1,
+    type: "session_register",
+    id: uuid7(820_000 + principal.length),
+    ts: NOW,
+    payload: {
+      local_session_key: `local-${principal}`,
+      user_hint: { name: principal },
+      machine: {
+        hostname: `host-${principal}`,
+        fingerprint: `sha256:${"1".repeat(64)}`,
+      },
+      revit: { version: "2026", build: "fixture", pid: 4100 },
+      addin_version: "foreign-receipt-fixture",
+      result_contract_version: 1,
+      session_capabilities: [],
+      bridge_version: "foreign-receipt-fixture",
+      documents: [],
+      port: 48884,
+    },
+  };
+}
+
+function cancellationChannel(): BridgeConnectionChannel {
+  return {
+    async send(): Promise<void> {},
+    sendDispatchStarted(
+      _serialized: string,
+      handoff: DispatchTransportHandoff,
+    ) {
+      const failure = Promise.reject(new Error("fixture cancels before carrier invocation"));
+      void failure.catch(() => undefined);
+      return {
+        started: failure,
+        completion: failure,
+        cancel: handoff.cancelBeforeStart,
+      };
+    },
+    async close(): Promise<void> {},
+  };
+}
+
+function realRequest(input: {
+  readonly tenantId: string;
+  readonly principal: string;
+  readonly rsid: string;
+  readonly ordinal: number;
+}): GatewayExecutorRequest {
+  const args: JsonValue = { fixture: "foreign-receipt" };
+  return {
+    toolName: "core.set_parameter",
+    toolVersion: "1.0.0",
+    executorMethod: "set_element_parameter",
+    policyClass: "auto",
+    mutationScopePolicy: "session",
+    args,
+    context: {
+      invocationId: uuid7(830_000 + input.principal.length + input.ordinal),
+      idempotencyKey: `${input.rsid}/${uuid7(830_000 + input.principal.length + input.ordinal)}`,
+      principalKey: `${input.tenantId}:${input.principal}`,
+      actor: { tenantId: input.tenantId, userId: `user-${input.principal}`, role: "user" },
+      gatewaySessionId: `gateway-${input.principal}`,
+      oauthClientId: `oauth-${input.principal}`,
+      mcpSessionId: `mcp-${input.principal}`,
+      effectiveMcpRequestScope: createEffectiveMcpRequestScopeV1({
+        principalKey: `${input.tenantId}:${input.principal}`,
+        transportMcpSessionId: `mcp-${input.principal}`,
+        identityMcpSessionId: null,
+        nowMs: 1_775_000_100_000,
+      }),
+      rsid: input.rsid,
+      toolName: "core.set_parameter",
+      toolVersion: "1.0.0",
+      policyClass: "auto",
+      policyDecision: "auto",
+      confirmationId: null,
+      originatingPreviewInvocationId: null,
+      mutationScopePolicy: "session",
+      mutating: true,
+      executor: "bridge",
+      documentIdentity: { kind: "live", session_document_id: `doc-${input.principal}` },
+      paramsDigest: makeParamsDigest(args),
+      mutationScope: SESSION_SCOPE,
+      startedAtMs: 1_775_000_100_000,
+    },
+  };
+}
+
+function expectedFromPending(pending: GatewayRecoveryPendingDispatch): GatewayExpectedDispatchBinding {
+  return {
+    rsid: pending.envelope.rsid,
+    sessionBindingId: pending.sessionBindingId,
+    gatewaySequence: pending.gatewaySequence,
+    envelopeDigest: pending.envelopeDigest,
+    invocationBindings: pending.journalRecords.map((journal) => ({
+      idempotencyKey: `${journal.binding.rsid}/${journal.binding.invocationId}`,
+      bindingDigest: journal.bindingDigest,
+    })),
+  };
+}
+
+async function createRealNoSendContext(input: {
+  readonly binding: RealBinding;
+  readonly principal: string;
+}): Promise<RealNoSendContext> {
+  const tenantId = "tenant-foreign-receipt";
+  const store = createRestartableTestStore();
+  const bridge = new GatewayBridgeSessionAuthority(
+    store.store,
+    realIdentity({ tenantId, principal: input.principal }),
+  );
+  await bridge.open();
+  const opened = await bridge.openConnection({
+    deviceToken: `token-${input.principal}`,
+    binding: input.binding,
+    hello: realHello(input.principal),
+    channel: cancellationChannel(),
+  });
+  await bridge.receive(opened.connectionId, realRegistration(input.principal));
+  // The public registration ACK is retained by the connection channel, but
+  // this test deliberately avoids a fixture-authored receipt. Read the rsid
+  // through the public build surface after discovering the sole real session.
+  const snapshot = store.snapshot();
+  const root = snapshot.records.find(
+    (record) => record.tenantId === tenantId && record.namespace === "gateway.rbp-session/v3",
+  );
+  if (root === undefined || typeof root.value !== "object" || root.value === null || !("rsid" in root.value)) {
+    throw new Error("real bridge registration did not create a v3 session root");
+  }
+  const rsid = root.value.rsid;
+  if (typeof rsid !== "string") throw new Error("registered rsid is invalid");
+  const request = realRequest({
+    tenantId,
+    principal: input.principal,
+    rsid,
+    ordinal: 100,
+  });
+  const draft = bridge.buildEnvelope(request);
+  const recovery = new GatewayRecoveryAuthority(store.store, {
+    bridgeEvidence: bridge,
+    evidenceDecision: {
+      async decideEvidence() {
+        return {
+          kind: "decided" as const,
+          conclusion: "inconclusive" as const,
+          authorityReference: "foreign-receipt-fixture",
+          decisionVersion: 1,
+          decidedAtMs: 1_775_000_100_001,
+        };
+      },
+    },
+    clock: () => 1_775_000_100_002,
+    newId: () => uuid7(840_000 + input.principal.length),
+  });
+  const attemptId = uuid7(850_000 + input.principal.length);
+  await recovery.acquireInvocationWindow({ tenantId, rsid, attemptId });
+  const prepareInput = {
+    tenantId,
+    attemptId,
+    sessionBindingId: draft.sessionBindingId,
+    connectionId: draft.connectionId,
+    envelope: draft.envelope,
+    expected: draft.expected,
+  };
+  const pending = requirePending(await recovery.prepareMutationDispatch(prepareInput));
+  await expect(bridge.execute(request, pending)).resolves.toMatchObject({
+    state: "failed",
+    error: { code: "executor_unavailable" },
+  });
+  return { tenantId, rsid, store, bridge, recovery, pending };
+}
+
+async function inspectRealNoSendRaw(input: RealNoSendContext): Promise<GatewayBridgeEvidenceLookup> {
+  const result = await input.store.store.transact(
+    { tenantId: input.tenantId },
+    async (tx) => await input.bridge.inspectDispatch(tx, expectedFromPending(input.pending)),
+  );
+  if (!result.ok) throw new Error(result.message);
+  return result.value;
+}

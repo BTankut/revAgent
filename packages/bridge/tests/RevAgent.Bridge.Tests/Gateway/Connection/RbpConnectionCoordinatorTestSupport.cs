@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -25,14 +26,18 @@ public sealed partial class RbpConnectionCoordinatorTests
         IRbpInvocationDispatcher? invocationDispatcher = null,
         TimeSpan? invocationDrainTimeout = null,
         Func<RbpConnectionFailureObservation, ValueTask>?
-            onConnectionFailureObservation = null) =>
+            onConnectionFailureObservation = null,
+        IRbpRecoveryCarrierObservationSink?
+            recoveryCarrierObservationSink = null,
+        RbpHelloProfile? helloProfile = null,
+        RbpDocContextWatcher? docContextWatcher = null) =>
         new(
             factory,
             store,
             catalog,
             new RbpConnectionCoordinatorOptions(
                 new Uri("wss://gateway.revagent.app/bridge/v1"),
-                new RbpHelloProfile(
+                helloProfile ?? new RbpHelloProfile(
                     "0.1.0",
                     "WS01",
                     "Windows 11",
@@ -44,7 +49,10 @@ public sealed partial class RbpConnectionCoordinatorTests
             clock,
             random ?? new FixedRandomSource(0),
             onConnectionFailureObservation:
-                onConnectionFailureObservation);
+                onConnectionFailureObservation,
+            recoveryCarrierObservationSink:
+                recoveryCarrierObservationSink,
+            docContextWatcher: docContextWatcher);
 
     private static RbpJournalStore OpenStore(
         RbpJournalTestDirectory directory,
@@ -135,7 +143,7 @@ public sealed partial class RbpConnectionCoordinatorTests
 
     private static async Task EventuallyAsync(
         Func<bool> predicate,
-        int attempts = 400)
+        int attempts = 4_000)
     {
         for (int attempt = 0; attempt < attempts; attempt++)
         {
@@ -152,7 +160,7 @@ public sealed partial class RbpConnectionCoordinatorTests
 
     private static async Task EventuallyAsync(
         Func<Task<bool>> predicate,
-        int attempts = 400)
+        int attempts = 4_000)
     {
         for (int attempt = 0; attempt < attempts; attempt++)
         {
@@ -165,6 +173,33 @@ public sealed partial class RbpConnectionCoordinatorTests
         }
 
         Assert.Fail("The deterministic coordinator condition was not met.");
+    }
+
+    private static async Task<Task<RbpCoordinatorTeardownResult>>
+        RequestNormalStopTeardownWhenReadyAsync(
+            RbpConnectionCoordinator coordinator)
+    {
+        object coordinatorSync = typeof(RbpConnectionCoordinator).GetField(
+            "_sync", BindingFlags.Instance | BindingFlags.NonPublic)?
+            .GetValue(coordinator) ?? throw new InvalidOperationException(
+                "Coordinator synchronization root was unavailable.");
+        for (int attempt = 0; attempt < 1_000; attempt++)
+        {
+            lock (coordinatorSync)
+            {
+                RbpConnectionCoordinatorSnapshot current =
+                    coordinator.GetSnapshot();
+                if (current.ActiveInvocationCount == 0 &&
+                    AttemptStopState(coordinator) is 2 or 5)
+                {
+                    return coordinator.RequestStopTeardown();
+                }
+            }
+            await Task.Delay(5);
+        }
+
+        Assert.Fail("The coordinator never reached a normal-stop state.");
+        throw new InvalidOperationException("Unreachable normal-stop path.");
     }
 
     private sealed class MutableSessionCatalog : IRbpLocalSessionCatalog
@@ -429,6 +464,19 @@ public sealed partial class RbpConnectionCoordinatorTests
             }
         }
 
+        internal int OutstandingDelayCountDueIn(TimeSpan delay)
+        {
+            lock (_sync)
+            {
+                long due = checked(
+                    _monotonicMilliseconds +
+                    (long)Math.Ceiling(delay.TotalMilliseconds));
+                return _delays.Count(item =>
+                    item.DueMilliseconds == due &&
+                    !item.Completion.Task.IsCompleted);
+            }
+        }
+
         private sealed record ScheduledDelay(
             long DueMilliseconds,
             TaskCompletionSource Completion);
@@ -448,6 +496,9 @@ public sealed partial class RbpConnectionCoordinatorTests
         }
 
         internal int OpenCount => Volatile.Read(ref _openCount);
+
+        public RbpConnectionBindingKind BindingKind =>
+            RbpConnectionBindingKind.Wss;
 
         public Task<IRbpConnectionCycle> OpenAsync(
             Uri endpoint,
@@ -481,26 +532,29 @@ public sealed partial class RbpConnectionCoordinatorTests
         private readonly bool _leaveInboundOpenAfterClose;
         private readonly Func<FakeConnectionCycle, RbpEnvelope,
             CancellationToken, Task>? _sendBehavior;
+        private readonly Action? _onCloseStarted;
         private int _closeCount;
+        private int _disposeCount;
 
         internal FakeConnectionCycle(
             Func<RbpEnvelope, RbpEnvelope?> responder,
             bool hangCloseAndDispose = false,
             bool leaveInboundOpenAfterClose = false,
             Func<FakeConnectionCycle, RbpEnvelope, CancellationToken, Task>?
-                sendBehavior = null)
+                sendBehavior = null,
+            IReadOnlyList<string>? grantedConnectionCapabilities = null,
+            string connectionId = "conn-test",
+            Action? onCloseStarted = null)
         {
             _responder = responder;
             _hangCloseAndDispose = hangCloseAndDispose;
             _leaveInboundOpenAfterClose = leaveInboundOpenAfterClose;
             _sendBehavior = sendBehavior;
-        }
-
-        public RbpHelloAckPayload Acknowledgement { get; } =
-            new(
+            _onCloseStarted = onCloseStarted;
+            Acknowledgement = new RbpHelloAckPayload(
                 1,
-                "conn-test",
-                Array.Empty<string>(),
+                connectionId,
+                grantedConnectionCapabilities ?? Array.Empty<string>(),
                 15_000,
                 new RbpHelloLimits(
                     4 * 1024 * 1024,
@@ -509,10 +563,14 @@ public sealed partial class RbpConnectionCoordinatorTests
                 new RbpHelloManifest(
                     "0.1.0",
                     "/bridge/update/manifest"));
+        }
+
+        public RbpHelloAckPayload Acknowledgement { get; }
 
         internal ConcurrentQueue<RbpEnvelope> Sent { get; } = new();
 
         internal int CloseCount => Volatile.Read(ref _closeCount);
+        internal int DisposeCount => Volatile.Read(ref _disposeCount);
 
         internal Action<RbpEnvelope>? AfterResponse { get; set; }
 
@@ -544,6 +602,7 @@ public sealed partial class RbpConnectionCoordinatorTests
         public Task CloseAsync(
             CancellationToken cancellationToken = default)
         {
+            _onCloseStarted?.Invoke();
             Interlocked.Increment(ref _closeCount);
             if (_hangCloseAndDispose)
             {
@@ -561,6 +620,7 @@ public sealed partial class RbpConnectionCoordinatorTests
 
         public ValueTask DisposeAsync()
         {
+            Interlocked.Increment(ref _disposeCount);
             if (_hangCloseAndDispose)
             {
                 return new ValueTask(
@@ -718,6 +778,13 @@ public sealed partial class RbpConnectionCoordinatorTests
         public IRbpInvocationClaim? TryClaim(string rsid) =>
             _gate.TryEnter(rsid) ? new GateClaim(_gate, rsid) : null;
 
+        public IRbpInvocationClaim? TryClaim(
+            string rsid,
+            RbpInvocationAuthoritySnapshot authority) =>
+            _gate.TryEnter(rsid)
+                ? new GateClaim(_gate, rsid, authority)
+                : null;
+
         public RbpInvocationAnswer RejectConcurrent(string invocationId)
         {
             RejectedInvocationIds.Enqueue(invocationId);
@@ -739,8 +806,10 @@ public sealed partial class RbpConnectionCoordinatorTests
         public async Task<RbpInvocationAnswer> DispatchClaimedAsync(
             IRbpInvocationClaim claim,
             JsonElement invokePayload,
+            IReadOnlyList<string> grantedConnectionCapabilities,
             CancellationToken cancellationToken)
         {
+            _ = grantedConnectionCapabilities;
             _dispatched.Enqueue(claim.Rsid);
             int active = Interlocked.Increment(ref _active);
             int peak = Volatile.Read(ref _concurrentPeak);

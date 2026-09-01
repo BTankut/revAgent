@@ -113,6 +113,11 @@ export interface FixtureEvidenceSnapshot {
     readonly method: string;
     readonly count: number;
   }[];
+  /** Bounded fixture-only origin-response provenance for D0 C39. */
+  readonly c39OriginResponses: readonly {
+    readonly requestId: string;
+    readonly responseDigest: string;
+  }[];
   readonly modelStateDigest: string;
   readonly modelStateEntryCount: number;
   readonly pendingStalls: readonly {
@@ -126,6 +131,13 @@ export interface FixtureEvidenceSnapshot {
     readonly totalEventCount: number;
     readonly droppedEventCount: number;
     readonly currentRevision: number;
+    readonly cacheIncarnationDigest: string;
+    /** SHA-256 of the canonical cached context; raw context is never in evidence. */
+    readonly cachedContextHash: string;
+    /** SHA-256 of the active document identity, or null when there is no active document. */
+    readonly activeDocumentIdentityHash: string | null;
+    /** The most recent strict control acknowledgement, if document context was controlled. */
+    readonly lastControlAcknowledgementHash: string | null;
     readonly applicationEventCacheUpdateCount: number;
     readonly cacheReadCount: number;
     readonly pollRequestCount: number;
@@ -139,6 +151,26 @@ export interface FixtureEvidenceSnapshot {
   };
   readonly openSocketCount: number;
   readonly crashed: boolean;
+}
+
+/** Fixed, slot-free D0 provenance projection for the C39 conformance route. */
+export interface FixtureC39OriginProvenance {
+  readonly version: 1;
+  readonly method: "fixture_multi_file_output";
+  readonly count: number;
+  readonly ready: boolean;
+  readonly latestDigest: string | null;
+  readonly domainHash: string;
+}
+
+/** Value-free receipt returned by the strict fixture control plane. */
+export interface DocumentContextControlAcknowledgement {
+  readonly action: "apply_document_context";
+  readonly revision: number;
+  readonly cacheIncarnationDigest: string;
+  readonly cachedContextHash: string;
+  readonly activeDocumentIdentityHash: string | null;
+  readonly acknowledgementHash: string;
 }
 
 export interface DocumentContextSnapshot {
@@ -164,11 +196,13 @@ export interface DocumentContextSnapshot {
     readonly level: string | null;
   } | null;
   readonly disciplineHint: string | null;
+  /** Fixture-only diagnostic metadata; never part of the production RBP payload. */
+  readonly cache_incarnation_digest?: string;
 }
 
 export type DocumentContextEvent = Omit<
   DocumentContextSnapshot,
-  "resultContractVersion" | "documentContextContractVersion" | "revision"
+  "resultContractVersion" | "documentContextContractVersion" | "revision" | "cache_incarnation_digest"
 >;
 
 export interface FixtureOptions {

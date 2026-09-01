@@ -52,6 +52,9 @@ namespace RevAgent.Contracts.Rbp
             "disciplineHint",
         };
 
+        private const string FixtureCacheIncarnationDigestProperty =
+            "cache_incarnation_digest";
+
         private static readonly string[] DocumentProperties =
         {
             "documentId",
@@ -92,7 +95,11 @@ namespace RevAgent.Contracts.Rbp
                 throw new ArgumentNullException(nameof(result));
             }
 
-            RequireExactProperties(result, ResultProperties, "result");
+            RequireRequiredAndOptionalProperties(
+                result,
+                ResultProperties,
+                new[] { FixtureCacheIncarnationDigestProperty },
+                "result");
             RequireInteger(result, "resultContractVersion", "result", 2, 2);
             RequireInteger(result, "documentContextContractVersion", "result", 1, 1);
 
@@ -177,6 +184,31 @@ namespace RevAgent.Contracts.Rbp
                 throw Invalid("result.disciplineHint does not match the frozen token format");
             }
 
+            string? cacheIncarnationDigest = null;
+            if (result.TryGetValue(
+                    FixtureCacheIncarnationDigestProperty,
+                    StringComparison.Ordinal,
+                    out JToken? cacheIncarnationToken))
+            {
+                if (cacheIncarnationToken.Type != JTokenType.String)
+                {
+                    throw Invalid("result.cache_incarnation_digest must be lowercase sha256:<64-hex>");
+                }
+
+                cacheIncarnationDigest = cacheIncarnationToken.Value<string>();
+                if (cacheIncarnationDigest == null || !Sha256Pattern.IsMatch(cacheIncarnationDigest))
+                {
+                    throw Invalid("result.cache_incarnation_digest must be lowercase sha256:<64-hex>");
+                }
+
+                // A fixture incarnation correlate is meaningful only with a
+                // positive, JSON-safe revision from the same snapshot.
+                if (revision <= 0)
+                {
+                    throw Invalid("result.cache_incarnation_digest requires a positive result.revision");
+                }
+            }
+
             ValidateStateInvariants(
                 cacheState,
                 unavailableReason,
@@ -194,7 +226,8 @@ namespace RevAgent.Contracts.Rbp
                 new ReadOnlyCollection<AddinDocumentContextDocument>(documents),
                 activeDocumentId,
                 activeView,
-                disciplineHint);
+                disciplineHint,
+                cacheIncarnationDigest);
         }
 
         private static AddinDocumentContextDocument ParseDocument(JObject value, string path)
@@ -344,6 +377,31 @@ namespace RevAgent.Contracts.Rbp
             foreach (var property in value.Properties())
             {
                 if (!remaining.Remove(property.Name))
+                {
+                    throw Invalid(path + " contains unexpected property \"" + property.Name + "\"");
+                }
+            }
+
+            if (remaining.Count != 0)
+            {
+                foreach (var missing in remaining)
+                {
+                    throw Invalid(path + " is missing required property \"" + missing + "\"");
+                }
+            }
+        }
+
+        private static void RequireRequiredAndOptionalProperties(
+            JObject value,
+            IEnumerable<string> required,
+            IEnumerable<string> optional,
+            string path)
+        {
+            var remaining = new HashSet<string>(required, StringComparer.Ordinal);
+            var allowedOptional = new HashSet<string>(optional, StringComparer.Ordinal);
+            foreach (var property in value.Properties())
+            {
+                if (!remaining.Remove(property.Name) && !allowedOptional.Contains(property.Name))
                 {
                     throw Invalid(path + " contains unexpected property \"" + property.Name + "\"");
                 }

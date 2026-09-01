@@ -31,11 +31,11 @@ function replaceCallable(
 }
 
 describe("M2 north first-slice composition", () => {
-  it("derives exactly one executable callable from the verified GW-3 catalog", () => {
-    expect(catalog).toHaveLength(40);
+  it("derives the normal bootstrap and C39 recovery callables from the verified catalog", () => {
+    expect(catalog).toHaveLength(41);
 
     const registry = buildNorthFirstSliceCallableRegistry(catalog);
-    expect(registry.records()).toHaveLength(1);
+    expect(registry.records()).toHaveLength(2);
     expect(registry.require(M2_NORTH_FIRST_SLICE_CALLABLE)).toMatchObject({
       name: "core.ui.state",
       executorMethod: "get_ui_state",
@@ -45,6 +45,15 @@ describe("M2 north first-slice composition", () => {
         additionalProperties: false,
         properties: {},
         type: "object",
+      },
+    });
+    expect(registry.require("core.dispatch.payload_recovery")).toMatchObject({
+      executorMethod: "dispatch_payload_recovery",
+      policyClass: "auto",
+      executor: "bridge",
+      inputJsonSchema: {
+        additionalProperties: false,
+        required: ["origin_invocation_id", "expected_result_digest"],
       },
     });
   });

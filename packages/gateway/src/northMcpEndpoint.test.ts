@@ -1,4 +1,6 @@
+import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import type { IncomingMessage } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -43,7 +45,12 @@ import {
   buildGatewayInstructionPackage,
   gatewayClientInstructions,
 } from "./instructionPackage.js";
-import type { GatewayInvocationRoute } from "./invocationContext.js";
+import {
+  createEffectiveMcpRequestScopeV1,
+  type EffectiveMcpRequestScopeV1,
+  type GatewayInvocationRoute,
+} from "./invocationContext.js";
+import { isGatewayUuidV7 } from "./identifiers.js";
 import { buildNorthFirstSliceCallableRegistry } from "./northFirstSlice.js";
 import {
   type AuthenticatedNorthMcpRequest,
@@ -51,6 +58,7 @@ import {
   type NorthMcpEndpointHandle,
   startNorthMcpEndpoint,
 } from "./northMcpEndpoint.js";
+import type { GatewayResourceAuthority } from "./resourceAuthority.js";
 import {
   GatewayToolRegistry,
   type GatewayToolRecord,
@@ -189,12 +197,15 @@ function authenticatedRequest(
 function invocationRouteFor(
   authenticated: AuthorizedNorthMcpRequest,
   mcpSessionId: string,
+  effectiveMcpRequestScope: EffectiveMcpRequestScopeV1,
 ): GatewayInvocationRoute {
   expect(authenticated.authInfo).not.toHaveProperty("token");
   expect(authenticated.authInfo).not.toHaveProperty("extra");
   return Object.freeze({
     tenantId: authenticated.authContext.actor.tenantId,
+    principalKey: authenticated.principalKey,
     mcpSessionId,
+    effectiveMcpRequestScope,
     rsid: RSID,
     documentIdentity: Object.freeze({
       kind: "live" as const,
@@ -373,6 +384,463 @@ function deferred<T>(): {
 }
 
 describe("M2 north MCP first slice", () => {
+  it("binds one immutable effective MCP scope and mints a UUIDv7 only for stateless requests", () => {
+    const transportOnly = createEffectiveMcpRequestScopeV1({
+      principalKey: PRINCIPAL_KEY,
+      transportMcpSessionId: "transport-session",
+      identityMcpSessionId: null,
+      nowMs: 1_775_000_000_000,
+    });
+    const identityOnly = createEffectiveMcpRequestScopeV1({
+      principalKey: PRINCIPAL_KEY,
+      transportMcpSessionId: null,
+      identityMcpSessionId: "identity-session",
+      nowMs: 1_775_000_000_000,
+    });
+    const stateless = createEffectiveMcpRequestScopeV1({
+      principalKey: PRINCIPAL_KEY,
+      transportMcpSessionId: null,
+      identityMcpSessionId: null,
+      nowMs: 1_775_000_000_000,
+    });
+    const secondStateless = createEffectiveMcpRequestScopeV1({
+      principalKey: PRINCIPAL_KEY,
+      transportMcpSessionId: null,
+      identityMcpSessionId: null,
+      nowMs: 1_775_000_000_001,
+    });
+
+    expect(transportOnly.effectiveMcpSessionId).toBe("transport-session");
+    expect(identityOnly.effectiveMcpSessionId).toBe("identity-session");
+    expect(stateless.effectiveMcpSessionId).toMatch(/^stateless-request:/u);
+    expect(isGatewayUuidV7(stateless.effectiveMcpSessionId.slice(18))).toBe(true);
+    expect(secondStateless.effectiveMcpSessionId).not.toBe(
+      stateless.effectiveMcpSessionId,
+    );
+    expect(Object.isFrozen(stateless)).toBe(true);
+  });
+
+  it("rejects a transport/identity session mismatch before route resolution or dispatch", async () => {
+    const registry = buildNorthFirstSliceCallableRegistry(VERIFIED_CATALOG);
+    const dispatcher = new GatewayDispatcher(
+      registry,
+      [
+        {
+          binding: "bridge",
+          async execute(): Promise<GatewayExecutorOutcome> {
+            return { state: "completed", result: { unexpected: true } };
+          },
+        },
+      ],
+      dispatcherOptions(),
+    );
+    const dispatchSpy = vi.spyOn(dispatcher, "dispatch");
+    const routeSpy = vi.fn(invocationRouteFor);
+    const authInfo: AuthInfo = {
+      token: TOKEN,
+      clientId: "wp09-mismatch",
+      scopes: ["mcp:tools"],
+    };
+    const endpoint = await startNorthMcpEndpoint({
+      dispatcher,
+      registry,
+      catalogViewFor: () => FULL_CATALOG_VIEW,
+      invocationRouteFor: routeSpy,
+      requestState: { key: REQUEST_STATE_KEY },
+      resourceMetadataUrl: new URL(
+        "https://gateway.example.test/.well-known/oauth-protected-resource/mcp",
+      ),
+      authenticator: {
+        async authenticate(request) {
+          return request.headers.authorization === `Bearer ${TOKEN}`
+            ? authenticatedRequest(
+                PRINCIPAL_KEY,
+                authInfo,
+                "gateway-wp09",
+                "identity-session",
+              )
+            : null;
+        },
+      },
+    });
+    try {
+      const response = await fetch(endpoint.endpoint, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${TOKEN}`,
+          accept: "application/json, text/event-stream",
+          "content-type": "application/json",
+          "mcp-session-id": "transport-session",
+        },
+        body: JSON.stringify(modernToolCallBody("2026-07-28", "wp09-mismatch")),
+      });
+      expect(response.status).toBeGreaterThanOrEqual(400);
+      expect(dispatchSpy).not.toHaveBeenCalled();
+      expect(routeSpy).not.toHaveBeenCalled();
+    } finally {
+      await endpoint.close().catch(() => undefined);
+    }
+  });
+
+  it("keeps each request-local effective scope object across applicable north boundaries", async () => {
+    type Boundary = "mode_a" | "resource" | "route" | "dispatch" | "result";
+    const observed: Array<{
+      readonly boundary: Boundary;
+      readonly scope: EffectiveMcpRequestScopeV1;
+    }> = [];
+    const routeScopes: EffectiveMcpRequestScopeV1[] = [];
+    const executorScopes: EffectiveMcpRequestScopeV1[] = [];
+    const resultScopes: EffectiveMcpRequestScopeV1[] = [];
+    const resourceScopes: EffectiveMcpRequestScopeV1[] = [];
+    const eventSink = createCapturingEventSink();
+    const registry = buildNorthFirstSliceCallableRegistry(VERIFIED_CATALOG);
+    const catalogEntry = FULL_CATALOG_VIEW.get("core.ui.state");
+    if (catalogEntry === undefined) {
+      throw new Error("combined scope oracle catalog entry is unavailable");
+    }
+    const catalogView = new EntitledCatalogView([catalogEntry], entitleAll);
+    const dispatcher = new GatewayDispatcher(
+      registry,
+      [
+        {
+          binding: "bridge",
+          async execute(request): Promise<GatewayExecutorOutcome> {
+            const scope = request.context.effectiveMcpRequestScope;
+            if (scope === undefined) {
+              throw new Error("north dispatch omitted the effective MCP scope");
+            }
+            executorScopes.push(scope);
+            return { state: "completed", result: { bounded: true } };
+          },
+        },
+      ],
+      {
+        ...dispatcherOptions(),
+        eventSink,
+      },
+    );
+    const dispatchSpy = vi.spyOn(dispatcher, "dispatch");
+    const resourceAuthority: Pick<
+      GatewayResourceAuthority,
+      "boundResult" | "readResource"
+    > = {
+      async boundResult(input) {
+        resultScopes.push(input.effectiveMcpRequestScope);
+        return Object.freeze({ kind: "inline" as const, value: input.value });
+      },
+      async readResource(_scope, effectiveMcpRequestScope, uri) {
+        resourceScopes.push(effectiveMcpRequestScope);
+        return Object.freeze({
+          uri: uri.href,
+          contentType: "application/json",
+          bytes: Buffer.from("{}", "utf8"),
+          digest: `sha256:${"0".repeat(64)}` as `sha256:${string}`,
+          nextPageUri: null,
+        });
+      },
+    };
+    const options = {
+      dispatcher,
+      registry,
+      catalogViewFor: () => catalogView,
+      invocationRouteFor: (
+        authenticated: AuthorizedNorthMcpRequest,
+        mcpSessionId: string,
+        effectiveMcpRequestScope: EffectiveMcpRequestScopeV1,
+      ) => {
+        routeScopes.push(effectiveMcpRequestScope);
+        return invocationRouteFor(
+          authenticated,
+          mcpSessionId,
+          effectiveMcpRequestScope,
+        );
+      },
+      requestState: { key: REQUEST_STATE_KEY },
+      modeA: {
+        schemaBudgetBytes: 0,
+        pinnedToolNames: ["core.ui.state"],
+      },
+      resourceAuthority,
+      resourceMetadataUrl: new URL(
+        "https://gateway.example.test/.well-known/oauth-protected-resource/mcp",
+      ),
+      authenticator: {
+        async authenticate(request: IncomingMessage) {
+          return request.headers.authorization === `Bearer ${TOKEN}`
+            ? authenticatedRequest(PRINCIPAL_KEY, {
+                token: TOKEN,
+                clientId: "wp09-combined-oracle",
+                scopes: ["mcp:resources", "mcp:tools"],
+              })
+            : null;
+        },
+      },
+    };
+    Object.defineProperty(options, "__revAgentTestObserveEffectiveMcpScope", {
+      configurable: true,
+      enumerable: false,
+      value: (entry: {
+        readonly boundary: Boundary;
+        readonly scope: EffectiveMcpRequestScopeV1;
+      }) => observed.push(entry),
+    });
+    expect(Object.keys(options)).not.toContain(
+      "__revAgentTestObserveEffectiveMcpScope",
+    );
+
+    let endpoint: NorthMcpEndpointHandle | undefined;
+    let client: Client | undefined;
+    let transport: StreamableHTTPClientTransport | undefined;
+    try {
+      endpoint = await startNorthMcpEndpoint(options);
+      client = new Client({
+        name: "wp09 combined scope oracle",
+        version: "0.0.0-test",
+      });
+      transport = new StreamableHTTPClientTransport(endpoint.endpoint, {
+        requestInit: { headers: { authorization: `Bearer ${TOKEN}` } },
+      });
+      await client.connect(transport);
+      await expect(
+        client.callTool({ name: "core.ui.state", arguments: {} }),
+      ).resolves.toMatchObject({
+        structuredContent: { result: { bounded: true } },
+      });
+      await expect(
+        client.readResource({
+          uri: `revagent://artifact/p/${"a".repeat(64)}/s/${"b".repeat(64)}/t/${"c".repeat(64)}/a/${"d".repeat(64)}/r/${"e".repeat(64)}`,
+        }),
+      ).resolves.toMatchObject({ contents: [{ mimeType: "application/json" }] });
+
+      const toolScope = routeScopes.at(-1);
+      const dispatchScope = dispatchSpy.mock.calls.at(-1)?.[0]
+        .effectiveMcpRequestScope;
+      const contextScope = executorScopes.at(-1);
+      const auditScope = eventSink
+        .captured()
+        .map((event) =>
+          Object.getOwnPropertyDescriptor(event, "effectiveMcpRequestScope")
+            ?.value,
+        )
+        .find((scope): scope is EffectiveMcpRequestScopeV1 => scope !== undefined);
+      const resultScope = resultScopes.at(-1);
+      const resourceScope = resourceScopes.at(-1);
+      if (
+        toolScope === undefined ||
+        dispatchScope === undefined ||
+        contextScope === undefined ||
+        auditScope === undefined ||
+        resultScope === undefined ||
+        resourceScope === undefined
+      ) {
+        throw new Error("combined scope oracle did not reach every required boundary");
+      }
+
+      const requestBoundaryTable = [
+        ["tool route", toolScope, toolScope],
+        ["tool dispatch", dispatchScope, toolScope],
+        ["tool context", contextScope, toolScope],
+        ["tool audit", auditScope, toolScope],
+        ["tool result", resultScope, toolScope],
+        ["tool Mode-A", observed.find((entry) => entry.boundary === "mode_a" && entry.scope === toolScope)?.scope, toolScope],
+        ["resource read", resourceScope, resourceScope],
+        ["resource observer", observed.find((entry) => entry.boundary === "resource" && entry.scope === resourceScope)?.scope, resourceScope],
+        ["resource Mode-A", observed.find((entry) => entry.boundary === "mode_a" && entry.scope === resourceScope)?.scope, resourceScope],
+      ] as const;
+      for (const [boundary, actual, expected] of requestBoundaryTable) {
+        expect(actual, boundary).toBe(expected);
+        expect(Object.isFrozen(actual)).toBe(true);
+      }
+      expect(observed.some((entry) => entry.boundary === "dispatch" && entry.scope === toolScope)).toBe(true);
+      expect(observed.some((entry) => entry.boundary === "route" && entry.scope === toolScope)).toBe(true);
+      expect(observed.some((entry) => entry.boundary === "result" && entry.scope === toolScope)).toBe(true);
+    } finally {
+      await client?.close().catch(() => undefined);
+      await transport?.close().catch(() => undefined);
+      await endpoint?.close().catch(() => undefined);
+    }
+  }, 15_000);
+
+  it("returns a fixed, message-free failure after post-dispatch result delivery fails", async () => {
+    const registry = buildNorthFirstSliceCallableRegistry(VERIFIED_CATALOG);
+    const record = registry.require("core.ui.state");
+    const catalogEntry = FULL_CATALOG_VIEW.get(record.name);
+    if (catalogEntry === undefined) throw new Error("delivery test catalog entry is unavailable");
+    const dispatcher = new GatewayDispatcher(registry, [{
+      binding: "bridge",
+      async execute(): Promise<GatewayExecutorOutcome> {
+        return { state: "completed", result: {} };
+      },
+    }], dispatcherOptions());
+    const outcomes: GatewayDispatchOutcome[] = [
+      {
+        ok: true, state: "completed", toolName: record.name, toolVersion: record.version,
+        executor: record.executor, requestId: "delivery-secret-completed", result: { committed: true },
+      },
+      {
+        ok: true, state: "guarded", toolName: record.name, toolVersion: record.version,
+        executor: record.executor, requestId: "delivery-secret-guarded", guardedReason: "guard-secret", result: { guarded: true },
+      },
+      {
+        ok: false, state: "failed", toolName: record.name, requestId: "delivery-secret-not-reached",
+        executorReached: false, error: { code: "executor_failed", message: "must-not-leak" },
+      },
+      {
+        ok: false, state: "failed", toolName: record.name, requestId: "delivery-secret-reached",
+        executorReached: true, error: { code: "executor_failed", message: "must-not-leak" },
+      },
+      {
+        ok: true, state: "confirmation_required", toolName: record.name, toolVersion: record.version,
+        executor: record.executor, requestId: "delivery-secret-confirmation", result: { preview: true },
+        confirmation: {
+          confirmToken: "confirmation-secret", confirmationId: "019f9ac3-ae89-7342-9f6d-b9269e1671ff",
+          originatingPreviewInvocationId: "019f9ac3-ae89-7342-9f6d-b9269e1671fe",
+          previewDigest: `sha256:${"a".repeat(64)}`, previewRef: "inline:secret",
+          commitArgsDigest: `sha256:${"b".repeat(64)}`, expiresAtMs: 1,
+        },
+      },
+      {
+        ok: true, state: "future_dispatch_state", toolName: record.name, toolVersion: record.version,
+        executor: record.executor, requestId: "delivery-secret-unknown", result: { secret: true },
+      } as unknown as GatewayDispatchOutcome,
+    ];
+    vi.spyOn(dispatcher, "dispatch").mockImplementation(async () => {
+      const next = outcomes.shift();
+      if (next === undefined) throw new Error("unexpected delivery test dispatch");
+      return next;
+    });
+    const resourceAuthority: Pick<GatewayResourceAuthority, "boundResult" | "readResource"> = {
+      async boundResult() { throw new Error("delivery exception must not leak"); },
+      async readResource() { throw new Error("not used"); },
+    };
+    let endpoint: NorthMcpEndpointHandle | undefined;
+    let client: Client | undefined;
+    let transport: StreamableHTTPClientTransport | undefined;
+    try {
+      endpoint = await startNorthMcpEndpoint({
+        dispatcher,
+        registry,
+        catalogViewFor: () => new EntitledCatalogView([catalogEntry], entitleAll),
+        invocationRouteFor,
+        requestState: { key: REQUEST_STATE_KEY },
+        resourceAuthority,
+        resourceMetadataUrl: new URL("https://gateway.example.test/.well-known/oauth-protected-resource/mcp"),
+        authenticator: {
+          async authenticate(request) {
+            return request.headers.authorization === `Bearer ${TOKEN}`
+              ? authenticatedRequest(PRINCIPAL_KEY, { token: TOKEN, clientId: "delivery-failure", scopes: ["mcp:tools"] })
+              : null;
+          },
+        },
+      });
+      client = new Client({ name: "post-dispatch delivery test", version: "0.0.0-test" });
+      transport = new StreamableHTTPClientTransport(endpoint.endpoint, {
+        requestInit: { headers: { authorization: `Bearer ${TOKEN}` } },
+      });
+      await client.connect(transport);
+      const cases = [
+        ["completed", true, true, "completed", "delivery-secret-completed"],
+        ["guarded", true, true, "guarded", "delivery-secret-guarded"],
+        ["failed", false, false, null, "delivery-secret-not-reached"],
+        ["failed", false, true, null, "delivery-secret-reached"],
+        ["confirmation_required", true, true, null, "delivery-secret-confirmation"],
+        ["failed", true, true, null, "delivery-secret-unknown"],
+      ] as const;
+      for (const [dispatchState, dispatchOk, executorReached, terminalKnown, requestId] of cases) {
+        const result = await client.callTool({ name: record.name, arguments: {} });
+        const requestIdDigest = `sha256:${createHash("sha256")
+          .update("revagent:north-mcp:post-dispatch-delivery:v1\0", "utf8")
+          .update(requestId, "utf8").digest("hex")}`;
+        expect(result.isError).toBe(true);
+        expect(result.content).toHaveLength(1);
+        expect(result.structuredContent).toEqual({
+          ok: false,
+          state: "failed",
+          toolName: record.name,
+          requestIdDigest,
+          error: { code: "result_delivery_unavailable" },
+          delivery: {
+            phase: "post_dispatch", dispatchState, dispatchOk, executorReached, terminalKnown,
+            mutationDisposition: "not_reclassified",
+          },
+          resultContractVersion: 2,
+        });
+        expect(JSON.parse((result.content[0] as { readonly text: string }).text)).toEqual(result.structuredContent);
+        const serialized = JSON.stringify(result);
+        expect(serialized).not.toContain(requestId);
+        for (const forbidden of ["message", "audit", "cause", "params", "artifacts", "tokens"]) {
+          expect(serialized).not.toContain(forbidden);
+        }
+      }
+    } finally {
+      await client?.close().catch(() => undefined);
+      await transport?.close().catch(() => undefined);
+      await endpoint?.close().catch(() => undefined);
+    }
+  });
+
+  it("preserves the fixed read dispatch failure identically in text and structured content", async () => {
+    const registry = buildNorthFirstSliceCallableRegistry(VERIFIED_CATALOG);
+    const record = registry.require("core.ui.state");
+    const catalogEntry = FULL_CATALOG_VIEW.get(record.name);
+    if (catalogEntry === undefined) throw new Error("read dispatch catalog entry is unavailable");
+    const dispatcher = new GatewayDispatcher(registry, [{
+      binding: "bridge",
+      async execute(): Promise<GatewayExecutorOutcome> {
+        return { state: "completed", result: {} };
+      },
+    }], dispatcherOptions());
+    vi.spyOn(dispatcher, "dispatch").mockResolvedValue(Object.freeze({
+      ok: false as const,
+      state: "failed" as const,
+      toolName: record.name,
+      requestId: "read-dispatch-request",
+      executorReached: true,
+      error: Object.freeze({ code: "dispatch_unavailable" as const }),
+    }));
+    let endpoint: NorthMcpEndpointHandle | undefined;
+    let client: Client | undefined;
+    let transport: StreamableHTTPClientTransport | undefined;
+    try {
+      endpoint = await startNorthMcpEndpoint({
+        dispatcher,
+        registry,
+        catalogViewFor: () => new EntitledCatalogView([catalogEntry], entitleAll),
+        invocationRouteFor,
+        requestState: { key: REQUEST_STATE_KEY },
+        resourceMetadataUrl: new URL("https://gateway.example.test/.well-known/oauth-protected-resource/mcp"),
+        authenticator: {
+          async authenticate(request) {
+            return request.headers.authorization === `Bearer ${TOKEN}`
+              ? authenticatedRequest(PRINCIPAL_KEY, { token: TOKEN, clientId: "read-dispatch", scopes: ["mcp:tools"] })
+              : null;
+          },
+        },
+      });
+      client = new Client({ name: "read dispatch failure test", version: "0.0.0-test" });
+      transport = new StreamableHTTPClientTransport(endpoint.endpoint, {
+        requestInit: { headers: { authorization: `Bearer ${TOKEN}` } },
+      });
+      await client.connect(transport);
+      const result = await client.callTool({ name: record.name, arguments: {} });
+      const expected = {
+        ok: false,
+        state: "failed",
+        toolName: record.name,
+        requestId: "read-dispatch-request",
+        executorReached: true,
+        error: { code: "dispatch_unavailable" },
+      };
+      expect(result.isError).toBe(true);
+      expect(result.structuredContent).toEqual(expected);
+      expect(result.content).toEqual([{ type: "text", text: JSON.stringify(expected) }]);
+    } finally {
+      await client?.close().catch(() => undefined);
+      await transport?.close().catch(() => undefined);
+      await endpoint?.close().catch(() => undefined);
+    }
+  });
+
   it("threads an ordinary MCP confirmation re-invocation without exposing controls to functional args", async () => {
     const catalogEntry = FULL_CATALOG_VIEW.get("core.parameter.set");
     if (catalogEntry === undefined) {
@@ -830,6 +1298,15 @@ describe("M2 north MCP first slice", () => {
         resourceMetadataUrl: new URL(
           "https://gateway.example.test/.well-known/oauth-protected-resource/mcp",
         ),
+        payloadRecovery: {
+          ready: () => true,
+          async admit() {
+            return { kind: "guarded" as const };
+          },
+          async replayCompleted() {
+            return null;
+          },
+        },
         authenticator: {
           async authenticate(request) {
             const authorization = request.headers.authorization;
@@ -934,7 +1411,7 @@ describe("M2 north MCP first slice", () => {
           text: instructionPackage.modules[0]!.manifestBytes,
         }),
       ]);
-      expect(FULL_CATALOG_VIEW.entries()).toHaveLength(40);
+      expect(FULL_CATALOG_VIEW.entries()).toHaveLength(41);
       expect(FULL_CATALOG_VIEW.capabilityIndex().tools).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
@@ -950,14 +1427,19 @@ describe("M2 north MCP first slice", () => {
 
       const legacyTools = await legacyClient.listTools();
       expect(legacyTools.tools.map((tool) => tool.name)).toEqual([
+        "core.dispatch.payload_recovery",
         "core.ui.state",
       ]);
       for (const tool of legacyTools.tools) {
         expect(tool.inputSchema).toEqual(
           registry.require(tool.name).inputJsonSchema,
         );
-        expect(tool.inputSchema.properties).toEqual({});
       }
+      expect(legacyTools.tools[0]?.inputSchema.properties).toEqual({
+        expected_result_digest: expect.any(Object),
+        origin_invocation_id: expect.any(Object),
+      });
+      expect(legacyTools.tools[1]?.inputSchema.properties).toEqual({});
       expect(fixture.getMethodExecutionCount("mcp_status")).toBe(1);
       expect(fixture.getMethodExecutionCount("get_ui_state")).toBe(0);
 
@@ -1093,6 +1575,7 @@ describe("M2 north MCP first slice", () => {
 
       const modernTools = await modernClient.listTools();
       expect(modernTools.tools.map((tool) => tool.name)).toEqual([
+        "core.dispatch.payload_recovery",
         "core.ui.state",
       ]);
       for (const tool of modernTools.tools) {
@@ -1257,6 +1740,54 @@ describe("M2 north MCP first slice", () => {
       rmSync(temporaryRoot, { recursive: true, force: true });
     }
   }, 45_000);
+
+  it("omits the C39 recovery tool from every north registry surface when readiness is disabled", async () => {
+    const registry = buildNorthFirstSliceCallableRegistry(VERIFIED_CATALOG);
+    const dispatcher = new GatewayDispatcher(
+      registry,
+      [{
+        binding: "bridge",
+        async execute(): Promise<GatewayExecutorOutcome> {
+          return { state: "completed", result: { ok: true } };
+        },
+      }],
+      dispatcherOptions(),
+    );
+    const authInfo: AuthInfo = { token: TOKEN, clientId: "c39-readiness-off", scopes: ["mcp:tools"] };
+    let endpoint: NorthMcpEndpointHandle | undefined;
+    let client: Client | undefined;
+    let transport: StreamableHTTPClientTransport | undefined;
+    try {
+      endpoint = await startNorthMcpEndpoint({
+        dispatcher,
+        registry,
+        catalogViewFor: () => FULL_CATALOG_VIEW,
+        invocationRouteFor,
+        requestState: { key: REQUEST_STATE_KEY },
+        resourceMetadataUrl: new URL("https://gateway.example.test/.well-known/oauth-protected-resource/mcp"),
+        authenticator: {
+          async authenticate(request) {
+            return request.headers.authorization === `Bearer ${TOKEN}`
+              ? authenticatedRequest(PRINCIPAL_KEY, authInfo)
+              : null;
+          },
+        },
+      });
+      client = new Client({ name: "C39 readiness disabled", version: "0.1.0" });
+      transport = new StreamableHTTPClientTransport(endpoint.endpoint, {
+        requestInit: { headers: { authorization: `Bearer ${TOKEN}` } },
+      });
+      await client.connect(transport);
+      expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual([
+        "core.ui.state",
+      ]);
+      const capability = await client.readResource({ uri: "revagent://capability-index" });
+      expect(JSON.stringify(capability)).not.toContain("core.dispatch.payload_recovery");
+    } finally {
+      await Promise.allSettled([client?.close(), transport?.close()]);
+      await endpoint?.close().catch(() => undefined);
+    }
+  });
 
   it("verifies signed requestState before dispatch and binds it to actor, Gateway session, and method", async () => {
     const reorderedScopesToken = "m2-reordered-scopes-test-token";

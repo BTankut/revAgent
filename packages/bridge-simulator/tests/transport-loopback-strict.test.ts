@@ -319,6 +319,51 @@ describe("strict Gateway transport boundaries", () => {
     }
   });
 
+  it("rejects a delayed WSS prefix fault whose envelope id is not the singular target id", async () => {
+    const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+    await once(server, "listening");
+    const port = (server.address() as AddressInfo).port;
+    server.on("connection", (socket) => {
+      let opened = false;
+      socket.on("message", () => {
+        if (!opened) {
+          opened = true;
+          socket.send(JSON.stringify(helloAck("delayed-prefix-fault")));
+          return;
+        }
+        socket.send(JSON.stringify({
+          v: 1,
+          type: "error",
+          id: uuid(),
+          ts: "2026-07-22T00:00:02.000Z",
+          payload: {
+            message: "delayed prefix protocol fault",
+            retryable: false,
+            fault_class: "protocol",
+            outcome: "known",
+            verification_required: false,
+          },
+        }), () => socket.close(4400, "delayed prefix protocol fault"));
+      });
+    });
+    const binding = new WssGatewayBinding({
+      baseUrl: `ws://127.0.0.1:${port}/bridge/v1`,
+      deviceToken: "device-token",
+      endpointPolicy: "loopback_test_readiness",
+    });
+    try {
+      await binding.open(hello());
+      await expect(binding.sendChunkConformanceFrame?.({
+        id: uuid(), type: "result", vector: "singular-target",
+      })).rejects.toThrow(/lacked an authenticated Gateway error envelope/u);
+    } finally {
+      await binding.close();
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => error === undefined ? resolve() : reject(error));
+      });
+    }
+  });
+
   it("uses T5 numeric-loopback readiness URLs only under the explicit test policy", async () => {
     let resolveSseClosed: () => void = () => undefined;
     const sseClosed = new Promise<void>((resolve) => {
@@ -736,6 +781,71 @@ describe("strict Gateway transport boundaries", () => {
     });
     expect(binding.bufferedAmount).toBe(0);
     await binding.close();
+    expect(eventReaderCancelled).toBe(true);
+  });
+
+  it("retains the singular HTTP chunk fault and leaves ordinary sends fail-closed", async () => {
+    const sentBodies: JsonObject[] = [];
+    let eventReaderCancelled = false;
+    let call = 0;
+    const fetchMock: typeof fetch = async (_input, init = {}) => {
+      call += 1;
+      if (call === 1) {
+        return new Response(JSON.stringify(helloAck("chunk-fault")), {
+          status: 201,
+          headers: { "RBP-Connection-Id": "chunk-fault" },
+        });
+      }
+      if (call === 2) {
+        return new Response(new ReadableStream<Uint8Array>({
+          cancel() { eventReaderCancelled = true; },
+        }), {
+          status: 200,
+          headers: { "Content-Type": "text/event-stream" },
+        });
+      }
+      sentBodies.push(JSON.parse(String(init.body)) as JsonObject);
+      return new Response(JSON.stringify({ error: "authenticated early HTTP chunk fault" }), {
+        status: 400,
+        headers: { "Content-Type": "application/json" },
+      });
+    };
+    const binding = new HttpSseGatewayBinding({
+      baseUrl: "http://127.0.0.1:32767/bridge/v1/http/connections",
+      deviceToken: "device-token",
+      endpointPolicy: "loopback_test_readiness",
+      fetch: fetchMock,
+    });
+    try {
+      await binding.open(hello());
+      await expect(binding.sendChunkConformanceFrame?.({
+        type: "result", vector: "invalid-target",
+      })).resolves.toEqual({
+        binding: "streamable_http_sse",
+        accepted: false,
+        source: "authenticated_http_response",
+        faultClass: "protocol",
+        httpStatus: 400,
+        closeCode: null,
+        closeReason: null,
+        message: "authenticated early HTTP chunk fault",
+      });
+      expect(sentBodies).toEqual([{ type: "result", vector: "invalid-target" }]);
+
+      await expect(binding.send({
+        v: 1,
+        type: "heartbeat",
+        id: uuid(),
+        ts: "2026-07-22T00:00:03.000Z",
+        payload: { bridge_version: "bridge-test", acks: [], sessions: [] },
+      })).rejects.toMatchObject({
+        faultClass: "protocol",
+        httpStatus: 400,
+      });
+      expect(sentBodies).toHaveLength(2);
+    } finally {
+      await binding.close();
+    }
     expect(eventReaderCancelled).toBe(true);
   });
 

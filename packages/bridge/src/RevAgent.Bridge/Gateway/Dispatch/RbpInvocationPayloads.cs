@@ -1,4 +1,5 @@
 using System.Text.Json;
+using RevAgent.Bridge.Gateway.Protocol;
 using RevAgent.Bridge.Gateway.Storage;
 
 namespace RevAgent.Bridge.Gateway.Dispatch;
@@ -86,6 +87,35 @@ internal static class RbpInvocationPayloads
             lateAfterIndeterminate: false,
             verificationHoldId: null,
             resultDigest: ReadStoredResultDigest(storedOutcome));
+
+    /// <summary>
+    /// Fixture-attested C39 reconnect evidence. This is the existing
+    /// non-chunked omitted-payload replay shape; no result bytes are emitted.
+    /// </summary>
+    internal static JsonElement ConformanceOmittedOriginReplay(
+        string originInvocationId, string resultDigest)
+    {
+        if (!RbpRecoveryClearance.IsUuidV7(originInvocationId) ||
+            !RbpJournalSerialization.IsSha256Digest(resultDigest))
+        {
+            throw new ArgumentException("A UUIDv7 origin and SHA-256 digest are required.");
+        }
+        using var buffer = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(buffer))
+        {
+            writer.WriteStartObject();
+            writer.WriteString("kind", "invocation");
+            writer.WriteString("invocation_id", originInvocationId);
+            writer.WriteString("status", "completed");
+            writer.WriteBoolean("payload_omitted", true);
+            writer.WriteString("result_digest", resultDigest);
+            writer.WriteBoolean("replayed", true);
+            writer.WriteBoolean("late_after_indeterminate", false);
+            WriteMetrics(writer, new RbpInvocationMetrics(0, 0, 0));
+            writer.WriteEndObject();
+        }
+        return Materialize(buffer);
+    }
 
     /// <summary>
     /// Section 12.2 rule 2: a durable outcome that became known after the same
@@ -188,6 +218,86 @@ internal static class RbpInvocationPayloads
         return Materialize(buffer);
     }
 
+    /// <summary>
+    /// C39's final chunked recovery result.  This is deliberately a distinct
+    /// builder instead of an object rewrite: the frozen schema forbids the
+    /// <c>payload_omitted</c> member entirely on a chunked terminal, including
+    /// when its value would otherwise be false.
+    /// </summary>
+    internal static JsonElement ChunkedRecoveryTerminal(
+        string invocationId,
+        int totalChunks,
+        int totalSize,
+        string resultDigest)
+    {
+        if (totalChunks < 1) throw new ArgumentOutOfRangeException(nameof(totalChunks));
+        if (totalSize < 1) throw new ArgumentOutOfRangeException(nameof(totalSize));
+        if (string.IsNullOrWhiteSpace(resultDigest) ||
+            !resultDigest.StartsWith("sha256:", StringComparison.Ordinal))
+        {
+            throw new ArgumentException("A SHA-256 result digest is required.",
+                nameof(resultDigest));
+        }
+
+        using var buffer = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(buffer))
+        {
+            writer.WriteStartObject();
+            writer.WriteString("kind", "invocation");
+            writer.WriteString("invocation_id", invocationId);
+            writer.WriteString("status", "completed");
+            writer.WriteBoolean("replayed", false);
+            writer.WriteBoolean("late_after_indeterminate", false);
+            writer.WriteString("result_digest", resultDigest);
+            WriteMetrics(writer, new RbpInvocationMetrics(0, 0, 0));
+            writer.WriteBoolean("chunked", true);
+            writer.WriteString("stream_id", "result");
+            writer.WriteString("content_type", "application/json");
+            writer.WriteNumber("total_chunks", totalChunks);
+            writer.WriteNumber("total_size", totalSize);
+            writer.WriteString("sha256", resultDigest);
+            writer.WriteEndObject();
+        }
+
+        return Materialize(buffer);
+    }
+
+    /// <summary>
+    /// Rehydrates C39's already durable terminal answer without changing its
+    /// wire shape.  The terminal plan is the authority; this adapter merely
+    /// rejects malformed or substituted plan material before the connection
+    /// can frame it.
+    /// </summary>
+    internal static RbpInvocationAnswer RecoveryTerminalDraft(
+        RbpRecoveryTerminalPlan plan)
+    {
+        ArgumentNullException.ThrowIfNull(plan);
+        JsonElement payload = plan.TerminalPayload;
+        if (payload.ValueKind != JsonValueKind.Object ||
+            !payload.TryGetProperty("kind", out JsonElement kind) ||
+            !string.Equals(kind.GetString(), "invocation", StringComparison.Ordinal) ||
+            !payload.TryGetProperty("invocation_id", out JsonElement invocationId) ||
+            !string.Equals(invocationId.GetString(), plan.RecoveryInvocationId,
+                StringComparison.Ordinal) ||
+            !payload.TryGetProperty("status", out JsonElement status) ||
+            !string.Equals(status.GetString(), "completed", StringComparison.Ordinal) ||
+            !payload.TryGetProperty("chunked", out JsonElement chunked) ||
+            chunked.ValueKind is not JsonValueKind.True ||
+            payload.TryGetProperty("payload_omitted", out _) ||
+            !payload.TryGetProperty("result_digest", out JsonElement digest) ||
+            digest.ValueKind != JsonValueKind.String ||
+            !digest.GetString()!.StartsWith("sha256:", StringComparison.Ordinal) ||
+            !string.Equals(Rfc8785Json.Sha256Digest(payload), plan.TerminalDigest,
+                StringComparison.Ordinal))
+        {
+            throw new RbpDispatchException(
+                RbpDispatchErrorCode.Environment,
+                "The durable C39 terminal plan is invalid.");
+        }
+
+        return RbpInvocationAnswer.Result(payload);
+    }
+
     private static JsonElement OverrideReplayFlags(
         JsonElement storedOutcome,
         bool replayed,
@@ -279,3 +389,36 @@ internal sealed record RbpInvocationMetrics(
     int ResponseBytes);
 
 internal sealed record AddinErrorDetail(int Code, string? Message);
+
+internal sealed record RbpPayloadRecoveryRequest(
+    string OriginInvocationId,
+    string ExpectedResultDigest)
+{
+    internal static RbpPayloadRecoveryRequest Parse(RbpInvokeRequest request)
+    {
+        JsonElement origin = default;
+        JsonElement digest = default;
+        if (request.Mutating || request.Parameters.ValueKind != JsonValueKind.Object ||
+            request.Parameters.EnumerateObject().Count() != 2 ||
+            request.RecoveryClearances.ValueKind != JsonValueKind.Array ||
+            request.RecoveryClearances.GetArrayLength() != 0 ||
+            !request.Parameters.TryGetProperty("origin_invocation_id", out origin) ||
+            !request.Parameters.TryGetProperty("expected_result_digest", out digest) ||
+            origin.ValueKind != JsonValueKind.String || digest.ValueKind != JsonValueKind.String ||
+            !RbpRecoveryClearance.IsUuidV7(origin.GetString()) ||
+            !RbpJournalSerialization.IsSha256Digest(digest.GetString() ?? string.Empty))
+        {
+            throw new RbpDispatchException(RbpDispatchErrorCode.Protocol,
+                "dispatch_payload_recovery requires exactly origin_invocation_id and expected_result_digest.");
+        }
+        return new RbpPayloadRecoveryRequest(origin.GetString()!, digest.GetString()!);
+    }
+
+    internal string EnvelopeDigest(string recoveryInvocationId) =>
+        Rfc8785Json.Sha256Digest(JsonSerializer.SerializeToElement(new
+        {
+            invocation_id = recoveryInvocationId,
+            origin_invocation_id = OriginInvocationId,
+            expected_result_digest = ExpectedResultDigest,
+        }));
+}

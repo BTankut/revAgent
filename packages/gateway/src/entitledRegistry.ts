@@ -6,6 +6,7 @@ import type {
 } from "./registry.js";
 import type { RegistrySeed } from "./registrySeed.js";
 import {
+  C39_PAYLOAD_RECOVERY_BINDING,
   E5_TOOL_BINDINGS,
   mutationScopePolicyForTool,
   type ToolBindingRow,
@@ -146,7 +147,10 @@ export function buildCatalog(
   seed: RegistrySeed,
   bindings: readonly ToolBindingRow[] = E5_TOOL_BINDINGS,
 ): readonly CatalogEntry[] {
-  const byTool = new Map(bindings.map((row) => [row.tool, row]));
+  const allBindings = bindings.some((row) => row.tool === C39_PAYLOAD_RECOVERY_BINDING.tool)
+    ? bindings
+    : [...bindings, C39_PAYLOAD_RECOVERY_BINDING];
+  const byTool = new Map(allBindings.map((row) => [row.tool, row]));
   const entries: CatalogEntry[] = [];
 
   for (const tool of seed.tools) {

@@ -5,6 +5,8 @@ namespace RevAgent.Bridge.Gateway.Storage;
 
 internal sealed partial class RbpJournalStore
 {
+    private long _ineligibleConnectionGeneration;
+
     internal Task<long> ActivateConnectionGenerationAsync(
         long connectionGeneration,
         CancellationToken cancellationToken = default)
@@ -20,7 +22,10 @@ internal sealed partial class RbpJournalStore
         return ReadAsync(
             _ =>
             {
-                if (connectionGeneration <= _activeConnectionGeneration)
+                long current = _activeConnectionGeneration;
+                if (_authorityPoisoned.Task.IsCompleted ||
+                    Volatile.Read(ref _ineligibleConnectionGeneration) != 0 ||
+                    connectionGeneration <= Math.Abs(current))
                 {
                     throw InvalidHeartbeat(
                         "Connection generation must advance monotonically.");
@@ -31,6 +36,57 @@ internal sealed partial class RbpJournalStore
             },
             cancellationToken);
     }
+
+    internal async Task<long> DeactivateConnectionGenerationAsync(
+        long connectionGeneration,
+        CancellationToken cancellationToken)
+    {
+        if (connectionGeneration < 1 ||
+            connectionGeneration > RbpSequenceReducer.MaximumSafeSequence)
+            throw new ArgumentOutOfRangeException(
+                nameof(connectionGeneration),
+                "Connection generation must be a positive JSON-safe integer.");
+        try
+        {
+            return await ReadAsync(
+                _ =>
+                {
+                    if (_activeConnectionGeneration == -connectionGeneration)
+                        return connectionGeneration;
+                    if (_activeConnectionGeneration != connectionGeneration)
+                        throw InvalidHeartbeat(
+                            "Only the exact active connection generation may be deactivated.");
+                    _activeConnectionGeneration = -connectionGeneration;
+                    return connectionGeneration;
+                },
+                cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            PoisonConnectionGeneration(connectionGeneration);
+            throw;
+        }
+    }
+
+    internal void PoisonConnectionGeneration(long connectionGeneration)
+    {
+        if (connectionGeneration <= 0)
+            throw new ArgumentOutOfRangeException(nameof(connectionGeneration));
+        long observed = Interlocked.CompareExchange(
+            ref _ineligibleConnectionGeneration,
+            connectionGeneration,
+            comparand: 0);
+        if (observed != 0 && observed != connectionGeneration)
+            throw InvalidHeartbeat(
+                "A different connection generation already poisoned this process.");
+        _authorityPoisoned.TrySetResult();
+    }
+
+    private bool IsActiveConnectionGeneration(long connectionGeneration) =>
+        connectionGeneration > 0 &&
+        !_authorityPoisoned.Task.IsCompleted &&
+        _activeConnectionGeneration == connectionGeneration &&
+        Volatile.Read(ref _ineligibleConnectionGeneration) == 0;
 
     internal Task<RbpJournalRecoveryPlan> LoadRecoveryPlanAsync(
         CancellationToken cancellationToken = default)
@@ -66,6 +122,8 @@ internal sealed partial class RbpJournalStore
                         RequireActiveSession(context, rsid);
                         LoadedSequence loaded =
                             LoadSequence(context, rsid);
+                        RequireNoUnresolvedRecoveryTerminalAcknowledgement(
+                            context, rsid, lastReceivedSequence);
                         RbpAcknowledgementResult acknowledgement =
                             RbpSequenceReducer
                                 .ApplyCumulativeAcknowledgement(
@@ -163,6 +221,22 @@ internal sealed partial class RbpJournalStore
                     context =>
                     {
                         RequireSessionExists(context, rsid);
+                        // A close/revoke must never silently discard the one
+                        // unacknowledged recovery fence.  Tombstone it before
+                        // recording unregister intent, retaining its audit
+                        // metadata and keeping ordinary outbound dispatch
+                        // fail-closed across restart.
+                        RbpRecoveryCarrierReservation? recovery =
+                            ReadActiveRecoveryCarrierReservation(context, rsid);
+                        if (recovery is not null &&
+                            recovery.Phase != RbpRecoveryCarrierPhase.Tombstoned)
+                        {
+                            TombstoneRecoveryCarrierReservation(
+                                context,
+                                recovery.RecoveryInvocationId,
+                                now,
+                                "session_unregistered");
+                        }
                         RbpUnregisterTombstone? existing =
                             ReadTombstone(context, rsid);
                         if (existing is not null)
@@ -211,7 +285,7 @@ internal sealed partial class RbpJournalStore
             RbpUnregisterTombstone? observed =
                 await GetUnregisterTombstoneAsync(
                         rsid,
-                        CancellationToken.None)
+                        cancellationToken)
                     .ConfigureAwait(false);
             if (observed is not null && observed.Reason == reason)
             {
@@ -325,6 +399,8 @@ internal sealed partial class RbpJournalStore
                             RequireActiveSession(context, rsid);
                             LoadedSequence loaded =
                                 LoadSequence(context, rsid);
+                            RequireNoUnresolvedRecoveryTerminalAcknowledgement(
+                                context, rsid, acknowledgements[rsid]);
                             RbpAcknowledgementResult result =
                                 RbpSequenceReducer
                                     .ApplyCumulativeAcknowledgement(

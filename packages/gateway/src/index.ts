@@ -221,14 +221,61 @@ export {
   GATEWAY_AUTH_CONTRACT_VERSION,
   createUnavailableEntitlementPort,
   createUnavailableIdentityPort,
+  isCanonicalMachineFingerprint,
+  machineFingerprintClaimsEqual,
   type AuthContext,
   type DeviceAuthContext,
   type EntitlementPort,
   type GatewayClientType,
   type GatewayModuleName,
+  type GatewayMachineFingerprint,
   type GatewayRole,
   type IdentityPort,
 } from "./authContext.js";
+export {
+  GATEWAY_CREDENTIAL_SCOPE_SCHEMA,
+  GATEWAY_REVOCATION_CURSOR_SCHEMA,
+  IDENTITY_DEVICE_SCHEMA,
+  IDENTITY_REVOCATION_EVENT_SCHEMA,
+  IDENTITY_REVOCATION_HEAD_SCHEMA,
+  IDENTITY_TENANT_SEAT_SCHEMA,
+  PRODUCTION_IDENTITY_PORT_TRUST_SCHEMA,
+  createProductionCredentialScopeLocator,
+  createProductionIdentityAuthority,
+  type CredentialScopeFailure,
+  type CredentialScopeLookupResult,
+  type CredentialScopeMutationResult,
+  type GatewayCredentialScopeV1,
+  type GatewayRevocationCursorV1,
+  type IdentityAuthorityChange,
+  type IdentityDeviceV2,
+  type IdentityMutationResult,
+  type IdentityReconciliationRequired,
+  type IdentityRevocationConsumeResult,
+  type IdentityRevocationEventV1,
+  type IdentityRevocationHeadV1,
+  type IdentityTenantSeatV1,
+  type ProductionCredentialScope,
+  type ProductionCredentialScopeLocator,
+  type ProductionCredentialScopeLocatorOptions,
+  type ProductionCredentialScopeStore,
+  type ProductionDeviceAuthContext,
+  type ProductionIdentityAuthority,
+  type ProductionIdentityManagedResources,
+  type ProductionIdentityLifecycleSnapshot,
+  type ProductionIdentityLifecycleStage,
+  type ProductionIdentityLifecycleState,
+  type ProductionIdentityPortTrustMetadata,
+  type ProductionIdentityResourceState,
+  type ProductionIdentityStoreOptions,
+  type ProductionIdentityTrustResource,
+  type ProductionNorthIdentityDelegate,
+  type ProductionTenantIdentityStore,
+  type ProductionTenantStoreOwnership,
+  type ProvisionIdentityDeviceInput,
+  type RevokeIdentityDeviceInput,
+  type RevokeIdentitySeatInput,
+} from "./productionIdentityStore.js";
 export {
   PRE_PRODUCTION_IDENTITY_CONTRACT_VERSION,
   PreProductionIdentityConfigurationError,
@@ -354,9 +401,11 @@ export {
 export {
   RBP_INGRESS_HTTP_FALLBACK_PATHS,
   RBP_INGRESS_MOUNT_PREFIX,
+  createConformanceRbpIngressHost,
   createProductionRbpIngressHost,
   createUnavailableRbpIngressHost,
   type ProductionRbpIngressHost,
+  type ConformanceRbpIngressHost,
   type RbpIngressHost,
 } from "./rbpIngress.js";
 export {
@@ -378,6 +427,7 @@ export {
 } from "./modeB.js";
 export {
   GatewayCompositionError,
+  GatewayConformancePortError,
   GatewayFixturePortError,
   GatewayPreProductionPortError,
   assertProductionPorts,
@@ -391,6 +441,14 @@ export {
   type GatewayServerPorts,
   type GatewayServerTlsMaterial,
 } from "./server.js";
+export { startProductionGatewayHost } from "./productionConformanceHost.js";
+export { runProductionConformanceHostCli } from "./productionConformanceHostCli.js";
+export {
+  ConformanceCredentialAuthority,
+  DigestFileConformanceObjectStore,
+  SqliteConformanceProtocolStore,
+  createConformanceSupportingPorts,
+} from "./conformanceEphemeralAdapters.js";
 // GW-3 executor and policy seed.
 export {
   DYNAMIC_CODE_TOOL,

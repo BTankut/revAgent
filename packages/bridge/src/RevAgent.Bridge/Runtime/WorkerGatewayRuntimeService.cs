@@ -70,9 +70,12 @@ internal sealed class WorkerGatewayRuntimeService : IHostedService,
     private readonly TimeSpan _stopBudget;
 
     private WorkerGatewayRuntime? _runtime;
+    private readonly object _disposeSync = new();
     private CancellationTokenSource? _runCancellation;
     private Task _run = Task.CompletedTask;
+    private Task? _disposeTask;
     private int _disposed;
+    private int _mustExit;
 
     internal WorkerGatewayRuntimeService(
         Func<WorkerGatewayRuntime> runtimeFactory,
@@ -141,52 +144,192 @@ internal sealed class WorkerGatewayRuntimeService : IHostedService,
 
     public async Task StopAsync(CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
+        WorkerGatewayRuntime? runtime = Volatile.Read(ref _runtime);
+        Task<RbpCoordinatorTeardownResult>? teardown =
+            runtime?.Coordinator.RequestStopTeardown();
         _runCancellation?.Cancel();
+        RbpCoordinatorTeardownResult? teardownResult = null;
+        if (teardown is not null)
+        {
+            teardownResult = await teardown.ConfigureAwait(false);
+            if (teardownResult.Disposition ==
+                RbpCoordinatorTeardownDisposition.EmergencyMustExit)
+            {
+                Interlocked.Exchange(ref _mustExit, 1);
+                ObserveRetainedTask(_run);
+                FailStopBudget();
+                return;
+            }
+        }
+        TimeSpan remaining = teardownResult?.Remaining(_stopBudget) ??
+            _stopBudget;
+        if (remaining <= TimeSpan.Zero)
+        {
+            ObserveRetainedTask(_run);
+            FailStopBudget();
+            return;
+        }
+        // The coordinator supplies the absolute attempt deadline. This one CTS
+        // is created from its exact remainder and is shared by the Root join
+        // and runtime disposal; it is not a second graceful-work budget.
+        using var budget = new CancellationTokenSource(remaining);
         Task run = _run;
         if (!run.IsCompleted)
         {
-            using var budget =
-                CancellationTokenSource.CreateLinkedTokenSource(
-                    cancellationToken);
-            budget.CancelAfter(_stopBudget);
             try
             {
                 await run.WaitAsync(budget.Token).ConfigureAwait(false);
             }
             catch (OperationCanceledException)
+                when (budget.IsCancellationRequested)
             {
-                // The coordinator already bounds its own close and drain
-                // windows and poisons authority when an owned handler will not
-                // return. Waiting past this budget would only trade a bounded
-                // stop for a forced process-tree kill.
-                await TryLogAsync(
-                        "Warning",
-                        "worker.gateway_runtime_drain_timeout",
-                        "The worker gateway runtime did not drain within its " +
-                        "stop budget; shutdown continues.")
-                    .ConfigureAwait(false);
+                ObserveRetainedTask(run);
+                FailStopBudget();
+                return;
             }
         }
 
-        await DisposeAsync().ConfigureAwait(false);
-    }
-
-    public async ValueTask DisposeAsync()
-    {
-        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        if (budget.IsCancellationRequested)
         {
+            FailStopBudget();
             return;
         }
 
-        _runCancellation?.Cancel();
-        WorkerGatewayRuntime? runtime = Volatile.Read(ref _runtime);
-        if (runtime is not null)
+        Task dispose = DisposeAsync().AsTask();
+        try
         {
-            await runtime.DisposeAsync().ConfigureAwait(false);
+            await dispose.WaitAsync(budget.Token).ConfigureAwait(false);
         }
+        catch (OperationCanceledException)
+            when (budget.IsCancellationRequested)
+        {
+            ObserveRetainedTask(dispose);
+            FailStopBudget();
+        }
+    }
 
-        _runCancellation?.Dispose();
-        _runCancellation = null;
+    public ValueTask DisposeAsync()
+    {
+        TaskCompletionSource? owner = null;
+        Task dispose;
+        lock (_disposeSync)
+        {
+            if (_disposeTask is null)
+            {
+                owner = new TaskCompletionSource(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+                _disposeTask = owner.Task;
+            }
+            dispose = _disposeTask;
+        }
+        if (owner is not null) _ = CompleteDisposeAsync(owner);
+        return new ValueTask(dispose);
+    }
+
+    private async Task CompleteDisposeAsync(TaskCompletionSource completion)
+    {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
+            completion.TrySetResult();
+            return;
+        }
+        try
+        {
+            Task run = _run;
+            WorkerGatewayRuntime? runtime = Volatile.Read(ref _runtime);
+            Task<RbpCoordinatorTeardownResult>? teardown =
+                !run.IsCompleted && runtime is not null
+                    ? runtime.Coordinator.RequestStopTeardown()
+                    : null;
+            // Direct Dispose owns the same decisive ordering as StopAsync:
+            // publish the exact coordinator owner before cancelling Root.
+            _runCancellation?.Cancel();
+            if (Volatile.Read(ref _mustExit) != 0)
+            {
+                ObserveRetainedTask(run);
+                completion.TrySetResult();
+                return;
+            }
+            RbpCoordinatorTeardownResult? teardownResult = null;
+            if (teardown is not null)
+            {
+                teardownResult = await teardown.ConfigureAwait(false);
+                if (teardownResult.Disposition ==
+                    RbpCoordinatorTeardownDisposition.EmergencyMustExit)
+                {
+                    ObserveRetainedTask(run);
+                    FailStopBudget();
+                    completion.TrySetResult();
+                    return;
+                }
+            }
+            TimeSpan remaining = teardownResult?.Remaining(_stopBudget) ??
+                _stopBudget;
+            if (remaining <= TimeSpan.Zero)
+            {
+                ObserveRetainedTask(run);
+                FailStopBudget();
+                completion.TrySetResult();
+                return;
+            }
+            using var budget = new CancellationTokenSource(remaining);
+            if (!run.IsCompleted)
+            {
+                try
+                {
+                    await run.WaitAsync(budget.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                    when (budget.IsCancellationRequested)
+                {
+                    ObserveRetainedTask(run);
+                    FailStopBudget();
+                    completion.TrySetResult();
+                    return;
+                }
+            }
+            // RunAsync can discover a must-exit authority failure while this
+            // method is awaiting it. Recheck at the disposal boundary so a
+            // quarantined runtime is retained and never touched by normal
+            // disposal after the poison winner publishes.
+            if (Volatile.Read(ref _mustExit) != 0)
+            {
+                ObserveRetainedTask(run);
+                completion.TrySetResult();
+                return;
+            }
+            if (budget.IsCancellationRequested)
+            {
+                FailStopBudget();
+                completion.TrySetResult();
+                return;
+            }
+            if (runtime is not null)
+            {
+                Task dispose = runtime.DisposeAsync().AsTask();
+                try
+                {
+                    await dispose.WaitAsync(budget.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                    when (budget.IsCancellationRequested)
+                {
+                    ObserveRetainedTask(dispose);
+                    FailStopBudget();
+                    completion.TrySetResult();
+                    return;
+                }
+            }
+
+            _runCancellation?.Dispose();
+            _runCancellation = null;
+            completion.TrySetResult();
+        }
+        catch (Exception exception)
+        {
+            completion.TrySetException(exception);
+        }
     }
 
     private async Task RunAsync(CancellationToken cancellationToken)
@@ -204,6 +347,7 @@ internal sealed class WorkerGatewayRuntimeService : IHostedService,
             when (exception.ErrorCode ==
                   RbpCoordinatorErrorCode.NonDrainingConnectionAuthority)
         {
+            Interlocked.Exchange(ref _mustExit, 1);
             // The P3-T4 host-wiring prerequisite: non-draining connection
             // authority is a must-exit condition, not a reconnect condition.
             _exitState.Fail();
@@ -229,6 +373,26 @@ internal sealed class WorkerGatewayRuntimeService : IHostedService,
             _applicationLifetime.StopApplication();
         }
     }
+
+    private void FailStopBudget()
+    {
+        Interlocked.Exchange(ref _mustExit, 1);
+        _exitState.Fail();
+        _applicationLifetime.StopApplication();
+        _ = TryLogAsync(
+            "Error",
+            "worker.gateway_runtime_drain_timeout",
+            "The worker gateway runtime did not prove shutdown within its " +
+            "single stop deadline; process exit is required.");
+    }
+
+    private static void ObserveRetainedTask(Task task) =>
+        _ = task.ContinueWith(
+            completed => _ = completed.Exception,
+            CancellationToken.None,
+            TaskContinuationOptions.OnlyOnFaulted |
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
 
     private async ValueTask TryLogAsync(
         string level,

@@ -15,13 +15,15 @@ internal sealed class StreamableHttpRbpConnectionCycleFactory :
     private readonly RbpHelloFactory _helloFactory;
     private readonly TimeProvider _timeProvider;
     private readonly bool _streamableHttpProvisioned;
+    private readonly Action<RbpSseReceiveObservation>? _onSseReceiveObservation;
 
     internal StreamableHttpRbpConnectionCycleFactory(
         IRbpEnrollmentStateProvider enrollment,
         IReadOnlyCollection<string> provisionedCapabilities,
         IRbpHttpClientFactory? clients = null,
         RbpHelloFactory? helloFactory = null,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null,
+        Action<RbpSseReceiveObservation>? onSseReceiveObservation = null)
     {
         _enrollment = enrollment ??
             throw new ArgumentNullException(nameof(enrollment));
@@ -33,16 +35,25 @@ internal sealed class StreamableHttpRbpConnectionCycleFactory :
                 RbpTransportCapabilities.StreamableHttp,
                 StringComparer.Ordinal);
         _timeProvider = timeProvider ?? TimeProvider.System;
+        _onSseReceiveObservation = onSseReceiveObservation;
         _helloFactory =
             helloFactory ?? new RbpHelloFactory(_timeProvider);
     }
+
+    public RbpConnectionBindingKind BindingKind =>
+        RbpConnectionBindingKind.StreamableHttpSse;
+
+    public string ExpectedEndpointScheme => Uri.UriSchemeHttps;
 
     public async Task<IRbpConnectionCycle> OpenAsync(
         Uri endpoint,
         RbpHelloProfile profile,
         CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(endpoint);
+        RbpConnectionBindingContract.RequireExpectedEndpointScheme(
+            endpoint,
+            ExpectedEndpointScheme,
+            nameof(endpoint));
         ArgumentNullException.ThrowIfNull(profile);
         if (!_streamableHttpProvisioned ||
             !profile.Capabilities.Contains(
@@ -61,7 +72,9 @@ internal sealed class StreamableHttpRbpConnectionCycleFactory :
             enrollment.Credential is not { } credential)
         {
             throw new RbpGatewayTransportException(
-                RbpGatewayFailureKind.EnrollmentRequired,
+                enrollment.Status == RbpEnrollmentStatus.Invalid
+                    ? RbpGatewayFailureKind.Authorization
+                    : RbpGatewayFailureKind.EnrollmentRequired,
                 "The fallback cannot open until enrollment is ready " +
                 $"({enrollment.DiagnosticCode}).");
         }
@@ -117,7 +130,8 @@ internal sealed class StreamableHttpRbpConnectionCycleFactory :
                     connectionId),
                 credential,
                 acknowledgement,
-                _timeProvider);
+                _timeProvider,
+                _onSseReceiveObservation);
         }
         catch
         {
@@ -315,6 +329,8 @@ internal sealed class StreamableHttpRbpConnectionCycleFactory :
                     "text/event-stream.");
             }
 
+            ObserveSseReceive("headers_received");
+
             Stream stream;
             try
             {
@@ -342,6 +358,19 @@ internal sealed class StreamableHttpRbpConnectionCycleFactory :
         {
             response.Dispose();
             throw;
+        }
+    }
+
+    private void ObserveSseReceive(string stage)
+    {
+        try
+        {
+            _onSseReceiveObservation?.Invoke(
+                RbpSseReceiveObservation.Create(stage));
+        }
+        catch
+        {
+            // Test-only observation cannot own connection establishment.
         }
     }
 

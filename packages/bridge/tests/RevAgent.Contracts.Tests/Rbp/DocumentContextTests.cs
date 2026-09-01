@@ -179,6 +179,49 @@ namespace RevAgent.Contracts.Tests.Rbp
         }
 
         [Fact]
+        public void FixtureCacheIncarnationIsParsedFromTheSameSnapshotButNeverMapped()
+        {
+            var root = PositiveRoot();
+            var result = (JObject)root["result"]!;
+            result["cache_incarnation_digest"] =
+                "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+
+            AddinDocumentContextSnapshot snapshot = AddinDocumentContextParser
+                .ParseResponse(root.ToString(Formatting.None)).Context;
+
+            Assert.Equal(
+                "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                snapshot.CacheIncarnationDigest);
+            string normalized = DocumentContextMapper.NormalizeForComparison(snapshot);
+            Assert.DoesNotContain("cache_incarnation", normalized, StringComparison.Ordinal);
+            Assert.DoesNotContain("\"revision\"", normalized, StringComparison.Ordinal);
+        }
+
+        [Theory]
+        [InlineData("sha256:CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC")]
+        [InlineData("sha256:cccc")]
+        public void RejectsMalformedFixtureCacheIncarnationDigest(string digest)
+        {
+            AssertInvalid(
+                root => ((JObject)root["result"]!)["cache_incarnation_digest"] = digest,
+                "cache_incarnation_digest");
+        }
+
+        [Fact]
+        public void RejectsFixtureCacheIncarnationWithoutPositiveSafeRevision()
+        {
+            AssertInvalid(
+                root =>
+                {
+                    var result = (JObject)root["result"]!;
+                    result["cache_incarnation_digest"] =
+                        "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+                    result["revision"] = 0;
+                },
+                "positive result.revision");
+        }
+
+        [Fact]
         public void RejectsWrongContractVersionsAndUnknownState()
         {
             AssertInvalid(
@@ -359,6 +402,11 @@ namespace RevAgent.Contracts.Tests.Rbp
                 () => AddinDocumentContextParser.ParseResponse("\uFEFF" + PositiveResponseJson));
             Assert.Throws<RbpContractException>(
                 () => AddinDocumentContextParser.ParseResponse(PositiveResponseJson + "{}"));
+            Assert.Throws<RbpContractException>(
+                () => AddinDocumentContextParser.ParseResponse(
+                    PositiveResponseJson.Replace(
+                        "\"disciplineHint\": \"mech\"",
+                        "\"disciplineHint\": \"mech\", \"cache_incarnation_digest\": \"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\", \"cache_incarnation_digest\": \"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\"")));
         }
 
         private static JObject PositiveRoot() => JObject.Parse(PositiveResponseJson);

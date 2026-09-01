@@ -7,6 +7,134 @@ namespace RevAgent.Bridge.Tests.Gateway.Connection;
 
 public sealed class StreamableHttpRbpConnectionCycleTests
 {
+    [Fact]
+    public async Task CloseIsRetainedAndDisposeDoesNotReclose()
+    {
+        await using var harness = new HttpFallbackHarness();
+        IRbpConnectionCycle cycle = await harness.OpenAsync();
+
+        Task first = cycle.CloseAsync();
+        Task repeated = cycle.CloseAsync();
+
+        Assert.Same(first, repeated);
+        await first;
+        int requestCount = harness.Handler.Requests.Count;
+        await cycle.DisposeAsync();
+        await cycle.DisposeAsync();
+        Assert.Equal(requestCount, harness.Handler.Requests.Count);
+    }
+
+    [Fact]
+    public async Task TerminateThenCloseReturnsTheExactRetainedLifetimeOwner()
+    {
+        await using var harness = new HttpFallbackHarness();
+        var cycle = Assert.IsType<StreamableHttpRbpConnectionCycle>(
+            await harness.OpenAsync());
+        harness.Events.WriteUtf8("event: wrong\ndata: {}\n\n");
+
+        RbpGatewayTransportException failure =
+            await Assert.ThrowsAsync<RbpGatewayTransportException>(
+                () => cycle.ReceiveAsync());
+        Task first = cycle.CloseAsync();
+        Task repeated = cycle.CloseAsync();
+
+        Assert.Equal(RbpGatewayFailureKind.Protocol, failure.Kind);
+        Assert.Equal("Terminate", cycle.LifetimeEndReason);
+        Assert.Same(first, repeated);
+        await first.WaitAsync(TimeSpan.FromSeconds(2));
+        await cycle.DisposeAsync();
+        Assert.Same(first, cycle.CloseAsync());
+    }
+
+    [Fact]
+    public async Task CloseWinnerRetainsItsOwnerWhenLatePostTerminates()
+    {
+        var entered = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var harness = new HttpFallbackHarness(async _ =>
+        {
+            entered.TrySetResult();
+            await release.Task.ConfigureAwait(false);
+            return new HttpResponseMessage(HttpStatusCode.BadGateway);
+        });
+        var cycle = Assert.IsType<StreamableHttpRbpConnectionCycle>(
+            await harness.OpenAsync());
+
+        Task send = cycle.SendAsync(Heartbeat());
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        Task close = cycle.CloseAsync();
+        try
+        {
+            Assert.Equal("Close", cycle.LifetimeEndReason);
+        }
+        finally
+        {
+            release.TrySetResult();
+        }
+
+        await Assert.ThrowsAsync<RbpGatewayTransportException>(() => send);
+        await close.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.Equal("Close", cycle.LifetimeEndReason);
+        Assert.Same(close, cycle.CloseAsync());
+        await cycle.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task AdmittedPostResumingAfterTerminateSeesExactFirstFailure()
+    {
+        var entered = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var harness = new HttpFallbackHarness(async _ =>
+        {
+            entered.TrySetResult();
+            await release.Task.ConfigureAwait(false);
+            return new HttpResponseMessage(HttpStatusCode.BadGateway);
+        });
+        await using IRbpConnectionCycle cycle = await harness.OpenAsync();
+        Task first = cycle.SendAsync(Data("rs-terminal-owner", 1));
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        Task second = cycle.SendAsync(Data("rs-terminal-owner", 2));
+        try
+        {
+            await Task.Delay(20);
+        }
+        finally
+        {
+            release.TrySetResult();
+        }
+
+        RbpGatewayTransportException firstFailure =
+            await Assert.ThrowsAsync<RbpGatewayTransportException>(() => first);
+        RbpGatewayTransportException secondFailure =
+            await Assert.ThrowsAsync<RbpGatewayTransportException>(() => second);
+        Assert.Same(firstFailure, secondFailure);
+        Assert.Equal(RbpGatewayFailureKind.Network, firstFailure.Kind);
+    }
+
+    [Fact]
+    public async Task PreCancelledCloseStillEndsSseBeforeReturningItsFault()
+    {
+        await using var harness = new HttpFallbackHarness();
+        var cycle = Assert.IsType<StreamableHttpRbpConnectionCycle>(
+            await harness.OpenAsync());
+        using var cancelled = new CancellationTokenSource();
+        cancelled.Cancel();
+
+        Task close = cycle.CloseAsync(cancelled.Token);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => close);
+
+        Assert.Equal("Close", cycle.LifetimeEndReason);
+        Assert.Throws<InvalidOperationException>(
+            () => harness.Events.WriteUtf8("data: late\n\n"));
+        Assert.Same(close, cycle.CloseAsync());
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => cycle.DisposeAsync().AsTask());
+    }
+
     private const string ConnectionId = "conn-test";
 
     [Fact]
@@ -80,6 +208,67 @@ public sealed class StreamableHttpRbpConnectionCycleTests
 
         Assert.Equal("heartbeat_ack", envelope.Type);
         Assert.Equal(RbpEnvelopeScope.Control, envelope.Scope);
+    }
+
+    [Fact]
+    public async Task SseReceiveObservationsRemainValueFreeAndClassifySessionRegistered()
+    {
+        var observations = new List<RbpSseReceiveObservation>();
+        await using var harness = new HttpFallbackHarness(
+            onSseReceiveObservation: observations.Add);
+        await using IRbpConnectionCycle cycle = await harness.OpenAsync();
+        harness.Events.WriteUtf8(
+            "event: rbp\n" +
+            "data: " + InboundSessionRegisteredJson() + "\n\n");
+
+        RbpEnvelope envelope = await cycle.ReceiveAsync();
+
+        Assert.Equal("session_registered", envelope.Type);
+        Assert.Contains(observations, item => item.Stage == "headers_received");
+        Assert.Contains(observations, item => item.Stage == "event_line");
+        Assert.Contains(observations, item => item.Stage == "data_line");
+        Assert.Contains(observations, item => item.Stage == "blank_terminator");
+        Assert.Contains(observations, item =>
+            item.Stage == "method_kind" &&
+            item.MethodKind == "session_registered");
+        Assert.All(observations, item =>
+        {
+            string serialized = System.Text.Json.JsonSerializer.Serialize(item);
+            Assert.DoesNotContain("resume-test-token", serialized);
+            Assert.DoesNotContain("tenant-test", serialized);
+            Assert.DoesNotContain("conn-test", serialized);
+        });
+    }
+
+    [Fact]
+    public async Task FragmentedMultiEventSseDeliversSessionRegisteredBeforeLaterFrames()
+    {
+        await using var harness = new HttpFallbackHarness();
+        await using IRbpConnectionCycle cycle = await harness.OpenAsync();
+        string registered = InboundSessionRegisteredJson();
+        string heartbeat = InboundHeartbeatAckJson();
+        const string Prefix = "event: rbp\r\ndata: ";
+        int split = registered.Length / 2;
+
+        // The real carrier sees arbitrary TLS/H1.1/H2 response chunks.  Do
+        // not let a partial session_registered frame be mistaken for a
+        // complete lifecycle event or bleed into the next SSE event.
+        harness.Events.WriteUtf8(Prefix + registered[..split]);
+        Task<RbpEnvelope> firstRead = cycle.ReceiveAsync();
+        await Task.Delay(20);
+        Assert.False(firstRead.IsCompleted);
+        harness.Events.WriteUtf8(
+            registered[split..] + "\r\n\r\n" +
+            "event: rbp\n" +
+            "data: " + heartbeat + "\n\n");
+
+        RbpEnvelope registeredEnvelope = await firstRead.WaitAsync(
+            TimeSpan.FromSeconds(2));
+        RbpEnvelope heartbeatEnvelope = await cycle.ReceiveAsync()
+            .WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.Equal("session_registered", registeredEnvelope.Type);
+        Assert.Equal("heartbeat_ack", heartbeatEnvelope.Type);
     }
 
     [Fact]
@@ -318,6 +507,11 @@ public sealed class StreamableHttpRbpConnectionCycleTests
         {"v":1,"type":"heartbeat_ack","id":"019f9add-7a83-7d11-a6a9-d2f8108c0099","ts":"2026-07-26T10:00:00.000Z","payload":{"server_time":"2026-07-26T10:00:00.000Z","acks":[]}}
         """;
 
+    private static string InboundSessionRegisteredJson() =>
+        """
+        {"v":1,"type":"session_registered","id":"019f9add-7a83-7d11-a6a9-d2f8108c0098","ts":"2026-07-26T10:00:00.000Z","payload":{"rsid":"018f7f7e-1234-7abc-8def-1234567890ab","resume_token":"resume-test-token","resume_expires_at":"2026-07-27T10:00:00.000Z","principal":{"tenant_id":"tenant-test","user_id":"user-test"},"seat":{"granted":true,"seat_id":"seat-test"},"granted_session_capabilities":[]}}
+        """;
+
     private sealed class HttpFallbackHarness : IAsyncDisposable
     {
         private readonly Func<
@@ -328,10 +522,12 @@ public sealed class StreamableHttpRbpConnectionCycleTests
 
         internal HttpFallbackHarness(
             HttpStatusCode messageStatus = HttpStatusCode.Accepted,
-            bool throwMessageFailure = false)
+            bool throwMessageFailure = false,
+            Action<RbpSseReceiveObservation>? onSseReceiveObservation = null)
         {
             _messageStatus = messageStatus;
             _throwMessageFailure = throwMessageFailure;
+            OnSseReceiveObservation = onSseReceiveObservation;
             Handler = new ScriptedHttpMessageHandler(RespondAsync);
         }
 
@@ -347,13 +543,16 @@ public sealed class StreamableHttpRbpConnectionCycleTests
 
         internal ScriptedHttpMessageHandler Handler { get; }
 
+        internal Action<RbpSseReceiveObservation>? OnSseReceiveObservation { get; }
+
         internal async Task<IRbpConnectionCycle> OpenAsync()
         {
             var factory =
                 new StreamableHttpRbpConnectionCycleFactory(
                     new FixedEnrollmentProvider(Credential()),
                     new[] { RbpTransportCapabilities.StreamableHttp },
-                    new FixedHttpClientFactory(Handler));
+                    new FixedHttpClientFactory(Handler),
+                    onSseReceiveObservation: OnSseReceiveObservation);
             return await factory.OpenAsync(Endpoint(), Profile());
         }
 
@@ -435,7 +634,7 @@ public sealed class StreamableHttpRbpConnectionCycleTests
     }
 
     internal static Uri Endpoint() =>
-        new("wss://gateway.revagent.example/bridge/v1");
+        new("https://gateway.revagent.example/bridge/v1");
 
     internal static RbpDeviceCredential Credential() =>
         new(

@@ -18,6 +18,7 @@ import {
   resultEnvelope,
   sessionRegister,
   statePath,
+  FINGERPRINT,
   NOW,
   TOKEN,
   tokenTable,
@@ -418,7 +419,148 @@ for (const [binding, connect] of [
   });
 }
 
+describe("enrolled fingerprint transport parity", () => {
+  it("uses one credential claim across WSS and HTTP/SSE while hostname remains metadata", async () => {
+    const handle = await start("fingerprint-transport-parity");
+    const wss = await websocketPeer(handle);
+    const http = await ssePeer(handle);
+    try {
+      const wssRegistration = sessionRegister();
+      wssRegistration.local_session_key = "raw-wss-session";
+      wssRegistration.machine.hostname = "renamed-wss-host";
+      const httpRegistration = sessionRegister();
+      httpRegistration.local_session_key = "raw-http-session";
+      httpRegistration.machine.hostname = "renamed-http-host";
+
+      await wss.send(controlEnvelope(
+        "session_register",
+        wssRegistration,
+        320,
+      ));
+      await http.send(controlEnvelope(
+        "session_register",
+        httpRegistration,
+        321,
+      ));
+      const wssRegistered = await wss.next() as Extract<
+        RbpEnvelope,
+        { type: "session_registered" }
+      >;
+      const httpRegistered = await http.next() as Extract<
+        RbpEnvelope,
+        { type: "session_registered" }
+      >;
+
+      const snapshot = handle.core.snapshot();
+      expect(snapshot.sessions[wssRegistered.payload.rsid]).toMatchObject({
+        machine: {
+          hostname: "renamed-wss-host",
+          fingerprint: FINGERPRINT,
+        },
+      });
+      expect(snapshot.sessions[httpRegistered.payload.rsid]).toMatchObject({
+        machine: {
+          hostname: "renamed-http-host",
+          fingerprint: FINGERPRINT,
+        },
+      });
+      expect(
+        snapshot.sessions[wssRegistered.payload.rsid]!.machine.fingerprint,
+      ).toBe(
+        snapshot.sessions[httpRegistered.payload.rsid]!.machine.fingerprint,
+      );
+    } finally {
+      await Promise.all([wss.close(), http.close()]);
+    }
+  });
+
+  it("keeps missing and mismatched claims fail-closed on both carriers", async () => {
+    const handle = await start("fingerprint-transport-negative");
+    const vectors = [
+      {
+        name: "missing",
+        claim: undefined,
+      },
+      {
+        name: "mismatch",
+        claim: `sha256:${"9".repeat(64)}`,
+      },
+    ] as const;
+
+    for (const [index, vector] of vectors.entries()) {
+      const opening = hello(322 + index * 2);
+      if (vector.claim === undefined) {
+        delete opening.payload.machine.fingerprint;
+      } else {
+        opening.payload.machine.fingerprint = vector.claim;
+      }
+
+      const socket = await openRawWebSocket(handle);
+      const closed = nextClose(socket);
+      socket.send(JSON.stringify(opening));
+      await expect(
+        within(closed, `${vector.name} WSS close`),
+        vector.name,
+      ).resolves.toMatchObject({ code: 4403 });
+
+      const response = await within(fetch(handle.httpConnectionUrl, {
+        method: "POST",
+        headers: {
+          accept: "application/json",
+          authorization: `Bearer ${TOKEN}`,
+          "content-type": "application/json",
+          "x-rbp-versions": "1",
+        },
+        body: JSON.stringify({
+          ...opening,
+          id: uuid7(323 + index * 2),
+        }),
+      }), `${vector.name} HTTP rejection`);
+      expect(response.status, vector.name).toBe(403);
+    }
+  });
+});
+
 describe("opening and proxy fault controls", () => {
+  it("closes an actively revoked WSS credential with 4403 after durable session invalidation", async () => {
+    const handle = await start("active-wss-credential-revocation");
+    const socket = await openRawWebSocket(handle);
+    try {
+      socket.send(JSON.stringify(hello(330)));
+      await expect(nextRawMessage(socket)).resolves.toMatchObject({
+        type: "hello_ack",
+      });
+      socket.send(JSON.stringify(controlEnvelope(
+        "session_register",
+        sessionRegister(),
+        331,
+      )));
+      const registered = await nextRawMessage(socket) as Extract<
+        RbpEnvelope,
+        { type: "session_registered" }
+      >;
+      const closed = nextClose(socket);
+
+      const response = await postControl(handle, {
+        action: "set_auth_status",
+        token: TOKEN,
+        status: "revoked",
+      });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({
+        status: "revoked",
+        disconnected: [expect.any(String)],
+      });
+      await expect(closed).resolves.toMatchObject({ code: 4403 });
+      expect(handle.core.snapshot().sessions[registered.payload.rsid]).toMatchObject({
+        revoked: true,
+        liveness: "disconnected",
+      });
+    } finally {
+      if (socket.readyState !== WebSocket.CLOSED) socket.terminate();
+    }
+  });
+
   it("rejects bridge-claimed seat and user authority on authenticated WSS paths without retaining values", async () => {
     const handle = await start("authorization-audit-server-path");
     const spoofVectors = [
@@ -746,7 +888,14 @@ describe("opening and proxy fault controls", () => {
   });
 
   it("injects exact HTTP opening errors with Retry-After and buffers SSE until explicitly flushed", async () => {
-    const handle = await start("fault-controls");
+    const handle = await start("fault-controls", {
+      connectionCapabilities: [
+        "journal_v1",
+        "chunked_results",
+        "artifact_result_v1",
+        "transport_streamable_http",
+      ],
+    });
     handle.core.faults.enqueueOpening({
       binding: "http_sse",
       status: 503,
@@ -803,8 +952,9 @@ describe("opening and proxy fault controls", () => {
       expect(await queuedHold.json()).toEqual({ queued: true });
       const bytes = Buffer.from("hello world", "utf8");
       const chunks = [bytes.subarray(0, 5), bytes.subarray(5)];
-      const pendingChunkPosts = chunks.map(async (chunk, chunkIndex) =>
-        peer.send({
+      const pendingChunkPosts: Array<Promise<void>> = [];
+      for (const [chunkIndex, chunk] of chunks.entries()) {
+        pendingChunkPosts.push(peer.send({
           v: 1,
           type: "partial",
           id: uuid7(113 + chunkIndex),
@@ -822,7 +972,14 @@ describe("opening and proxy fault controls", () => {
             data: chunk.toString("base64"),
           },
         }));
-      await waitFor(() => handle.core.snapshot().runtime.heldInboundFrames === 2);
+        // Capture the frozen sequence in wire order. Concurrent POST startup
+        // can invert seq 1/2 before the hold controller owns either request,
+        // turning this fault-control test into a scheduler race.
+        await waitFor(
+          () => handle.core.snapshot().runtime.heldInboundFrames ===
+            chunkIndex + 1,
+        );
+      }
       expect(handle.core.snapshot().sessions[rsid]).toMatchObject({
         inFlight: { correlationId: invocationId },
         sequence: { lastRxSeq: 0 },
@@ -1465,10 +1622,11 @@ describe("opening and proxy fault controls", () => {
 
     const fault = nextRawMessage(socket);
     const closed = nextClose(socket);
+    const unsupportedFrameId = uuid7(214);
     socket.send(JSON.stringify({
       v: 1,
       type: "partial",
-      id: uuid7(214),
+      id: unsupportedFrameId,
       rsid,
       seq: 1,
       ack: 1,
@@ -1485,6 +1643,7 @@ describe("opening and proxy fault controls", () => {
     }));
     expect(await within(fault, "unsupported connection error")).toMatchObject({
       type: "error",
+      id: unsupportedFrameId,
       payload: {
         retryable: false,
         fault_class: "protocol",

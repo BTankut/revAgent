@@ -69,8 +69,24 @@ public sealed partial class RbpConnectionCoordinatorTests
             StringComparison.Ordinal);
         Assert.Equal(1, factory.OpenCount);
 
+        await EventuallyAsync(() =>
+        {
+            RbpConnectionCoordinatorSnapshot snapshot =
+                coordinator.GetSnapshot();
+            return snapshot.Lifecycle.Phase ==
+                       RbpConnectionPhase.RetryPaused &&
+                   !snapshot.HasActiveConnection;
+        });
+        Task<RbpCoordinatorTeardownResult> teardown =
+            coordinator.RequestStopTeardown();
         stop.Cancel();
+        RbpCoordinatorTeardownResult result = await teardown.WaitAsync(
+            TimeSpan.FromSeconds(2));
+        Assert.Equal(
+            RbpCoordinatorTeardownDisposition.NormalStopped,
+            result.Disposition);
         await run.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.Equal(1, factory.OpenCount);
     }
 
     [Fact]
@@ -81,10 +97,11 @@ public sealed partial class RbpConnectionCoordinatorTests
         await using RbpJournalStore store = OpenStore(directory, clock);
         var responder = new ScriptedGatewayResponder(clock);
         var cycle = new FakeConnectionCycle(responder.Respond);
+        var factory = new FakeConnectionCycleFactory(cycle);
         RbpConnectionCoordinator coordinator =
             WorkerGatewayComposition.CreateCoordinator(
                 new WorkerGatewayServices(
-                    new FakeConnectionCycleFactory(cycle),
+                    factory,
                     store,
                     new MutableSessionCatalog(LocalSession(8080, 1000)),
                     CompositionOptions(),
@@ -97,8 +114,14 @@ public sealed partial class RbpConnectionCoordinatorTests
         using var stop = new CancellationTokenSource();
 
         Task run = coordinator.RunAsync(stop.Token);
-        await EventuallyAsync(
-            () => coordinator.GetSnapshot().ActiveRsids.Count == 1);
+        await EventuallyAsync(() =>
+        {
+            RbpConnectionCoordinatorSnapshot snapshot =
+                coordinator.GetSnapshot();
+            return snapshot.Lifecycle.Phase == RbpConnectionPhase.Steady &&
+                   snapshot.HasActiveConnection &&
+                   snapshot.ActiveRsids.Count == 1;
+        });
 
         cycle.Deliver(
             DataEnvelope(
@@ -151,7 +174,22 @@ public sealed partial class RbpConnectionCoordinatorTests
         Assert.Equal(1, frontier.LastAcceptedSequence);
         Assert.Equal(1, frontier.LastJournaledSequence);
 
+        await EventuallyAsync(() =>
+        {
+            RbpConnectionCoordinatorSnapshot snapshot =
+                coordinator.GetSnapshot();
+            return snapshot.HasActiveConnection &&
+                   snapshot.Lifecycle.Phase == RbpConnectionPhase.Steady &&
+                   snapshot.ActiveInvocationCount == 0;
+        });
+        Task<RbpCoordinatorTeardownResult> teardown =
+            coordinator.RequestStopTeardown();
         stop.Cancel();
+        RbpCoordinatorTeardownResult result = await teardown.WaitAsync(
+            TimeSpan.FromSeconds(5));
+        Assert.Equal(
+            RbpCoordinatorTeardownDisposition.NormalStopped,
+            result.Disposition);
         await run.WaitAsync(TimeSpan.FromSeconds(5));
     }
 
@@ -163,10 +201,11 @@ public sealed partial class RbpConnectionCoordinatorTests
         await using RbpJournalStore store = OpenStore(directory, clock);
         var responder = new ScriptedGatewayResponder(clock);
         var cycle = new FakeConnectionCycle(responder.Respond);
+        var factory = new FakeConnectionCycleFactory(cycle);
         RbpConnectionCoordinator coordinator =
             WorkerGatewayComposition.CreateCoordinator(
                 new WorkerGatewayServices(
-                    new FakeConnectionCycleFactory(cycle),
+                    factory,
                     store,
                     new MutableSessionCatalog(LocalSession(8080, 1000)),
                     CompositionOptions(),
@@ -176,8 +215,14 @@ public sealed partial class RbpConnectionCoordinatorTests
         using var stop = new CancellationTokenSource();
 
         Task run = coordinator.RunAsync(stop.Token);
-        await EventuallyAsync(
-            () => coordinator.GetSnapshot().ActiveRsids.Count == 1);
+        await EventuallyAsync(() =>
+        {
+            RbpConnectionCoordinatorSnapshot snapshot =
+                coordinator.GetSnapshot();
+            return snapshot.Lifecycle.Phase == RbpConnectionPhase.Steady &&
+                   snapshot.HasActiveConnection &&
+                   snapshot.ActiveRsids.Count == 1;
+        });
 
         cycle.Deliver(
             DataEnvelope(
@@ -204,22 +249,33 @@ public sealed partial class RbpConnectionCoordinatorTests
         // binding rather than half-handling the frame.
         await EventuallyAsync(() => cycle.CloseCount >= 1);
 
-        // Accepted but never journaled: the frontier proves the fail-closed
-        // default engaged, so no acknowledgement can ever cover the envelope
-        // and the Gateway keeps retransmission authority.
-        RbpReceiveFrontier frontier =
-            await store.GetReceiveFrontierAsync("rs-8080");
-        Assert.Equal(1, frontier.LastAcceptedSequence);
-        Assert.Equal(0, frontier.LastJournaledSequence);
-
         // No data-plane answer was fabricated for the refused invoke.
         Assert.DoesNotContain(
             cycle.Sent,
             envelope => envelope.Type is "error" or "result");
-        Assert.Null(await store.GetInvocationAsync("rs-8080/" + Id(512)));
-
+        Assert.Equal(1, cycle.CloseCount);
+        Task<RbpCoordinatorTeardownResult> teardown =
+            await RequestNormalStopTeardownWhenReadyAsync(coordinator);
         stop.Cancel();
+        RbpCoordinatorTeardownResult result = await teardown.WaitAsync(
+            TimeSpan.FromSeconds(5));
+        Assert.Equal(
+            RbpCoordinatorTeardownDisposition.NormalStopped,
+            result.Disposition);
         await run.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(1, cycle.CloseCount);
+        Assert.Equal(1, cycle.DisposeCount);
+        await store.DisposeAsync();
+
+        await using RbpJournalStore reopened = OpenStore(directory, clock);
+        // Accepted but never journaled: reopening the physical journal proves
+        // the fail-closed frontier survived teardown without a fabricated
+        // invocation terminal or acknowledgement.
+        RbpReceiveFrontier frontier =
+            await reopened.GetReceiveFrontierAsync("rs-8080");
+        Assert.Equal(1, frontier.LastAcceptedSequence);
+        Assert.Equal(0, frontier.LastJournaledSequence);
+        Assert.Null(await reopened.GetInvocationAsync("rs-8080/" + Id(512)));
     }
 
     [Fact]

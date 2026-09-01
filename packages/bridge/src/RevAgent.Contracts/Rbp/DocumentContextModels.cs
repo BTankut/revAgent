@@ -36,7 +36,8 @@ namespace RevAgent.Contracts.Rbp
             IReadOnlyList<AddinDocumentContextDocument> documents,
             string? activeDocumentId,
             AddinDocumentContextActiveView? activeView,
-            string? disciplineHint)
+            string? disciplineHint,
+            string? cacheIncarnationDigest)
         {
             CapturedAtUtc = capturedAtUtc;
             Revision = revision;
@@ -46,6 +47,7 @@ namespace RevAgent.Contracts.Rbp
             ActiveDocumentId = activeDocumentId;
             ActiveView = activeView;
             DisciplineHint = disciplineHint;
+            CacheIncarnationDigest = cacheIncarnationDigest;
         }
 
         public int ResultContractVersion => 2;
@@ -67,6 +69,12 @@ namespace RevAgent.Contracts.Rbp
         public AddinDocumentContextActiveView? ActiveView { get; }
 
         public string? DisciplineHint { get; }
+
+        /// <summary>
+        /// Optional fixture-only cache lifetime correlate. This metadata is
+        /// never mapped into the frozen production RBP payload.
+        /// </summary>
+        public string? CacheIncarnationDigest { get; }
     }
 
     public sealed class AddinDocumentContextDocument

@@ -817,6 +817,11 @@ export class WssGatewayBinding implements GatewayBinding {
     if (this.#socket?.readyState !== WebSocket.OPEN || this.#connectionId === null) {
       throw new Error("WSS binding is not steady");
     }
+    if (!isJsonRecord(frame) || typeof frame.id !== "string" || frame.id.length === 0 ||
+        frame.id.length > 256 || /[\r\n]/u.test(frame.id)) {
+      throw new Error("WSS conformance target frame id is invalid");
+    }
+    const targetFrameId = frame.id;
     const socket = this.#socket;
     const body = JSON.stringify(frame);
     if (Buffer.byteLength(body, "utf8") > MAX_RBP_WIRE_FRAME_BYTES) {
@@ -846,7 +851,8 @@ export class WssGatewayBinding implements GatewayBinding {
         try {
           if (binary) return;
           const envelope = parseEnvelope(rawDataBytes(data));
-          if (envelope.type !== "error" || envelope.payload.fault_class !== "protocol") return;
+          if (envelope.type !== "error" || envelope.id !== targetFrameId ||
+              envelope.payload.fault_class !== "protocol") return;
           remoteFault = new GatewayTransportError(envelope.payload.message, {
             faultClass: "protocol",
           });
@@ -890,11 +896,15 @@ export class WssGatewayBinding implements GatewayBinding {
       socket.on("message", onMessage);
       socket.once("close", onClose);
       socket.once("error", onError);
-      socket.send(body, (error) => {
-        if (error !== undefined && error !== null) {
+      try {
+        socket.send(body, (error) => {
+          if (error !== undefined && error !== null) {
+            fail(normalizedTransportError(error, "WSS conformance send failed"));
+          }
+        });
+      } catch (error) {
           fail(normalizedTransportError(error, "WSS conformance send failed"));
-        }
-      });
+      }
     });
   }
 

@@ -22,6 +22,14 @@ internal sealed class RbpPrimaryFallbackConnectionCycleFactory :
             throw new ArgumentNullException(nameof(primary));
         _fallback = fallback ??
             throw new ArgumentNullException(nameof(fallback));
+        if (_primary.BindingKind != RbpConnectionBindingKind.Wss ||
+            _fallback.BindingKind !=
+                RbpConnectionBindingKind.StreamableHttpSse)
+        {
+            throw new ArgumentException(
+                "The production fallback composition requires WSS primary " +
+                "and Streamable HTTP/SSE fallback bindings.");
+        }
         ArgumentNullException.ThrowIfNull(provisionedCapabilities);
         _streamableHttpProvisioned =
             provisionedCapabilities.Contains(
@@ -29,12 +37,20 @@ internal sealed class RbpPrimaryFallbackConnectionCycleFactory :
                 StringComparer.Ordinal);
     }
 
+    public RbpConnectionBindingKind BindingKind =>
+        RbpConnectionBindingKind.WssWithStreamableHttpSseFallback;
+
+    public string ExpectedEndpointScheme => Uri.UriSchemeWss;
+
     public async Task<IRbpConnectionCycle> OpenAsync(
         Uri endpoint,
         RbpHelloProfile profile,
         CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(endpoint);
+        RbpConnectionBindingContract.RequireExpectedEndpointScheme(
+            endpoint,
+            ExpectedEndpointScheme,
+            nameof(endpoint));
         ArgumentNullException.ThrowIfNull(profile);
         try
         {
@@ -50,8 +66,12 @@ internal sealed class RbpPrimaryFallbackConnectionCycleFactory :
             cancellationToken.ThrowIfCancellationRequested();
             try
             {
-                return await _fallback.OpenAsync(
+                Uri fallbackEndpoint =
+                    RbpConnectionBindingContract.WithExpectedScheme(
                         endpoint,
+                        _fallback.ExpectedEndpointScheme);
+                return await _fallback.OpenAsync(
+                        fallbackEndpoint,
                         profile,
                         cancellationToken)
                     .ConfigureAwait(false);

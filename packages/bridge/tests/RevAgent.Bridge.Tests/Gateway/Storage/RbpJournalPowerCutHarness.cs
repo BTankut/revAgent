@@ -37,6 +37,15 @@ internal static class RbpJournalPowerCutMode
     /// handed the result, so the RBP answer was never sent.
     /// </summary>
     internal const string TerminalCommitted = "terminal-committed";
+
+    internal const string RecoveryValidatedRaw = "recovery-validated-raw";
+    internal const string RecoveryPlanInserted = "recovery-plan-inserted";
+    internal const string RecoverySequenceReserved = "recovery-sequence-reserved";
+    internal const string RecoverySendStarted = "recovery-send-started";
+    internal const string RecoveryEqualAcknowledgement = "recovery-equal-acknowledgement";
+    internal const string RecoveryTombstoneRawDeleted = "recovery-tombstone-raw-deleted";
+    internal const string RecoveryMinimalTombstonePersisted = "recovery-minimal-tombstone-persisted";
+    internal const string RecoveryDetailedAuditPruned = "recovery-detailed-audit-pruned";
 }
 
 /// <summary>
@@ -62,6 +71,15 @@ internal static class RbpJournalPowerCutData
 
     internal const string BatchReadStepId =
         "0197a3c2-0000-7000-8000-0000000000d5";
+
+    internal const string RecoveryOriginInvocationId =
+        "0197a3c2-0000-7000-8000-0000000000d6";
+
+    internal const string RecoveryInvocationId =
+        "0197a3c2-0000-7000-8000-0000000000d7";
+
+    internal const string RecoveryRawSentinel =
+        "C39_RAW_JSON_SENTINEL_7ebd7b90";
 
     internal const string DocumentScopeJcs =
         """{"document_id":"doc-1","kind":"document"}""";
@@ -133,12 +151,47 @@ internal static class RbpJournalPowerCutData
             RbpJournalTestData.Json(TerminalOutcomeJson));
 
     internal static RbpJournalOpenOptions ChildOptions(
-        IRbpJournalFaultInjector faultInjector) =>
+        IRbpJournalFaultInjector faultInjector,
+        Func<long>? nowMilliseconds = null) =>
         new(
             BusyTimeoutMilliseconds: 5_000,
-            NowMilliseconds: () =>
-                RbpJournalTestData.Now.ToUnixTimeMilliseconds(),
+            NowMilliseconds: nowMilliseconds ?? (() =>
+                RbpJournalTestData.Now.ToUnixTimeMilliseconds()),
             FaultInjector: faultInjector);
+
+    internal static RbpInvocationIdentity RecoveryOriginIdentity() =>
+        new(
+            Rsid,
+            RecoveryOriginInvocationId,
+            "get_current_view_info",
+            Mutating: false,
+            MutationScopeJcs: null,
+            ParamsDigest: ParamsDigest,
+            PolicyJcs: """{"decision":"allow"}""",
+            RecoveryClearancesJcs: "[]");
+
+    internal static byte[] RecoveryRawBytes() =>
+        System.Text.Encoding.UTF8.GetBytes(
+            "{\"jsonrpc\":\"2.0\",\"result\":{\"sentinel\":\"" +
+            RecoveryRawSentinel + "\"}}");
+
+    internal static string RecoveryRawDigest()
+    {
+        byte[] raw = RecoveryRawBytes();
+        return "sha256:" + Convert.ToHexString(
+            System.Security.Cryptography.SHA256.HashData(raw)).ToLowerInvariant();
+    }
+
+    internal static RbpRecoveryCarrierReservationRequest RecoveryRequest() =>
+        new(
+            Rsid,
+            RecoveryInvocationId,
+            RecoveryOriginInvocationId,
+            RecoveryRawDigest(),
+            RecoveryRawBytes().Length,
+            new RbpRecoveryCarrierHeader("application/json", "base64"),
+            "sha256:" + new string('e', 64),
+            RbpJournalTestData.Now.AddHours(1));
 }
 
 /// <summary>

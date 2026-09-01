@@ -32,6 +32,7 @@ import {
   type GatewayServerTlsMaterial,
 } from "./server.js";
 import { gatewayUuidV7 } from "./identifiers.js";
+import { createEffectiveMcpRequestScopeV1 } from "./invocationContext.js";
 import type { AuthorizedNorthMcpRequest } from "./northMcpEndpoint.js";
 import { verifyRegistrySeed } from "./registrySeed.js";
 
@@ -275,6 +276,12 @@ function auditInvocationEvent(): GatewayEventEnvelope {
 }
 
 describe("M4 pre-production serving composition", () => {
+  it("does not register C39 from a key-file setting without a durable inventory", async () => {
+    await expect(preparePreProductionServing({
+      ...options(),
+      environment: { ...options().environment, C39_PROTECTED_OBJECT_KEY_FILE: "/run/revagent/c39-key.json" },
+    })).rejects.toMatchObject({ reason: "c39_protected_object_unavailable" });
+  });
   it("loads one credential and builds one inspectable identity/store/Bridge/north graph", async () => {
     const fixture = dependencies();
     const prepared = await preparePreProductionServing(
@@ -297,6 +304,8 @@ describe("M4 pre-production serving composition", () => {
     expect(prepared.composition.bridgeAuthority.store).toBe(
       prepared.composition.ports.protocolStore,
     );
+    expect(prepared.composition.ports.objectStore.kind).toBe("unavailable");
+    expect(Object.hasOwn(prepared.composition, "resourceAuthority")).toBe(false);
     expect(prepared.composition.northAuthenticator.identity).toBe(
       prepared.composition.identity,
     );
@@ -601,14 +610,22 @@ describe("M4 pre-production serving composition", () => {
         authContext: north.value,
         principalKey: north.value.principalKey,
       };
+      const effectiveMcpRequestScope = createEffectiveMcpRequestScopeV1({
+        principalKey: authenticated.principalKey,
+        transportMcpSessionId: "mcp-session-serving-live",
+        identityMcpSessionId: null,
+        nowMs: 1_775_000_000_000,
+      });
       const route = await Promise.resolve(
         prepared.composition.northMcp.invocationRouteFor(
           authenticated,
           "mcp-session-serving-live",
+          effectiveMcpRequestScope,
         ),
       );
       expect(route).toEqual({
         tenantId: "tenant-m4-serving",
+        effectiveMcpRequestScope,
         mcpSessionId: "mcp-session-serving-live",
         rsid: registered.payload.rsid,
         documentIdentity: {
@@ -645,7 +662,8 @@ describe("M4 pre-production serving composition", () => {
     });
     expect(fixture.counts.start).toBe(1);
 
-    expect(prepared.revokeConfiguredDevice()).toMatchObject({
+    await prepared.composition.bridgeAuthority.open();
+    await expect(prepared.revokeConfiguredDevice()).resolves.toMatchObject({
       ok: true,
       value: { deviceStatus: "revoked" },
     });
@@ -670,6 +688,7 @@ describe("M4 pre-production serving composition", () => {
         channel: { async send() {}, async close() {} },
       }),
     ).rejects.toMatchObject({ code: "auth", httpStatus: 403, closeCode: 4403 });
+    await prepared.composition.bridgeAuthority.close();
   });
 
   it("refuses a pre-production composition before listener creation when TLS is absent", async () => {

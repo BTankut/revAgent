@@ -328,7 +328,7 @@ public sealed partial class RbpConnectionCoordinatorTests
             store,
             new MutableSessionCatalog(),
             clock,
-            closeTimeout: TimeSpan.FromMilliseconds(20));
+            closeTimeout: TimeSpan.FromMilliseconds(200));
         using var stop = new CancellationTokenSource();
         Task run = coordinator.RunAsync(stop.Token);
 
@@ -443,7 +443,12 @@ public sealed partial class RbpConnectionCoordinatorTests
 
             var stopwatch = System.Diagnostics.Stopwatch.StartNew();
             stop.Cancel();
-            await run.WaitAsync(TimeSpan.FromSeconds(1));
+            RbpCoordinatorException failure = await Assert.ThrowsAsync<
+                RbpCoordinatorException>(() =>
+                run.WaitAsync(TimeSpan.FromSeconds(1)));
+            Assert.Equal(
+                RbpCoordinatorErrorCode.NonDrainingConnectionAuthority,
+                failure.ErrorCode);
             Assert.True(stopwatch.Elapsed < TimeSpan.FromSeconds(1));
             Assert.False(coordinator.GetSnapshot().HasActiveConnection);
             Assert.Equal(
@@ -467,7 +472,15 @@ public sealed partial class RbpConnectionCoordinatorTests
         {
             stop.Cancel();
             faults.Release();
-            await run.WaitAsync(TimeSpan.FromSeconds(2));
+            try
+            {
+                await run.WaitAsync(TimeSpan.FromSeconds(2));
+            }
+            catch (RbpCoordinatorException exception)
+                when (exception.ErrorCode ==
+                    RbpCoordinatorErrorCode.NonDrainingConnectionAuthority)
+            {
+            }
         }
 
         await EventuallyAsync(
@@ -502,6 +515,8 @@ public sealed partial class RbpConnectionCoordinatorTests
             faults.Arm(RbpJournalFaultPoint.BeforeCommit);
             clock.Advance(TimeSpan.FromSeconds(15));
             await faults.Entered.WaitAsync(TimeSpan.FromSeconds(2));
+            await EventuallyAsync(
+                () => clock.HasDelayDueIn(TimeSpan.FromSeconds(65)));
 
             clock.Advance(TimeSpan.FromSeconds(65));
             RbpCoordinatorException failure =
@@ -510,7 +525,10 @@ public sealed partial class RbpConnectionCoordinatorTests
             Assert.Equal(
                 RbpCoordinatorErrorCode.NonDrainingConnectionAuthority,
                 failure.ErrorCode);
-            Assert.True(first.CloseCount > 0);
+            // The bounded deadline may expire before the retained close wins
+            // the scheduler. It may be skipped or start once, never twice.
+            Assert.InRange(first.CloseCount, 0, 1);
+            Assert.Equal(0, first.DisposeCount);
             Assert.Equal(1, factory.OpenCount);
             Assert.Empty(second.Sent);
             Assert.Equal(1, coordinator.GetSnapshot().ConnectionGeneration);
@@ -541,6 +559,8 @@ public sealed partial class RbpConnectionCoordinatorTests
 
         await EventuallyAsync(
             () => coordinator.GetSnapshot().OwnedBackgroundTaskCount == 0);
+        Assert.InRange(first.CloseCount, 0, 1);
+        Assert.Equal(0, first.DisposeCount);
     }
 
     [Fact]

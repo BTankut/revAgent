@@ -354,6 +354,38 @@ public sealed class RbpEnvelopeCodecTests
     }
 
     [Fact]
+    public void HelloFingerprintKeepsFrozenOptionalSchemaAndCanonicalCodec()
+    {
+        JsonObject missing =
+            RbpFixtureReader.CreatePositiveEnvelope("hello");
+        _ = missing["payload"]!["machine"]!.AsObject()
+            .Remove("fingerprint");
+        RbpEnvelope decodedMissing = RbpEnvelopeCodec.Decode(
+            RbpFixtureReader.Serialize(missing));
+        Assert.Null(decodedMissing.Hello!.Machine.Fingerprint);
+
+        JsonObject uppercase =
+            RbpFixtureReader.CreatePositiveEnvelope("hello");
+        uppercase["payload"]!["machine"]!["fingerprint"] =
+            "sha256:" + new string('A', 64);
+        AssertInvalidEnvelope(
+            uppercase,
+            "/payload/machine/fingerprint");
+
+        JsonObject canonical =
+            RbpFixtureReader.CreatePositiveEnvelope("hello");
+        canonical["payload"]!["machine"]!["fingerprint"] =
+            "sha256:" + new string('0', 64);
+        Assert.Equal(
+            "sha256:" + new string('0', 64),
+            RbpEnvelopeCodec.Decode(
+                    RbpFixtureReader.Serialize(canonical))
+                .Hello!
+                .Machine
+                .Fingerprint);
+    }
+
+    [Fact]
     public void EmbeddedFrozenSchemasMatchCanonicalProtocolBytes()
     {
         string root = RbpFixtureReader.FindRepositoryRoot();

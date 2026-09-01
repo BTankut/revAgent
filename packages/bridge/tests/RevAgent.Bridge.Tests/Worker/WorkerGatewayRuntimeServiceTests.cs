@@ -145,12 +145,15 @@ public sealed class WorkerGatewayRuntimeServiceTests
         var instanceId = Guid.NewGuid();
         var lifetime = new FakeLifetime();
         var exitState = new WorkerExitState();
+        var stopWorkerRelease = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
         var session = new FakeSession(
             new StopWorker(
                 ControlProtocol.Version,
                 instanceId,
                 "service_stop",
-                DateTimeOffset.UtcNow.AddSeconds(8).ToUnixTimeMilliseconds()));
+                DateTimeOffset.UtcNow.AddSeconds(8).ToUnixTimeMilliseconds()),
+            stopWorkerRelease.Task);
         var control = new WorkerControlService(
             new WorkerRuntimeOptions(
                 "test-pipe",
@@ -165,10 +168,11 @@ public sealed class WorkerGatewayRuntimeServiceTests
         await using RbpJournalStore store = RbpJournalStore.Open(
             layout.JournalPath,
             new UnusedResumeTokenProtector());
+        var parkedGate = new ParkedRuntimeGate();
         RbpConnectionCoordinator coordinator =
             WorkerGatewayComposition.CreateCoordinator(
                 new WorkerGatewayServices(
-                    new ParkedRuntimeGate(),
+                    parkedGate,
                     store,
                     new EmptySessionCatalog(),
                     new RbpConnectionCoordinatorOptions(
@@ -189,6 +193,12 @@ public sealed class WorkerGatewayRuntimeServiceTests
         // host registers them.
         await control.StartAsync(CancellationToken.None);
         await gateway.StartAsync(CancellationToken.None);
+        await WaitUntilAsync(() =>
+            coordinator.GetSnapshot().Lifecycle.Phase ==
+                RbpConnectionPhase.RetryPaused &&
+            !coordinator.GetSnapshot().HasActiveConnection);
+        Assert.Equal(1, parkedGate.OpenCount);
+        stopWorkerRelease.TrySetResult();
         await WaitUntilAsync(() => lifetime.StopRequested);
         await gateway.StopAsync(CancellationToken.None);
         await control.StopAsync(CancellationToken.None);
@@ -203,6 +213,7 @@ public sealed class WorkerGatewayRuntimeServiceTests
         Assert.Equal(
             RbpConnectionPhase.Shutdown,
             coordinator.GetSnapshot().Lifecycle.Phase);
+        Assert.Equal(1, parkedGate.OpenCount);
     }
 
     private static ResolvedBridgeConfiguration Configuration(
@@ -305,6 +316,12 @@ public sealed class WorkerGatewayRuntimeServiceTests
 
     private sealed class ParkedRuntimeGate : IRbpConnectionCycleFactory
     {
+        private int _openCount;
+        internal int OpenCount => Volatile.Read(ref _openCount);
+
+        public RbpConnectionBindingKind BindingKind =>
+            RbpConnectionBindingKind.Wss;
+
         public Task<IRbpConnectionCycle> OpenAsync(
             Uri endpoint,
             RbpHelloProfile profile,
@@ -313,8 +330,11 @@ public sealed class WorkerGatewayRuntimeServiceTests
             _ = endpoint;
             _ = profile;
             cancellationToken.ThrowIfCancellationRequested();
+            Interlocked.Increment(ref _openCount);
             return Task.FromException<IRbpConnectionCycle>(
-                new IOException("The test never contacts a Gateway."));
+                new RbpGatewayTransportException(
+                    RbpGatewayFailureKind.Version,
+                    "The test parks Gateway retry authority."));
         }
     }
 
@@ -340,10 +360,14 @@ public sealed class WorkerGatewayRuntimeServiceTests
     private sealed class FakeSession : IWorkerControlSession
     {
         private readonly ControlMessage? _message;
+        private readonly Task _receiveGate;
 
-        internal FakeSession(ControlMessage? message)
+        internal FakeSession(
+            ControlMessage? message,
+            Task? receiveGate = null)
         {
             _message = message;
+            _receiveGate = receiveGate ?? Task.CompletedTask;
         }
 
         internal List<ControlMessage> Sent { get; } = [];
@@ -357,11 +381,13 @@ public sealed class WorkerGatewayRuntimeServiceTests
             return ValueTask.CompletedTask;
         }
 
-        public ValueTask<ControlMessage?> ReceiveAsync(
+        public async ValueTask<ControlMessage?> ReceiveAsync(
             CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            return ValueTask.FromResult(_message);
+            await _receiveGate.WaitAsync(cancellationToken)
+                .ConfigureAwait(false);
+            return _message;
         }
 
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;

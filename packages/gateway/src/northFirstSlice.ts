@@ -12,6 +12,8 @@ import type { CatalogEntry } from "./entitledRegistry.js";
  * executable schema materialization remains a later GW-10 responsibility.
  */
 export const M2_NORTH_FIRST_SLICE_CALLABLE = "core.ui.state" as const;
+export const C39_PAYLOAD_RECOVERY_CALLABLE =
+  "core.dispatch.payload_recovery" as const;
 
 export class NorthFirstSliceCompositionError extends Error {
   public constructor(
@@ -38,48 +40,33 @@ function fail(code: string, message: string): never {
 export function buildNorthFirstSliceCallableRegistry(
   catalog: readonly CatalogEntry[],
 ): GatewayToolRegistry {
-  const matches = catalog.filter(
-    (entry) => entry.name === M2_NORTH_FIRST_SLICE_CALLABLE,
-  );
-  if (matches.length !== 1) {
-    fail(
-      "callable_catalog_entry_count",
-      `${M2_NORTH_FIRST_SLICE_CALLABLE} must appear exactly once in the GW-3 catalog`,
-    );
-  }
-
-  const entry = matches[0]!;
-  if (
-    entry.tool !== "get_ui_state" ||
-    entry.module !== "runtime" ||
-    entry.policyClass !== "auto" ||
-    entry.mutationScopePolicy !== "none" ||
-    entry.executor !== "bridge"
-  ) {
-    fail(
-      "callable_binding_mismatch",
-      `${M2_NORTH_FIRST_SLICE_CALLABLE} must bind runtime/get_ui_state through the auto bridge executor`,
-    );
-  }
-
-  const bootstrap = M2_BOOTSTRAP_TOOL_RECORDS[0];
-  if (bootstrap === undefined) {
-    fail(
-      "callable_schema_missing",
-      `${M2_NORTH_FIRST_SLICE_CALLABLE} has no reviewed bootstrap schema`,
-    );
-  }
-
-  const record: GatewayToolRecord = Object.freeze({
-    ...bootstrap,
-    name: entry.name,
-    summary: entry.summary,
-    namespace: entry.namespace,
-    version: entry.version,
-    policyClass: entry.policyClass,
-    mutationScopePolicy: entry.mutationScopePolicy,
-    executor: entry.executor,
-    executorMethod: entry.tool,
+  const expected = Object.freeze([
+    [M2_NORTH_FIRST_SLICE_CALLABLE, "get_ui_state"],
+    [C39_PAYLOAD_RECOVERY_CALLABLE, "dispatch_payload_recovery"],
+  ] as const);
+  const records = expected.map(([name, method], index) => {
+    const matches = catalog.filter((entry) => entry.name === name);
+    const entry = matches[0];
+    const bootstrap = M2_BOOTSTRAP_TOOL_RECORDS[index];
+    if (
+      matches.length !== 1 || entry === undefined || bootstrap === undefined ||
+      entry.tool !== method || entry.module !== "runtime" ||
+      entry.policyClass !== "auto" || entry.mutationScopePolicy !== "none" ||
+      entry.executor !== "bridge"
+    ) {
+      fail("callable_binding_mismatch", `${name} must bind ${method} through the auto bridge executor`);
+    }
+    return Object.freeze({
+      ...bootstrap,
+      name: entry.name,
+      summary: entry.summary,
+      namespace: entry.namespace,
+      version: entry.version,
+      policyClass: entry.policyClass,
+      mutationScopePolicy: entry.mutationScopePolicy,
+      executor: entry.executor,
+      executorMethod: entry.tool,
+    }) satisfies GatewayToolRecord;
   });
-  return new GatewayToolRegistry([record]);
+  return new GatewayToolRegistry(records);
 }

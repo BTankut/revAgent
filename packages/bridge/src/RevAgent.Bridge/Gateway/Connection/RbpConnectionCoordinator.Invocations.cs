@@ -7,6 +7,60 @@ namespace RevAgent.Bridge.Gateway.Connection;
 
 internal sealed partial class RbpConnectionCoordinator
 {
+    private async Task RunJournaledInvocationWorkAsync(
+        ConnectionCycleContext context,
+        RbpDataEnvelopeSnapshot envelope,
+        IRbpInvocationClaim? claim,
+        bool batch)
+    {
+        try
+        {
+            await JournalAcceptedInboundAsync(envelope, context.Token)
+                .ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            claim?.Dispose();
+            context.CompleteInvocation();
+            HandleInvocationFailure(context, exception);
+            throw;
+        }
+
+        CurrentOperationResult<bool> continued =
+            await TryRunCurrentOperationAsync(
+                    context,
+                    async () =>
+                    {
+                        if (claim is null)
+                        {
+                            if (batch)
+                                await RunBatchConcurrentRejectionAsync(
+                                        context, envelope)
+                                    .ConfigureAwait(false);
+                            else
+                                await RunConcurrentRejectionAsync(
+                                        context, envelope)
+                                    .ConfigureAwait(false);
+                            return;
+                        }
+
+                        if (batch)
+                            await RunBatchAsync(context, claim, envelope)
+                                .ConfigureAwait(false);
+                        else
+                            await RunInvocationAsync(context, claim, envelope)
+                                .ConfigureAwait(false);
+                    })
+                .ConfigureAwait(false);
+        if (continued.Started) return;
+
+        claim?.Dispose();
+        context.CompleteInvocation();
+        RbpCoordinatorException failure = NonDrainingConnectionAuthority();
+        PromoteConnectionAuthorityMustExit(context, failure);
+        throw failure;
+    }
+
     /// <summary>
     /// Runs one claimed invocation to its terminal answer.
     /// </summary>
@@ -24,10 +78,19 @@ internal sealed partial class RbpConnectionCoordinator
         try
         {
             RbpInvocationAnswer answer = await _invocationDispatcher
-                .DispatchClaimedAsync(claim, envelope.Payload, context.Token)
+                .DispatchClaimedAsync(
+                    claim,
+                    envelope.Payload,
+                    context.GrantedConnectionCapabilities,
+                    context.Token)
                 .ConfigureAwait(false);
-            await SendDataAsync(context, envelope.Rsid, answer)
-                .ConfigureAwait(false);
+            CurrentOperationResult<bool> sent =
+                await TryRunCurrentOperationAsync(
+                        context,
+                        () => SendDataAsync(
+                            context, envelope.Rsid, envelope.Sequence, answer))
+                    .ConfigureAwait(false);
+            if (!sent.Started) return;
         }
         catch (OperationCanceledException)
         {
@@ -54,8 +117,7 @@ internal sealed partial class RbpConnectionCoordinator
         {
             // Anything else compromises durability authority. Fail closed, the
             // same way the receive loop does.
-            context.FailPending(exception);
-            context.Cancel();
+            HandleInvocationFailure(context, exception);
         }
         finally
         {
@@ -88,8 +150,13 @@ internal sealed partial class RbpConnectionCoordinator
                 : RbpBatchCoordinator.Unavailable(envelope.Payload);
             Diagnose(
                 $"batch answered type={answer.Type} payload={answer.Payload.GetRawText()}");
-            await SendDataAsync(context, envelope.Rsid, answer)
-                .ConfigureAwait(false);
+            CurrentOperationResult<bool> sent =
+                await TryRunCurrentOperationAsync(
+                        context,
+                        () => SendDataAsync(
+                            context, envelope.Rsid, envelope.Sequence, answer))
+                    .ConfigureAwait(false);
+            if (!sent.Started) return;
             Diagnose("batch sent");
         }
         catch (OperationCanceledException)
@@ -110,8 +177,7 @@ internal sealed partial class RbpConnectionCoordinator
         catch (Exception exception)
         {
             Diagnose($"batch fatal {exception.GetType().Name}: {exception.Message}");
-            context.FailPending(exception);
-            context.Cancel();
+            HandleInvocationFailure(context, exception);
         }
         finally
         {
@@ -147,10 +213,13 @@ internal sealed partial class RbpConnectionCoordinator
     {
         try
         {
-            await SendDataAsync(
+            _ = await TryRunCurrentOperationAsync(
                     context,
-                    envelope.Rsid,
-                    RbpBatchCoordinator.RejectConcurrent(envelope.Payload))
+                    () => SendDataAsync(
+                        context,
+                        envelope.Rsid,
+                        envelope.Sequence,
+                        RbpBatchCoordinator.RejectConcurrent(envelope.Payload)))
                 .ConfigureAwait(false);
         }
         catch (OperationCanceledException)
@@ -167,8 +236,7 @@ internal sealed partial class RbpConnectionCoordinator
         }
         catch (Exception exception)
         {
-            context.FailPending(exception);
-            context.Cancel();
+            HandleInvocationFailure(context, exception);
         }
         finally
         {
@@ -187,10 +255,13 @@ internal sealed partial class RbpConnectionCoordinator
         try
         {
             string invocationId = ReadInvocationId(envelope.Payload);
-            await SendDataAsync(
+            _ = await TryRunCurrentOperationAsync(
                     context,
-                    envelope.Rsid,
-                    _invocationDispatcher.RejectConcurrent(invocationId))
+                    () => SendDataAsync(
+                        context,
+                        envelope.Rsid,
+                        envelope.Sequence,
+                        _invocationDispatcher.RejectConcurrent(invocationId)))
                 .ConfigureAwait(false);
         }
         catch (OperationCanceledException)
@@ -207,8 +278,7 @@ internal sealed partial class RbpConnectionCoordinator
         }
         catch (Exception exception)
         {
-            context.FailPending(exception);
-            context.Cancel();
+            HandleInvocationFailure(context, exception);
         }
         finally
         {
@@ -224,6 +294,19 @@ internal sealed partial class RbpConnectionCoordinator
             ? text
             : "00000000-0000-7000-8000-000000000000";
 
+    private void HandleInvocationFailure(
+        ConnectionCycleContext context,
+        Exception exception)
+    {
+        if (IsNonDrainingConnectionAuthority(exception))
+        {
+            PromoteConnectionAuthorityMustExit(context, exception);
+            return;
+        }
+        context.FailPending(exception);
+        context.Cancel();
+    }
+
     /// <summary>
     /// Queues one outbound data envelope and sends it.
     /// </summary>
@@ -238,45 +321,299 @@ internal sealed partial class RbpConnectionCoordinator
     private async Task SendDataAsync(
         ConnectionCycleContext context,
         string rsid,
+        long inboundSequence,
         RbpInvocationAnswer answer)
     {
-        await context.OutboundGate.WaitAsync(context.Token)
-            .ConfigureAwait(false);
+        CurrentOperationResult<bool> gate =
+            await TryRunCurrentOperationAsync(
+                    context,
+                    async () =>
+                    {
+                        await context.OutboundGate.WaitAsync(context.Token)
+                            .ConfigureAwait(false);
+                    })
+                .ConfigureAwait(false);
+        if (!gate.Started) return;
         try
         {
-            RbpQueueOutboundResult queued = await _journal
-                .QueueOutboundDataAsync(
-                    rsid,
-                    new RbpOutboundDataDraft(
-                        answer.Type,
-                        _identifiers.NewId(),
-                        answer.Payload),
-                    context.Token)
-                .ConfigureAwait(false);
-
-            // The only path that yields no envelope is RenewalRequired: the
-            // session has no usable transmit sequence until it resumes. A
-            // session that was unregistered or tombstoned throws instead, and
-            // the caller treats that as a per-session condition.
-            if (queued.Envelope is not { } outbound)
+            if (!TryCommitCurrent(context, () => { })) return;
+            if (answer.RecoveryReservation is { } recovery)
             {
-                Diagnose($"send suppressed: no transmit sequence for {rsid}");
+                await SendRecoveryCarrierAsync(context, recovery)
+                    .ConfigureAwait(false);
                 return;
             }
 
-            if (!context.IsDispatchAllowed(rsid))
+            if (answer.Prefixes is not null)
             {
-                Diagnose($"send suppressed: dispatch not allowed for {rsid}");
-                return;
+                foreach (RbpInvocationAnswer prefix in answer.Prefixes)
+                {
+                    CurrentOperationResult<bool> prefixSent =
+                        await TryRunCurrentOperationAsync(
+                                context,
+                                () => QueueAndSendDataAsync(
+                                    context, rsid, inboundSequence, prefix))
+                            .ConfigureAwait(false);
+                    if (!prefixSent.Started) return;
+                }
             }
 
-            await context.Cycle
-                .SendAsync(CreateDataEnvelope(outbound), context.Token)
+            _ = await TryRunCurrentOperationAsync(
+                    context,
+                    () => QueueAndSendDataAsync(
+                        context, rsid, inboundSequence, answer))
                 .ConfigureAwait(false);
         }
         finally
         {
             context.OutboundGate.Release();
+        }
+    }
+
+    private async Task QueueAndSendDataAsync(
+        ConnectionCycleContext context,
+        string rsid,
+        long inboundSequence,
+        RbpInvocationAnswer answer)
+    {
+        CurrentOperationResult<RbpQueueOutboundResult> queue =
+            await TryRunCurrentOperationAsync(
+                    context,
+                    async () =>
+                    {
+                        IReadOnlyList<RbpSessionAcknowledgement>
+                            acknowledgements = await _journal
+                                .LoadJournaledAcknowledgementsAsync(
+                                    new[] { rsid }, context.Token)
+                                .ConfigureAwait(false);
+                        RbpSessionAcknowledgement acknowledgement =
+                            RequireTerminalAcknowledgement(
+                                acknowledgements, rsid, inboundSequence);
+                        return await _journal.QueueOutboundDataAsync(
+                                rsid,
+                                new RbpOutboundDataDraft(
+                                    answer.Type,
+                                    _identifiers.NewId(),
+                                    answer.Payload,
+                                    Acknowledgement:
+                                        acknowledgement.Sequence),
+                                context.Token)
+                            .ConfigureAwait(false);
+                    })
+                .ConfigureAwait(false);
+        if (!queue.Started) return;
+        RbpQueueOutboundResult queued = queue.Value;
+
+        // The only path that yields no envelope is RenewalRequired: the
+        // session has no usable transmit sequence until it resumes. A
+        // session that was unregistered or tombstoned throws instead, and
+        // the caller treats that as a per-session condition.
+        if (queued.Envelope is not { } outbound)
+        {
+            Diagnose($"send suppressed: no transmit sequence for {rsid}");
+            return;
+        }
+
+        if (answer.CarrierKey is { } carrierKey)
+        {
+            CurrentOperationResult<bool> recorded =
+                await TryRunCurrentOperationAsync(
+                        context,
+                        () => _journal.RecordCarrierTerminalQueuedAsync(
+                            carrierKey,
+                            rsid,
+                            outbound.Sequence,
+                            context.Token))
+                    .ConfigureAwait(false);
+            if (!recorded.Started) return;
+            CurrentOperationResult<bool> producerRecorded =
+                await TryRunCurrentOperationAsync(
+                        context,
+                        () =>
+                        {
+                            _carrierProducer?.RecordTerminalQueued(
+                                carrierKey,
+                                rsid,
+                                outbound.Sequence);
+                            return Task.FromResult(true);
+                        })
+                    .ConfigureAwait(false);
+            if (!producerRecorded.Started) return;
+        }
+
+        if (!context.IsDispatchAllowed(rsid))
+        {
+            Diagnose($"send suppressed: dispatch not allowed for {rsid}");
+            return;
+        }
+
+        RbpEnvelope outboundEnvelope = CreateDataEnvelope(outbound);
+        RbpPreparedSend prepared = context.Cycle.PrepareSend(
+            outboundEnvelope,
+            context.Token);
+        string? outerDigest = answer.OmittedOriginReplay is not null
+            ? ExactWireEnvelopeDigest(outboundEnvelope)
+            : null;
+
+        bool markerBound = answer.OmittedOriginReplay is null;
+        bool published = false;
+        bool committed = TryCommitCurrent(context, () =>
+        {
+            if (!context.IsDispatchAllowed(rsid)) return;
+            if (answer.OmittedOriginReplay is { } omitted)
+                markerBound = _omittedOriginObservation.TryBindReplay(
+                    omitted, context.Generation, outbound.Sequence,
+                    outerDigest!);
+            if (!markerBound) return;
+            published = context.TryPublishPreparedInvocationSend(
+                prepared, outbound.Sequence, outerDigest);
+            if (!published && answer.OmittedOriginReplay is { } rollback)
+                markerBound = _omittedOriginObservation.AbortBoundReplay(
+                    rollback, context.Generation, outbound.Sequence,
+                    outerDigest!);
+        });
+        if (!committed || !markerBound || !published)
+        {
+            _ = prepared.TryCancelBeforeStart();
+            if (!markerBound)
+                throw new RbpCoordinatorException(
+                    RbpCoordinatorErrorCode.UnexpectedControl,
+                    "The C39 fixture replay marker could not bind its terminal.");
+            return;
+        }
+        Diagnose("prepared invocation send committed");
+
+        if (context.Token.IsCancellationRequested ||
+            !context.IsDispatchAllowed(rsid))
+        {
+            if (prepared.TryCancelBeforeStart())
+            {
+                bool abortValid = answer.OmittedOriginReplay is null;
+                bool abortCommitted = TryCommitCurrent(context, () =>
+                {
+                    if (answer.OmittedOriginReplay is { } localAbort)
+                        abortValid = _omittedOriginObservation.AbortBoundReplay(
+                            localAbort, context.Generation, outbound.Sequence,
+                            outerDigest!);
+                    _ = context.CompletePreparedInvocationSend(prepared);
+                });
+                if (abortCommitted && !abortValid)
+                    throw new RbpCoordinatorException(
+                        RbpCoordinatorErrorCode.NonDrainingConnectionAuthority,
+                        "The exact current no-start replay marker could not abort.");
+            }
+            context.Token.ThrowIfCancellationRequested();
+            return;
+        }
+
+        if (!prepared.TryStart(out Task? send) || send is null)
+        {
+            if (prepared.IsCancelledBeforeStart)
+                context.Token.ThrowIfCancellationRequested();
+            throw new RbpCoordinatorException(
+                RbpCoordinatorErrorCode.NonDrainingConnectionAuthority,
+                "The prepared outbound send lost exact start ownership.");
+        }
+        bool exposureValid = true;
+        bool exposureCommitted = true;
+        if (answer.OmittedOriginReplay is { } exposed)
+        {
+            exposureValid = false;
+            exposureCommitted = TryCommitCurrent(context, () =>
+                exposureValid = _omittedOriginObservation.TryExposeReplay(
+                    exposed, context.Generation, outbound.Sequence,
+                    outerDigest!));
+        }
+        if (!exposureCommitted || !exposureValid)
+        {
+            throw new RbpCoordinatorException(
+                RbpCoordinatorErrorCode.NonDrainingConnectionAuthority,
+                "The started omitted-origin send lost its exact replay marker.");
+        }
+        try
+        {
+            await send.ConfigureAwait(false);
+        }
+        finally
+        {
+            _ = TryCommitCurrent(context, () =>
+                context.CompletePreparedInvocationSend(prepared));
+        }
+    }
+
+    internal static RbpSessionAcknowledgement
+        RequireTerminalAcknowledgement(
+        IReadOnlyList<RbpSessionAcknowledgement>? acknowledgements,
+        string rsid,
+        long inboundSequence)
+    {
+        if (acknowledgements is null || acknowledgements.Count != 1 ||
+            !string.Equals(
+                acknowledgements[0].Rsid, rsid, StringComparison.Ordinal) ||
+            acknowledgements[0].Sequence < inboundSequence ||
+            acknowledgements[0].Sequence < 0 ||
+            acknowledgements[0].Sequence >
+                RbpProtocolLimits.MaximumSafeInteger)
+        {
+            throw new RbpCoordinatorException(
+                RbpCoordinatorErrorCode.SequenceFault,
+                "The terminal answer has no single exact durable journal " +
+                "acknowledgement frontier.");
+        }
+
+        return acknowledgements[0];
+    }
+
+    private async Task<bool> SendCurrentPreparedAsync(
+        ConnectionCycleContext context,
+        RbpEnvelope envelope,
+        string rsid)
+    {
+        RbpPreparedSend prepared = context.Cycle.PrepareSend(
+            envelope, context.Token);
+        bool published = false;
+        if (!TryCommitCurrent(context, () =>
+            {
+                if (context.IsDispatchAllowed(rsid))
+                    published = context.TryPublishPreparedInvocationSend(
+                        prepared, envelope.Sequence ?? 0, outerDigest: null);
+            }) || !published)
+        {
+            _ = prepared.TryCancelBeforeStart();
+            return false;
+        }
+        if (context.Token.IsCancellationRequested)
+        {
+            _ = prepared.TryCancelBeforeStart();
+            context.Token.ThrowIfCancellationRequested();
+        }
+        if (!prepared.TryStart(out Task? send) || send is null)
+            throw NonDrainingConnectionAuthority();
+        try
+        {
+            await send.ConfigureAwait(false);
+            return true;
+        }
+        finally
+        {
+            _ = TryCommitCurrent(context, () =>
+                context.CompletePreparedInvocationSend(prepared));
+        }
+    }
+
+    private static string ExactWireEnvelopeDigest(RbpEnvelope envelope)
+    {
+        byte[] bytes = RbpEnvelopeCodec.Encode(envelope);
+        try
+        {
+            return "sha256:" + Convert.ToHexString(
+                System.Security.Cryptography.SHA256.HashData(bytes))
+                .ToLowerInvariant();
+        }
+        finally
+        {
+            System.Security.Cryptography.CryptographicOperations.ZeroMemory(
+                bytes);
         }
     }
 }

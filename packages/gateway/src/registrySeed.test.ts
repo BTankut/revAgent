@@ -41,10 +41,10 @@ function reseal(seed: Record<string, unknown>): Record<string, unknown> {
 }
 
 describe("registry seed", () => {
-  it("carries the complete 35 runtime + 5 docs surface", () => {
+  it("carries the complete 35 runtime + C39 recovery + 5 docs surface", () => {
     const seed = verifyRegistrySeed(loadSeed());
-    expect(seed.tools).toHaveLength(40);
-    expect(seed.tools.filter((tool) => tool.module === "runtime")).toHaveLength(35);
+    expect(seed.tools).toHaveLength(41);
+    expect(seed.tools.filter((tool) => tool.module === "runtime")).toHaveLength(36);
     expect(seed.tools.filter((tool) => tool.module === "docs")).toHaveLength(5);
   });
 
@@ -54,7 +54,7 @@ describe("registry seed", () => {
     // accept any handler change.
     const seed = verifyRegistrySeed(loadSeed());
     const digests = new Set(seed.tools.map((tool) => tool.handlerDigest));
-    expect(digests.size).toBe(40);
+    expect(digests.size).toBe(41);
   });
 
   it("keeps the collected surface byte-stable", () => {

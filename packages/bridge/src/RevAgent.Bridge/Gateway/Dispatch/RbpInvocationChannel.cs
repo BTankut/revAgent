@@ -26,6 +26,9 @@ internal enum RbpAddinOutcomeKind
     /// <c>journal_indeterminate</c>.
     /// </summary>
     PossiblyDispatched,
+
+    /// <summary>A correlated application failure; never evidence of no effect.</summary>
+    ApplicationError,
 }
 
 /// <summary>
@@ -48,7 +51,107 @@ internal sealed record RbpAddinOutcome(
     string? Message = null,
     AddinErrorDetail? AddinError = null,
     IRbpDispatchLease? Lease = null,
-    bool? Retryable = null);
+    bool? Retryable = null,
+    // Internal-only signal for a resolver refusal before an add-in byte can
+    // be written.  It lets the document-context watcher distinguish route
+    // authority loss from a cache that is merely warming/not ready.
+    bool RouteFailure = false,
+    // This is an internal, already post-response-verified attestation from
+    // AddinTcpTransport. It is never serialized or exposed to a caller.
+    AddinProcessAttestation? ProcessAttestation = null,
+    string? RouteLocalSessionKey = null,
+    // Closed Bridge-owned incarnation evidence captured by the router's
+    // durable-decision lease. It is internal journal input, never a wire or
+    // caller-supplied authority.
+    RbpRouteAuthoritySnapshot? RouteAuthority = null)
+{
+    internal RbpAddinOutcome ConservativeClassification() =>
+        Kind == RbpAddinOutcomeKind.KnownNotDispatched &&
+        (RequestBytes != 0 || ResponseBytes != 0 || RawResponsePayload.Length != 0)
+            ? this with { Kind = RbpAddinOutcomeKind.PossiblyDispatched }
+            : this;
+}
+
+/// <summary>
+/// Exact Bridge-owned route facts for one current RBP-to-add-in binding.
+/// </summary>
+/// <remarks>
+/// <para>
+/// Handle generation plus the registration-signature and attestation digests
+/// identify the exact router slot incarnation without exposing registration or
+/// process material outside the local Bridge journal.
+/// </para>
+/// <para>
+/// Gateway-authenticated principal, seat, actor and effective MCP-session
+/// authority are intentionally absent: RBP/1 does not carry those facts to the
+/// Bridge, so their current-binding negatives remain Gateway conformance
+/// obligations rather than invented Bridge evidence.
+/// </para>
+/// </remarks>
+internal sealed record RbpRouteAuthoritySnapshot(
+    string LocalSessionKey,
+    long HandleGeneration,
+    string RegistrationSignatureDigest,
+    string ProcessAttestationDigest);
+
+/// <summary>
+/// Shared by single/batch owners using the same channel. A failed persistence
+/// decision retains its routed lease across connection epochs and route rebinds.
+/// There is deliberately no reset, timer, or disposal-based release API.
+/// </summary>
+internal sealed class RbpDispatchDecisionQuarantine
+{
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<
+        IRbpInvocationChannel, RbpDispatchDecisionQuarantine> Owners = new();
+    private sealed class Entry
+    {
+        internal IRbpDispatchLease? Lease;
+        internal bool HasOutcome;
+    }
+    private readonly Dictionary<string, Entry> _leases = new(StringComparer.Ordinal);
+    internal static RbpDispatchDecisionQuarantine For(IRbpInvocationChannel channel) =>
+        Owners.GetValue(channel, _ => new());
+
+    internal bool IsBlocked(string rsid)
+    {
+        lock (_leases) return _leases.ContainsKey(rsid) || _leases.Count >= 1024;
+    }
+
+    internal bool IsQuarantined(string rsid)
+    {
+        lock (_leases) return _leases.TryGetValue(rsid, out Entry? entry) && entry.HasOutcome;
+    }
+
+    internal bool TryReserve(string rsid)
+    {
+        lock (_leases)
+        {
+            return _leases.Count < 1024 && _leases.TryAdd(rsid, new Entry());
+        }
+    }
+
+    internal void Own(string rsid, IRbpDispatchLease? lease)
+    {
+        lock (_leases)
+        {
+            if (!_leases.TryGetValue(rsid, out Entry? entry) || entry.HasOutcome)
+                throw new InvalidOperationException("A session already owns an unresolved dispatch decision.");
+            entry.Lease = lease;
+            entry.HasOutcome = true;
+        }
+    }
+
+    internal void ReleaseProven(string rsid, IRbpDispatchLease? lease)
+    {
+        lock (_leases)
+        {
+            if (!_leases.TryGetValue(rsid, out Entry? owned) || !owned.HasOutcome || !ReferenceEquals(owned.Lease, lease))
+                throw new InvalidOperationException("The durable decision does not own this dispatch lease.");
+            lease?.ReleaseAfterDurableDecision();
+            _leases.Remove(rsid);
+        }
+    }
+}
 
 /// <summary>
 /// Ownership of an add-in session for the duration of one invocation.
@@ -104,12 +207,17 @@ internal interface IRbpInFlightGate
 /// <summary>
 /// Holds the Section 10.1 window for one session until disposed.
 /// </summary>
-internal sealed class GateClaim(IRbpInFlightGate gate, string rsid)
+internal sealed class GateClaim(
+    IRbpInFlightGate gate,
+    string rsid,
+    RbpInvocationAuthoritySnapshot? authority = null)
     : IRbpInvocationClaim
 {
     private int _released;
 
     public string Rsid { get; } = rsid;
+
+    public RbpInvocationAuthoritySnapshot? Authority { get; } = authority;
 
     public void Dispose()
     {

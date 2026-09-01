@@ -2,6 +2,14 @@ namespace RevAgent.Bridge.Tests.Worker;
 
 public sealed class WorkerDoctorReEnrollCommandLineTests
 {
+    [Fact]
+    public void DiagnosticStateCannotBeCombinedWithReEnrollment()
+    {
+        Assert.Throws<WorkerCommandLineException>(() => WorkerCommandLine.Parse(
+            ["__doctor", "--config", ConfigPath, "--re-enroll", "true",
+             "--diagnostic-state-root", Path.Combine(Path.GetTempPath(), "doctor-state")]));
+    }
+
     private static readonly string ConfigPath =
         Path.Combine(Path.GetTempPath(), "bridge-config.json");
 

@@ -68,6 +68,32 @@ function Import-UpdaterFunction {
     Invoke-Expression $scriptScopedDefinition
 }
 
+function Get-ExperimentalBetterSqlite3DependencyClosure {
+    param([string]$RuntimePackageRoot)
+
+    $lockPath = Join-Path $RuntimePackageRoot "package-lock.json"
+    if (-not (Test-Path -LiteralPath $lockPath -PathType Leaf)) {
+        throw "Experimental runtime lock is missing: $lockPath"
+    }
+
+    $lock = Get-Content -Raw -LiteralPath $lockPath | ConvertFrom-Json -AsHashtable
+    $packages = $lock["packages"]
+    $runtime = $packages[""]
+    $betterSqlite3 = $packages["node_modules/better-sqlite3"]
+    Assert-Equal ([string]$runtime["dependencies"]["better-sqlite3"]) "13.0.3" "Experimental runtime must pin better-sqlite3 13.0.3."
+    Assert-Equal ([string]$betterSqlite3["version"]) "13.0.3" "Experimental runtime lock must resolve better-sqlite3 13.0.3."
+
+    $directDependencies = @($betterSqlite3["dependencies"].Keys | Sort-Object)
+    Assert-Equal ($directDependencies -join ",") "node-addon-api" "better-sqlite3 13.0.3 direct runtime closure must contain only node-addon-api."
+    foreach ($dependencyName in $directDependencies) {
+        if ($null -eq $packages["node_modules/$dependencyName"]) {
+            throw "Experimental runtime lock is missing direct better-sqlite3 dependency: $dependencyName"
+        }
+    }
+
+    return @("better-sqlite3") + $directDependencies
+}
+
 $updaterPath = Join-Path $RepoRoot "installer\nas\update-from-nas.ps1"
 $tokens = $null
 $parseErrors = $null
@@ -115,6 +141,7 @@ $runtimeNodeModules = Join-Path $RuntimePackageRoot "node_modules"
 if (-not (Test-Path -LiteralPath (Join-Path $runtimeNodeModules "better-sqlite3") -PathType Container)) {
     throw "Runtime test package must have better-sqlite3 installed before updater dependency tests: $RuntimePackageRoot"
 }
+$nativeDependencyClosure = @(Get-ExperimentalBetterSqlite3DependencyClosure -RuntimePackageRoot $RuntimePackageRoot)
 
 $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("revagent-updater-npm-test-" + [Guid]::NewGuid().ToString("N"))
 $previousNpmIgnoreScripts = [Environment]::GetEnvironmentVariable("npm_config_ignore_scripts", "Process")
@@ -247,18 +274,22 @@ try {
     Assert-True (-not (Test-NpmDependenciesCurrent -WorkingDirectory $plainPackage -Fingerprint $fingerprint -NodePath $nodePath -Label "Plain fixture")) "Mismatched ABI marker must fail closed."
 
     Write-Host "Test better-sqlite3 native load and cache rejection" -ForegroundColor Cyan
+    $betterSqlite3Root = Join-Path $runtimeNodeModules "better-sqlite3"
+    $selectedPrebuild = Join-Path $betterSqlite3Root (Join-Path "prebuilds" ("{0}-{1}.node" -f $identity.platform, $identity.arch))
+    Assert-True (Test-Path -LiteralPath $selectedPrebuild -PathType Leaf) "better-sqlite3 must ship the official selected prebuild for the current platform/architecture: $selectedPrebuild"
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $betterSqlite3Root "build") -PathType Container)) "Installed better-sqlite3 must not contain an unexpected node-gyp build path when the selected shipped prebuild is used."
     Assert-True (Test-NpmNativeDependenciesLoad -WorkingDirectory $RuntimePackageRoot -NodePath $nodePath -Label "Runtime test package") "Installed better-sqlite3 must open an in-memory database under the selected Node."
     $codexNodePath = Join-Path $env:LOCALAPPDATA "OpenAI\Codex\bin\node.exe"
     if (Test-Path -LiteralPath $codexNodePath -PathType Leaf) {
         $codexIdentity = Get-NodeRuntimeIdentity -NodePath $codexNodePath
         if ($null -ne $codexIdentity -and $codexIdentity.nodeModuleVersion -ne $identity.nodeModuleVersion) {
-            Assert-True (-not (Test-NpmNativeDependenciesLoad -WorkingDirectory $RuntimePackageRoot -NodePath $codexNodePath -Label "Wrong ABI fixture" -Quiet)) "A real alternate Node ABI must reject the installed better-sqlite3 binding."
+            Assert-True (Test-NpmNativeDependenciesLoad -WorkingDirectory $RuntimePackageRoot -NodePath $codexNodePath -Label "N-API alternate runtime" -Quiet) "The shipped N-API prebuild must remain loadable under a compatible alternate Node runtime."
         }
     }
 
     $nativeFixture = Join-Path $tempRoot "native-fixture"
     New-Item -ItemType Directory -Path $nativeFixture -Force | Out-Null
-    '{"name":"native-fixture","version":"1.0.0","dependencies":{"better-sqlite3":"12.9.0"}}' | Set-Content -LiteralPath (Join-Path $nativeFixture "package.json") -Encoding UTF8
+    '{"name":"native-fixture","version":"1.0.0","dependencies":{"better-sqlite3":"13.0.3"}}' | Set-Content -LiteralPath (Join-Path $nativeFixture "package.json") -Encoding UTF8
     '{"name":"native-fixture","lockfileVersion":3}' | Set-Content -LiteralPath (Join-Path $nativeFixture "package-lock.json") -Encoding UTF8
     $nativeFingerprint = Get-NpmDependencyFingerprint -WorkingDirectory $nativeFixture -RuntimeIdentity $identity
     $nativeCachePath = Get-NpmDependencyCacheNodeModulesPath -CacheRoot $cacheRoot -WorkingDirectory $nativeFixture -Fingerprint $nativeFingerprint
@@ -268,7 +299,7 @@ try {
     Assert-True (-not (Test-Path -LiteralPath (Split-Path -Parent $nativeCachePath))) "Invalid native cache entry must be removed before rebuild."
 
     New-Item -ItemType Directory -Path $nativeCachePath -Force | Out-Null
-    foreach ($dependencyName in @("better-sqlite3", "bindings", "file-uri-to-path")) {
+    foreach ($dependencyName in $nativeDependencyClosure) {
         $dependencySource = Join-Path $runtimeNodeModules $dependencyName
         if (-not (Test-Path -LiteralPath $dependencySource -PathType Container)) {
             throw "Runtime dependency fixture is missing: $dependencySource"
@@ -277,6 +308,8 @@ try {
     }
     Assert-True (Restore-NpmDependenciesFromCache -WorkingDirectory $nativeFixture -Fingerprint $nativeFingerprint -CacheRoot $cacheRoot -NodePath $nodePath -Label "Valid cache") "Validated native cache must restore successfully."
     Assert-True (Test-NpmDependenciesCurrent -WorkingDirectory $nativeFixture -Fingerprint $nativeFingerprint -NodePath $nodePath -Label "Valid cache") "Restored native cache marker and binding must be current."
+    $alternateNativeFingerprint = Get-NpmDependencyFingerprint -WorkingDirectory $nativeFixture -RuntimeIdentity $alternateAbi
+    Assert-True (-not (Test-NpmDependenciesCurrent -WorkingDirectory $nativeFixture -Fingerprint $alternateNativeFingerprint -NodePath $nodePath -Label "Wrong ABI cache fixture")) "A cache marker from a different Node ABI must reject the otherwise loadable N-API dependency tree."
     Remove-NpmNodeModulesPath -WorkingDirectory $nativeFixture
 
     Write-Host "Test cache restore rollback after marker failure" -ForegroundColor Cyan
@@ -335,12 +368,12 @@ try {
     New-Item -ItemType Directory -Path (Join-Path $saveCachePath "better-sqlite3") -Force | Out-Null
     $nativeFixtureNodeModules = Join-Path $nativeFixture "node_modules"
     New-Item -ItemType Directory -Path $nativeFixtureNodeModules -Force | Out-Null
-    foreach ($dependencyName in @("better-sqlite3", "bindings", "file-uri-to-path")) {
+    foreach ($dependencyName in $nativeDependencyClosure) {
         Copy-Item -LiteralPath (Join-Path $runtimeNodeModules $dependencyName) -Destination $nativeFixtureNodeModules -Recurse -Force
     }
     Save-NpmDependenciesToCache -WorkingDirectory $nativeFixture -Fingerprint $saveFingerprint -CacheRoot $cacheRoot -NodePath $nodePath -Label "Save fixture"
     Assert-True (Test-NpmNativeDependenciesLoad -WorkingDirectory $nativeFixture -NodePath $nodePath -NodeModulesPath $saveCachePath -Label "Saved cache") "Stale physical cache must be replaced with a loadable native dependency tree."
-    Assert-True (Test-Path -LiteralPath (Join-Path $saveCachePath "better-sqlite3\build\Release\better_sqlite3.node") -PathType Leaf) "Saved cache must contain the validated better-sqlite3 native binding."
+    Assert-True (Test-Path -LiteralPath (Join-Path $saveCachePath (Join-Path "better-sqlite3\prebuilds" ("{0}-{1}.node" -f $identity.platform, $identity.arch))) -PathType Leaf) "Saved cache must retain the validated selected better-sqlite3 prebuild."
 
     Write-Host "Test incomplete cache entry replacement" -ForegroundColor Cyan
     foreach ($incompleteKind in @("missing", "file")) {

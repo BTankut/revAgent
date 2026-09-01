@@ -12,6 +12,47 @@ namespace RevAgent.Bridge.Tests.Gateway.Connection;
 public sealed partial class RbpConnectionCoordinatorTests
 {
     [Fact]
+    public async Task ActiveRevocation4403InvalidatesCredentialAndNeverReconnects()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        var clock = new ManualCoordinatorClock();
+        await using RbpJournalStore store = OpenStore(directory, clock);
+        var cycle = new RevokedConnectionCycle();
+        var invalidator = new RecordingCredentialClaimInvalidator();
+        var coordinator = new RbpConnectionCoordinator(
+            new FixedConnectionCycleFactory(cycle),
+            store,
+            new MutableSessionCatalog(),
+            new RbpConnectionCoordinatorOptions(
+                new Uri("wss://gateway.revagent.app/bridge/v1"),
+                new RbpHelloProfile(
+                    "0.1.0",
+                    "WS01",
+                    "Windows 11",
+                    new[] { "2026.07.26.0" }),
+                CredentialClaimInvalidator: invalidator),
+            new StubInvocationDispatcher(),
+            inboundJournal: null,
+            clock,
+            new FixedRandomSource(0));
+        using var stop = new CancellationTokenSource();
+
+        Task run = coordinator.RunAsync(stop.Token);
+        await EventuallyAsync(
+            () => coordinator.GetSnapshot().Lifecycle.Phase ==
+                  RbpConnectionPhase.RetryPaused);
+        Assert.Equal(1, invalidator.InvalidationCount);
+        Assert.Equal(
+            RbpRetryPauseReason.Auth,
+            coordinator.GetSnapshot().Lifecycle.RetryPauseReason);
+        await Task.Delay(50);
+        Assert.Equal(1, coordinator.GetSnapshot().ConnectionGeneration);
+
+        stop.Cancel();
+        await run.WaitAsync(TimeSpan.FromSeconds(2));
+    }
+
+    [Fact]
     public async Task OldConnectionGenerationCannotConfirmTombstone()
     {
         using var directory = new RbpJournalTestDirectory();
@@ -64,8 +105,18 @@ public sealed partial class RbpConnectionCoordinatorTests
 
         Task run = coordinator.RunAsync(stop.Token);
         await EventuallyAsync(() => factory.OpenCount == 1);
+        await EventuallyAsync(
+            () => coordinator.GetSnapshot().HasActiveConnection &&
+                  clock.HasOutstandingDelayDueIn(TimeSpan.FromSeconds(15)));
         clock.Advance(TimeSpan.FromSeconds(65));
 
+        await EventuallyAsync(() => first.CloseCount > 0);
+        if (factory.OpenCount < 2)
+        {
+            await EventuallyAsync(() => clock.HasOutstandingDelayDueIn(
+                TimeSpan.FromSeconds(1)));
+            clock.Advance(TimeSpan.FromSeconds(1));
+        }
         await EventuallyAsync(() => factory.OpenCount == 2);
         Assert.True(first.CloseCount > 0);
         Assert.DoesNotContain(
@@ -73,6 +124,7 @@ public sealed partial class RbpConnectionCoordinatorTests
             item => item.Type == "heartbeat");
         Assert.Equal(2, coordinator.GetSnapshot().ConnectionGeneration);
 
+        await EventuallyAsync(() => coordinator.GetSnapshot().HasActiveConnection);
         stop.Cancel();
         await run.WaitAsync(TimeSpan.FromSeconds(2));
     }
@@ -170,12 +222,100 @@ public sealed partial class RbpConnectionCoordinatorTests
             () => coordinator.GetSnapshot().HasActiveConnection);
         var stopwatch = Stopwatch.StartNew();
         stop.Cancel();
-        await run.WaitAsync(TimeSpan.FromSeconds(1));
+        RbpCoordinatorException failure = await Assert.ThrowsAsync<
+            RbpCoordinatorException>(() =>
+            run.WaitAsync(TimeSpan.FromSeconds(1)));
 
         Assert.True(stopwatch.Elapsed < TimeSpan.FromSeconds(1));
         Assert.Equal(
+            RbpCoordinatorErrorCode.NonDrainingConnectionAuthority,
+            failure.ErrorCode);
+        Assert.Equal(1, cycle.CloseCount);
+        Assert.Equal(0, cycle.DisposeCount);
+        Assert.Equal(
             0,
             coordinator.GetSnapshot().OwnedBackgroundTaskCount);
+    }
+
+    private sealed class RecordingCredentialClaimInvalidator :
+        IRbpCredentialClaimInvalidator
+    {
+        private int _invalidationCount;
+
+        internal int InvalidationCount =>
+            Volatile.Read(ref _invalidationCount);
+
+        public void InvalidateActiveCredential() =>
+            Interlocked.Increment(ref _invalidationCount);
+    }
+
+    private sealed class FixedConnectionCycleFactory :
+        IRbpConnectionCycleFactory
+    {
+        private readonly IRbpConnectionCycle _cycle;
+
+        public RbpConnectionBindingKind BindingKind =>
+            RbpConnectionBindingKind.Wss;
+
+        internal FixedConnectionCycleFactory(IRbpConnectionCycle cycle)
+        {
+            _cycle = cycle;
+        }
+
+        public Task<IRbpConnectionCycle> OpenAsync(
+            Uri endpoint,
+            RbpHelloProfile profile,
+            CancellationToken cancellationToken = default)
+        {
+            _ = endpoint;
+            _ = profile;
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult(_cycle);
+        }
+    }
+
+    private sealed class RevokedConnectionCycle : IRbpConnectionCycle
+    {
+        public RbpHelloAckPayload Acknowledgement { get; } =
+            new(
+                1,
+                "conn-revoked",
+                Array.Empty<string>(),
+                15_000,
+                new RbpHelloLimits(
+                    4 * 1024 * 1024,
+                    32 * 1024 * 1024,
+                    1024 * 1024),
+                new RbpHelloManifest("0.1.0", "/bridge/update/manifest"));
+
+        public Task SendAsync(
+            RbpEnvelope envelope,
+            CancellationToken cancellationToken = default)
+        {
+            _ = envelope;
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.CompletedTask;
+        }
+
+        public Task<RbpEnvelope> ReceiveAsync(
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromException<RbpEnvelope>(
+                new RbpGatewayTransportException(
+                    RbpGatewayFailureKind.Authorization,
+                    "device credential revoked",
+                    closeCode: 4403));
+        }
+
+        public Task CloseAsync(
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.CompletedTask;
+        }
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 
 }

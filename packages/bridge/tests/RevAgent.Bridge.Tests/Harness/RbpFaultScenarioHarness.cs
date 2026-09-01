@@ -360,18 +360,38 @@ internal sealed class RbpFaultScenarioHarness : IAsyncDisposable
         }
 
         _disposed = true;
-        Addin.ReleaseGate();
-        _stop.Cancel();
+        RbpCoordinatorTeardownResult? teardownResult = null;
         try
         {
+            Task<RbpCoordinatorTeardownResult> teardown;
+            try
+            {
+                teardown = Coordinator.RequestStopTeardown();
+            }
+            finally
+            {
+                Addin.ReleaseGate();
+            }
+            _stop.Cancel();
+            teardownResult = await teardown.WaitAsync(
+                    SocketIntegrationCollection.CoordinationTimeout)
+                .ConfigureAwait(false);
             await _run.WaitAsync(SocketIntegrationCollection.CoordinationTimeout)
                 .ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (_stop.IsCancellationRequested)
         {
         }
+        catch (RbpCoordinatorException exception) when (
+            teardownResult?.Disposition ==
+                RbpCoordinatorTeardownDisposition.EmergencyMustExit &&
+            exception.ErrorCode ==
+                RbpCoordinatorErrorCode.NonDrainingConnectionAuthority)
+        {
+        }
         finally
         {
+            _stop.Cancel();
             _stop.Dispose();
             await _journal.DisposeAsync().ConfigureAwait(false);
             Control.Dispose();

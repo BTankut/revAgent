@@ -9,6 +9,7 @@ import {
   splitGatewayConfirmationArguments,
 } from "./confirmation.js";
 import type { GatewayToolRecord } from "./registry.js";
+import { MUTATION_PROBE_CONFORMANCE_TOOL_RECORDS } from "./productionConformanceTools.js";
 
 function record(
   executorMethod: string,
@@ -37,6 +38,27 @@ function record(
 }
 
 describe("Gateway confirmation client contract", () => {
+  it("keeps mutation-probe confirm previews read-only with one exact empty commit", () => {
+    for (const tool of [
+      MUTATION_PROBE_CONFORMANCE_TOOL_RECORDS[0]!,
+      MUTATION_PROBE_CONFORMANCE_TOOL_RECORDS[2]!,
+    ]) {
+      const projection = buildConfirmationPreviewProjection(tool, {});
+      expect(projection).toMatchObject({
+        ok: true,
+        previewExecutorMethod: "get_ui_state",
+        previewArgs: {},
+        commitArgs: {},
+      });
+      if (!projection.ok) throw new Error("expected mutation-probe confirmation projection");
+      expect(buildConfirmationCommitProjection(tool, projection.commitArgs)).toEqual({
+        ok: true,
+        commitArgs: {},
+        commitArgsDigest: projection.commitArgsDigest,
+      });
+    }
+  });
+
   it("derives exact dry-run and commit projections for guarded write tools", () => {
     const tool = record("delete_review_view", {
       viewName: z.string(),

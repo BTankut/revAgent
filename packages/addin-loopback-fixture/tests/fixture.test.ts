@@ -208,6 +208,7 @@ describe("add-in loopback fixture listener", () => {
       documentContextContractVersion: 1,
       cacheState: "ready",
       activeDocumentId: "fixture-document-1",
+      cache_incarnation_digest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u),
     });
     expect(fixture.getExecutionCount(id)).toBe(1);
   });
@@ -252,6 +253,52 @@ describe("add-in loopback fixture listener", () => {
     expect(responses.map((entry) => entry.id)).toEqual([firstId, secondId]);
     expect(fixture.getExecutionCount(firstId)).toBe(1);
     expect(fixture.getExecutionCount(secondId)).toBe(1);
+  });
+
+  it("owns one mutation-probe cell and reports actual routed state", async () => {
+    const { fixture, address } = await started();
+    const socket = await connected(address);
+    const originId = uuid7(40);
+    const verifyId = uuid7(41);
+    const nextId = uuid7(42);
+
+    const origin = await writeAndRead(
+      socket,
+      request(originId, "fixture_commit_then_throw", {}),
+    );
+    expect(origin.result).toMatchObject({
+      state: "failed",
+      error: { code: "command_failure" },
+    });
+
+    const read = await writeAndRead(
+      socket,
+      request(verifyId, "fixture_read_mutation_probe", {}),
+    );
+    expect(read.result).toMatchObject({
+      schema: "revagent.fixture-mutation-probe/v1",
+      present: true,
+      complete: true,
+      originInvocationId: originId,
+      value: 1,
+      originWriteCount: 1,
+      nextWriteCount: 0,
+    });
+
+    const next = await writeAndRead(
+      socket,
+      request(nextId, "fixture_complete_mutation_probe", {}),
+    );
+    expect(next.result).toMatchObject({ value: 2, originWriteCount: 1, nextWriteCount: 1 });
+    expect(fixture.getMethodExecutionCount("fixture_commit_then_throw")).toBe(1);
+    expect(fixture.getMethodExecutionCount("fixture_read_mutation_probe")).toBe(1);
+    expect(fixture.getMethodExecutionCount("fixture_complete_mutation_probe")).toBe(1);
+    const rawRead = fixture.snapshotEvidence().observations.find((observation) =>
+      observation.method === "fixture_read_mutation_probe" && observation.phase === "response_sent");
+    expect(rawRead).toMatchObject({
+      executionOrdinal: expect.any(Number),
+      detail: expect.stringMatching(/^mutation_probe_raw_response:sha256:[0-9a-f]{64}$/u),
+    });
   });
 
   it.each([
@@ -376,11 +423,12 @@ describe("add-in loopback fixture listener", () => {
   });
 
   it("returns deterministic multi-file artifact observations", async () => {
-    const { address } = await started();
+    const { fixture, address } = await started();
     const socket = await connected(address);
+    const requestId = uuid7(8);
     const response = await writeAndRead(
       socket,
-      request(uuid7(8), "fixture_multi_file_output"),
+      request(requestId, "fixture_multi_file_output"),
     );
     const files = ((response.result as JsonObject).files ?? []) as unknown[];
 
@@ -398,6 +446,9 @@ describe("add-in loopback fixture listener", () => {
         `sha256:${createHash("sha256").update(bytes).digest("hex")}`,
       );
     }
+    expect(fixture.snapshotEvidence().c39OriginResponses).toEqual([
+      { requestId, responseDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u) },
+    ]);
   });
 
   it("honors bounded deterministic multi-file scenario sizing and rejects an over-budget scenario", async () => {
@@ -502,6 +553,10 @@ describe("add-in loopback fixture listener", () => {
       pollRequestCount: 2,
       externalEventRaiseCount: 0,
     });
+    expect((before.result as JsonObject).cache_incarnation_digest)
+      .not.toBe((after.result as JsonObject).cache_incarnation_digest);
+    expect((after.result as JsonObject).cache_incarnation_digest)
+      .toBe(evidence.cacheIncarnationDigest);
     expect(evidence.timeline.map((entry) => entry.kind)).toEqual([
       "cache_initialized",
       "cache_read",
@@ -512,6 +567,59 @@ describe("add-in loopback fixture listener", () => {
       expect(evidence.timeline[index]!.atMonotonicMs)
         .toBeGreaterThan(evidence.timeline[index - 1]!.atMonotonicMs);
     }
+  });
+
+  it("provides a value-free controlled document-context acknowledgement and probe", () => {
+    const fixture = new AddinLoopbackFixture();
+    const acknowledgement = fixture.applyDocumentContextControlEvent({
+      capturedAtUtc: "2026-07-22T10:15:00.000Z",
+      cacheState: "ready",
+      unavailableReason: null,
+      documents: [{
+        documentId: "control-only-document",
+        title: "Control-only Fixture Model",
+        pathDigest: null,
+        isWorkshared: false,
+        isActive: true,
+      }],
+      activeDocumentId: "control-only-document",
+      activeView: {
+        documentId: "control-only-document",
+        id: "2003",
+        name: "Control-only Fixture View",
+        type: "ThreeD",
+        level: null,
+      },
+      disciplineHint: "coordination",
+    });
+    const evidence = fixture.snapshotEvidence().documentContextEvidence;
+
+    expect(acknowledgement).toMatchObject({
+      action: "apply_document_context",
+      revision: 2,
+      cacheIncarnationDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u),
+      cachedContextHash: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u),
+      activeDocumentIdentityHash: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u),
+      acknowledgementHash: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u),
+    });
+    expect(evidence).toMatchObject({
+      currentRevision: acknowledgement.revision,
+      cachedContextHash: acknowledgement.cachedContextHash,
+      activeDocumentIdentityHash: acknowledgement.activeDocumentIdentityHash,
+      lastControlAcknowledgementHash: acknowledgement.acknowledgementHash,
+      cacheIncarnationDigest: acknowledgement.cacheIncarnationDigest,
+    });
+    expect(JSON.stringify(evidence)).not.toContain("control-only-document");
+    expect(JSON.stringify(evidence)).not.toContain("Control-only Fixture Model");
+  });
+
+  it("uses a new opaque cache incarnation for each fixture process lifetime", () => {
+    const first = new AddinLoopbackFixture().snapshotEvidence().documentContextEvidence;
+    const second = new AddinLoopbackFixture().snapshotEvidence().documentContextEvidence;
+    expect(first.cacheIncarnationDigest).toMatch(/^sha256:[0-9a-f]{64}$/u);
+    expect(second.cacheIncarnationDigest).toMatch(/^sha256:[0-9a-f]{64}$/u);
+    expect(first.cacheIncarnationDigest).not.toBe(second.cacheIncarnationDigest);
+    expect(JSON.stringify(first)).not.toMatch(/revagent:fixture-cache-incarnation|nonce/iu);
   });
 
   it("bounds document-context evidence while retaining monotonic totals", () => {
@@ -647,7 +755,7 @@ describe("add-in loopback fixture listener", () => {
     expect(fixture.observations.find(
       (entry) => entry.requestId === plusOneId && entry.phase === "response_overflow",
     )?.payloadBytes).toBe(32 * 1024 * 1024 + 1);
-  });
+  }, 15_000);
 
   it("exposes busy, delay, and stall controls without double execution", async () => {
     const { fixture, address } = await started();

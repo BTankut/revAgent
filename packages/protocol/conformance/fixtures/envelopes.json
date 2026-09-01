@@ -112,7 +112,30 @@
       "payload": {
         "rsid": "rs_7f3a",
         "resume_token": "opaque-token",
-        "last_rx_seq": 409
+        "last_rx_seq": 409,
+        "route_rebind_proof": {
+          "version": 1,
+          "connection_id": "018f4c3a-7b11-7abc-8def-0123456789ab",
+          "proof_id": "018f4c3a-7b12-7abc-8def-0123456789ab",
+          "context": {
+            "documents": [
+              {
+                "document_id": "doc-7f3a",
+                "title": "Fixture document",
+                "path_digest": null,
+                "is_workshared": false,
+                "is_active": true
+              }
+            ],
+            "active_document": "doc-7f3a",
+            "active_view": null
+          },
+          "context_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "freshness": {
+            "source_revision": 1,
+            "cache_incarnation_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          }
+        }
       }
     },
     {

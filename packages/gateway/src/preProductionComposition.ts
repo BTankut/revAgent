@@ -30,6 +30,7 @@ import type {
   GatewayProtocolStore,
   ObjectStorePort,
 } from "./store.js";
+import type { GatewayServingOwnership } from "./gatewayServingOwnership.js";
 
 export const PRE_PRODUCTION_LAN_TEST_PROFILE = "lan_test" as const;
 
@@ -39,7 +40,9 @@ export type PreProductionCompositionErrorCode =
   | "invalid_gateway_configuration"
   | "production_mode_refused"
   | "unavailable_protocol_store"
-  | "invalid_north_authority";
+  | "startup_coordinator_unavailable"
+  | "invalid_north_authority"
+  | "c39_protected_object_unavailable";
 
 export class PreProductionCompositionError extends Error {
   public constructor(
@@ -81,6 +84,8 @@ export interface PreProductionLanTestCompositionOptions {
   readonly entitlement: EntitlementPort;
   readonly events: GatewayEventSink;
   readonly objectStore: ObjectStorePort;
+  /** Internal session durability graph; never installed as the public object port. */
+  readonly servingOwnership?: GatewayServingOwnership;
   readonly guardrails: GuardrailPort;
   readonly northAuth: {
     /** Explicit authorization scopes copied into each request-lifetime AuthInfo. */
@@ -266,10 +271,26 @@ export function createPreProductionLanTestComposition(
       "the LAN/test pre-production composition is unavailable in production",
     );
   }
+  // This LAN/test graph has no durable receipt inventory.  It must never
+  // register C39 merely because a key-file path was supplied; the production
+  // composition added by C2b must provide both durable inventory and a passed
+  // startup self-test before it can wire the protected-object port.
+  if (config.objectStore.protectedObjectKeyFile != null) {
+    fail(
+      "c39_protected_object_unavailable",
+      "C39 protected objects require a durable inventory and startup self-test",
+    );
+  }
   if (options.protocolStore.kind === "unavailable") {
     fail(
       "unavailable_protocol_store",
       "the LAN/test composition requires an explicit protocol store adapter",
+    );
+  }
+  if (options.protocolStore.startupCoordinator === undefined) {
+    fail(
+      "startup_coordinator_unavailable",
+      "the LAN/test composition requires the durable startup coordinator",
     );
   }
   if (
@@ -302,7 +323,12 @@ export function createPreProductionLanTestComposition(
   const bridgeAuthority = new GatewayBridgeSessionAuthority(
     options.protocolStore,
     identity,
-    { clock: options.identityOptions.clock },
+    {
+      clock: options.identityOptions.clock,
+      ...(options.servingOwnership === undefined
+        ? {}
+        : { servingOwnership: options.servingOwnership }),
+    },
   );
   const rbpIngress = createPreProductionRbpIngress(bridgeAuthority, identity);
   const configuredNorthMcp =
@@ -315,7 +341,7 @@ export function createPreProductionLanTestComposition(
     identity,
     entitlement: options.entitlement,
     events: options.events,
-    protocolStore: options.protocolStore,
+    protocolStore: bridgeAuthority.store,
     objectStore: options.objectStore,
     guardrails: options.guardrails,
     rbpIngress,

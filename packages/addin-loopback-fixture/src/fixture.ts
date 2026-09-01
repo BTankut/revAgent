@@ -1,5 +1,5 @@
 import { Buffer } from "node:buffer";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import {
   createServer,
   isIP,
@@ -29,10 +29,12 @@ import { parseStrictJsonBytes } from "./strictJson.js";
 import { TestTransactionGroup } from "./transactionGroup.js";
 import type {
   DocumentContextEvent,
+  DocumentContextControlAcknowledgement,
   DocumentContextSnapshot,
   Effect,
   FaultPlan,
   FixtureAddress,
+  FixtureC39OriginProvenance,
   FixtureHandler,
   FixtureEvidenceSnapshot,
   FixtureObservation,
@@ -157,6 +159,8 @@ const DEFAULT_DOCUMENT_CONTEXT: DocumentContextSnapshot = {
   },
   disciplineHint: "mechanical",
 };
+
+const FIXTURE_CACHE_INCARNATION_DOMAIN = "revagent:fixture-cache-incarnation:v1\n";
 
 function isObject(value: unknown): value is JsonObject {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -576,6 +580,20 @@ interface DocumentContextEvidenceEvent {
   readonly atMonotonicMs: number;
 }
 
+interface MutationProbeCell {
+  originInvocationId: string;
+  value: 1 | 2;
+  originWriteCount: number;
+  nextWriteCount: number;
+}
+
+const MUTATION_PROBE_RESULT_SCHEMA = "revagent.fixture-mutation-probe/v1";
+const MUTATION_PROBE_METHODS = new Set([
+  "fixture_commit_then_throw",
+  "fixture_read_mutation_probe",
+  "fixture_complete_mutation_probe",
+]);
+
 export class AddinLoopbackFixture {
   readonly #options: Required<
     Pick<
@@ -589,6 +607,7 @@ export class AddinLoopbackFixture {
   readonly #stallLatches = new Map<string, StallLatch[]>();
   readonly #dispatchCounts = new Map<string, number>();
   readonly #methodCounts = new Map<string, number>();
+  readonly #c39OriginResponseDigests = new Map<string, string>();
   readonly #observations: FixtureObservation[] = [];
   readonly #modelState = new Map<string, JsonValue>();
   readonly #sockets = new Set<Socket>();
@@ -604,8 +623,11 @@ export class AddinLoopbackFixture {
   #documentContextCacheReadCount = 0;
   #documentContextPollRequestCount = 0;
   #lastDocumentContextMonotonicMs = -1;
+  #lastDocumentContextControlAcknowledgementHash: string | null = null;
+  #cacheIncarnationDigest: string;
   readonly #documentContextEvidenceTimeline: DocumentContextEvidenceEvent[] = [];
   #crashed = false;
+  #mutationProbe: MutationProbeCell | null = null;
 
   public constructor(options: FixtureOptions = {}) {
     assertFixtureOptions(options);
@@ -621,6 +643,12 @@ export class AddinLoopbackFixture {
     };
     this.#validator = new LoopbackContractValidator(this.#options.maxRequestPayloadBytes);
     this.#documentContext = structuredClone(options.documentContext ?? DEFAULT_DOCUMENT_CONTEXT);
+    // Retain only the one-way correlate. The raw 32-byte nonce is never
+    // stored, serialized, logged, or returned by the fixture.
+    this.#cacheIncarnationDigest = "sha256:" + createHash("sha256")
+      .update(FIXTURE_CACHE_INCARNATION_DOMAIN, "utf8")
+      .update(randomBytes(32))
+      .digest("hex");
     this.#validateDocumentContext(this.#documentContext);
     this.#recordDocumentContextEvidence("cache_initialized");
     this.#registerDefaultHandlers();
@@ -654,6 +682,30 @@ export class AddinLoopbackFixture {
     return this.#methodCounts.get(method) ?? 0;
   }
 
+  /**
+   * Fixed D0 proof for C39.  It deliberately omits request IDs, parameters,
+   * paths, responses, and every recovery claim; the public Gateway carrier is
+   * the sole source of an origin UUID and recovery coordinates.
+   */
+  public c39OriginProvenance(): FixtureC39OriginProvenance {
+    const method = "fixture_multi_file_output" as const;
+    const values = [...this.#c39OriginResponseDigests.values()];
+    const latestDigest = values.at(-1) ?? null;
+    const count = values.length;
+    const domainHash = sha256(Buffer.from(
+      `revagent/c39-origin-provenance/v1\0${method}\0${String(count)}\0${latestDigest ?? ""}`,
+      "utf8",
+    ));
+    return Object.freeze({
+      version: 1,
+      method,
+      count,
+      ready: count === 1 && latestDigest !== null,
+      latestDigest,
+      domainHash,
+    });
+  }
+
   public snapshotEvidence(): FixtureEvidenceSnapshot {
     const modelEntries = [...this.#modelState]
       .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
@@ -668,6 +720,9 @@ export class AddinLoopbackFixture {
       methodExecutionCounts: [...this.#methodCounts]
         .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
         .map(([method, count]) => ({ method, count })),
+      c39OriginResponses: [...this.#c39OriginResponseDigests]
+        .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+        .map(([requestId, responseDigest]) => ({ requestId, responseDigest })),
       modelStateDigest: sha256(Buffer.from(JSON.stringify(modelEntries), "utf8")),
       modelStateEntryCount: modelEntries.length,
       pendingStalls: [...this.#stallLatches]
@@ -683,6 +738,10 @@ export class AddinLoopbackFixture {
           this.#documentContextEvidenceSequence - this.#documentContextEvidenceTimeline.length,
         ),
         currentRevision: this.#documentContext.revision,
+        cacheIncarnationDigest: this.#cacheIncarnationDigest,
+        cachedContextHash: this.#documentContextHash(),
+        activeDocumentIdentityHash: this.#activeDocumentIdentityHash(),
+        lastControlAcknowledgementHash: this.#lastDocumentContextControlAcknowledgementHash,
         applicationEventCacheUpdateCount: this.#documentContextCacheUpdateCount,
         cacheReadCount: this.#documentContextCacheReadCount,
         pollRequestCount: this.#documentContextPollRequestCount,
@@ -747,9 +806,41 @@ export class AddinLoopbackFixture {
     };
     this.#validateDocumentContext(candidate);
     this.#documentContext = candidate;
+    this.#cacheIncarnationDigest = "sha256:" + createHash("sha256")
+      .update(`${this.#cacheIncarnationDigest}\0${candidate.revision}`, "utf8")
+      .digest("hex");
     this.#documentContextCacheUpdateCount += 1;
     this.#recordDocumentContextEvidence("application_event_cache_update");
     return structuredClone(candidate);
+  }
+
+  /**
+   * Applies one strict control-plane update and returns only a value-free
+   * acknowledgement. This lets real-trio tests prove cache identity without
+   * reflecting document titles, paths, or document ids through stdio.
+   */
+  public applyDocumentContextControlEvent(
+    event: DocumentContextEvent,
+  ): DocumentContextControlAcknowledgement {
+    const snapshot = this.applyDocumentContextEvent(event);
+    const cachedContextHash = this.#documentContextHash();
+    const activeDocumentIdentityHash = this.#activeDocumentIdentityHash();
+    const acknowledgementHash = sha256(Buffer.from(JSON.stringify(stableJsonValue({
+      action: "apply_document_context",
+      revision: snapshot.revision,
+      cacheIncarnationDigest: this.#cacheIncarnationDigest,
+      cachedContextHash,
+      activeDocumentIdentityHash,
+    })), "utf8"));
+    this.#lastDocumentContextControlAcknowledgementHash = acknowledgementHash;
+    return Object.freeze({
+      action: "apply_document_context",
+      revision: snapshot.revision,
+      cacheIncarnationDigest: this.#cacheIncarnationDigest,
+      cachedContextHash,
+      activeDocumentIdentityHash,
+      acknowledgementHash,
+    });
   }
 
   public async start(): Promise<FixtureAddress> {
@@ -802,6 +893,41 @@ export class AddinLoopbackFixture {
       state: "completed",
       result: { success: true, executionOrdinal: context.executionOrdinal },
     }));
+    this.registerHandler("fixture_commit_then_throw", "model_transaction", (params, context): HandlerOutcome => {
+      if (Object.keys(params).length !== 0) {
+        return { state: "failed", error: { code: "command_failure", message: "mutation probe requires empty params" } };
+      }
+      if (this.#mutationProbe !== null) {
+        return { state: "guarded", guardedReason: "mutation_probe_origin_already_exists", result: this.#mutationProbeResult() };
+      }
+      this.#mutationProbe = {
+        originInvocationId: context.requestId,
+        value: 1,
+        originWriteCount: 1,
+        nextWriteCount: 0,
+      };
+      return {
+        state: "failed",
+        error: { code: "command_failure", message: "fixture mutation committed before application failure" },
+      };
+    });
+    this.registerHandler("fixture_read_mutation_probe", "read_only", (params): HandlerOutcome => {
+      if (Object.keys(params).length !== 0) {
+        return { state: "failed", error: { code: "command_failure", message: "mutation probe requires empty params" } };
+      }
+      return { state: "completed", result: this.#mutationProbeResult() };
+    });
+    this.registerHandler("fixture_complete_mutation_probe", "model_transaction", (params): HandlerOutcome => {
+      if (Object.keys(params).length !== 0) {
+        return { state: "failed", error: { code: "command_failure", message: "mutation probe requires empty params" } };
+      }
+      const current = this.#mutationProbe;
+      if (current === null || current.value !== 1 || current.originWriteCount !== 1 || current.nextWriteCount !== 0) {
+        return { state: "guarded", guardedReason: "mutation_probe_state_not_verified", result: this.#mutationProbeResult() };
+      }
+      this.#mutationProbe = { ...current, value: 2, nextWriteCount: 1 };
+      return { state: "completed", result: this.#mutationProbeResult() };
+    });
     this.registerHandler("fixture_multi_file_output", "read_only", (params) => ({
       state: "completed",
       result: {
@@ -829,6 +955,29 @@ export class AddinLoopbackFixture {
         };
       });
     }
+  }
+
+  #mutationProbeResult(): JsonObject {
+    const cell = this.#mutationProbe;
+    return cell === null
+      ? {
+          schema: MUTATION_PROBE_RESULT_SCHEMA,
+          present: false,
+          complete: false,
+          originInvocationId: null,
+          value: null,
+          originWriteCount: 0,
+          nextWriteCount: 0,
+        }
+      : {
+          schema: MUTATION_PROBE_RESULT_SCHEMA,
+          present: true,
+          complete: true,
+          originInvocationId: cell.originInvocationId,
+          value: cell.value,
+          originWriteCount: cell.originWriteCount,
+          nextWriteCount: cell.nextWriteCount,
+        };
   }
 
   #multiFileArtifacts(params: JsonObject): MultiFileArtifact[] | JsonObject[] {
@@ -971,6 +1120,25 @@ export class AddinLoopbackFixture {
     }
   }
 
+  #documentContextHash(): string {
+    return sha256(Buffer.from(JSON.stringify(stableJsonValue(
+      this.#documentContext as unknown as JsonValue,
+    )), "utf8"));
+  }
+
+  #activeDocumentIdentityHash(): string | null {
+    return this.#documentContext.activeDocumentId === null
+      ? null
+      : sha256(Buffer.from(this.#documentContext.activeDocumentId, "utf8"));
+  }
+
+  #fixtureDocumentContextSnapshot(): DocumentContextSnapshot {
+    return {
+      ...structuredClone(this.#documentContext),
+      cache_incarnation_digest: this.#cacheIncarnationDigest,
+    };
+  }
+
   #recordDocumentContextRead(): void {
     this.#documentContextCacheReadCount += 1;
     this.#documentContextPollRequestCount += 1;
@@ -1100,6 +1268,7 @@ export class AddinLoopbackFixture {
       }
 
       const { response, executionOrdinal } = await responsePromise;
+      this.#recordC39OriginResponse(request.id, request.method, response);
       const responseBytes = jsonPayloadBytes(response).byteLength;
       const outcome = this.#responseOutcome(response);
       this.#finishTask(task, outcome, responseBytes);
@@ -1183,7 +1352,7 @@ export class AddinLoopbackFixture {
         response: {
           jsonrpc: "2.0",
           id: requestId,
-          result: structuredClone(this.#documentContext) as unknown as JsonObject,
+          result: this.#fixtureDocumentContextSnapshot() as unknown as JsonObject,
         },
       };
     }
@@ -1613,6 +1782,13 @@ export class AddinLoopbackFixture {
     this.#observe(requestId, method, phase, ordinal, null, detail);
   }
 
+  /** Test-only provenance; it does not alter dispatch or manufacture replay data. */
+  #recordC39OriginResponse(requestId: string, method: string, response: JsonObject): void {
+    if (method !== "fixture_multi_file_output" || this.#c39OriginResponseDigests.has(requestId)) return;
+    if (this.#c39OriginResponseDigests.size >= 16 || !isObject(response.result)) return;
+    this.#c39OriginResponseDigests.set(requestId, sha256(jsonPayloadBytes(response)));
+  }
+
   #responseOutcome(response: JsonObject): HandlerOutcome {
     if ("error" in response) {
       const error = isObject(response.error) ? response.error : {};
@@ -1652,7 +1828,20 @@ export class AddinLoopbackFixture {
       response.id === null && responseError?.code === -32700;
     if (requestId !== null && method !== null && !isUncorrelatedParseError) {
       try {
-        this.#validator.validateResponse(method, requestId, response);
+        if (method === "get_document_context" && isObject(response.result)) {
+          // Validate the frozen production envelope after removing the
+          // fixture-only correlate; it is not an RBP/public wire extension.
+          const result = structuredClone(response.result);
+          const digest = result.cache_incarnation_digest;
+          delete result.cache_incarnation_digest;
+          this.#validator.validateResponse(method, requestId, { ...response, result });
+          if (digest !== undefined &&
+              (typeof digest !== "string" || !/^sha256:[0-9a-f]{64}$/u.test(digest))) {
+            throw new ContractValidationError("invalid_response", "invalid fixture cache incarnation digest");
+          }
+        } else {
+          this.#validator.validateResponse(method, requestId, response);
+        }
       } catch (error) {
         response = jsonRpcError(requestId, -32603, "Fixture generated an invalid response", {
           validationError: boundedMessage(error),
@@ -1724,7 +1913,17 @@ export class AddinLoopbackFixture {
     await new Promise<void>((resolve, reject) => {
       socket.write(frame, (error) => (error ? reject(error) : resolve()));
     });
-    this.#observe(requestId, method, "response_sent", null, payload.byteLength, null);
+    const mutationProbeDigest = method !== null && MUTATION_PROBE_METHODS.has(method)
+      ? `mutation_probe_raw_response:${sha256(payload)}`
+      : null;
+    this.#observe(
+      requestId,
+      method,
+      "response_sent",
+      executionOrdinal,
+      payload.byteLength,
+      mutationProbeDigest,
+    );
   }
 
   #statusResult(): JsonObject {
@@ -1788,6 +1987,7 @@ export class AddinLoopbackFixture {
     if (payloadBytes > MAX_RESPONSE_PAYLOAD_BYTES) {
       return `response payload ${payloadBytes} exceeds cap ${MAX_RESPONSE_PAYLOAD_BYTES}`;
     }
+    if (MUTATION_PROBE_METHODS.has(method)) return null;
     try {
       this.#validator.validateResponse(method, requestId, response);
       return null;

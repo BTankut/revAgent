@@ -447,29 +447,14 @@ public sealed class AddinSessionRouterTests
                         8080,
                         1301,
                         addinVersion: "2026.07.26.1")));
-        AddinSessionRouter.LifecycleChange change =
-            Assert.Single(replacement.Changes);
-        AddinSessionRouter.SessionRoute current =
+        Assert.Empty(replacement.Changes);
+        AddinSessionRouter.SessionRoute retained =
             Assert.Single(replacement.AvailableSessions);
-
-        Assert.Equal(
-            AddinSessionRouter.LifecycleChangeKind.Replaced,
-            change.Kind);
-        Assert.Same(original.Handle, change.Previous!.Handle);
-        Assert.Same(current.Handle, change.Current!.Handle);
-        Assert.Equal(
-            original.Handle.Generation + 1,
-            current.Handle.Generation);
-        Assert.Equal(
-            LocalSessionKey(8080, 1300),
-            original.Handle.LocalSessionKey);
-        Assert.Equal(
-            LocalSessionKey(8080, 1301),
-            current.Handle.LocalSessionKey);
+        Assert.Same(original.Handle, retained.Handle);
 
         Task<AddinSessionRouter.InvocationLease> whileOriginalRuns =
             router.InvokeAsync(
-                current.Handle,
+                original.Handle,
                 Call("replacement-overlap"));
         Assert.True(whileOriginalRuns.IsCompleted);
         AddinSessionRouter.RouteException overlap =
@@ -486,13 +471,22 @@ public sealed class AddinSessionRouterTests
         AddinSessionRouter.RouteException beforeOriginalTerminal =
             await Assert.ThrowsAsync<AddinSessionRouter.RouteException>(
                 () => router.InvokeAsync(
-                    current.Handle,
+                    original.Handle,
                     Call("replacement-before-durable-terminal")));
         Assert.Equal(
             AddinSessionRouter.RouteFailureKind.InvocationInFlight,
             beforeOriginalTerminal.Kind);
 
         originalLease.ReleaseAfterDurableDecision();
+        AddinSessionRouter.ReconciliationResult applied = ReconcileFresh(
+            router,
+            Snapshot(Session(8080, 1301, addinVersion: "2026.07.26.1")));
+        AddinSessionRouter.LifecycleChange change = Assert.Single(applied.Changes);
+        AddinSessionRouter.SessionRoute current =
+            Assert.Single(applied.AvailableSessions);
+        Assert.Equal(AddinSessionRouter.LifecycleChangeKind.Replaced, change.Kind);
+        Assert.Same(original.Handle, change.Previous!.Handle);
+        Assert.Equal(original.Handle.Generation + 1, current.Handle.Generation);
         Assert.True(
             (await InvokeAndCompleteAsync(
                 router,
@@ -586,6 +580,90 @@ public sealed class AddinSessionRouterTests
         Assert.Equal(
             route.Session.ProcessAttestation.Identity,
             observation.ExpectedProcessIdentity);
+    }
+
+    [Fact]
+    public async Task InvokeAsync_UsesInjectedAttestorAndPreservesDiscoveredIdentity()
+    {
+        ProbedAddinSession session = Session(8080, 1365);
+        var attestor = new RecordingProcessAttestor(
+            session.ProcessAttestation);
+        var transport = new RecordingTransport(
+            (_, call, _, _) => Task.FromResult(Success(call)),
+            executeProcessAttestation: true);
+        var router = new AddinSessionRouter(transport, attestor);
+        AddinSessionRouter.SessionRoute route = Assert.Single(
+            ReconcileFresh(router, Snapshot(session)).AvailableSessions);
+
+        AddinCallResult result = await InvokeAndCompleteAsync(
+            router,
+            route.Handle,
+            Call("injected-attestor"));
+
+        Assert.True(result.Response.IsSuccess);
+        Assert.Equal(1, attestor.BeforeDispatchCount);
+        Assert.Equal(1, attestor.AfterResponseCount);
+        Assert.Equal(1, transport.HandlerInvocationCount);
+        Assert.Equal(
+            route.Session.ProcessAttestation.Identity,
+            Assert.Single(transport.Calls).ExpectedProcessIdentity);
+    }
+
+    [Fact]
+    public async Task InvokeAsync_InjectedAttestorDenialPreventsTransportDispatch()
+    {
+        ProbedAddinSession session = Session(8080, 1366);
+        var attestor = new RecordingProcessAttestor(
+            session.ProcessAttestation,
+            denyBeforeDispatch: true);
+        var transport = new RecordingTransport(
+            (_, call, _, _) => Task.FromResult(Success(call)),
+            executeProcessAttestation: true);
+        var router = new AddinSessionRouter(transport, attestor);
+        AddinSessionRouter.SessionRoute route = Assert.Single(
+            ReconcileFresh(router, Snapshot(session)).AvailableSessions);
+
+        AddinSessionRouter.InvocationLease lease = await router.InvokeAsync(
+            route.Handle,
+            Call("injected-attestor-denied"));
+        try
+        {
+            AddinProcessAttestationException failure = Assert.Throws<
+                AddinProcessAttestationException>(() => lease.GetResult());
+            Assert.Equal("addin_test_attestation_denied", failure.Code);
+        }
+        finally
+        {
+            lease.ReleaseAfterDurableDecision();
+        }
+
+        Assert.Equal(1, attestor.BeforeDispatchCount);
+        Assert.Equal(0, attestor.AfterResponseCount);
+        Assert.Equal(0, transport.HandlerInvocationCount);
+    }
+
+    [Fact]
+    public async Task InvokeAsync_DefaultAttestorRemainsWindowsAttestor()
+    {
+        var transport = new RecordingTransport((_, call, _, _) =>
+            Task.FromResult(Success(call)));
+        var router = new AddinSessionRouter(transport);
+        AddinSessionRouter.SessionRoute route = Assert.Single(
+            ReconcileFresh(router, Snapshot(Session(8080, 1367))).AvailableSessions);
+
+        Assert.True((await InvokeAndCompleteAsync(
+            router,
+            route.Handle,
+            Call("default-attestor"))).Response.IsSuccess);
+
+        ExpectedAddinProcessAttestor expected = Assert.IsType<
+            ExpectedAddinProcessAttestor>(
+            Assert.Single(transport.ProcessAttestors));
+        var field = (IAddinProcessAttestor?)typeof(ExpectedAddinProcessAttestor)
+            .GetField("_inner", System.Reflection.BindingFlags.Instance |
+                System.Reflection.BindingFlags.NonPublic)
+            ?.GetValue(expected);
+        Assert.IsType<WindowsAddinProcessAttestor>(field);
     }
 
     [Fact]
@@ -1333,6 +1411,9 @@ public sealed class AddinSessionRouterTests
             CancellationToken,
             Task<AddinCallResult>> _handler;
         private readonly List<ObservedCall> _calls = new();
+        private readonly List<IAddinProcessAttestor?> _processAttestors = new();
+        private readonly bool _executeProcessAttestation;
+        private int _handlerInvocationCount;
 
         internal RecordingTransport(
             Func<
@@ -1340,9 +1421,11 @@ public sealed class AddinSessionRouterTests
                 AddinCall,
                 CancellationToken,
                 CancellationToken,
-                Task<AddinCallResult>> handler)
+                Task<AddinCallResult>> handler,
+            bool executeProcessAttestation = false)
         {
             _handler = handler;
+            _executeProcessAttestation = executeProcessAttestation;
         }
 
         internal IReadOnlyList<ObservedCall> Calls
@@ -1355,6 +1438,20 @@ public sealed class AddinSessionRouterTests
                 }
             }
         }
+
+        internal IReadOnlyList<IAddinProcessAttestor?> ProcessAttestors
+        {
+            get
+            {
+                lock (_sync)
+                {
+                    return _processAttestors.ToArray();
+                }
+            }
+        }
+
+        internal int HandlerInvocationCount =>
+            Volatile.Read(ref _handlerInvocationCount);
 
         public async Task<AddinCallResult> InvokeAsync(
             AddinEndpoint endpoint,
@@ -1372,6 +1469,7 @@ public sealed class AddinSessionRouterTests
                         call.MaxRequestPayloadBytes,
                         (processAttestor as ExpectedAddinProcessAttestor)
                             ?.Expected.Identity));
+                _processAttestors.Add(processAttestor);
             }
 
             var peer = new AddinConnectedPeer(
@@ -1382,7 +1480,8 @@ public sealed class AddinSessionRouterTests
                     endpoint.Address,
                     endpoint.Port));
             AddinProcessAttestation? attestation = null;
-            if (processAttestor is ExpectedAddinProcessAttestor expected)
+            if (processAttestor is ExpectedAddinProcessAttestor expected &&
+                !_executeProcessAttestation)
             {
                 attestation = expected.Expected;
             }
@@ -1394,6 +1493,7 @@ public sealed class AddinSessionRouterTests
                         preDispatchCancellationToken);
             }
 
+            Interlocked.Increment(ref _handlerInvocationCount);
             AddinCallResult result = await _handler(
                 endpoint,
                 call,
@@ -1404,7 +1504,8 @@ public sealed class AddinSessionRouterTests
                 return result;
             }
 
-            if (processAttestor is not ExpectedAddinProcessAttestor)
+            if (processAttestor is not ExpectedAddinProcessAttestor ||
+                _executeProcessAttestation)
             {
                 await processAttestor.VerifyAfterResponseAsync(
                     peer,
@@ -1447,6 +1548,53 @@ public sealed class AddinSessionRouterTests
             CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            return Task.CompletedTask;
+        }
+    }
+
+    private sealed class RecordingProcessAttestor : IAddinProcessAttestor
+    {
+        private readonly AddinProcessAttestation _attestation;
+        private readonly bool _denyBeforeDispatch;
+        private int _beforeDispatchCount;
+        private int _afterResponseCount;
+
+        internal RecordingProcessAttestor(
+            AddinProcessAttestation attestation,
+            bool denyBeforeDispatch = false)
+        {
+            _attestation = attestation;
+            _denyBeforeDispatch = denyBeforeDispatch;
+        }
+
+        internal int BeforeDispatchCount => Volatile.Read(ref _beforeDispatchCount);
+
+        internal int AfterResponseCount => Volatile.Read(ref _afterResponseCount);
+
+        public Task<AddinProcessAttestation> AttestBeforeDispatchAsync(
+            AddinConnectedPeer peer,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Interlocked.Increment(ref _beforeDispatchCount);
+            if (_denyBeforeDispatch)
+            {
+                throw new AddinProcessAttestationException(
+                    "addin_test_attestation_denied",
+                    "The test attestor denied pre-dispatch routing.");
+            }
+
+            return Task.FromResult(_attestation);
+        }
+
+        public Task VerifyAfterResponseAsync(
+            AddinConnectedPeer peer,
+            AddinProcessAttestation attestation,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Assert.Equal(_attestation, attestation);
+            Interlocked.Increment(ref _afterResponseCount);
             return Task.CompletedTask;
         }
     }

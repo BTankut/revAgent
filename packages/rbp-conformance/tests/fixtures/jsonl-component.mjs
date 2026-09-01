@@ -1,8 +1,19 @@
 const mode = process.argv[2] ?? "good";
-if (mode === "stderr-exit") {
+if (mode === "stderr-exit" || mode === "stderr-eacces-exit" || mode === "stderr-json-eacces-exit") {
+  if (mode === "stderr-json-eacces-exit") {
+    await new Promise((resolve) => {
+      process.stderr.write(
+        `${JSON.stringify({ code: "EACCES", message: "SECRET_CANARY" })}\n`,
+        resolve,
+      );
+    });
+    process.exit(1);
+  }
+  const code = mode === "stderr-eacces-exit" ? "EACCES" : "EADDRINUSE";
+  const message = code === "EACCES" ? "permission denied" : "address already in use";
   await new Promise((resolve) => {
     process.stderr.write(
-      "fixture startup failed\nlisten EADDRINUSE: address already in use 127.0.0.1:43123",
+      `fixture startup failed\nlisten ${code}: ${message} 127.0.0.1:43123`,
       resolve,
     );
   });

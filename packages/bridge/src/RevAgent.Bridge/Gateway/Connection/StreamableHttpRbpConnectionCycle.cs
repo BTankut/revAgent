@@ -15,15 +15,22 @@ internal sealed class StreamableHttpRbpConnectionCycle :
     private readonly Uri _messagesUri;
     private readonly RbpDeviceCredential _credential;
     private readonly TimeProvider _timeProvider;
+    private readonly Action<RbpSseReceiveObservation>? _onSseReceiveObservation;
     private readonly CancellationTokenSource _lifetime = new();
     private readonly SemaphoreSlim _receiveGate = new(1, 1);
     private readonly SemaphoreSlim _lifecycleGate = new(1, 1);
     private readonly SemaphoreSlim _heartbeatGate = new(1, 1);
     private readonly ConcurrentDictionary<string, SemaphoreSlim>
         _sessionGates = new(StringComparer.Ordinal);
+    private readonly object _lifetimeSync = new();
     private Exception? _terminalFailure;
-    private int _closeStarted;
-    private int _disposeStarted;
+    private Task? _closeTask;
+    private TaskCompletionSource? _operationsQuiesced;
+    private LifetimeEndOwner _lifetimeEndOwner;
+    private int _admittedOperations;
+    private bool _disposeRequested;
+    private bool _disposed;
+    private int _streamEnded;
 
     internal StreamableHttpRbpConnectionCycle(
         HttpClient client,
@@ -32,14 +39,18 @@ internal sealed class StreamableHttpRbpConnectionCycle :
         Uri messagesUri,
         RbpDeviceCredential credential,
         RbpHelloAckPayload acknowledgement,
-        TimeProvider timeProvider)
+        TimeProvider timeProvider,
+        Action<RbpSseReceiveObservation>? onSseReceiveObservation = null)
     {
         _client = client ?? throw new ArgumentNullException(nameof(client));
         _eventsResponse = eventsResponse ??
             throw new ArgumentNullException(nameof(eventsResponse));
         _eventsStream = eventsStream ??
             throw new ArgumentNullException(nameof(eventsStream));
-        _events = new SseRbpEventReader(_eventsStream);
+        _onSseReceiveObservation = onSseReceiveObservation;
+        _events = new SseRbpEventReader(
+            _eventsStream,
+            stage => ObserveSseReceive(stage));
         _messagesUri = messagesUri ??
             throw new ArgumentNullException(nameof(messagesUri));
         _credential = credential ??
@@ -57,7 +68,7 @@ internal sealed class StreamableHttpRbpConnectionCycle :
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(envelope);
-        EnsureActive();
+        using TransportOperationLease admitted = AdmitOperation();
         if (envelope.Scope == RbpEnvelopeScope.PreNegotiation)
         {
             throw RbpHttpBindingProtocol.Protocol(
@@ -81,6 +92,7 @@ internal sealed class StreamableHttpRbpConnectionCycle :
     public async Task<RbpEnvelope> ReceiveAsync(
         CancellationToken cancellationToken = default)
     {
+        using TransportOperationLease admitted = AdmitOperation();
         await _receiveGate.WaitAsync(cancellationToken)
             .ConfigureAwait(false);
         try
@@ -108,6 +120,7 @@ internal sealed class StreamableHttpRbpConnectionCycle :
             }
             catch (RbpGatewayTransportException exception)
             {
+                ObserveSseReceive("parser_error", outcome: "error");
                 Terminate(exception);
                 throw;
             }
@@ -116,6 +129,7 @@ internal sealed class StreamableHttpRbpConnectionCycle :
                     IOException or
                     ObjectDisposedException)
             {
+                ObserveSseReceive("stream_end", outcome: "error");
                 if (Volatile.Read(ref _terminalFailure) is { } terminal)
                 {
                     throw terminal;
@@ -131,10 +145,17 @@ internal sealed class StreamableHttpRbpConnectionCycle :
 
             try
             {
-                return RbpEnvelopeCodec.Decode(frame);
+                RbpEnvelope envelope = RbpEnvelopeCodec.Decode(frame);
+                ObserveSseReceive(
+                    "method_kind",
+                    string.Equals(envelope.Type, "session_registered", StringComparison.Ordinal)
+                        ? "session_registered"
+                        : "other");
+                return envelope;
             }
             catch (RbpFrameException exception)
             {
+                ObserveSseReceive("parser_error", outcome: "error");
                 RbpGatewayTransportException failure =
                     RbpHttpBindingProtocol.Protocol(
                         "The fallback SSE event contained invalid RBP.",
@@ -150,32 +171,111 @@ internal sealed class StreamableHttpRbpConnectionCycle :
     }
 
     public Task CloseAsync(
-        CancellationToken cancellationToken = default)
-    {
-        cancellationToken.ThrowIfCancellationRequested();
-        if (Interlocked.Exchange(ref _closeStarted, 1) == 0)
-        {
-            _lifetime.Cancel();
-            _eventsStream.Dispose();
-            _eventsResponse.Dispose();
-        }
-
-        return Task.CompletedTask;
-    }
+        CancellationToken cancellationToken = default) =>
+        BeginLifetimeEnd(LifetimeEndOwner.Close, cancellationToken);
 
     public ValueTask DisposeAsync()
     {
-        if (Interlocked.Exchange(ref _disposeStarted, 1) != 0)
+        TaskCompletionSource? owner = null;
+        Task quiescence = Task.CompletedTask;
+        Task ending;
+        lock (_lifetimeSync)
         {
-            return ValueTask.CompletedTask;
+            if (_disposed)
+                return _closeTask is { } settled
+                    ? new ValueTask(settled)
+                    : ValueTask.CompletedTask;
+            if (_disposeRequested)
+                return new ValueTask(_closeTask ??
+                    throw new InvalidOperationException(
+                        "Direct HTTP disposal has no retained lifetime owner."));
+            _disposeRequested = true;
+            ending = PublishLifetimeEndUnderLock(
+                LifetimeEndOwner.DirectDispose,
+                out owner,
+                out quiescence);
         }
+        if (owner is not null)
+            _ = CompleteLifetimeEndAsync(
+                owner, CancellationToken.None, quiescence);
+        TryFinalizeAfterOperation();
+        return new ValueTask(ending);
+    }
 
-        _ = CloseAsync();
-        _client.Dispose();
-        // Coordinator disposal is deliberately bounded before its owned
-        // receive/send tasks join. Keep this managed CTS alive so their linked
-        // registrations can unwind without racing ObjectDisposedException.
-        return ValueTask.CompletedTask;
+    private Task BeginLifetimeEnd(
+        LifetimeEndOwner ownerKind,
+        CancellationToken cancellationToken)
+    {
+        TaskCompletionSource? owner = null;
+        Task quiescence = Task.CompletedTask;
+        Task ending;
+        lock (_lifetimeSync)
+        {
+            if (_closeTask is not null) return _closeTask;
+            if (_disposed)
+                return Task.FromException(new ObjectDisposedException(
+                    nameof(StreamableHttpRbpConnectionCycle)));
+            ending = PublishLifetimeEndUnderLock(
+                ownerKind, out owner, out quiescence);
+        }
+        if (owner is not null)
+            _ = CompleteLifetimeEndAsync(
+                owner, cancellationToken, quiescence);
+        return ending;
+    }
+
+    private Task PublishLifetimeEndUnderLock(
+        LifetimeEndOwner ownerKind,
+        out TaskCompletionSource? owner,
+        out Task quiescence)
+    {
+        if (_closeTask is not null)
+        {
+            owner = null;
+            quiescence = Task.CompletedTask;
+            return _closeTask;
+        }
+        _lifetimeEndOwner = ownerKind;
+        if (_admittedOperations == 0)
+        {
+            quiescence = Task.CompletedTask;
+        }
+        else
+        {
+            _operationsQuiesced = new TaskCompletionSource(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            quiescence = _operationsQuiesced.Task;
+        }
+        owner = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        _closeTask = owner.Task;
+        return _closeTask;
+    }
+
+    private async Task CompleteLifetimeEndAsync(
+        TaskCompletionSource owner,
+        CancellationToken cancellationToken,
+        Task quiescence)
+    {
+        try
+        {
+            // The exact owner task is already published. Cancellation callbacks
+            // and operation releases can therefore re-enter without taking a
+            // second close owner or running under _lifetimeSync.
+            EndEventStream();
+            cancellationToken.ThrowIfCancellationRequested();
+            await quiescence.WaitAsync(cancellationToken)
+                .ConfigureAwait(false);
+            owner.TrySetResult();
+        }
+        catch (Exception exception)
+        {
+            owner.TrySetException(exception);
+        }
+        finally
+        {
+            TryFinalizeAfterOperation();
+        }
     }
 
     private async Task PostMessageAsync(
@@ -277,38 +377,119 @@ internal sealed class StreamableHttpRbpConnectionCycle :
 
     private void EnsureActive()
     {
-        if (Volatile.Read(ref _disposeStarted) != 0)
+        lock (_lifetimeSync)
         {
-            throw new ObjectDisposedException(
-                nameof(StreamableHttpRbpConnectionCycle));
+            if (_lifetimeEndOwner == LifetimeEndOwner.Terminate &&
+                _terminalFailure is { } terminal)
+                throw terminal;
+            if (_disposeRequested || _disposed || _closeTask is not null)
+            {
+                throw new ObjectDisposedException(
+                    nameof(StreamableHttpRbpConnectionCycle));
+            }
         }
 
-        if (Volatile.Read(ref _terminalFailure) is { } terminal)
-        {
-            throw terminal;
-        }
-
-        if (Volatile.Read(ref _closeStarted) != 0)
-        {
-            throw new RbpGatewayTransportException(
-                RbpGatewayFailureKind.RemoteClosed,
-                "The fallback connection cycle is closed.");
-        }
     }
 
     private void Terminate(Exception exception)
     {
-        if (Interlocked.CompareExchange(
-                ref _terminalFailure,
-                exception,
-                comparand: null) is not null)
+        ArgumentNullException.ThrowIfNull(exception);
+        TaskCompletionSource? owner;
+        Task quiescence;
+        lock (_lifetimeSync)
         {
-            return;
+            _terminalFailure ??= exception;
+            _ = PublishLifetimeEndUnderLock(
+                LifetimeEndOwner.Terminate, out owner, out quiescence);
         }
+        if (owner is not null)
+            _ = CompleteLifetimeEndAsync(
+                owner, CancellationToken.None, quiescence);
+        else
+            EndEventStream();
+    }
 
+    private TransportOperationLease AdmitOperation()
+    {
+        lock (_lifetimeSync)
+        {
+            if (_lifetimeEndOwner == LifetimeEndOwner.Terminate &&
+                _terminalFailure is { } terminal)
+                throw terminal;
+            if (_disposed || _disposeRequested || _closeTask is not null)
+                throw new ObjectDisposedException(
+                    nameof(StreamableHttpRbpConnectionCycle));
+            checked { _admittedOperations++; }
+            return new TransportOperationLease(this);
+        }
+    }
+
+    private void ReleaseOperation()
+    {
+        lock (_lifetimeSync)
+        {
+            if (_admittedOperations <= 0)
+                throw new InvalidOperationException(
+                    "The HTTP transport operation lease was released twice.");
+            _admittedOperations--;
+            if (_admittedOperations == 0)
+                _operationsQuiesced?.TrySetResult();
+        }
+        TryFinalizeAfterOperation();
+    }
+
+    private void EndEventStream()
+    {
+        if (Interlocked.Exchange(ref _streamEnded, 1) != 0) return;
         _lifetime.Cancel();
         _eventsStream.Dispose();
         _eventsResponse.Dispose();
+    }
+
+    private void TryFinalizeAfterOperation()
+    {
+        bool finalize = false;
+        lock (_lifetimeSync)
+        {
+            if (_disposeRequested && !_disposed &&
+                _admittedOperations == 0 &&
+                _closeTask?.IsCompleted == true)
+            {
+                _disposed = true;
+                finalize = true;
+            }
+        }
+        if (!finalize) return;
+        _client.Dispose();
+        _receiveGate.Dispose();
+        _lifecycleGate.Dispose();
+        _heartbeatGate.Dispose();
+        foreach (SemaphoreSlim gate in _sessionGates.Values) gate.Dispose();
+        _lifetime.Dispose();
+    }
+
+    internal string LifetimeEndReason
+    {
+        get
+        {
+            lock (_lifetimeSync) return _lifetimeEndOwner.ToString();
+        }
+    }
+
+    private enum LifetimeEndOwner
+    {
+        Open,
+        Terminate,
+        Close,
+        DirectDispose,
+    }
+
+    private sealed class TransportOperationLease(
+        StreamableHttpRbpConnectionCycle owner) : IDisposable
+    {
+        private StreamableHttpRbpConnectionCycle? _owner = owner;
+        public void Dispose() =>
+            Interlocked.Exchange(ref _owner, null)?.ReleaseOperation();
     }
 
     private Exception TerminalOrRemoteClosed(
@@ -318,4 +499,20 @@ internal sealed class StreamableHttpRbpConnectionCycle :
             RbpGatewayFailureKind.RemoteClosed,
             "The fallback connection cycle ended.",
             innerException: innerException);
+
+    private void ObserveSseReceive(
+        string stage,
+        string methodKind = "other",
+        string outcome = "observed")
+    {
+        try
+        {
+            _onSseReceiveObservation?.Invoke(
+                RbpSseReceiveObservation.Create(stage, methodKind, outcome));
+        }
+        catch
+        {
+            // Observation is never a transport owner.
+        }
+    }
 }

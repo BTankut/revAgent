@@ -333,10 +333,10 @@ export class FixtureJsonlControl {
       case "apply_document_context": {
         exactKeys(record, ["controlVersion", "id", "action", "event"]);
         if (!isObject(record.event)) throw new Error("event must be an object");
-        const snapshot = this.fixture.applyDocumentContextEvent(
+        const acknowledgement = this.fixture.applyDocumentContextControlEvent(
           record.event as unknown as DocumentContextEvent,
         );
-        return { value: snapshot as unknown as JsonObject, shutdown: false };
+        return { value: acknowledgement as unknown as JsonObject, shutdown: false };
       }
       case "snapshot_evidence": {
         exactKeys(record, ["controlVersion", "id", "action"], ["snapshotId", "cursor"]);
@@ -362,6 +362,10 @@ export class FixtureJsonlControl {
         const page = evidencePage(snapshotId, snapshot, cursor);
         if (page.complete === true) this.#snapshots.delete(snapshotId);
         return { value: page, shutdown: false };
+      }
+      case "read_c39_origin_provenance": {
+        exactKeys(record, ["controlVersion", "id", "action"]);
+        return { value: this.fixture.c39OriginProvenance() as unknown as JsonObject, shutdown: false };
       }
       case "shutdown": {
         exactKeys(record, ["controlVersion", "id", "action"]);

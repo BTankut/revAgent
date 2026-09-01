@@ -82,6 +82,54 @@ export {
 } from "./caseStackSupervisor.js";
 export { createEphemeralLoopbackTlsIdentity } from "./ephemeralTlsIdentity.js";
 export type { EphemeralTlsIdentity } from "./ephemeralTlsIdentity.js";
+export {
+  assertRealBridgeWorkerExecutable,
+  REAL_TRIO_COMPONENT_IDS,
+  sha256RealTrioFile,
+  validateRealTrioAttestation,
+} from "./realTrioAttestation.js";
+export { REAL_TRIO_SUPERVISOR_SCHEMA, startRealTrioSupervisor } from "./realTrioSupervisor.js";
+export type { RealTrioSupervisorLaunch, RealTrioSupervisorResult } from "./realTrioSupervisor.js";
+export { REAL_TRIO_PROCESS_COMPONENT_IDS, RealTrioProcessHarness } from "./realTrioProcessHarness.js";
+export type {
+  RealTrioJsonlChild,
+  RealTrioProcessCommand,
+  RealTrioProcessComponent,
+  RealTrioReadyChild,
+} from "./realTrioProcessHarness.js";
+export { REAL_TRIO_CLI_COMMAND, runRealTrioCli } from "./realTrioCli.js";
+export {
+  C957_REAL_TRIO_CONTROL_SURFACE,
+  REAL_TRIO_NORTH_CASE_TOOL_MAP,
+  REAL_TRIO_CASE_DRIVER_CONTRACT,
+  REAL_TRIO_COMPONENTS,
+  RealTrioCaseControlSurfaceError,
+  assertRealTrioCaseControlSurface,
+  realTrioCaseControlGaps,
+  realTrioNorthToolForCase,
+} from "./realTrioCaseDriver.js";
+export type {
+  RealTrioCaseComponent,
+  RealTrioCaseControlGap,
+  RealTrioCaseControlSurface,
+} from "./realTrioCaseDriver.js";
+export type {
+  RealTrioAttestation,
+  RealTrioComponentId,
+  RealTrioProcessIdentity,
+} from "./realTrioAttestation.js";
+export {
+  PRODUCTION_TRIO_COMPONENTS,
+  PRODUCTION_TRIO_CONFORMANCE_CONTRACT,
+  attestProductionGatewayModuleGraph,
+  validateProductionTrioRuntimeAttestation,
+} from "./productionTrioConformance.js";
+export type {
+  ProductionTrioAdapterIdentity,
+  ProductionTrioComponent,
+  ProductionTrioModuleHash,
+  ProductionTrioRuntimeAttestation,
+} from "./productionTrioConformance.js";
 export type {
   CaseStackSupervisorOptions,
   FixtureBindPolicyProbeInput,

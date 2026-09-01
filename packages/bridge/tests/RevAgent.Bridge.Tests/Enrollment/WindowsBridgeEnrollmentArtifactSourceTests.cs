@@ -585,9 +585,24 @@ public sealed class WindowsBridgeEnrollmentArtifactSourceTests
 
     private static void DeleteTestRoot(string rootPath)
     {
-        if (Directory.Exists(rootPath))
+        for (int attempt = 0; attempt < 20; attempt++)
         {
-            Directory.Delete(rootPath, recursive: true);
+            if (!Directory.Exists(rootPath))
+            {
+                return;
+            }
+
+            try
+            {
+                Directory.Delete(rootPath, recursive: true);
+                return;
+            }
+            catch (Exception exception) when (
+                attempt < 19 &&
+                exception is IOException or UnauthorizedAccessException)
+            {
+                Thread.Sleep(25);
+            }
         }
     }
 

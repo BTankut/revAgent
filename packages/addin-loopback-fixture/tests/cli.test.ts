@@ -25,6 +25,7 @@ interface CliReady extends JsonObject {
   actions: string[];
   host: string;
   port: number;
+  cacheIncarnationDigest: string;
 }
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -181,8 +182,9 @@ describe("fixture CLI JSONL control and cleanup", () => {
       expect(ready).toMatchObject({
         ready: true,
         contract: "addin-loopback/v1",
-        controlVersion: 1,
-        maxControlLineBytes: MAX_CONTROL_LINE_BYTES,
+      controlVersion: 1,
+      maxControlLineBytes: MAX_CONTROL_LINE_BYTES,
+      cacheIncarnationDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u),
       });
       expect(child.kill(signal)).toBe(true);
       const [code, exitSignal] = (await once(child, "exit")) as [
@@ -208,8 +210,21 @@ describe("fixture CLI JSONL control and cleanup", () => {
       "release_stall",
       "apply_document_context",
       "snapshot_evidence",
+      "read_c39_origin_provenance",
       "shutdown",
     ]);
+    const emptyC39Provenance = await channel.send(control("c39-origin-empty", "read_c39_origin_provenance"));
+    expect(emptyC39Provenance.value).toMatchObject({
+      ok: true,
+      result: {
+        version: 1,
+        method: "fixture_multi_file_output",
+        count: 0,
+        ready: false,
+        latestDigest: null,
+        domainHash: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u),
+      },
+    });
     const address = { host: ready.host, port: ready.port };
 
     const duplicate = await channel.sendRaw(
@@ -233,7 +248,7 @@ describe("fixture CLI JSONL control and cleanup", () => {
       error: { code: "control_line_too_large" },
     });
 
-    await channel.send(
+    const contextControl = await channel.send(
       control("ctl-context", "apply_document_context", {
         event: {
           capturedAtUtc: "2026-07-22T12:00:00.000Z",
@@ -260,6 +275,28 @@ describe("fixture CLI JSONL control and cleanup", () => {
         },
       }),
     );
+    const acknowledgement = contextControl.value.result as JsonObject;
+    expect(acknowledgement).toMatchObject({
+      action: "apply_document_context",
+      revision: 2,
+      cacheIncarnationDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u),
+      cachedContextHash: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u),
+      activeDocumentIdentityHash: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u),
+      acknowledgementHash: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u),
+    });
+    expect(JSON.stringify(acknowledgement)).not.toContain("cli-document");
+    expect(JSON.stringify(acknowledgement)).not.toContain("CLI Fixture");
+
+    const missingContext = await channel.send(control("ctl-context-missing", "apply_document_context"));
+    expect(missingContext.value).toMatchObject({
+      ok: false,
+      error: { code: "invalid_control_request", message: expect.stringMatching(/Missing control field: event/u) },
+    });
+    const invalidContext = await channel.send(control("ctl-context-invalid", "apply_document_context", { event: {} }));
+    expect(invalidContext.value).toMatchObject({
+      ok: false,
+      error: { code: "invalid_control_request" },
+    });
     const contextSocket = await connectFixture(address);
     const contextResponse = await fixtureRequest(
       contextSocket,
@@ -430,6 +467,10 @@ describe("fixture CLI JSONL control and cleanup", () => {
       documentContextEvidence: {
         evidenceVersion: 1,
         externalEventRaiseCount: 0,
+        cachedContextHash: acknowledgement.cachedContextHash,
+        activeDocumentIdentityHash: acknowledgement.activeDocumentIdentityHash,
+        lastControlAcknowledgementHash: acknowledgement.acknowledgementHash,
+        cacheIncarnationDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u),
         timeline: expect.any(Array),
       },
       pendingStalls: [],

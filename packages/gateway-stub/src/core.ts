@@ -104,6 +104,7 @@ import type {
 const RESUME_LIFETIME_MS = 24 * 60 * 60 * 1000;
 const PENDING_HOLD_MS = 10 * 60 * 1000;
 const AUTHORIZATION_AUDIT_CAPACITY = 256;
+const SHA256_PATTERN = /^sha256:[0-9a-f]{64}$/;
 const RESERVED_IDENTITY_FIELDS = new Set([
   "tenant_id",
   "user_id",
@@ -340,6 +341,7 @@ export class GatewayStubCore {
   private readonly store: DurableGatewayStateStore;
   private readonly clock: GatewayClock;
   private readonly connectionCapabilities: readonly string[];
+  private readonly carrierReady: boolean;
   private readonly sessionCapabilities: readonly string[];
   private readonly tokenTable: Map<string, StaticDeviceIdentity>;
   private readonly enrollmentTokenTable: Map<string, StaticEnrollmentGrant>;
@@ -357,10 +359,9 @@ export class GatewayStubCore {
     this.supportedProtocols = supportedProtocols;
     this.connectionCapabilities = options.connectionCapabilities ?? [
       "journal_v1",
-      "chunked_results",
-      "artifact_result_v1",
       "transport_streamable_http",
     ];
+    this.carrierReady = options.carrierReady ?? true;
     this.sessionCapabilities = options.sessionCapabilities ?? [
       "batch_atomic",
       "doc_context_cached_v1",
@@ -387,11 +388,17 @@ export class GatewayStubCore {
 
   authenticate(token: string): AuthenticatedDevice {
     const identity = this.tokenTable.get(token);
-    if (identity === undefined || identity.status === "revoked") {
+    if (identity === undefined) {
       throw new GatewayStubFault("device credential rejected", "auth", 4401);
     }
-    if (identity.status === "seat_denied") {
-      throw new GatewayStubFault("device seat authorization rejected", "auth", 4403);
+    if (identity.status !== "active") {
+      throw new GatewayStubFault(
+        identity.status === "revoked"
+          ? "device credential revoked"
+          : "device seat authorization rejected",
+        "auth",
+        4403,
+      );
     }
     return cloneIdentity(identity, token);
   }
@@ -425,17 +432,38 @@ export class GatewayStubCore {
     return { deviceId: grant.deviceId, deviceToken: grant.deviceToken };
   }
 
-  setAuthStatus(token: string, status: AuthStatus): string[] {
+  async setAuthStatus(token: string, status: AuthStatus): Promise<string[]> {
     const identity = this.tokenTable.get(token);
     if (identity === undefined) {
       throw new Error("unknown static test token");
     }
+    const affected = [...this.connections.entries()]
+      .filter(([, runtime]) => runtime.transport.device.deviceId === identity.deviceId)
+      .map(([connectionId]) => connectionId);
+    if (status !== "active") {
+      const now = this.clock.nowMs();
+      const revokedRsids = await this.store.update((draft) => {
+        const revoked: string[] = [];
+        for (const session of Object.values(draft.sessions)) {
+          if (session.deviceId !== identity.deviceId || session.revoked) continue;
+          if (session.inFlight !== null) this.expireInFlight(draft, session, now);
+          session.revoked = true;
+          session.liveness = "disconnected";
+          session.disconnectedAtMs = now;
+          session.lifecycle = advanceSession(session.lifecycle, {
+            type: "unregister",
+            reason: "operator_requested",
+          });
+          revoked.push(session.rsid);
+        }
+        return revoked;
+      });
+      for (const rsid of revokedRsids) this.sessionBindings.delete(rsid);
+    }
     identity.status = status;
-    const affected: string[] = [];
-    for (const [connectionId, runtime] of this.connections) {
+    for (const runtime of this.connections.values()) {
       if (runtime.transport.device.deviceId === identity.deviceId) {
         runtime.transport.device.status = status;
-        affected.push(connectionId);
       }
     }
     return affected;
@@ -473,6 +501,22 @@ export class GatewayStubCore {
       this.recordAuthorizationAudit(runtime, "hello", "rejected", "connection_or_session_authority", []);
       throw new GatewayStubFault("hello device_id does not match authenticated enrollment", "auth", 4403);
     }
+    const helloFingerprint = hello.payload.machine.fingerprint;
+    if (
+      typeof helloFingerprint !== "string" ||
+      !SHA256_PATTERN.test(helloFingerprint) ||
+      !secureStringEqual(
+        helloFingerprint,
+        runtime.transport.device.machineFingerprint,
+      )
+    ) {
+      this.recordAuthorizationAudit(runtime, "hello", "rejected", "machine_fingerprint_mismatch", []);
+      throw new GatewayStubFault(
+        "hello machine fingerprint does not match enrollment",
+        "auth",
+        4403,
+      );
+    }
 
     let selected: number;
     try {
@@ -491,7 +535,11 @@ export class GatewayStubCore {
     const provisioned = new Set(runtime.transport.device.provisionedCapabilities);
     const requested = new Set(hello.payload.capabilities);
     const granted = this.connectionCapabilities.filter(
-      (capability) => provisioned.has(capability) && requested.has(capability),
+      (capability) =>
+        provisioned.has(capability) &&
+        requested.has(capability) &&
+        (this.carrierReady ||
+          (capability !== "chunked_results" && capability !== "artifact_result_v1")),
     );
     if (
       runtime.transport.binding === "http_sse" &&
@@ -984,23 +1032,33 @@ export class GatewayStubCore {
     void reason;
   }
 
-  async sendConnectionFault(connectionId: string, fault: GatewayStubFault): Promise<void> {
+  async sendConnectionFault(
+    connectionId: string,
+    fault: GatewayStubFault,
+    correlationId?: string,
+  ): Promise<void> {
     const runtime = this.connections.get(connectionId);
     if (runtime === undefined || !runtime.helloReceived) {
       return;
     }
-    const envelope = await this.store.update((draft) => this.makeControlEnvelope(draft, "error", {
-      retryable: false,
-      // O1 connection-level errors are deliberately limited to protocol/auth.
-      // Richer classes remain invocation-scoped data faults; an unsupported or
-      // environment connection guard therefore closes as a protocol fault.
-      fault_class: fault.faultClass === "auth" ? "auth" : "protocol",
-      outcome: "known",
-      verification_required: false,
-      replayed: false,
-      late_after_indeterminate: false,
-      message: fault.message.slice(0, 4096),
-    }));
+    const envelope = await this.store.update((draft) => {
+      const generated = this.makeControlEnvelope(draft, "error", {
+        retryable: false,
+        // O1 connection-level errors are deliberately limited to protocol/auth.
+        // Richer classes remain invocation-scoped data faults; an unsupported or
+        // environment connection guard therefore closes as a protocol fault.
+        fault_class: fault.faultClass === "auth" ? "auth" : "protocol",
+        outcome: "known",
+        verification_required: false,
+        replayed: false,
+        late_after_indeterminate: false,
+        message: fault.message.slice(0, 4096),
+      });
+      if (correlationId === undefined) return generated;
+      const correlated = { ...generated, id: correlationId } as RbpEnvelope;
+      assertEnvelope(correlated);
+      return correlated;
+    });
     await this.sendEnvelope(connectionId, envelope);
   }
 
@@ -1408,8 +1466,14 @@ export class GatewayStubCore {
       const allocation = allocateUuidV7(draft, now);
       const rsid = opaqueId("rs", `${runtime.transport.device.deviceId}/${payload.local_session_key}/${allocation}`);
       const resumeToken = opaqueId("resume", `${rsid}/${allocateUuidV7(draft, now)}`);
-      const grantedSessionCapabilities = payload.session_capabilities.filter((capability) =>
-        this.sessionCapabilities.includes(capability),
+      const enrolledCapabilities = new Set(
+        runtime.transport.device.provisionedCapabilities,
+      );
+      const requestedSessionCapabilities = new Set(payload.session_capabilities);
+      const grantedSessionCapabilities = this.sessionCapabilities.filter(
+        (capability) =>
+          enrolledCapabilities.has(capability) &&
+          requestedSessionCapabilities.has(capability),
       );
       let lifecycle = createSessionLifecycle(payload.local_session_key);
       lifecycle = advanceSession(lifecycle, { type: "register_requested" });
@@ -1491,6 +1555,10 @@ export class GatewayStubCore {
         session.tenantId !== runtime.transport.device.tenantId ||
         session.userId !== runtime.transport.device.userId ||
         session.seatId !== runtime.transport.device.seatId ||
+        !secureStringEqual(
+          session.machine.fingerprint,
+          runtime.transport.device.machineFingerprint,
+        ) ||
         session.resumeExpiresAtMs <= now ||
         !secureStringEqual(session.resumeToken, payload.resume_token)
       ) {
@@ -2384,7 +2452,7 @@ export class GatewayStubCore {
       throw new GatewayStubFault(
         "device credential is no longer active",
         "auth",
-        runtime.transport.device.status === "seat_denied" ? 4403 : 4401,
+        4403,
       );
     }
     return runtime;

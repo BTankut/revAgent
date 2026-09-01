@@ -448,6 +448,25 @@ function createHarnessDriver(
       }
       case "await_condition": {
         const timeoutMs = Number(request.arguments.timeoutMs);
+        const rawGrantedSessionCapabilities =
+          request.arguments.grantedSessionCapabilities;
+        const grantedSessionCapabilities = rawGrantedSessionCapabilities === undefined
+          ? undefined
+          : (() => {
+              if (!Array.isArray(rawGrantedSessionCapabilities)) {
+                throw new Error(
+                  "await_condition grantedSessionCapabilities must be a string array",
+                );
+              }
+              return rawGrantedSessionCapabilities.map((capability) => {
+                if (typeof capability !== "string") {
+                  throw new Error(
+                    "await_condition grantedSessionCapabilities must be a string array",
+                  );
+                }
+                return capability;
+              });
+            })();
         const result = await supervisor.awaitCondition({
           source: String(request.arguments.source),
           jsonPointer: String(request.arguments.jsonPointer),
@@ -455,6 +474,9 @@ function createHarnessDriver(
           ...(request.arguments.expected === undefined
             ? {}
             : { expected: request.arguments.expected }),
+          ...(grantedSessionCapabilities === undefined
+            ? {}
+            : { grantedSessionCapabilities }),
           timeoutMs,
         });
         return asSuccess(result, conditionObservation(request, result));

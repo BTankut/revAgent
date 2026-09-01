@@ -105,6 +105,7 @@ function storePort<K extends "postgres" | "fs" | "memory">(
   return Object.freeze({
     kind,
     contractVersion: GATEWAY_STORE_CONTRACT_VERSION,
+    startupCoordinator: createRestartableTestStore().store.startupCoordinator,
     async open() {
       return { ok: true as const, value: undefined };
     },

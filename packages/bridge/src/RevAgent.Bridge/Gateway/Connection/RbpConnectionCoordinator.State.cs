@@ -9,6 +9,9 @@ namespace RevAgent.Bridge.Gateway.Connection;
 
 internal sealed partial class RbpConnectionCoordinator
 {
+    private sealed record RbpResumeControl(
+        JsonElement Payload,
+        string? RouteAuthorityCheckpoint);
     private static RbpSessionLifecycleState AdvanceSession(
         RbpSessionLifecycleState lifecycle,
         RbpSessionEvent sessionEvent)
@@ -50,6 +53,8 @@ internal sealed partial class RbpConnectionCoordinator
     {
         lock (_sync)
         {
+            if (_attemptStopState != 1)
+                throw NonDrainingConnectionAuthority();
             if (_connectionGeneration >=
                 RbpSequenceReducer.MaximumSafeSequence)
             {
@@ -66,7 +71,7 @@ internal sealed partial class RbpConnectionCoordinator
     {
         lock (_sync)
         {
-            if (_active is not null)
+            if (_attemptStopState != 1 || _active is not null)
             {
                 throw new RbpCoordinatorException(
                     RbpCoordinatorErrorCode.SessionAuthorityConflict,
@@ -97,6 +102,33 @@ internal sealed partial class RbpConnectionCoordinator
         }
     }
 
+    private bool TryCommitCurrent(
+        ConnectionCycleContext context,
+        Action mutation)
+    {
+        ArgumentNullException.ThrowIfNull(mutation);
+        lock (_sync)
+        {
+            if (!ReferenceEquals(_active, context) ||
+                _connectionGeneration != context.Generation ||
+                Volatile.Read(ref _attemptStopState) is 3 or 4 or 5)
+                return false;
+            mutation();
+            return true;
+        }
+    }
+
+    private bool TryCommitAttempt(Action mutation)
+    {
+        ArgumentNullException.ThrowIfNull(mutation);
+        lock (_sync)
+        {
+            if (_attemptStopState is not (1 or 2)) return false;
+            mutation();
+            return true;
+        }
+    }
+
     private double GetCurrentContinuousSteadyMilliseconds()
     {
         ConnectionCycleContext? active;
@@ -107,6 +139,47 @@ internal sealed partial class RbpConnectionCoordinator
 
         return active?.ContinuousSteadyMilliseconds ?? 0;
     }
+
+    private long NextC39CausalOrdinal() => Interlocked.Increment(ref _c39CausalOrdinal);
+
+    private void MarkRouteAuthorityCheckpoint(ConnectionCycleContext context, string rsid, string checkpoint)
+    {
+        lock (_sync)
+        {
+            _routeAuthorityCheckpoints[new RouteAuthorityCheckpointKey(context, rsid)] = checkpoint;
+        }
+    }
+
+    private string? GetRouteAuthorityCheckpoint(ConnectionCycleContext context, string rsid)
+    {
+        lock (_sync)
+        {
+            return _routeAuthorityCheckpoints.TryGetValue(
+                new RouteAuthorityCheckpointKey(context, rsid), out string? value)
+                ? value : null;
+        }
+    }
+
+    // Checkpoints prove one exact live connection route only.  They must leave
+    // memory with that cycle; retaining an old context key would make a stale
+    // diagnostic correlation observable after its transport authority ended.
+    // The reference comparison is deliberately narrow so a later active cycle
+    // cannot be cleared by teardown of an earlier failed one.
+    private void ClearRouteAuthorityCheckpoints(ConnectionCycleContext context)
+    {
+        lock (_sync)
+        {
+            foreach (RouteAuthorityCheckpointKey key in
+                     _routeAuthorityCheckpoints.Keys.Where(
+                         key => ReferenceEquals(key.Context, context))
+                     .ToArray())
+            {
+                _routeAuthorityCheckpoints.Remove(key);
+            }
+        }
+    }
+
+    private sealed record RouteAuthorityCheckpointKey(ConnectionCycleContext Context, string Rsid);
 
     private void OwnedTaskStarted()
     {
@@ -299,11 +372,17 @@ internal sealed partial class RbpConnectionCoordinator
         new(RbpCoordinatorErrorCode.InvalidControlPayload, message);
 
     private static void ValidateOptions(
+        IRbpConnectionCycleFactory cycleFactory,
         RbpConnectionCoordinatorOptions options)
     {
+        ArgumentNullException.ThrowIfNull(cycleFactory);
         ArgumentNullException.ThrowIfNull(options.Endpoint);
         ArgumentNullException.ThrowIfNull(options.HelloProfile);
-        if (options.Endpoint.Scheme != Uri.UriSchemeWss ||
+        if (!options.Endpoint.IsAbsoluteUri ||
+            !string.Equals(
+                options.Endpoint.Scheme,
+                cycleFactory.ExpectedEndpointScheme,
+                StringComparison.OrdinalIgnoreCase) ||
             options.EffectiveHeartbeatAcknowledgementTimeout !=
                 TimeSpan.FromSeconds(10) ||
             options.EffectiveWakeGapThreshold !=
@@ -317,8 +396,8 @@ internal sealed partial class RbpConnectionCoordinator
             options.EffectiveCloseTimeout <= TimeSpan.Zero)
         {
             throw new ArgumentException(
-                "Coordinator options require WSS and positive bounded " +
-                "timeouts.",
+                "Coordinator options require the selected binding endpoint " +
+                "scheme and positive bounded timeouts.",
                 nameof(options));
         }
     }

@@ -14,6 +14,10 @@ if ([string]::IsNullOrWhiteSpace($RepoRoot)) {
     $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 }
 $RepoRoot = [IO.Path]::GetFullPath($RepoRoot)
+. (Join-Path $RepoRoot 'scripts\test-desktop-launcher-evidence.ps1') -RepoRoot $RepoRoot -LibraryOnly
+$fixtureExpectedHostSha256 = '2c6ab614fc33c1bed2e878c8f3a6c6fcfdc10176aa7470b0703f49519c3d646c'
+$fixtureExpectedModuleSha256 = 'b21d81ae3ad015b82535ce449454b89ad5cc2fc1d8c9cd0a47820c4a5d6293cc'
+$fixtureExpectedGuiSha256 = 'e63f5db6828396a2bfb035c3b789e53a58b27955aef795c5323b2db8b6238553'
 
 function Assert-True {
     param([bool]$Condition, [string]$Message)
@@ -22,6 +26,7 @@ function Assert-True {
 
 $refreshPath = Join-Path $RepoRoot 'installer\nas\Refresh-revAgent-LocalBootstrap-STABLE.ps1'
 $windowsPowerShell = Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe'
+$guiTestHost = Join-Path $RepoRoot 'scripts\Invoke-RevAgentUpdaterGuiTestHost.ps1'
 $fixtureRoot = Join-Path ([IO.Path]::GetTempPath()) ('revagent-clean-install-fixture-' + [Guid]::NewGuid().ToString('N'))
 $releaseRoot = Join-Path $fixtureRoot 'revAgent-deploy'
 $packageSource = Join-Path $fixtureRoot 'package-source'
@@ -33,14 +38,32 @@ $bootstrapRoot = Join-Path $fixtureRoot 'protected-bootstrap'
 $fixtureProgramDataRoot = Join-Path $fixtureRoot 'programdata'
 $desktopRoot = Join-Path $fixtureRoot 'desktop'
 $applySentinel = Join-Path $fixtureRoot 'mock-elevated-apply.json'
+$guiNominalLogRoot = Join-Path $fixtureRoot 'gui-nominal-logs'
 $fixtureModule = $null
 $cleanInput = $null
+$script:CleanGuiCaseSequence = 0
+
+function New-CleanGuiFixtureCase {
+    param([Parameter(Mandatory=$true)][string]$ConsumerPath)
+    $script:CleanGuiCaseSequence++
+    $root=Join-Path $fixtureRoot ('clean-host-gui-{0}' -f $script:CleanGuiCaseSequence);[void][IO.Directory]::CreateDirectory($root);Protect-FixtureRoot -Path $root
+    $bundle=Join-Path $root 'trusted-bundle';$logs=Join-Path $root 'logs';[void][IO.Directory]::CreateDirectory($bundle);[void][IO.Directory]::CreateDirectory($logs)
+    Copy-RevAgentTrustedFixtureFile $guiTestHost (Join-Path $bundle (Split-Path -Leaf $guiTestHost)) $fixtureExpectedHostSha256;Copy-RevAgentTrustedFixtureFile (Join-Path $RepoRoot 'scripts\RevAgent.TestFixtureAuthority.psm1') (Join-Path $bundle 'RevAgent.TestFixtureAuthority.psm1') $fixtureExpectedModuleSha256
+    return [pscustomobject]@{Root=$root;Logs=$logs;Host=(Join-Path $bundle (Split-Path -Leaf $guiTestHost));Consumer=$ConsumerPath}
+}
+function Invoke-CleanGuiFixture {
+    param([Parameter(Mandatory=$true)]$Case,[hashtable]$HostArguments=@{})
+    $args=@{LogDirectory=[string]$Case.Logs};foreach($key in $HostArguments.Keys){$args[$key]=$HostArguments[$key]}
+    $result=@(Invoke-CleanFixtureHost -Operation Gui -ConsumerPath ([string]$Case.Consumer) -FixtureRoot ([string]$Case.Root) -HostArguments $args -SelectedHostPath ([string]$Case.Host) -ExpectedHostLiteralSha256 $fixtureExpectedHostSha256 -ExpectedModuleLiteralSha256 $fixtureExpectedModuleSha256 -ExpectedConsumerLiteralSha256 $fixtureExpectedGuiSha256)
+    return $result[-1]
+}
 
 [void][IO.Directory]::CreateDirectory($packageSource)
 [void][IO.Directory]::CreateDirectory((Split-Path -Parent $packagePath))
 [void][IO.Directory]::CreateDirectory((Split-Path -Parent $channelPath))
 [void][IO.Directory]::CreateDirectory((Split-Path -Parent $trustedKeysPath))
 [void][IO.Directory]::CreateDirectory($bootstrapTempRoot)
+[void][IO.Directory]::CreateDirectory($guiNominalLogRoot)
 
 try {
     Write-Host 'Build clean-install signed-release fixture'
@@ -214,20 +237,14 @@ $evidence = [ordered]@{
     $installedState = Get-Content -Raw -LiteralPath $installedStatePath | ConvertFrom-Json
     Assert-True ([bool]$installedState.sourceAuthentication.independentlyAuthenticated) 'Supervised isolated manual apply did not preserve independently authenticated bootstrap state.'
 
-    Write-Host 'Execute protected GUI pre-window chain in a fresh Windows PowerShell 5.1 child'
+    Write-Host 'Execute protected GUI pre-window chain in a fresh exact PowerShell 7 child'
     $protectedGui = Join-Path $bootstrapRoot 'Install-revAgent-Updater-GUI.ps1'
     $protectedState = Join-Path $bootstrapRoot 'bootstrap-state.json'
-    $guiOutput = @(& $windowsPowerShell `
-            -NoLogo `
-            -NoProfile `
-            -NonInteractive `
-            -ExecutionPolicy Bypass `
-            -File $protectedGui `
-            -ChannelManifestPath $channelPath `
-            -BootstrapStatePath $protectedState `
-            -PreWindowBootstrapSmokeTest 2>&1 | ForEach-Object { [string]$_ })
-    $guiExitCode = $LASTEXITCODE
-    Assert-True ($guiExitCode -eq 0) "Clean-install GUI pre-window PS5 child failed. output=$($guiOutput -join ' | ')"
+    $nominalGuiCase=New-CleanGuiFixtureCase -ConsumerPath $protectedGui
+    $guiNominalLogRoot=[string]$nominalGuiCase.Logs
+    $nominalGuiResult=Invoke-CleanGuiFixture -Case $nominalGuiCase -HostArguments @{ChannelManifestPath=$channelPath;BootstrapStatePath=$protectedState;PreWindowBootstrapSmokeTest=$true}
+    $guiOutput=@($nominalGuiResult.stdout,$nominalGuiResult.stderr);$guiExitCode=$nominalGuiResult.exitCode
+    Assert-True ($guiExitCode -eq 0) "Clean-install GUI pre-window PowerShell 7 child failed. output=$($guiOutput -join ' | ')"
     $jsonLine = @($guiOutput | Where-Object { $_.TrimStart().StartsWith('{') } | Select-Object -Last 1)
     Assert-True ($jsonLine.Count -eq 1) "Clean-install GUI pre-window child did not return JSON evidence. output=$($guiOutput -join ' | ')"
     $guiResult = $jsonLine[0] | ConvertFrom-Json
@@ -235,6 +252,25 @@ $evidence = [ordered]@{
     foreach ($loadedPath in @($guiResult.sourceFreeMigrationModule, $guiResult.releaseSnapshotModule, $guiResult.trustedKeysPath)) {
         Assert-True ([IO.Path]::GetFullPath([string]$loadedPath).StartsWith([IO.Path]::GetFullPath($bootstrapRoot).TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)) "Clean-install GUI loaded evidence outside the fixture bootstrap: $loadedPath"
     }
+
+    Write-Host 'Execute protected GUI startup-failure logging in the owned fixture root'
+    $failureGuiCase=New-CleanGuiFixtureCase -ConsumerPath $protectedGui
+    $guiFailureLogRoot=[string]$failureGuiCase.Logs
+    $guiFailureMarker = 'clean-install-gui-startup-' + [Guid]::NewGuid().ToString('N')
+    $previousErrorActionPreference = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $failureGuiResult=Invoke-CleanGuiFixture -Case $failureGuiCase -HostArguments @{ChannelManifestPath=$channelPath;BootstrapStatePath=$protectedState;PreWindowBootstrapSmokeTest=$true;TestStartupFailureMessage=$guiFailureMarker}
+        $guiFailureOutput=@($failureGuiResult.stdout,$failureGuiResult.stderr);$guiFailureExitCode=$failureGuiResult.exitCode
+    }
+    finally { $ErrorActionPreference = $previousErrorActionPreference }
+    $guiFailureLogs = @(Get-ChildItem -LiteralPath $guiFailureLogRoot -Filter 'gui-startup-*.log' -File)
+    Assert-True ($guiFailureExitCode -ne 0 -and $guiFailureLogs.Count -eq 1) 'Clean-install GUI startup failure did not create exactly one owned-fixture diagnostic log.'
+    $guiFailureLogText = Get-Content -Raw -LiteralPath $guiFailureLogs[0].FullName
+    Assert-True ($guiFailureLogText -match [regex]::Escape($guiFailureMarker) -and $guiFailureLogText -match 'revAgent GUI startup failure') 'Clean-install GUI startup failure did not preserve its reason in the owned fixture log.'
+    Assert-True ((@($guiFailureOutput) -join ' | ') -match [regex]::Escape($guiFailureLogs[0].FullName)) 'Clean-install GUI startup failure did not disclose the owned fixture log path.'
+    $protectedGuiSource = Get-Content -Raw -LiteralPath $protectedGui
+    Assert-True ($protectedGuiSource -match '\$localAppDataRoot = \[Environment\]::GetFolderPath\(\[Environment\+SpecialFolder\]::LocalApplicationData\)' -and $protectedGuiSource -match '\[void\]\[IO\.Directory\]::CreateDirectory\(\$logDirectory\)' -and $protectedGuiSource -match '\[IO\.File\]::WriteAllLines' -and $protectedGuiSource -match 'Add-Type -AssemblyName System\.Windows\.Forms' -and $protectedGuiSource -match 'Get-RevAgentTestFixtureOwnership' -and $protectedGuiSource -notmatch ('TestStartupFailureLog' + 'Root|TestFixtureAuthority' + 'Path')) 'Clean-install copied GUI did not preserve production logging/Add-Type or exact live-authority isolation.'
 
     Write-Host 'Prove production clean-machine self-service fails closed before acquisition, elevation, or coordinator work'
     $failClosedState = & $fixtureModule {
@@ -373,3 +409,4 @@ finally {
     if ($null -ne $fixtureModule) { Remove-Module $fixtureModule.Name -Force -ErrorAction SilentlyContinue }
     if (Test-Path -LiteralPath $fixtureRoot) { Remove-Item -LiteralPath $fixtureRoot -Recurse -Force -ErrorAction SilentlyContinue }
 }
+$global:LASTEXITCODE = 0

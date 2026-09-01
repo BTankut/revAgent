@@ -38,7 +38,7 @@ export class RegistrySeedError extends Error {
 const SHA256_PATTERN = /^sha256:[0-9a-f]{64}$/u;
 const TOOL_NAME_PATTERN = /^[a-z][a-z0-9_]*$/u;
 const EXPECTED_COUNTS: Readonly<Record<RegistrySeedTool["module"], number>> = {
-  runtime: 35,
+  runtime: 36,
   docs: 5,
 };
 

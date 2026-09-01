@@ -4,18 +4,24 @@ import type { Duplex } from "node:stream";
 
 import {
   parseRbpFrame,
+  RBP_MAX_DECODED_CHUNK_BYTES,
+  RBP_MAX_INLINE_RESULT_BYTES,
+  RBP_MAX_INVOCATION_PARAMS_BYTES,
   type HelloEnvelope,
   type RbpEnvelope,
 } from "@revagent/protocol";
 import type { FastifyInstance } from "fastify";
-import { WebSocket, WebSocketServer } from "ws";
+import { WebSocket, WebSocketServer, type RawData } from "ws";
 
 import {
   GatewayRbpFault,
   type BridgeConnectionChannel,
+  type DispatchPreStartCancellation,
+  type DispatchTransportHandoff,
   type GatewayBridgeSessionAuthority,
 } from "./bridgeSession.js";
-import { gatewayUuidV7 } from "./identifiers.js";
+import type { DeviceAuthContext } from "./authContext.js";
+import { gatewayUuidV7, isGatewayUuidV7 } from "./identifiers.js";
 import {
   portNotImplemented,
   type GatewayPortAdapterKind,
@@ -32,6 +38,355 @@ export const RBP_INGRESS_HTTP_FALLBACK_PATHS = Object.freeze([
 
 const MAX_HTTP_MESSAGE_BYTES = 48 * 1024 * 1024;
 const MAX_PENDING_TRANSPORT_BYTES = 1024 * 1024;
+const RBP_WSS_FRAME_OVERHEAD_BYTES = 64 * 1024;
+const RBP_WSS_DEFAULT_QUEUED_FRAMES = 32;
+const RBP_WSS_MIN_QUEUED_FRAMES = 1;
+const RBP_WSS_MAX_QUEUED_FRAMES = 256;
+const RBP_WSS_DEFAULT_SEND_COMPLETION_TIMEOUT_MS = 5_000;
+const RBP_WSS_MIN_SEND_COMPLETION_TIMEOUT_MS = 1;
+const RBP_WSS_MAX_SEND_COMPLETION_TIMEOUT_MS = 60_000;
+const RBP_DISPATCH_REVALIDATION_TIMEOUT_MS = 5_000;
+const RBP_DISPATCH_CLEANUP_TIMEOUT_MS = 250;
+const HTTP_SSE_GLOBAL_CONNECTION_LIMIT = 1_024;
+const HTTP_SSE_TENANT_CONNECTION_LIMIT = 128;
+const HTTP_SSE_DEVICE_CONNECTION_LIMIT = 8;
+const HTTP_SSE_ATTACH_TTL_MS = 30_000;
+const HTTP_SSE_REGISTER_TTL_MS = 60_000;
+const HTTP_SSE_SWEEP_INTERVAL_MS = 5_000;
+const HTTP_SSE_DISPOSED_TOMBSTONE_TTL_MS = 60_000;
+const HTTP_SSE_DELIVERY_OBSERVATION_LIMIT = 256;
+const HTTP_SSE_DEFAULT_QUEUED_FRAMES = 32;
+const HTTP_SSE_MIN_QUEUED_FRAMES = 1;
+const HTTP_SSE_MAX_QUEUED_FRAMES = 256;
+const HTTP_SSE_DEFAULT_TEARDOWN_TIMEOUT_MS = RBP_WSS_DEFAULT_SEND_COMPLETION_TIMEOUT_MS;
+
+async function boundedDispatchRevalidate(
+  handoff: DispatchTransportHandoff,
+  controller: AbortController,
+  timeoutMs = RBP_DISPATCH_REVALIDATION_TIMEOUT_MS,
+  requestCancellation: () => Promise<DispatchPreStartCancellation> = () =>
+    rawDispatchCancellation(handoff),
+): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const revalidation = handoff.revalidate(controller.signal);
+  // An aborted producer may resolve/reject much later; observe it now so the
+  // next queue entry never inherits an unhandled rejection.
+  void revalidation.catch(() => undefined);
+  try {
+    await Promise.race([
+      revalidation,
+      new Promise<void>((_, reject) => {
+        timer = setTimeout(() => {
+          controller.abort();
+          reject(new Error("dispatch revalidation timed out before invocation"));
+        }, timeoutMs);
+      }),
+    ]);
+    if (controller.signal.aborted) {
+      throw new Error("dispatch revalidation cancelled before invocation");
+    }
+  } catch (error) {
+    controller.abort();
+    const settlement = await observeDispatchCancellation(requestCancellation());
+    if (settlement !== "settled_no_send") {
+      throw new Error("dispatch cancellation cleanup is uncertain; durable reservation remains frozen");
+    }
+    throw error;
+  } finally {
+    if (timer !== null) clearTimeout(timer);
+  }
+}
+
+/** The raw durable task is ownership truth; callers may separately observe it. */
+function rawDispatchCancellation(
+  handoff: DispatchTransportHandoff,
+): Promise<DispatchPreStartCancellation> {
+  const cleanup = handoff.cancelBeforeStart();
+  // Sink the producer immediately. The transformed task below still preserves
+  // the only useful carrier result without promoting a timeout into truth.
+  void cleanup.catch(() => undefined);
+  return cleanup.then(
+    (settled) => settled ? "settled_no_send" : "cancellation_pending",
+    () => "cancellation_pending",
+  );
+}
+
+/** Observe one shared cancellation task without turning a timeout into truth. */
+async function observeDispatchCancellation(
+  cleanup: Promise<DispatchPreStartCancellation>,
+): Promise<DispatchPreStartCancellation> {
+  // A late store completion must never create an unhandled rejection after a
+  // transport queue has advanced past this cancelled generation.
+  void cleanup.catch(() => undefined);
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  try {
+    const observed = await Promise.race([
+      cleanup,
+      new Promise<DispatchPreStartCancellation>((resolve) => {
+        // This is an observation bound, not a durable outcome. The shared
+        // handoff promise continues after connection detach/queue advance.
+        timer = setTimeout(() => resolve("cancellation_pending"), RBP_DISPATCH_CLEANUP_TIMEOUT_MS);
+      }),
+    ]);
+    return observed;
+  } catch {
+    return "cancellation_pending";
+  } finally {
+    if (timer !== null) clearTimeout(timer);
+  }
+}
+
+type WssConnectionState = "opening" | "open" | "closing" | "closed" | "faulted";
+type HttpConnectionState =
+  | "created"
+  | "sse_attached"
+  | "registered"
+  | "disposing"
+  | "disposed";
+
+interface HttpAdmissionScope {
+  readonly tenantId: string;
+  readonly userId: string;
+  readonly deviceId: string;
+  readonly seatId: string;
+  readonly deviceTokenDigest: DeviceAuthContext["deviceTokenDigest"];
+  readonly machineFingerprint: DeviceAuthContext["machineFingerprint"];
+  readonly authorizationVersion: DeviceAuthContext["authorizationVersion"];
+  readonly identityRecordVersion: DeviceAuthContext["identityRecordVersion"];
+  readonly connectionCapabilityVersion: DeviceAuthContext["connectionCapabilityVersion"];
+  readonly sessionCapabilityVersion: DeviceAuthContext["sessionCapabilityVersion"];
+  readonly seatAuthorityVersion: DeviceAuthContext["seatAuthorityVersion"];
+  readonly seatRecordVersion: DeviceAuthContext["seatRecordVersion"];
+  readonly grantedConnectionCapabilities: readonly string[] | undefined;
+  readonly grantedSessionCapabilities: readonly string[];
+}
+
+interface HttpConnectionEntry {
+  readonly connectionId: string;
+  readonly channel: HttpSseChannel;
+  readonly scope: HttpAdmissionScope;
+  state: HttpConnectionState;
+  expiresAtMs: number;
+  disposePromise: Promise<void> | null;
+}
+
+interface WssFrameCeilings {
+  readonly maxParamsBytes: number;
+  readonly maxPartialBytes: number;
+  readonly maxInlineTerminalBytes: number;
+}
+
+export interface RbpWssQueueConfig {
+  readonly queuedFrames?: number;
+  readonly queuedBytes?: number;
+}
+
+export interface RbpWssEgressConfig {
+  readonly queuedFrames?: number;
+  readonly queuedBytes?: number;
+  readonly sendCompletionTimeoutMs?: number;
+}
+
+/** Internal carrier-only backpressure seam; it does not alter any RBP wire API. */
+export interface RbpHttpSseEgressConfig {
+  readonly queuedFrames?: number;
+  readonly queuedBytes?: number;
+  /** Internal carrier teardown watchdog; never wire-visible. */
+  readonly teardownTimeoutMs?: number;
+}
+
+/** Testable clock/scheduler seam; production always retains the frozen values. */
+export interface RbpHttpSseLifecycleRuntime {
+  readonly clock?: () => number;
+  readonly setInterval?: (
+    callback: () => void,
+    milliseconds: number,
+  ) => ReturnType<typeof setInterval>;
+  readonly clearInterval?: (timer: ReturnType<typeof setInterval>) => void;
+  /** Value-free bounded-accounting observation for deterministic lifecycle tests. */
+  readonly onLifecycleSnapshot?: (snapshot: {
+    readonly entries: number;
+    readonly globalAdmissions: number;
+    readonly tenantAdmissions: number;
+    readonly deviceAdmissions: number;
+  }) => void;
+}
+
+export const RBP_HTTP_SSE_DELIVERY_OBSERVATION_CONTRACT =
+  "revagent.gateway-rbp-http-sse-delivery-observation/v1" as const;
+
+/**
+ * Value-free delivery boundary evidence for the real HTTP/SSE carrier.
+ * Connection ids are correlation handles, never credentials; payload and
+ * transport-error text are deliberately unrepresentable here.
+ */
+export interface RbpHttpSseDeliveryObservation {
+  readonly contractVersion: typeof RBP_HTTP_SSE_DELIVERY_OBSERVATION_CONTRACT;
+  readonly event: "gateway.rbp_http_sse_delivery_observation";
+  readonly timestamp: string;
+  readonly connectionId: string;
+  readonly frame: "rbp";
+  readonly action: "queued" | "write_callback" | "drain" | "flush" | "close" | "error";
+  readonly state: HttpConnectionState;
+  readonly reason: "none" | "stream_closed" | "write_failed" | "close_failed";
+}
+
+export const RBP_WSS_INTERNAL_DIAGNOSTIC_CONTRACT =
+  "revagent.gateway-rbp-wss-internal-diagnostic/v1" as const;
+
+export interface RbpWssInternalDiagnostic {
+  readonly contractVersion: typeof RBP_WSS_INTERNAL_DIAGNOSTIC_CONTRACT;
+  readonly event: "gateway.rbp_wss_internal_diagnostic";
+  readonly phase: "opening" | "receive" | "egress" | "transport" | "queue" | "teardown";
+  readonly faultClass: "protocol" | "auth" | "authorization" | "version" | "internal";
+  readonly closeCode: number;
+  /** Protected diagnostic detail. It must never be copied to a wire response. */
+  readonly detail: string;
+}
+
+export interface ProductionRbpIngressOptions {
+  readonly authority: GatewayBridgeSessionAuthority;
+  readonly wssQueue?: RbpWssQueueConfig;
+  readonly wssEgress?: RbpWssEgressConfig;
+  readonly httpSseEgress?: RbpHttpSseEgressConfig;
+  readonly httpSseLifecycleRuntime?: RbpHttpSseLifecycleRuntime;
+  readonly writeOpeningRefusalLog?: (serializedObservation: string) => void;
+  readonly onOpeningRefusalObservation?: (
+    observation: RbpOpeningRefusalObservation,
+  ) => void;
+  readonly onWssInternalDiagnostic?: (diagnostic: RbpWssInternalDiagnostic) => void;
+  readonly onHttpSseDeliveryObservation?: (
+    observation: RbpHttpSseDeliveryObservation,
+  ) => void;
+}
+
+interface PublicWssFault {
+  readonly closeCode: number;
+  readonly closeReason: string;
+  readonly message: string;
+  readonly wireFaultClass: "protocol" | "auth";
+  readonly diagnosticFaultClass: RbpWssInternalDiagnostic["faultClass"];
+}
+
+function publicWssFault(fault: GatewayRbpFault): PublicWssFault {
+  switch (fault.closeCode) {
+    case 4401:
+      return {
+        closeCode: 4401,
+        closeReason: "RBP authentication failed",
+        message: "RBP authentication failed",
+        wireFaultClass: "auth",
+        diagnosticFaultClass: "auth",
+      };
+    case 4403:
+      return {
+        closeCode: 4403,
+        closeReason: "RBP authorization failed",
+        message: "RBP authorization failed",
+        wireFaultClass: "auth",
+        diagnosticFaultClass: "authorization",
+      };
+    case 4426:
+      return {
+        closeCode: 4426,
+        closeReason: "RBP version negotiation failed",
+        message: "RBP version negotiation failed",
+        wireFaultClass: "protocol",
+        diagnosticFaultClass: "version",
+      };
+    case 1011:
+      return {
+        closeCode: 1011,
+        closeReason: "RBP internal error",
+        message: "RBP internal error",
+        // RBP/1 permits only protocol/auth on connection-level error frames.
+        // The protected diagnostic below carries the truthful internal class.
+        wireFaultClass: "protocol",
+        diagnosticFaultClass: "internal",
+      };
+    default:
+      return {
+        closeCode: 4400,
+        closeReason: "RBP protocol error",
+        message: "RBP protocol error",
+        wireFaultClass: "protocol",
+        diagnosticFaultClass: "protocol",
+      };
+  }
+}
+
+function wssFrameBudget(ceilings: WssFrameCeilings): number {
+  return (
+    RBP_WSS_FRAME_OVERHEAD_BYTES +
+    Math.max(
+      ceilings.maxParamsBytes,
+      4 * Math.ceil(ceilings.maxPartialBytes / 3),
+      ceilings.maxInlineTerminalBytes,
+    )
+  );
+}
+
+const LOCAL_WSS_FRAME_BUDGET_BYTES = wssFrameBudget({
+  maxParamsBytes: RBP_MAX_INVOCATION_PARAMS_BYTES,
+  maxPartialBytes: RBP_MAX_DECODED_CHUNK_BYTES,
+  maxInlineTerminalBytes: RBP_MAX_INLINE_RESULT_BYTES,
+});
+
+function boundedInteger(
+  value: number,
+  minimum: number,
+  maximum: number,
+  name: string,
+): number {
+  if (!Number.isSafeInteger(value) || value < minimum || value > maximum) {
+    throw new RangeError(
+      `${name} must be a safe integer in [${String(minimum)}, ${String(maximum)}]`,
+    );
+  }
+  return value;
+}
+
+function configuredQueueBytes(configured: number | undefined, frameBudget: number): number {
+  return boundedInteger(
+    configured ?? 2 * frameBudget,
+    frameBudget,
+    2 * frameBudget,
+    "wssQueue.queuedBytes",
+  );
+}
+
+function clampedInteger(
+  configured: number | undefined,
+  defaultValue: number,
+  minimum: number,
+  maximum: number,
+  name: string,
+): number {
+  const value = configured ?? defaultValue;
+  if (!Number.isSafeInteger(value)) {
+    throw new RangeError(`${name} must be a safe integer`);
+  }
+  return Math.min(maximum, Math.max(minimum, value));
+}
+
+function configuredEgressQueueBytes(
+  configured: number | undefined,
+  frameBudget: number,
+): number {
+  return clampedInteger(
+    configured,
+    2 * frameBudget,
+    frameBudget,
+    2 * frameBudget,
+    "wssEgress.queuedBytes",
+  );
+}
+
+function rawFrame(raw: RawData): Buffer {
+  if (Buffer.isBuffer(raw)) return raw;
+  if (Array.isArray(raw)) return Buffer.concat(raw);
+  return Buffer.from(raw);
+}
 
 export const RBP_OPENING_REFUSAL_OBSERVER_CONTRACT =
   "revagent.m4-rbp-refusal-observer/v1" as const;
@@ -76,37 +431,362 @@ export interface ProductionRbpIngressHost extends RbpIngressHost {
   readonly authority: GatewayBridgeSessionAuthority;
 }
 
+/**
+ * Non-production carrier for the exact production ingress implementation.
+ *
+ * This deliberately does not subclass or reimplement any ingress lifecycle:
+ * the returned object forwards the production mount/start/upgrade/drain/close
+ * functions verbatim and changes only the deployment-admission kind.  That
+ * makes a conformance listener observable as such while keeping C28/C29 on
+ * the production RBP state machine.
+ */
+export interface ConformanceRbpIngressHost extends RbpIngressHost {
+  readonly kind: "conformance";
+  readonly enabled: true;
+  readonly authority: GatewayBridgeSessionAuthority;
+  readonly delegate: ProductionRbpIngressHost;
+}
+const CONFORMANCE_INGRESS_BRAND = new WeakSet<object>();
+
+/** Module-private nominal admission; shape-compatible caller objects never pass. */
+export function isFactoryConformanceRbpIngressHost(value: unknown): value is ConformanceRbpIngressHost {
+  return value !== null && typeof value === "object" && CONFORMANCE_INGRESS_BRAND.has(value);
+}
+
+export function createConformanceRbpIngressHost(
+  options: ProductionRbpIngressOptions,
+): ConformanceRbpIngressHost {
+  const delegate = createProductionRbpIngressHost(options);
+  const host: ConformanceRbpIngressHost = {
+    kind: "conformance" as const,
+    mountPrefix: delegate.mountPrefix,
+    enabled: true as const,
+    authority: delegate.authority,
+    delegate,
+    refuse: delegate.refuse,
+    start: delegate.start,
+    mount: delegate.mount,
+    handleUpgrade: delegate.handleUpgrade,
+    beginDrain: delegate.beginDrain,
+    close: delegate.close,
+  };
+  CONFORMANCE_INGRESS_BRAND.add(host);
+  return Object.freeze(host);
+}
+
+interface SsePendingDispatchEntry {
+    readonly serialized: string;
+    readonly handoff: DispatchTransportHandoff | null;
+    readonly controller: AbortController | null;
+    readonly generation: number;
+    readonly resolveStarted: (() => void) | null;
+    readonly rejectStarted: ((error: Error) => void) | null;
+    readonly resolveCompletion: (() => void) | null;
+    readonly rejectCompletion: ((error: Error) => void) | null;
+    readonly cancelled: () => boolean;
+    readonly cancelLocal: () => void;
+    readonly requestCancellation: (() => Promise<DispatchPreStartCancellation>) | null;
+}
+
 class HttpSseChannel implements BridgeConnectionChannel {
-  readonly #pending: string[] = [];
+  readonly #pending: SsePendingDispatchEntry[] = [];
+  readonly #inFlight = new Set<SsePendingDispatchEntry>();
+  /** Raw durable cancellation work, not the 250ms presentation observation. */
+  readonly #rawSettlements = new Set<Promise<DispatchPreStartCancellation>>();
   #response: ServerResponse | null = null;
   #pendingBytes = 0;
+  #closed = false;
+  #connectionId: string | null = null;
+  #dispatchGeneration = 0;
 
-  public attach(response: ServerResponse): void {
+  public constructor(
+    private readonly onClose: () => void,
+    private readonly onDelivery: (
+      connectionId: string,
+      action: RbpHttpSseDeliveryObservation["action"],
+      reason: RbpHttpSseDeliveryObservation["reason"],
+    ) => void,
+    private readonly maxPendingFrames = HTTP_SSE_DEFAULT_QUEUED_FRAMES,
+    private readonly maxPendingBytes = MAX_PENDING_TRANSPORT_BYTES,
+    private readonly teardownTimeoutMs = HTTP_SSE_DEFAULT_TEARDOWN_TIMEOUT_MS,
+  ) {}
+
+  public bindConnection(connectionId: string): void {
+    this.#connectionId = connectionId;
+  }
+
+  #observe(
+    action: RbpHttpSseDeliveryObservation["action"],
+    reason: RbpHttpSseDeliveryObservation["reason"] = "none",
+  ): void {
+    if (this.#connectionId !== null) this.onDelivery(this.#connectionId, action, reason);
+  }
+
+  public get closed(): boolean {
+    return this.#closed;
+  }
+
+  #ownCancellation(
+    handoff: DispatchTransportHandoff,
+  ): () => Promise<DispatchPreStartCancellation> {
+    let raw: Promise<DispatchPreStartCancellation> | null = null;
+    return (): Promise<DispatchPreStartCancellation> => {
+      if (raw !== null) return raw;
+      raw = rawDispatchCancellation(handoff);
+      this.#rawSettlements.add(raw);
+      // The set is the ownership boundary. Remove only when the raw durable
+      // task settles; a bounded observer is deliberately not allowed here.
+      void raw.then(() => {
+        this.#rawSettlements.delete(raw!);
+      });
+      return raw;
+    };
+  }
+
+  async #settleRawCancellations(): Promise<void> {
+    for (;;) {
+      const snapshot = [...this.#rawSettlements];
+      if (snapshot.length === 0) return;
+      await Promise.allSettled(snapshot);
+      if (this.#rawSettlements.size === 0) return;
+    }
+  }
+
+  #fail(error: Error): never {
+    this.#observe("error", "write_failed");
+    this.onClose();
+    throw error;
+  }
+
+  public async attach(response: ServerResponse): Promise<void> {
+    if (this.#closed) {
+      this.#fail(new GatewayRbpFault("auth", "SSE authority is revoked", 403, 4403));
+    }
     if (this.#response !== null) {
       throw new GatewayRbpFault("protocol", "SSE stream is already attached", 409, 4400);
     }
     this.#response = response;
-    for (const serialized of this.#pending.splice(0)) {
-      response.write(`event: rbp\ndata: ${serialized}\n\n`);
+    // An HTTP/SSE stream carries the Gateway's registration authority.  Do
+    // not leave Nagle coalescing to decide whether the first lifecycle frame
+    // reaches the real HTTP client before its bounded startup deadline.
+    response.socket?.setNoDelay(true);
+    response.once("close", this.onClose);
+    response.once("error", this.onClose);
+    if (response.destroyed || response.writableEnded) {
+      this.#fail(new Error("SSE stream is closed"));
+    }
+    const attachedPending = this.#pending.splice(0);
+    try {
+      for (let index = 0; index < attachedPending.length; index += 1) {
+        const pending = attachedPending[index]!;
+        this.#pendingBytes -= Buffer.byteLength(pending.serialized);
+        this.#inFlight.add(pending);
+        try {
+          if (pending.cancelled()) throw new Error("SSE dispatch queue cancelled before invocation");
+          // Queue entries retain only an opaque closure, never proof bytes.
+          if (pending.handoff !== null && pending.controller !== null) {
+            await boundedDispatchRevalidate(
+              pending.handoff,
+              pending.controller,
+              RBP_DISPATCH_REVALIDATION_TIMEOUT_MS,
+              pending.requestCancellation!,
+            );
+          }
+          if (pending.cancelled()) throw new Error("SSE dispatch queue cancelled before invocation");
+          // #writeFrame crosses response.write synchronously before returning
+          // its completion promise, so resolve started only after the actual
+          // transport invocation has occurred.
+          const write = this.#writeFrame(response, pending.serialized);
+          pending.resolveStarted?.();
+          await write;
+          pending.resolveCompletion?.();
+        } catch (error) {
+          const failure = error instanceof Error ? error : new Error(String(error));
+          pending.rejectStarted?.(failure);
+          pending.rejectCompletion?.(failure);
+          for (const remainder of attachedPending.slice(index + 1)) {
+            remainder.cancelLocal();
+            void remainder.requestCancellation?.();
+            remainder.rejectStarted?.(failure);
+            remainder.rejectCompletion?.(failure);
+          }
+          throw failure;
+        } finally {
+          this.#inFlight.delete(pending);
+        }
+      }
+    } catch (error) {
+      if (error instanceof Error) this.#fail(error);
+      this.#fail(new Error(String(error)));
     }
     this.#pendingBytes = 0;
   }
 
   public async send(serialized: string): Promise<void> {
+    if (this.#closed) this.#fail(new Error("SSE stream is closed"));
     const response = this.#response;
     if (response === null) {
       const nextBytes = this.#pendingBytes + Buffer.byteLength(serialized);
-      if (nextBytes > MAX_PENDING_TRANSPORT_BYTES) {
-        throw new Error("SSE attach backlog exceeds the bounded transport window");
+      if (this.#pending.length + 1 > this.maxPendingFrames || nextBytes > this.maxPendingBytes) {
+        this.#fail(new Error("SSE attach backlog exceeds the bounded transport window"));
       }
       this.#pendingBytes = nextBytes;
-      this.#pending.push(serialized);
+      this.#pending.push({ serialized, handoff: null, controller: null, generation: 0, resolveStarted: null, rejectStarted: null, resolveCompletion: null, rejectCompletion: null, cancelled: () => false, cancelLocal: () => undefined, requestCancellation: null });
+      this.#observe("queued");
       return;
     }
     if (response.destroyed || response.writableEnded) {
-      throw new Error("SSE stream is closed");
+      this.#fail(new Error("SSE stream is closed"));
     }
-    if (!response.write(`event: rbp\ndata: ${serialized}\n\n`)) {
+    await this.#writeFrame(response, serialized);
+  }
+
+  public sendDispatchStarted(
+    serialized: string,
+    handoff: DispatchTransportHandoff,
+  ): { readonly started: Promise<void>; readonly completion: Promise<void>; cancel(): Promise<boolean> } {
+    let resolveStarted!: () => void;
+    let rejectStarted!: (error: Error) => void;
+    let resolveCompletion!: () => void;
+    let rejectCompletion!: (error: Error) => void;
+    const started = new Promise<void>((resolve, reject) => { resolveStarted = resolve; rejectStarted = reject; });
+    const completion = new Promise<void>((resolve, reject) => { resolveCompletion = resolve; rejectCompletion = reject; });
+    // Install sinks before returning the pair: a caller that times out after
+    // observing only `started` cannot turn a later attach/close failure into
+    // an unhandled rejection.
+    void started.catch(() => undefined);
+    void completion.catch(() => undefined);
+    let startedAtInvocation = false;
+    let cancelled = false;
+    let queued: SsePendingDispatchEntry | null = null;
+    let controller: AbortController | null = null;
+    const requestCancellation = this.#ownCancellation(handoff);
+    const cancelLocal = (): void => {
+      cancelled = true;
+      controller?.abort();
+    };
+    try {
+      if (this.#closed) throw new Error("SSE stream is closed");
+      const response = this.#response;
+      if (response === null) {
+        const nextBytes = this.#pendingBytes + Buffer.byteLength(serialized);
+        if (this.#pending.length + 1 > this.maxPendingFrames || nextBytes > this.maxPendingBytes) {
+          throw new Error("SSE attach backlog exceeds the bounded transport window");
+        }
+        this.#pendingBytes = nextBytes;
+        controller = new AbortController();
+        queued = { serialized, handoff, controller, generation: ++this.#dispatchGeneration, resolveStarted, rejectStarted, resolveCompletion, rejectCompletion, cancelled: () => cancelled, cancelLocal, requestCancellation };
+        this.#pending.push(queued);
+        this.#observe("queued");
+      } else {
+        if (response.destroyed || response.writableEnded) throw new Error("SSE stream is closed");
+        controller = new AbortController();
+        const inFlight: SsePendingDispatchEntry = {
+          serialized,
+          handoff,
+          controller,
+          generation: ++this.#dispatchGeneration,
+          resolveStarted,
+          rejectStarted,
+          resolveCompletion,
+          rejectCompletion,
+          cancelled: () => cancelled,
+          cancelLocal,
+          requestCancellation,
+        };
+        this.#inFlight.add(inFlight);
+        void (async () => {
+          try {
+            await boundedDispatchRevalidate(handoff, controller, RBP_DISPATCH_REVALIDATION_TIMEOUT_MS, requestCancellation);
+            if (cancelled) throw new Error("SSE dispatch queue cancelled before invocation");
+            // #writeFrame invokes response.write synchronously before it
+            // returns.  Keep this directly after the authoritative async
+            // revalidation: no intervening await may widen the revocation
+            // window.
+            const write = this.#writeFrame(response, serialized);
+            startedAtInvocation = true;
+            resolveStarted();
+            await write;
+            resolveCompletion();
+          } catch (error) {
+            const failure = error instanceof Error ? error : new Error(String(error));
+            rejectStarted(failure);
+            rejectCompletion(failure);
+          } finally {
+            this.#inFlight.delete(inFlight);
+          }
+        })();
+      }
+    } catch (error) {
+      const failure = error instanceof Error ? error : new Error(String(error));
+      rejectStarted(failure);
+      rejectCompletion(failure);
+    }
+    const cancel = async (): Promise<boolean> => {
+      if (startedAtInvocation) return false;
+      cancelLocal();
+      if (queued !== null) {
+        const index = this.#pending.indexOf(queued);
+        if (index >= 0) {
+          this.#pending.splice(index, 1);
+          this.#pendingBytes -= Buffer.byteLength(serialized);
+          queued = null;
+        }
+      }
+      const failure = new Error("SSE dispatch queue cancelled before invocation");
+      rejectStarted(failure);
+      rejectCompletion(failure);
+      return (await observeDispatchCancellation(requestCancellation())) === "settled_no_send";
+    };
+    return { started, completion, cancel };
+  }
+
+  /**
+   * Resolving `write()` is only queue acceptance.  The callback is Node's
+   * delivery boundary for ServerResponse; a `false` return additionally
+   * requires a drain before another RBP frame can be accepted.  Keeping both
+   * waits here makes attach backlog and normal live delivery identical.
+   */
+  async #writeFrame(response: ServerResponse, serialized: string): Promise<void> {
+    const frame = `event: rbp\ndata: ${serialized}\n\n`;
+    let writable: boolean;
+    try {
+      writable = await new Promise<boolean>((resolve, reject) => {
+        let settled = false;
+        let accepted = false;
+        const finish = (error?: Error): void => {
+          if (settled) return;
+          settled = true;
+          response.off("close", onClose);
+          response.off("error", onError);
+          if (error === undefined) resolve(accepted);
+          else reject(error);
+        };
+        const onClose = (): void => finish(new Error("SSE stream closed before write callback"));
+        const onError = (error: Error): void => finish(error);
+        // The callback is the only success path: `write()` returning true is
+        // not proof that bytes crossed the ServerResponse boundary.
+        response.once("close", onClose);
+        response.once("error", onError);
+        try {
+          accepted = response.write(frame, (error?: Error | null) => {
+            if (error === undefined || error === null) this.#observe("write_callback");
+            finish(error === undefined || error === null ? undefined : error);
+          });
+          const flush = (response as unknown as { flush?: () => void }).flush;
+          // Compression middleware may buffer SSE chunks after write().  Its
+          // optional flush is part of the same delivery boundary.
+          flush?.call(response);
+          this.#observe("flush");
+        } catch (error) {
+          finish(error instanceof Error ? error : new Error(String(error)));
+        }
+      });
+    } catch (error) {
+      if (error instanceof Error) this.#fail(error);
+      this.#fail(new Error(String(error)));
+    }
+    if (!writable) {
       await new Promise<void>((resolve, reject) => {
         const onDrain = (): void => finish();
         const onClose = (): void => finish(new Error("SSE stream closed before drain"));
@@ -115,7 +795,11 @@ class HttpSseChannel implements BridgeConnectionChannel {
           response.off("drain", onDrain);
           response.off("close", onClose);
           response.off("error", onError);
-          if (error === undefined) resolve();
+          if (error !== undefined) this.onClose();
+          if (error === undefined) {
+            this.#observe("drain");
+            resolve();
+          }
           else reject(error);
         };
         response.once("drain", onDrain);
@@ -126,12 +810,52 @@ class HttpSseChannel implements BridgeConnectionChannel {
   }
 
   public async close(): Promise<void> {
-    if (this.#response !== null && !this.#response.writableEnded) {
-      this.#response.end();
+    if (this.#closed) return;
+    this.#closed = true;
+    const cancelled = new Error("SSE dispatch queue cancelled before invocation");
+    for (const pending of this.#pending.splice(0)) {
+      pending.cancelLocal();
+      void pending.requestCancellation?.();
+      pending.rejectStarted?.(cancelled);
+      pending.rejectCompletion?.(cancelled);
     }
-    this.#response = null;
-    this.#pending.length = 0;
+    for (const pending of this.#inFlight) {
+      pending.cancelLocal();
+      void pending.requestCancellation?.();
+      pending.rejectStarted?.(cancelled);
+      pending.rejectCompletion?.(cancelled);
+    }
+    this.#inFlight.clear();
     this.#pendingBytes = 0;
+    let closeError: Error | null = null;
+    const closeTransport = (): void => {
+      if (this.#response !== null && !this.#response.writableEnded) {
+        try {
+          this.#response.end();
+          this.#observe("close");
+        } catch (error) {
+          closeError = error instanceof Error ? error : new Error(String(error));
+          this.#observe("error", "close_failed");
+        }
+      }
+      this.#response = null;
+    };
+    // Raw settlement is ownership truth. The watchdog is the one bounded
+    // escape: it closes/detaches only after local abort, leaving the durable
+    // reservation/cancellation-pending state for recovery without asserting
+    // a no-send receipt.
+    let watchdogTimer: ReturnType<typeof setTimeout> | null = null;
+    const settled = await Promise.race([
+      this.#settleRawCancellations().then(() => true),
+      new Promise<boolean>((resolve) => {
+        watchdogTimer = setTimeout(() => resolve(false), this.teardownTimeoutMs);
+      }),
+    ]);
+    if (watchdogTimer !== null) clearTimeout(watchdogTimer);
+    if (!settled) this.#observe("error", "close_failed");
+    closeTransport();
+    this.onClose();
+    if (closeError !== null) throw closeError;
   }
 }
 
@@ -155,6 +879,19 @@ function versionOneOffered(request: IncomingMessage): boolean {
 function frame(body: unknown): RbpEnvelope {
   if (Buffer.isBuffer(body)) return parseRbpFrame(body);
   return parseRbpFrame(Buffer.from(JSON.stringify(body), "utf8"));
+}
+
+function safeWssFrameCorrelationId(bytes: Buffer): string | null {
+  try {
+    const value = JSON.parse(
+      new TextDecoder("utf-8", { fatal: true }).decode(bytes),
+    ) as unknown;
+    if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
+    const id = (value as { readonly id?: unknown }).id;
+    return typeof id === "string" && isGatewayUuidV7(id) ? id : null;
+  } catch {
+    return null;
+  }
 }
 
 function faultBody(error: GatewayRbpFault): {
@@ -214,21 +951,281 @@ function rawResponse(
   );
 }
 
-export function createProductionRbpIngressHost(options: {
-  readonly authority: GatewayBridgeSessionAuthority;
-  readonly writeOpeningRefusalLog?: (serializedObservation: string) => void;
-  readonly onOpeningRefusalObservation?: (
-    observation: RbpOpeningRefusalObservation,
-  ) => void;
-}): ProductionRbpIngressHost {
+export function createProductionRbpIngressHost(
+  options: ProductionRbpIngressOptions,
+): ProductionRbpIngressHost {
   const { authority } = options;
+  const httpSseClock = options.httpSseLifecycleRuntime?.clock ?? Date.now;
+  const scheduleHttpSseSweep = options.httpSseLifecycleRuntime?.setInterval ?? setInterval;
+  const clearHttpSseSweep = options.httpSseLifecycleRuntime?.clearInterval ?? clearInterval;
+  const queuedFrameLimit = boundedInteger(
+    options.wssQueue?.queuedFrames ?? RBP_WSS_DEFAULT_QUEUED_FRAMES,
+    RBP_WSS_MIN_QUEUED_FRAMES,
+    RBP_WSS_MAX_QUEUED_FRAMES,
+    "wssQueue.queuedFrames",
+  );
+  const configuredQueuedByteLimit = options.wssQueue?.queuedBytes;
+  const localQueuedByteLimit = configuredQueueBytes(
+    configuredQueuedByteLimit,
+    LOCAL_WSS_FRAME_BUDGET_BYTES,
+  );
+  const egressQueuedFrameLimit = clampedInteger(
+    options.wssEgress?.queuedFrames,
+    RBP_WSS_DEFAULT_QUEUED_FRAMES,
+    RBP_WSS_MIN_QUEUED_FRAMES,
+    RBP_WSS_MAX_QUEUED_FRAMES,
+    "wssEgress.queuedFrames",
+  );
+  const configuredEgressQueuedByteLimit = options.wssEgress?.queuedBytes;
+  const localEgressQueuedByteLimit = configuredEgressQueueBytes(
+    configuredEgressQueuedByteLimit,
+    LOCAL_WSS_FRAME_BUDGET_BYTES,
+  );
+  const sendCompletionTimeoutMs = clampedInteger(
+    options.wssEgress?.sendCompletionTimeoutMs,
+    RBP_WSS_DEFAULT_SEND_COMPLETION_TIMEOUT_MS,
+    RBP_WSS_MIN_SEND_COMPLETION_TIMEOUT_MS,
+    RBP_WSS_MAX_SEND_COMPLETION_TIMEOUT_MS,
+    "wssEgress.sendCompletionTimeoutMs",
+  );
+  const httpSseQueuedFrameLimit = clampedInteger(
+    options.httpSseEgress?.queuedFrames,
+    HTTP_SSE_DEFAULT_QUEUED_FRAMES,
+    HTTP_SSE_MIN_QUEUED_FRAMES,
+    HTTP_SSE_MAX_QUEUED_FRAMES,
+    "httpSseEgress.queuedFrames",
+  );
+  const httpSseQueuedByteLimit = clampedInteger(
+    options.httpSseEgress?.queuedBytes,
+    MAX_PENDING_TRANSPORT_BYTES,
+    1,
+    MAX_PENDING_TRANSPORT_BYTES,
+    "httpSseEgress.queuedBytes",
+  );
+  const httpSseTeardownTimeoutMs = boundedInteger(
+    options.httpSseEgress?.teardownTimeoutMs ?? HTTP_SSE_DEFAULT_TEARDOWN_TIMEOUT_MS,
+    RBP_WSS_MIN_SEND_COMPLETION_TIMEOUT_MS,
+    RBP_WSS_MAX_SEND_COMPLETION_TIMEOUT_MS,
+    "httpSseEgress.teardownTimeoutMs",
+  );
   const websocketServer = new WebSocketServer({
     noServer: true,
     maxPayload: MAX_HTTP_MESSAGE_BYTES,
   });
-  const httpChannels = new Map<string, HttpSseChannel>();
+  const httpConnections = new Map<string, HttpConnectionEntry>();
+  const httpDisposed = new Map<string, number>();
+  const httpTenantCounts = new Map<string, number>();
+  const httpDeviceCounts = new Map<string, number>();
+  let httpGlobalCount = 0;
+  let httpAdmissionTail = Promise.resolve();
+  let httpSseDeliveryObservationCount = 0;
   let draining = false;
   let livenessTimer: ReturnType<typeof setInterval> | null = null;
+
+  const observeHttpLifecycle = (): void => {
+    options.httpSseLifecycleRuntime?.onLifecycleSnapshot?.(
+      Object.freeze({
+        entries: httpConnections.size,
+        globalAdmissions: httpGlobalCount,
+        tenantAdmissions: httpTenantCounts.size,
+        deviceAdmissions: httpDeviceCounts.size,
+      }),
+    );
+  };
+
+  const observeHttpSseDelivery = (
+    connectionId: string,
+    action: RbpHttpSseDeliveryObservation["action"],
+    reason: RbpHttpSseDeliveryObservation["reason"],
+  ): void => {
+    if (
+      options.onHttpSseDeliveryObservation === undefined ||
+      httpSseDeliveryObservationCount >= HTTP_SSE_DELIVERY_OBSERVATION_LIMIT
+    ) return;
+    httpSseDeliveryObservationCount += 1;
+    const entry = httpConnections.get(connectionId);
+    bestEffort(() => options.onHttpSseDeliveryObservation!(Object.freeze({
+      contractVersion: RBP_HTTP_SSE_DELIVERY_OBSERVATION_CONTRACT,
+      event: "gateway.rbp_http_sse_delivery_observation",
+      timestamp: new Date(httpSseClock()).toISOString(),
+      connectionId,
+      frame: "rbp",
+      action,
+      state: entry?.state ?? "created",
+      reason,
+    })));
+  };
+
+  const httpAdmission = async <T>(operation: () => Promise<T>): Promise<T> => {
+    const prior = httpAdmissionTail;
+    let release!: () => void;
+    httpAdmissionTail = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await prior;
+    try {
+      return await operation();
+    } finally {
+      release();
+    }
+  };
+
+  const releaseHttpAdmission = (scope: HttpAdmissionScope): void => {
+    httpGlobalCount -= 1;
+    const tenantCount = (httpTenantCounts.get(scope.tenantId) ?? 1) - 1;
+    if (tenantCount === 0) httpTenantCounts.delete(scope.tenantId);
+    else httpTenantCounts.set(scope.tenantId, tenantCount);
+    const deviceKey = `${scope.tenantId}\u0000${scope.deviceId}`;
+    const deviceCount = (httpDeviceCounts.get(deviceKey) ?? 1) - 1;
+    if (deviceCount === 0) httpDeviceCounts.delete(deviceKey);
+    else httpDeviceCounts.set(deviceKey, deviceCount);
+    observeHttpLifecycle();
+  };
+
+  const reserveHttpAdmission = (scope: HttpAdmissionScope): void => {
+    const tenantCount = httpTenantCounts.get(scope.tenantId) ?? 0;
+    const deviceKey = `${scope.tenantId}\u0000${scope.deviceId}`;
+    const deviceCount = httpDeviceCounts.get(deviceKey) ?? 0;
+    if (
+      httpGlobalCount >= HTTP_SSE_GLOBAL_CONNECTION_LIMIT ||
+      tenantCount >= HTTP_SSE_TENANT_CONNECTION_LIMIT ||
+      deviceCount >= HTTP_SSE_DEVICE_CONNECTION_LIMIT
+    ) {
+      throw new GatewayRbpFault(
+        "unavailable",
+        "HTTP/SSE connection admission limit reached",
+        429,
+        1013,
+      );
+    }
+    httpGlobalCount += 1;
+    httpTenantCounts.set(scope.tenantId, tenantCount + 1);
+    httpDeviceCounts.set(deviceKey, deviceCount + 1);
+    observeHttpLifecycle();
+  };
+
+  const disposeHttpConnection = (entry: HttpConnectionEntry): Promise<void> => {
+    if (entry.disposePromise !== null) return entry.disposePromise;
+    entry.state = "disposing";
+    // Make this connection invisible to new work before any transport or
+    // authority operation. All terminal paths converge here, so counters are
+    // released exactly once even when close/error/TTL race each other.
+    httpConnections.delete(entry.connectionId);
+    releaseHttpAdmission(entry.scope);
+    httpDisposed.set(entry.connectionId, httpSseClock() + HTTP_SSE_DISPOSED_TOMBSTONE_TTL_MS);
+    let settle!: () => void;
+    entry.disposePromise = new Promise<void>((resolve) => {
+      settle = resolve;
+    });
+    void (async () => {
+      try {
+        await entry.channel.close();
+      } catch {
+        // A transport failure cannot retain the admission reservation.
+      }
+      try {
+        await authority.detach(entry.connectionId);
+      } catch {
+        // Detach is containment work; the admission has already been released.
+      } finally {
+        entry.state = "disposed";
+        settle();
+      }
+    })();
+    return entry.disposePromise;
+  };
+
+  const disposeHttpCredentialFailure = async (
+    entry: HttpConnectionEntry | undefined,
+    error: unknown,
+  ): Promise<void> => {
+    if (
+      entry !== undefined &&
+      error instanceof GatewayRbpFault &&
+      error.httpStatus === 403
+    ) {
+      await disposeHttpConnection(entry);
+    }
+  };
+
+  const sweepHttpConnections = (): void => {
+    const now = httpSseClock();
+    for (const [connectionId, expiresAtMs] of httpDisposed) {
+      if (expiresAtMs <= now) httpDisposed.delete(connectionId);
+    }
+    for (const entry of [...httpConnections.values()]) {
+      if (entry.expiresAtMs <= now) void disposeHttpConnection(entry);
+    }
+  };
+
+  const sameStringList = (
+    left: readonly string[] | undefined,
+    right: readonly string[] | undefined,
+  ): boolean => {
+    if (left === undefined || right === undefined) return left === right;
+    return left.length === right.length && left.every((value, index) => value === right[index]);
+  };
+
+  const admissionScope = (authenticated: DeviceAuthContext): HttpAdmissionScope =>
+    Object.freeze({
+      tenantId: authenticated.actor.tenantId,
+      userId: authenticated.actor.userId,
+      deviceId: authenticated.actor.deviceId,
+      seatId: authenticated.actor.seatId,
+      deviceTokenDigest: authenticated.deviceTokenDigest,
+      machineFingerprint: authenticated.machineFingerprint,
+      authorizationVersion: authenticated.authorizationVersion,
+      identityRecordVersion: authenticated.identityRecordVersion,
+      connectionCapabilityVersion: authenticated.connectionCapabilityVersion,
+      sessionCapabilityVersion: authenticated.sessionCapabilityVersion,
+      seatAuthorityVersion: authenticated.seatAuthorityVersion,
+      seatRecordVersion: authenticated.seatRecordVersion,
+      grantedConnectionCapabilities: authenticated.grantedConnectionCapabilities,
+      grantedSessionCapabilities: authenticated.grantedSessionCapabilities,
+    });
+
+  const admissionScopeMatches = (
+    expected: HttpAdmissionScope,
+    actual: DeviceAuthContext,
+  ): boolean =>
+    actual.deviceStatus === "active" &&
+    actual.actor.tenantId === expected.tenantId &&
+    actual.actor.userId === expected.userId &&
+    actual.actor.deviceId === expected.deviceId &&
+    actual.actor.seatId === expected.seatId &&
+    actual.deviceTokenDigest === expected.deviceTokenDigest &&
+    actual.machineFingerprint === expected.machineFingerprint &&
+    actual.authorizationVersion === expected.authorizationVersion &&
+    actual.identityRecordVersion === expected.identityRecordVersion &&
+    actual.connectionCapabilityVersion === expected.connectionCapabilityVersion &&
+    actual.sessionCapabilityVersion === expected.sessionCapabilityVersion &&
+    actual.seatAuthorityVersion === expected.seatAuthorityVersion &&
+    actual.seatRecordVersion === expected.seatRecordVersion &&
+    sameStringList(expected.grantedConnectionCapabilities, actual.grantedConnectionCapabilities) &&
+    sameStringList(expected.grantedSessionCapabilities, actual.grantedSessionCapabilities);
+
+  const preauthenticateHttpScope = async (
+    hello: HelloEnvelope,
+    deviceToken: string | undefined,
+  ): Promise<HttpAdmissionScope> => {
+    const authenticated = await authority.identity.authenticateDevice({
+      deviceToken,
+      connectionId: gatewayUuidV7(httpSseClock()),
+      claimedDeviceId: hello.payload.device_id,
+      machineFingerprint: hello.payload.machine.fingerprint,
+      machineHostname: hello.payload.machine.hostname,
+    });
+    if (!authenticated.ok) {
+      throw new GatewayRbpFault("auth", authenticated.message, 401, 4401);
+    }
+    if (authenticated.value.deviceStatus !== "active") {
+      throw new GatewayRbpFault("auth", "device or seat is not active", 403, 4403);
+    }
+    if (authenticated.value.actor.deviceId !== hello.payload.device_id) {
+      throw new GatewayRbpFault("auth", "hello device identity does not match credential", 403, 4403);
+    }
+    return admissionScope(authenticated.value);
+  };
 
   const bestEffort = (operation: () => unknown): void => {
     try {
@@ -257,6 +1254,13 @@ export function createProductionRbpIngressHost(options: {
     }
   };
 
+  const observeWssInternalDiagnostic = (
+    diagnostic: RbpWssInternalDiagnostic,
+  ): void => {
+    if (options.onWssInternalDiagnostic === undefined) return;
+    bestEffort(() => options.onWssInternalDiagnostic!(Object.freeze(diagnostic)));
+  };
+
   const host: ProductionRbpIngressHost = {
     kind: "postgres" as const,
     mountPrefix: RBP_INGRESS_MOUNT_PREFIX,
@@ -270,15 +1274,16 @@ export function createProductionRbpIngressHost(options: {
     },
     async start(): Promise<void> {
       await authority.open();
-      livenessTimer = setInterval(() => {
+      livenessTimer = scheduleHttpSseSweep(() => {
+        sweepHttpConnections();
         void authority.sweepLiveness().catch(() => {
           // Losing durable liveness authority is a fail-closed condition: keep
           // existing sockets available for shutdown evidence, but admit no new
           // connection that could be mistaken for authorized dispatch state.
           draining = true;
         });
-      }, 5_000);
-      livenessTimer.unref();
+      }, HTTP_SSE_SWEEP_INTERVAL_MS);
+      (livenessTimer as unknown as { readonly unref?: () => void }).unref?.();
     },
     mount(app): void {
       app.post(
@@ -299,14 +1304,68 @@ export function createProductionRbpIngressHost(options: {
               throw new GatewayRbpFault("protocol", "create body must be hello", 400, 4400);
             }
             openingCorrelationId = hello.id;
-            const channel = new HttpSseChannel();
-            const opened = await authority.openConnection({
-              deviceToken: bearer(request.headers.authorization),
-              binding: "http_sse",
-              hello: hello as HelloEnvelope,
-              channel,
+            const opened = await httpAdmission(async () => {
+              const deviceToken = bearer(request.headers.authorization);
+              const scope = await preauthenticateHttpScope(hello as HelloEnvelope, deviceToken);
+              reserveHttpAdmission(scope);
+              let entry: HttpConnectionEntry | null = null;
+              let openedConnectionId: string | null = null;
+              const channel = new HttpSseChannel(
+                () => {
+                  if (entry !== null) void disposeHttpConnection(entry);
+                },
+                observeHttpSseDelivery,
+                httpSseQueuedFrameLimit,
+                httpSseQueuedByteLimit,
+                httpSseTeardownTimeoutMs,
+              );
+              try {
+                const opening = await authority.openConnection({
+                  deviceToken,
+                  binding: "http_sse",
+                  hello: hello as HelloEnvelope,
+                  channel,
+                });
+                openedConnectionId = opening.connectionId;
+                channel.bindConnection(opening.connectionId);
+                const boundConnection = await authority.assertConnectionCredential(
+                  opening.connectionId,
+                  deviceToken,
+                );
+                if (!admissionScopeMatches(scope, boundConnection.auth)) {
+                  throw new GatewayRbpFault(
+                    "auth",
+                    "HTTP/SSE admission identity changed before connection binding",
+                    403,
+                    4403,
+                  );
+                }
+                entry = {
+                  connectionId: opening.connectionId,
+                  channel,
+                  scope,
+                  state: "created",
+                  expiresAtMs: httpSseClock() + HTTP_SSE_ATTACH_TTL_MS,
+                  disposePromise: null,
+                };
+                httpConnections.set(opening.connectionId, entry);
+                observeHttpLifecycle();
+                authority.assertConnectionOutbound(opening.connectionId);
+                return opening;
+              } catch (error) {
+                if (entry === null) {
+                  releaseHttpAdmission(scope);
+                  if (openedConnectionId !== null) {
+                    try {
+                      await authority.detach(openedConnectionId);
+                    } catch {
+                      // The failed opening is already invisible and uncharged.
+                    }
+                  }
+                } else await disposeHttpConnection(entry);
+                throw error;
+              }
             });
-            httpChannels.set(opened.connectionId, channel);
             return reply
               .header("RBP-Connection-Id", opened.connectionId)
               .header("Cache-Control", "no-store")
@@ -333,15 +1392,23 @@ export function createProductionRbpIngressHost(options: {
         "/bridge/v1/http/connections/:connection_id/events",
         async (request, reply) => {
           const connectionId = (request.params as { connection_id: string }).connection_id;
+          let entry: HttpConnectionEntry | undefined;
           try {
+            entry = httpConnections.get(connectionId);
+            if (entry === undefined) {
+              throw new GatewayRbpFault(
+                "unavailable",
+                httpDisposed.has(connectionId) ? "connection is disposed" : "unknown connection",
+                httpDisposed.has(connectionId) ? 410 : 404,
+                4401,
+              );
+            }
+            const attachedEntry = entry;
             await authority.assertConnectionCredential(
               connectionId,
               bearer(request.headers.authorization),
             );
-            const channel = httpChannels.get(connectionId);
-            if (channel === undefined) {
-              throw new GatewayRbpFault("auth", "unknown connection", 404, 4401);
-            }
+            authority.assertConnectionOutbound(connectionId);
             reply.hijack();
             reply.raw.writeHead(200, {
               "Cache-Control": "no-cache, no-store",
@@ -350,13 +1417,18 @@ export function createProductionRbpIngressHost(options: {
               "X-Accel-Buffering": "no",
             });
             reply.raw.flushHeaders();
-            channel.attach(reply.raw);
+            await attachedEntry.channel.attach(reply.raw);
+            if (attachedEntry.state !== "registered") {
+              attachedEntry.state = "sse_attached";
+              attachedEntry.expiresAtMs = httpSseClock() + HTTP_SSE_ATTACH_TTL_MS;
+            }
             // Last-Event-ID is deliberately ignored. RBP sequence state is the
             // only replay authority and lives in the durable session record.
             reply.raw.once("close", () => {
-              void authority.detach(connectionId);
+              void disposeHttpConnection(attachedEntry);
             });
           } catch (error) {
+            await disposeHttpCredentialFailure(entry, error);
             if (error instanceof GatewayRbpFault) {
               return reply.code(error.httpStatus).send(faultBody(error));
             }
@@ -370,16 +1442,36 @@ export function createProductionRbpIngressHost(options: {
         { bodyLimit: MAX_HTTP_MESSAGE_BYTES },
         async (request, reply) => {
           const connectionId = (request.params as { connection_id: string }).connection_id;
+          let entry: HttpConnectionEntry | undefined;
           try {
+            entry = httpConnections.get(connectionId);
+            if (entry === undefined) {
+              throw new GatewayRbpFault(
+                "unavailable",
+                httpDisposed.has(connectionId) ? "connection is disposed" : "unknown connection",
+                httpDisposed.has(connectionId) ? 410 : 404,
+                4401,
+              );
+            }
             await authority.assertConnectionCredential(
               connectionId,
               bearer(request.headers.authorization),
             );
             const envelope = frame(request.body);
             await authority.receive(connectionId, envelope);
+            if (envelope.type === "session_register" || envelope.type === "session_resume") {
+              entry.state = "registered";
+              entry.expiresAtMs = httpSseClock() + HTTP_SSE_REGISTER_TTL_MS;
+            } else if (entry.state === "registered" && envelope.type === "heartbeat") {
+              // The entry is already located by connection id, so heartbeat
+              // renewal never scans the connection registry.
+              entry.expiresAtMs = httpSseClock() + HTTP_SSE_REGISTER_TTL_MS;
+            }
+            authority.assertConnectionOutbound(connectionId);
             // receive() commits sequence/journal changes before resolving.
             return reply.code(202).send({ accepted: true });
           } catch (error) {
+            await disposeHttpCredentialFailure(entry, error);
             if (error instanceof GatewayRbpFault) {
               return reply.code(error.httpStatus).send(faultBody(error));
             }
@@ -412,130 +1504,795 @@ export function createProductionRbpIngressHost(options: {
           return;
         }
         websocketServer.handleUpgrade(request, socket, head, (websocket) => {
-          let connectionId: string | null = null;
-          let opening = true;
+          let state: WssConnectionState = "opening";
+          let authorityConnectionId: string | null = null;
+          let openingCorrelationId: string | null = null;
           let openingRefusalObserved = false;
-          const channel: BridgeConnectionChannel = {
-            async send(serialized): Promise<void> {
-              if (websocket.readyState !== WebSocket.OPEN) {
-                throw new Error("WSS transport is not open");
+          let queuedFrames = 0;
+          let queuedBytes = 0;
+          let queuedByteLimit = localQueuedByteLimit;
+          let pauseAtBytes = Math.ceil((queuedByteLimit * 3) / 4);
+          let resumeBelowBytes = Math.ceil(queuedByteLimit / 2);
+          let readsPaused = false;
+          let serialTail: Promise<void> = Promise.resolve();
+          let egressTail: Promise<void> = Promise.resolve();
+          let applicationEgressFrames = 0;
+          let applicationEgressBytes = 0;
+          let egressQueuedByteLimit = localEgressQueuedByteLimit;
+          let terminalEgressClaimed = false;
+          let terminalErrorAttempted = false;
+          let teardownTask: Promise<void> | null = null;
+          let detachRequested = false;
+          let detachedConnectionId: string | null = null;
+          let detachTask: Promise<void> | null = null;
+          let transportFinalized = false;
+          const pendingSendCancellations = new Set<(error: Error) => void>();
+          const pendingDispatchCancellations = new Set<() => Promise<DispatchPreStartCancellation>>();
+          // These are the raw durable tasks. They are intentionally distinct
+          // from the 250ms caller observation used by the dispatch adapter.
+          const rawDispatchSettlements = new Set<Promise<DispatchPreStartCancellation>>();
+
+          const internalFault = (error: unknown): GatewayRbpFault =>
+            new GatewayRbpFault(
+              "unavailable",
+              error instanceof Error ? error.message : String(error),
+              500,
+              1011,
+            );
+
+          const append = (operation: () => Promise<void>): Promise<void> => {
+            const task = serialTail.then(operation);
+            serialTail = task.catch(() => {
+              // Every socket-owned task has a rejection observer. Individual
+              // operations translate failures into the first teardown below.
+            });
+            return task;
+          };
+
+          const appendEgress = (operation: () => Promise<void>): Promise<void> => {
+            const task = egressTail.then(operation);
+            egressTail = task.catch(() => {
+              // The caller owns the observed task; the tail remains fulfilled
+              // so one failed write cannot create an unhandled rejection.
+            });
+            return task;
+          };
+
+          const observeDiagnostic = (
+            phase: RbpWssInternalDiagnostic["phase"],
+            faultClass: RbpWssInternalDiagnostic["faultClass"],
+            closeCode: number,
+            error: unknown,
+          ): void => {
+            observeWssInternalDiagnostic({
+              contractVersion: RBP_WSS_INTERNAL_DIAGNOSTIC_CONTRACT,
+              event: "gateway.rbp_wss_internal_diagnostic",
+              phase,
+              faultClass,
+              closeCode,
+              detail: error instanceof Error ? error.message : String(error),
+            });
+          };
+
+          const cancelPendingSends = (error: Error): void => {
+            for (const cancel of [...pendingSendCancellations]) cancel(error);
+          };
+
+          const ownCancellation = (
+            handoff: DispatchTransportHandoff,
+          ): (() => Promise<DispatchPreStartCancellation>) => {
+            let raw: Promise<DispatchPreStartCancellation> | null = null;
+            return (): Promise<DispatchPreStartCancellation> => {
+              if (raw !== null) return raw;
+              raw = rawDispatchCancellation(handoff);
+              rawDispatchSettlements.add(raw);
+              void raw.then(() => {
+                rawDispatchSettlements.delete(raw!);
+              });
+              return raw;
+            };
+          };
+
+          const cancelPendingDispatches = (): void => {
+            for (const requestCancellation of [...pendingDispatchCancellations]) {
+              void requestCancellation();
+            }
+          };
+
+          const settleRawDispatchCancellations = async (): Promise<void> => {
+            for (;;) {
+              const snapshot = [...rawDispatchSettlements];
+              if (snapshot.length === 0) return;
+              await Promise.allSettled(snapshot);
+              if (rawDispatchSettlements.size === 0) return;
+            }
+          };
+
+          const sendRaw = async (serialized: string): Promise<void> => {
+            if (websocket.readyState !== WebSocket.OPEN) {
+              throw new Error("WSS transport is not open");
+            }
+            // The negotiated current frame owns its own protocol byte limit.
+            // This guard measures only backlog that existed before this send.
+            if (websocket.bufferedAmount > MAX_PENDING_TRANSPORT_BYTES) {
+              throw new Error("WSS backlog exceeds the bounded transport window");
+            }
+            await new Promise<void>((resolve, reject) => {
+              let settled = false;
+              const finish = (error?: unknown): void => {
+                if (settled) return;
+                settled = true;
+                pendingSendCancellations.delete(cancel);
+                if (error === undefined || error === null) resolve();
+                else reject(error);
+              };
+              const cancel = (error: Error): void => finish(error);
+              pendingSendCancellations.add(cancel);
+              try {
+                websocket.send(serialized, (error) => finish(error));
+              } catch (error) {
+                finish(error);
               }
-              if (
-                websocket.bufferedAmount + Buffer.byteLength(serialized) >
-                MAX_PENDING_TRANSPORT_BYTES
-              ) {
-                throw new Error("WSS backlog exceeds the bounded transport window");
+            });
+          };
+
+          const sendSerialized = async (serialized: string): Promise<void> => {
+            if (
+              terminalEgressClaimed ||
+              state === "closing" ||
+              state === "faulted" ||
+              state === "closed"
+            ) {
+              throw new Error("WSS normal egress is closed");
+            }
+            const serializedBytes = Buffer.byteLength(serialized);
+            const nextFrames = applicationEgressFrames + 1;
+            const nextBytes = applicationEgressBytes + serializedBytes;
+            if (
+              nextFrames > egressQueuedFrameLimit ||
+              nextBytes > egressQueuedByteLimit
+            ) {
+              egressOverload();
+              throw new Error("WSS application egress queue overloaded");
+            }
+            applicationEgressFrames = nextFrames;
+            applicationEgressBytes = nextBytes;
+            try {
+              await appendEgress(async () => {
+                if (
+                  terminalEgressClaimed ||
+                  state === "closing" ||
+                  state === "faulted" ||
+                  state === "closed"
+                ) {
+                  throw new Error("WSS normal egress is closed");
+                }
+                await sendRaw(serialized);
+              });
+            } catch (error) {
+              observeDiagnostic("egress", "internal", 1011, error);
+              throw error;
+            } finally {
+              applicationEgressFrames -= 1;
+              applicationEgressBytes -= serializedBytes;
+            }
+          };
+
+          const sendDispatchStarted = (
+            serialized: string,
+            handoff: DispatchTransportHandoff,
+          ): { readonly started: Promise<void>; readonly completion: Promise<void>; cancel(): Promise<boolean> } => {
+            let resolveStarted!: () => void;
+            let rejectStarted!: (error: Error) => void;
+            let startedSettled = false;
+            const started = new Promise<void>((resolve, reject) => {
+              resolveStarted = resolve;
+              rejectStarted = reject;
+            });
+            // Callers may stop waiting after the bounded-start race; retain
+            // both rejection observers here so a later close/error cannot
+            // become a process-level unhandled rejection.
+            void started.catch(() => undefined);
+            let cancelled = false;
+            // `startedSettled` means only that the caller was notified. A
+            // synchronous queue rejection also settles it, but has not
+            // crossed websocket.send(). Cancellation must remain eligible
+            // until that concrete invocation boundary.
+            let transportStarted = false;
+            const controller = new AbortController();
+            const requestCancellation = ownCancellation(handoff);
+            pendingDispatchCancellations.add(requestCancellation);
+            const rejectStart = (error: unknown): void => {
+              if (startedSettled) return;
+              startedSettled = true;
+              rejectStarted(error instanceof Error ? error : new Error(String(error)));
+            };
+            const serializedBytes = Buffer.byteLength(serialized);
+            const nextFrames = applicationEgressFrames + 1;
+            const nextBytes = applicationEgressBytes + serializedBytes;
+            if (
+              nextFrames > egressQueuedFrameLimit ||
+              nextBytes > egressQueuedByteLimit
+            ) {
+              // Register the raw durable task before teardown can detach the
+              // connection. The bounded observer below is presentation only.
+              const cancellation = requestCancellation();
+              pendingDispatchCancellations.delete(requestCancellation);
+              egressOverload();
+              const overloadError = new Error("WSS application egress queue overloaded");
+              rejectStart(overloadError);
+              const completion = Promise.reject<void>(overloadError);
+              void completion.catch(() => undefined);
+              // The queue rejected this dispatch before revalidation, but the
+              // Gateway has already persisted its reserved lease/pending
+              // record.  Do not claim a no-send outcome until that exact
+              // durable cancellation wins.  The promise is intentionally
+              // shared so a started-race cleanup and teardown cannot each
+              // invoke a new cancellation against a later lease.
+              const cancel = async (): Promise<boolean> => {
+                return (await observeDispatchCancellation(cancellation)) === "settled_no_send";
+              };
+              return { started, completion, cancel };
+            }
+            applicationEgressFrames = nextFrames;
+            applicationEgressBytes = nextBytes;
+            const completion = appendEgress(async () => {
+              if (cancelled) throw new Error("WSS dispatch queue cancelled before invocation");
+              if (terminalEgressClaimed || state === "closing" || state === "faulted" || state === "closed") {
+                void requestCancellation();
+                throw new Error("WSS dispatch egress is closed");
               }
+              // The adapter bounds a stalled producer and observes its late
+              // rejection. No await follows successful validation before
+              // websocket.send below.
+              await boundedDispatchRevalidate(
+                handoff,
+                controller,
+                sendCompletionTimeoutMs,
+                requestCancellation,
+              );
+              if (cancelled) throw new Error("WSS dispatch queue cancelled before invocation");
+              if (websocket.readyState !== WebSocket.OPEN) throw new Error("WSS transport is not open");
               await new Promise<void>((resolve, reject) => {
-                websocket.send(serialized, (error) =>
-                  error === undefined || error === null
-                    ? resolve()
-                    : reject(error),
+                let settled = false;
+                const finish = (error?: unknown): void => {
+                  if (settled) return;
+                  settled = true;
+                  pendingSendCancellations.delete(cancel);
+                  if (error === undefined || error === null) resolve();
+                  else reject(error);
+                };
+                const cancel = (error: Error): void => finish(error);
+                pendingSendCancellations.add(cancel);
+                try {
+                  transportStarted = true;
+                  pendingDispatchCancellations.delete(requestCancellation);
+                  websocket.send(serialized, (error) => finish(error));
+                  if (!startedSettled) {
+                    startedSettled = true;
+                    resolveStarted();
+                  }
+                } catch (error) {
+                  finish(error);
+                }
+              });
+            }).finally(() => {
+              if (!transportStarted) {
+                void requestCancellation();
+              }
+              pendingDispatchCancellations.delete(requestCancellation);
+              applicationEgressFrames -= 1;
+              applicationEgressBytes -= serializedBytes;
+            });
+            void completion.catch((error: unknown) => rejectStart(error));
+            void completion.catch(() => undefined);
+            return {
+              started,
+              completion,
+              async cancel(): Promise<boolean> {
+                if (transportStarted) return false;
+                cancelled = true;
+                controller.abort();
+                rejectStart(new Error("WSS dispatch queue cancelled before invocation"));
+                return (await observeDispatchCancellation(requestCancellation())) === "settled_no_send";
+              },
+            };
+          };
+
+          const settleEgressForTeardown = async (
+            terminalSerialized: string | null,
+            closeCode: number,
+          ): Promise<"settled" | "failed" | "timed_out"> => {
+            let timedOut = false;
+            let timer: ReturnType<typeof setTimeout> | null = null;
+            const operation = (async (): Promise<"settled" | "timed_out"> => {
+              await egressTail;
+              if (timedOut) return "timed_out";
+              if (terminalSerialized !== null && !terminalErrorAttempted) {
+                terminalErrorAttempted = true;
+                await sendRaw(terminalSerialized);
+              }
+              return "settled";
+            })();
+            const observedOperation = operation.catch((error: unknown) => {
+              observeDiagnostic("egress", "internal", closeCode, error);
+              return timedOut ? ("timed_out" as const) : ("failed" as const);
+            });
+            const timeout = new Promise<"timed_out">((resolve) => {
+              timer = setTimeout(() => {
+                timedOut = true;
+                cancelPendingSends(new Error("WSS send completion timed out"));
+                resolve("timed_out");
+              }, sendCompletionTimeoutMs);
+            });
+            const result = await Promise.race([observedOperation, timeout]);
+            if (timer !== null) clearTimeout(timer);
+            if (result === "timed_out") {
+              cancelPendingSends(new Error("WSS send completion timed out"));
+              await egressTail;
+            }
+            return result;
+          };
+
+          const safeChannelCloseReason = (code: number): string =>
+            code === 1001
+              ? "server draining"
+              : code === 4401
+                ? "RBP authentication failed"
+                : code === 4403
+                  ? "RBP authorization failed"
+                  : code === 4426
+                    ? "RBP version negotiation failed"
+                    : code === 1011
+                      ? "RBP internal error"
+                      : "RBP connection closed";
+
+          const detachOnce = (): Promise<void> => {
+            detachRequested = true;
+            if (authorityConnectionId === null) return Promise.resolve();
+            if (detachedConnectionId !== null) return detachTask ?? Promise.resolve();
+            detachedConnectionId = authorityConnectionId;
+            detachTask = authority.detach(authorityConnectionId).catch((error: unknown) => {
+              observeDiagnostic("teardown", "internal", 1011, error);
+            });
+            return detachTask;
+          };
+
+          const finalizeTransportOnce = (
+            force: boolean,
+            closeCode: number | null,
+            closeReason: string,
+          ): void => {
+            if (transportFinalized) return;
+            transportFinalized = true;
+            if (websocket.readyState === WebSocket.CLOSED) return;
+            if (!force && websocket.readyState === WebSocket.CLOSING) {
+              // ws already owns a protocol close (for example maxPayload 1009).
+              return;
+            }
+            if (force || closeCode === null || websocket.readyState !== WebSocket.OPEN) {
+              try {
+                websocket.terminate();
+              } catch (error) {
+                observeDiagnostic("teardown", "internal", 1011, error);
+              }
+              return;
+            }
+            try {
+              websocket.close(closeCode, closeReason.slice(0, 123));
+            } catch (error) {
+              observeDiagnostic("teardown", "internal", 1011, error);
+              try {
+                websocket.terminate();
+              } catch (terminateError) {
+                observeDiagnostic("teardown", "internal", 1011, terminateError);
+              }
+            }
+          };
+
+          const scheduleTeardown = (input: {
+            readonly closeCode: number | null;
+            readonly closeReason: string;
+            readonly publicFault: PublicWssFault | null;
+            readonly sendFaultFrame: boolean;
+            readonly faultCorrelationId: string | null;
+          }): Promise<void> => {
+            if (teardownTask !== null) return teardownTask;
+            terminalEgressClaimed = true;
+            if (state !== "faulted" && state !== "closed") state = "closing";
+            const pendingAtClaim = pendingSendCancellations.size;
+            const claimedEgressTail = egressTail;
+            let accountingObserved = false;
+            let watchdogFired = false;
+            let watchdogTimer: ReturnType<typeof setTimeout> | null = null;
+            const watchdog = new Promise<void>((resolve) => {
+              watchdogTimer = setTimeout(() => {
+                watchdogFired = true;
+                cancelPendingSends(new Error("WSS teardown watchdog expired"));
+                cancelPendingDispatches();
+                observeDiagnostic(
+                  "egress",
+                  "internal",
+                  input.closeCode ?? 1011,
+                  new Error("WSS send completion timed out"),
+                );
+                finalizeTransportOnce(true, input.closeCode, input.closeReason);
+                void detachOnce();
+                state = "closed";
+                resolve();
+              }, sendCompletionTimeoutMs);
+            });
+            // This cancellation must happen before the cleanup is appended
+            // behind serialTail: processFrame may itself be awaiting this send.
+            cancelPendingSends(new Error("WSS send cancelled for teardown"));
+            cancelPendingDispatches();
+            if (pendingAtClaim > 0) {
+              void claimedEgressTail.then(() => {
+                if (accountingObserved) return;
+                accountingObserved = true;
+                observeDiagnostic(
+                  "egress",
+                  "internal",
+                  input.closeCode ?? 1011,
+                  new Error(
+                    `WSS egress accounting released frames=${String(applicationEgressFrames)} bytes=${String(applicationEgressBytes)}`,
+                  ),
                 );
               });
-            },
+            }
+            const serializedCleanup = append(async () => {
+              if (watchdogFired) return;
+              if (readsPaused) {
+                try {
+                  websocket.resume();
+                } catch {
+                  // The watchdog owns the force-close fallback.
+                }
+                readsPaused = false;
+              }
+              const terminalSerialized =
+                input.publicFault !== null && input.sendFaultFrame
+                  ? JSON.stringify({
+                      v: 1,
+                      type: "error",
+                      id: input.faultCorrelationId ?? gatewayUuidV7(Date.now()),
+                      ts: new Date().toISOString(),
+                      payload: {
+                        retryable: false,
+                        fault_class: input.publicFault.wireFaultClass,
+                        outcome: "known",
+                        verification_required: false,
+                        message: input.publicFault.message,
+                      },
+                    } satisfies RbpEnvelope)
+                  : null;
+              const egressResult = await settleEgressForTeardown(
+                terminalSerialized,
+                input.closeCode ?? 1011,
+              );
+              if (watchdogFired) return;
+              // egressTail is quiescent before this snapshot. A cancellation
+              // created by its final failure path is therefore either present
+              // here or will be picked up by the stable-set loop. Do not close
+              // or detach before the raw durable task settles.
+              await settleRawDispatchCancellations();
+              if (watchdogFired) return;
+              if (egressResult === "timed_out") {
+                observeDiagnostic(
+                  "egress",
+                  "internal",
+                  input.closeCode ?? 1011,
+                  new Error("WSS send completion timed out"),
+                );
+                finalizeTransportOnce(true, input.closeCode, input.closeReason);
+              } else {
+                finalizeTransportOnce(false, input.closeCode, input.closeReason);
+              }
+              await detachOnce();
+              if (!watchdogFired) state = "closed";
+            });
+            const observedCleanup = serializedCleanup.catch(async (error: unknown) => {
+              observeDiagnostic("teardown", "internal", 1011, error);
+              finalizeTransportOnce(true, input.closeCode, input.closeReason);
+              await detachOnce();
+              state = "closed";
+            });
+            teardownTask = Promise.race([observedCleanup, watchdog]).finally(() => {
+              if (watchdogTimer !== null) clearTimeout(watchdogTimer);
+            });
+            return teardownTask;
+          };
+
+          const fail = (
+            fault: GatewayRbpFault,
+            phase: RbpWssInternalDiagnostic["phase"],
+            faultCorrelationId: string | null = null,
+          ): void => {
+            if (state === "closing" || state === "closed" || state === "faulted") return;
+            const sendFaultFrame = state === "open";
+            const publicFault = publicWssFault(fault);
+            observeDiagnostic(
+              phase,
+              publicFault.diagnosticFaultClass,
+              publicFault.closeCode,
+              fault,
+            );
+            const observation =
+              state === "opening" && openingCorrelationId !== null
+                ? openingRefusalObservation(fault, openingCorrelationId, "wss")
+                : null;
+            if (!openingRefusalObserved && observation !== null) {
+              openingRefusalObserved = true;
+              observeOpeningRefusal(observation);
+            }
+            terminalEgressClaimed = true;
+            state = "faulted";
+            void scheduleTeardown({
+              closeCode: publicFault.closeCode,
+              closeReason: publicFault.closeReason,
+              publicFault,
+              sendFaultFrame,
+              faultCorrelationId,
+            });
+          };
+
+          const overload = (): void => {
+            if (state === "closing" || state === "closed" || state === "faulted") return;
+            terminalEgressClaimed = true;
+            state = "faulted";
+            void scheduleTeardown({
+              closeCode: 1013,
+              closeReason: "RBP inbound queue overloaded",
+              publicFault: null,
+              sendFaultFrame: false,
+              faultCorrelationId: null,
+            });
+          };
+
+          function egressOverload(): void {
+            if (state === "closing" || state === "closed" || state === "faulted") return;
+            terminalEgressClaimed = true;
+            state = "faulted";
+            void scheduleTeardown({
+              closeCode: 1013,
+              closeReason: "RBP application egress overloaded",
+              publicFault: null,
+              sendFaultFrame: false,
+              faultCorrelationId: null,
+            });
+          }
+
+          const releaseQueueCharge = (bytes: number): void => {
+            queuedFrames -= 1;
+            queuedBytes -= bytes;
+            if (
+              readsPaused &&
+              queuedBytes < resumeBelowBytes &&
+              (state === "opening" || state === "open")
+            ) {
+              try {
+                websocket.resume();
+                readsPaused = false;
+              } catch (error) {
+                fail(internalFault(error), "queue");
+              }
+            }
+          };
+
+          const applyNegotiatedQueueLimits = (opened: {
+            readonly helloAck: {
+              readonly payload: {
+                readonly limits: {
+                  readonly max_params_bytes: number;
+                  readonly max_partial_bytes: number;
+                  readonly max_result_bytes: number;
+                };
+              };
+            };
+          }): boolean => {
+            const negotiatedFrameBudget = wssFrameBudget({
+              maxParamsBytes: opened.helloAck.payload.limits.max_params_bytes,
+              maxPartialBytes: opened.helloAck.payload.limits.max_partial_bytes,
+              maxInlineTerminalBytes: opened.helloAck.payload.limits.max_result_bytes,
+            });
+            queuedByteLimit = configuredQueueBytes(
+              configuredQueuedByteLimit,
+              negotiatedFrameBudget,
+            );
+            egressQueuedByteLimit = configuredEgressQueueBytes(
+              configuredEgressQueuedByteLimit,
+              negotiatedFrameBudget,
+            );
+            pauseAtBytes = Math.ceil((queuedByteLimit * 3) / 4);
+            resumeBelowBytes = Math.ceil(queuedByteLimit / 2);
+            if (queuedFrames > queuedFrameLimit || queuedBytes > queuedByteLimit) {
+              overload();
+              return false;
+            }
+            if (
+              applicationEgressFrames > egressQueuedFrameLimit ||
+              applicationEgressBytes > egressQueuedByteLimit
+            ) {
+              egressOverload();
+              return false;
+            }
+            return true;
+          };
+
+          const channel: BridgeConnectionChannel = {
+            send: sendSerialized,
+            sendDispatchStarted,
             async close(code, reason): Promise<void> {
-              if (websocket.readyState === WebSocket.CLOSED) return;
-              websocket.close(code, reason.slice(0, 123));
+              observeDiagnostic(
+                "teardown",
+                code === 1011 ? "internal" : "protocol",
+                code,
+                reason,
+              );
+              terminalEgressClaimed = true;
+              if (state !== "faulted" && state !== "closed") state = "closing";
+              await scheduleTeardown({
+                closeCode: code,
+                closeReason: safeChannelCloseReason(code),
+                publicFault: null,
+                sendFaultFrame: false,
+                faultCorrelationId: null,
+              });
             },
           };
-          websocket.on("message", (raw, binary) => {
-            void (async () => {
-              let openingCorrelationId: string | null = null;
-              try {
-                if (binary) {
-                  throw new GatewayRbpFault("protocol", "RBP WSS requires text frames", 400, 4400);
-                }
-                const envelope = parseRbpFrame(
-                  Buffer.isBuffer(raw) ? raw : Buffer.from(raw as ArrayBuffer),
+
+          const processFrame = async (bytes: Buffer, binary: boolean): Promise<void> => {
+            if (binary) {
+              throw new GatewayRbpFault(
+                "protocol",
+                "RBP WSS requires text frames",
+                400,
+                4400,
+              );
+            }
+            let envelope: RbpEnvelope;
+            try {
+              envelope = parseRbpFrame(bytes);
+            } catch (error) {
+              throw new GatewayRbpFault(
+                "protocol",
+                error instanceof Error ? error.message : String(error),
+                400,
+                4400,
+              );
+            }
+            if (state === "opening") {
+              if (envelope.type !== "hello") {
+                throw new GatewayRbpFault(
+                  "protocol",
+                  "first WSS frame must be hello",
+                  400,
+                  4400,
                 );
-                if (opening) {
-                  if (envelope.type !== "hello") {
-                    throw new GatewayRbpFault("protocol", "first WSS frame must be hello", 400, 4400);
-                  }
-                  openingCorrelationId = envelope.id;
-                  const opened = await authority.openConnection({
-                    deviceToken: bearer(request.headers.authorization),
-                    binding: "wss",
-                    hello: envelope,
-                    channel,
-                  });
-                  connectionId = opened.connectionId;
-                  opening = false;
-                  await channel.send(JSON.stringify(opened.helloAck));
-                  return;
-                }
-                await authority.receive(connectionId!, envelope);
-              } catch (error) {
-                const fault =
-                  error instanceof GatewayRbpFault
-                    ? error
-                    : new GatewayRbpFault(
-                        "protocol",
-                        error instanceof Error ? error.message : String(error),
-                        400,
-                        4400,
-                      );
-                const observation =
-                  opening && openingCorrelationId !== null
-                    ? openingRefusalObservation(fault, openingCorrelationId, "wss")
-                    : null;
-                if (
-                  !openingRefusalObserved &&
-                  observation !== null
-                ) {
-                  // Claim before invoking any best-effort sink so duplicate
-                  // hello frames cannot race the observer side effect.
-                  openingRefusalObserved = true;
-                  observeOpeningRefusal(observation);
-                }
-                if (!opening && websocket.readyState === WebSocket.OPEN) {
-                  try {
-                    await channel.send(
-                      JSON.stringify({
-                        v: 1,
-                        type: "error",
-                        id: gatewayUuidV7(Date.now()),
-                        ts: new Date().toISOString(),
-                        payload: {
-                          retryable: false,
-                          fault_class: fault.code === "auth" ? "auth" : "protocol",
-                          outcome: "known",
-                          verification_required: false,
-                          message: fault.message,
-                        },
-                      } satisfies RbpEnvelope),
-                    );
-                  } catch {
-                    // The authenticated close code remains authoritative when
-                    // the peer cannot accept the final control frame.
-                  }
-                }
-                websocket.close(fault.closeCode, fault.message.slice(0, 123));
               }
-            })();
+              openingCorrelationId = envelope.id;
+              const opened = await authority.openConnection({
+                deviceToken: bearer(request.headers.authorization),
+                binding: "wss",
+                hello: envelope,
+                channel,
+              });
+              if (authorityConnectionId !== null) {
+                throw new Error("WSS socket attempted to claim a second authority connection");
+              }
+              authorityConnectionId = opened.connectionId;
+              if (detachRequested) void detachOnce();
+              if (state !== "opening") return;
+              if (!applyNegotiatedQueueLimits(opened)) return;
+              authority.assertConnectionOutbound(opened.connectionId);
+              await channel.send(JSON.stringify(opened.helloAck));
+              if (state === "opening") state = "open";
+              return;
+            }
+            if (state !== "open") return;
+            if (envelope.type === "hello") {
+              throw new GatewayRbpFault(
+                "protocol",
+                "hello is only valid as the first WSS frame",
+                400,
+                4400,
+              );
+            }
+            if (authorityConnectionId === null) {
+              throw new Error("open WSS socket has no authority connection");
+            }
+            await authority.receive(authorityConnectionId, envelope);
+          };
+
+          const enqueueFrame = (raw: RawData, binary: boolean): void => {
+            if (state !== "opening" && state !== "open") return;
+            let bytes: Buffer;
+            try {
+              bytes = rawFrame(raw);
+            } catch (error) {
+              fail(internalFault(error), "queue");
+              return;
+            }
+            const nextFrames = queuedFrames + 1;
+            const nextBytes = queuedBytes + bytes.byteLength;
+            if (nextFrames > queuedFrameLimit || nextBytes > queuedByteLimit) {
+              overload();
+              return;
+            }
+            queuedFrames = nextFrames;
+            queuedBytes = nextBytes;
+            if (!readsPaused && queuedBytes >= pauseAtBytes) {
+              try {
+                websocket.pause();
+                readsPaused = true;
+              } catch (error) {
+                releaseQueueCharge(bytes.byteLength);
+                fail(internalFault(error), "queue");
+                return;
+              }
+            }
+            const task = append(async () => {
+              try {
+                if (state !== "opening" && state !== "open") return;
+                await processFrame(bytes, binary);
+              } catch (error) {
+                fail(
+                  error instanceof GatewayRbpFault ? error : internalFault(error),
+                  state === "opening" ? "opening" : "receive",
+                  binary ? null : safeWssFrameCorrelationId(bytes),
+                );
+              } finally {
+                releaseQueueCharge(bytes.byteLength);
+              }
+            });
+            void task.catch(() => {
+              // append() has already installed the queue-tail rejection sink.
+            });
+          };
+
+          websocket.on("error", (error) => {
+            fail(internalFault(error), "transport");
           });
           websocket.once("close", () => {
-            if (connectionId !== null) void authority.detach(connectionId);
+            terminalEgressClaimed = true;
+            if (state !== "faulted" && state !== "closed") state = "closing";
+            void scheduleTeardown({
+              closeCode: null,
+              closeReason: "WSS transport closed",
+              publicFault: null,
+              sendFaultFrame: false,
+              faultCorrelationId: null,
+            });
           });
+          websocket.on("message", enqueueFrame);
         });
       })().catch((error: unknown) => {
-        rawResponse(socket, 503, {
-          error: error instanceof Error ? error.message : String(error),
+        observeWssInternalDiagnostic({
+          contractVersion: RBP_WSS_INTERNAL_DIAGNOSTIC_CONTRACT,
+          event: "gateway.rbp_wss_internal_diagnostic",
+          phase: "opening",
+          faultClass: "internal",
+          closeCode: 1011,
+          detail: error instanceof Error ? error.message : String(error),
         });
+        rawResponse(socket, 503, { error: "RBP upgrade unavailable" });
       });
     },
     beginDrain(): void {
       draining = true;
+      for (const entry of [...httpConnections.values()]) {
+        void disposeHttpConnection(entry);
+      }
     },
     async close(): Promise<void> {
       draining = true;
       if (livenessTimer !== null) {
-        clearInterval(livenessTimer);
+        clearHttpSseSweep(livenessTimer);
         livenessTimer = null;
       }
-      for (const channel of httpChannels.values()) await channel.close();
-      httpChannels.clear();
+      await Promise.all(
+        [...httpConnections.values()].map((entry) => disposeHttpConnection(entry)),
+      );
       websocketServer.close();
       await authority.close();
     },

@@ -661,6 +661,31 @@ export interface SessionResume {
   rsid: string;
   resume_token: string;
   last_rx_seq: number;
+  route_rebind_proof?: RouteRebindProof;
+  [k: string]: unknown;
+}
+export interface RouteRebindProof {
+  version: 1;
+  connection_id: string;
+  proof_id: string;
+  context: RouteRebindDocumentContext;
+  context_digest: string;
+  freshness: {
+    source_revision: number;
+    cache_incarnation_digest: string;
+  };
+}
+export interface RouteRebindDocumentContext {
+  documents: Documents;
+  active_document: string | null;
+  active_view: ActiveView | null;
+  discipline_hint?: string;
+}
+export interface ActiveView {
+  id: string;
+  name: string;
+  type: string;
+  level?: string | null;
   [k: string]: unknown;
 }
 export interface ResumeAck {
@@ -769,13 +794,6 @@ export interface DocContextUpdate {
   active_document: string | null;
   active_view: ActiveView | null;
   discipline_hint?: string;
-  [k: string]: unknown;
-}
-export interface ActiveView {
-  id: string;
-  name: string;
-  type: string;
-  level?: string | null;
   [k: string]: unknown;
 }
 export interface ManifestCheck {

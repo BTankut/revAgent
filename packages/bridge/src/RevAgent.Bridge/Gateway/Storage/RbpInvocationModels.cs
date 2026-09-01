@@ -1,4 +1,5 @@
 using System.Text.Json;
+using RevAgent.Bridge.Gateway.Protocol;
 
 namespace RevAgent.Bridge.Gateway.Storage;
 
@@ -65,7 +66,8 @@ internal sealed record RbpStoredInvocation(
     string? LateResultDigest,
     long CreatedAtMilliseconds,
     long? StartedAtMilliseconds,
-    long? FinishedAtMilliseconds)
+    long? FinishedAtMilliseconds,
+    RbpCarrierPlan? CarrierPlan = null)
 {
     internal bool IsTerminal =>
         State is not (RbpInvocationState.Received or RbpInvocationState.Executing);
@@ -158,4 +160,223 @@ internal sealed record RbpVerificationHold(
 internal sealed record RbpInvocationTerminal(
     RbpInvocationState State,
     JsonElement Outcome,
-    string? ResultDigest);
+    string? ResultDigest,
+    RbpCarrierPlan? CarrierPlan = null,
+    RbpRecoveryPayload? RecoveryPayload = null);
+
+/// <summary>
+/// Exact prefix-excluded add-in response material eligible for the narrowly
+/// correlated C39 recovery path.  The payload is deliberately bytes, never a
+/// reserialized <see cref="JsonElement"/>: the frozen wire digest domain is
+/// SHA-256 over the strict UTF-8 JSON-RPC response bytes.
+/// </summary>
+internal sealed class RbpRecoveryPayload
+{
+    private readonly byte[] _rawResponseBytes;
+
+    internal RbpRecoveryPayload(string resultDigest, ReadOnlySpan<byte> rawResponseBytes)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(resultDigest);
+        if (rawResponseBytes.IsEmpty)
+        {
+            throw new ArgumentException("Recovery payload must not be empty.", nameof(rawResponseBytes));
+        }
+
+        ResultDigest = resultDigest;
+        _rawResponseBytes = rawResponseBytes.ToArray();
+    }
+
+    internal string ResultDigest { get; }
+
+    internal ReadOnlyMemory<byte> RawResponseBytes => _rawResponseBytes;
+
+    internal byte[] CopyRawResponseBytes() => _rawResponseBytes.ToArray();
+
+    internal void Clear() => System.Security.Cryptography.CryptographicOperations.ZeroMemory(_rawResponseBytes);
+
+    public override string ToString() => "[recovery payload]";
+}
+
+/// <summary>
+/// Returned only by the typed, owner-RSID-scoped recovery read.  Null is the
+/// opaque answer for absent, pruned, corrupt, foreign, non-terminal, or
+/// protection-unavailable material; callers must not turn it into a replay.
+/// </summary>
+internal sealed class RbpRecoveredPayload : IDisposable
+{
+    private byte[]? _rawResponseBytes;
+
+    internal RbpRecoveredPayload(string resultDigest, ReadOnlySpan<byte> rawResponseBytes)
+    {
+        ResultDigest = resultDigest;
+        _rawResponseBytes = rawResponseBytes.ToArray();
+    }
+
+    internal string ResultDigest { get; }
+    /// <summary>
+    /// A leased view over the decrypted raw response. It is valid only until
+    /// <see cref="Dispose"/>; callers must not retain it across that boundary.
+    /// </summary>
+    internal ReadOnlyMemory<byte> RawResponseBytes => _rawResponseBytes ?? ReadOnlyMemory<byte>.Empty;
+
+    /// <summary>Transfers the sole owned buffer to the caller.</summary>
+    internal byte[] TakeRawResponseBytes() =>
+        Interlocked.Exchange(ref _rawResponseBytes, Array.Empty<byte>()) ??
+        Array.Empty<byte>();
+
+    public void Dispose()
+    {
+        byte[]? bytes = Interlocked.Exchange(ref _rawResponseBytes, Array.Empty<byte>());
+        if (bytes is { Length: > 0 })
+        {
+            System.Security.Cryptography.CryptographicOperations.ZeroMemory(bytes);
+        }
+    }
+    public override string ToString() => "[recovered payload]";
+}
+
+// C39 recovery-carrier metadata is deliberately kept separate from the
+// frozen wire schema and contains no payload/frame material.
+internal enum RbpRecoveryCarrierPhase
+{
+    Reserved,
+    SendStarted,
+    AwaitingAcknowledgement,
+    Completed,
+    Tombstoned,
+}
+
+internal sealed record RbpRecoveryCarrierReservationRequest(
+    string Rsid,
+    string RecoveryInvocationId,
+    string OriginInvocationId,
+    string ResultDigest,
+    int ChunkSize,
+    RbpRecoveryCarrierHeader Header,
+    string CanonicalEnvelopeDigest,
+    DateTimeOffset ExpiresAt);
+
+/// <summary>Fixed non-secret C39 carrier header. No extension fields exist.</summary>
+internal sealed record RbpRecoveryCarrierHeader(
+    string ContentType,
+    string ContentEncoding)
+{
+    internal const string RequiredContentType = "application/json";
+    internal const string RequiredContentEncoding = "base64";
+}
+
+internal sealed record RbpRecoveryCarrierReservation(
+    string Rsid,
+    string RecoveryInvocationId,
+    string OriginInvocationId,
+    string ResultDigest,
+    string RawIdempotencyKey,
+    string HeaderJcs,
+    int PlaintextLength,
+    int ChunkSize,
+    int ChunkCount,
+    RbpRecoveryCarrierPhase Phase,
+    int ChunkIndex,
+    long CurrentReservedSequence,
+    int RawPayloadVersion,
+    string CanonicalEnvelopeDigest,
+    long? SendStartedAtMilliseconds,
+    long HighestReservedSequence,
+    long AcknowledgementCursor,
+    long InboundAcknowledgementBaseline,
+    int PlanVersion,
+    long CreatedAtMilliseconds,
+    long ExpiresAtMilliseconds,
+    long UpdatedAtMilliseconds,
+    long? CompletedAtMilliseconds,
+    long? TombstonedAtMilliseconds,
+    string? TombstoneReason);
+
+internal sealed record RbpRecoveryTerminalPlan(
+    string RecoveryInvocationId, string Rsid, int PlanVersion,
+    long FinalSequence, long AcknowledgementBaseline,
+    long InboundAcknowledgementBaseline,
+    JsonElement TerminalPayload, string TerminalDigest,
+    string PayloadCommitment, string State, long CreatedAtMilliseconds,
+    long ExpiresAtMilliseconds, long? ConfirmedAtMilliseconds);
+
+/// <summary>
+/// Domain-separated non-wire commitment for C39's one terminal after the
+/// protected partial-result carrier.  This is deliberately separate from the
+/// v8 chunk commitment: a terminal cannot be substituted for a chunk simply
+/// because both describe the same recovery invocation.
+/// </summary>
+internal static class RbpRecoveryTerminalCommitment
+{
+    internal const int PlanVersion = 9;
+
+    internal static string Compute(
+        string rsid,
+        string recoveryInvocationId,
+        long finalSequence,
+        long acknowledgementBaseline,
+        long inboundAcknowledgementBaseline,
+        string terminalDigest,
+        string terminalJcs,
+        long expiresAtMilliseconds) =>
+        Rfc8785Json.Sha256Digest(JsonSerializer.SerializeToElement(new
+        {
+            domain = "revagent/recovery-terminal-commitment/v9",
+            rsid,
+            recovery_invocation_id = recoveryInvocationId,
+            plan_version = PlanVersion,
+            final_sequence = finalSequence,
+            acknowledgement_baseline = acknowledgementBaseline,
+            inbound_ack_baseline = inboundAcknowledgementBaseline,
+            terminal_digest = terminalDigest,
+            terminal_jcs = terminalJcs,
+            expires_at_ms = expiresAtMilliseconds,
+        }));
+}
+
+/// <summary>Single domain-separated, non-wire commitment for C39 carrier state.</summary>
+internal static class RbpRecoveryCarrierCommitment
+{
+    internal static string Compute(RbpRecoveryCarrierReservation value, long nextSequence) =>
+        Rfc8785Json.Sha256Digest(JsonSerializer.SerializeToElement(new
+        {
+            domain = "revagent/recovery-carrier-commitment/v1",
+            rsid = value.Rsid,
+            recovery_invocation_id = value.RecoveryInvocationId,
+            origin_invocation_id = value.OriginInvocationId,
+            result_digest = value.ResultDigest,
+            raw_id = value.RawIdempotencyKey,
+            raw_version = value.RawPayloadVersion,
+            raw_length = value.PlaintextLength,
+            plan_version = value.PlanVersion,
+            phase = value.Phase.ToString().ToLowerInvariant(),
+            header_jcs = value.HeaderJcs,
+            chunk_size = value.ChunkSize,
+            chunk_count = value.ChunkCount,
+            chunk_index = value.ChunkIndex,
+            total_length = value.PlaintextLength,
+            current_reserved_seq = value.CurrentReservedSequence,
+            predecessor_ack = value.AcknowledgementCursor,
+            inbound_ack_baseline = value.InboundAcknowledgementBaseline,
+            high_water = value.HighestReservedSequence,
+            next_sequence = nextSequence,
+            created_at_ms = value.CreatedAtMilliseconds,
+            expires_at_ms = value.ExpiresAtMilliseconds,
+        }));
+}
+
+/// <summary>
+/// Immutable delivery material for a chunk/artifact carrier.  The journal owns
+/// this plan, not the socket: a reconnect must replay these exact prefix
+/// frames before the recorded terminal rather than attempting to regenerate
+/// output from a spool or add-in response.
+/// </summary>
+internal sealed record RbpCarrierPlan(
+    string PlanId,
+    string CarrierKey,
+    IReadOnlyList<RbpCarrierPlanFrame> OrderedPrefixes,
+    JsonElement TerminalPayload,
+    string PrefixDigest,
+    string TerminalDigest);
+
+internal sealed record RbpCarrierPlanFrame(string Type, JsonElement Payload);

@@ -40,6 +40,7 @@ export type {
 export type {
   CompletedHandlerOutcome,
   DocumentContextEvent,
+  DocumentContextControlAcknowledgement,
   DocumentContextSnapshot,
   Effect,
   FailedHandlerOutcome,

@@ -33,6 +33,8 @@ export const tokenTable: StaticTokenTable = {
       "chunked_results",
       "artifact_result_v1",
       "transport_streamable_http",
+      "batch_atomic",
+      "doc_context_cached_v1",
     ],
   },
 };
@@ -57,7 +59,11 @@ export function hello(id = 1): HelloEnvelope {
       ],
       bridge_version: "0.1.0-test",
       device_id: "device-01",
-      machine: { hostname: "fixture", os: "test" },
+      machine: {
+        hostname: "fixture",
+        os: "test",
+        fingerprint: FINGERPRINT,
+      },
       addin_versions: ["0.1.0-test"],
     },
   };

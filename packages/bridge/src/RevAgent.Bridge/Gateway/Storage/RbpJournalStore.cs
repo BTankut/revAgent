@@ -1,4 +1,7 @@
 using System.Globalization;
+using System.Runtime.Versioning;
+using System.Security.AccessControl;
+using System.Security.Principal;
 using Microsoft.Data.Sqlite;
 
 namespace RevAgent.Bridge.Gateway.Storage;
@@ -14,19 +17,36 @@ internal sealed partial class RbpJournalStore : IAsyncDisposable
     private readonly SqliteConnection _connection;
     private readonly RbpJournalWriterLease _writerLease;
     private readonly IRbpResumeTokenProtector _resumeTokenProtector;
+    private readonly IRbpRecoveryPayloadProtector _recoveryPayloadProtector;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly Func<long> _nowMilliseconds;
     private readonly IRbpJournalFaultInjector? _faultInjector;
     private readonly int _commandTimeoutSeconds;
     private long _activeConnectionGeneration;
-    private bool _closed;
+    private readonly object _lifetimeSync = new();
+    private RbpJournalLifetimeState _lifetimeState =
+        RbpJournalLifetimeState.Open;
+    private int _admittedOperationCount;
+    private readonly TaskCompletionSource _finalized = new(
+        TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly TaskCompletionSource _authorityPoisoned = new(
+        TaskCreationOptions.RunContinuationsAsynchronously);
     private bool _sensitiveCompactionUnproven;
+
+    private enum RbpJournalLifetimeState
+    {
+        Open,
+        QuarantineRequested,
+        Finalizing,
+        Closed,
+    }
 
     private RbpJournalStore(
         string databasePath,
         SqliteConnection connection,
         RbpJournalWriterLease writerLease,
         IRbpResumeTokenProtector resumeTokenProtector,
+        IRbpRecoveryPayloadProtector recoveryPayloadProtector,
         RbpJournalOpenOptions options,
         RbpJournalDurabilityProfile durabilityProfile,
         int schemaVersion)
@@ -35,6 +55,7 @@ internal sealed partial class RbpJournalStore : IAsyncDisposable
         _connection = connection;
         _writerLease = writerLease;
         _resumeTokenProtector = resumeTokenProtector;
+        _recoveryPayloadProtector = recoveryPayloadProtector;
         _nowMilliseconds =
             options.NowMilliseconds ??
             (() => DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
@@ -55,10 +76,14 @@ internal sealed partial class RbpJournalStore : IAsyncDisposable
     internal static RbpJournalStore Open(
         string databasePath,
         IRbpResumeTokenProtector resumeTokenProtector,
-        RbpJournalOpenOptions? options = null)
+        RbpJournalOpenOptions? options = null,
+        IRbpRecoveryPayloadProtector? recoveryPayloadProtector = null,
+        IRbpJournalRollbackBackupSeam? rollbackBackupSeam = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(databasePath);
         ArgumentNullException.ThrowIfNull(resumeTokenProtector);
+        recoveryPayloadProtector ??= UnavailableRbpRecoveryPayloadProtector.Instance;
+        rollbackBackupSeam ??= SystemRbpJournalRollbackBackupSeam.Instance;
         options ??= new RbpJournalOpenOptions();
         ValidateOpenOptions(options);
 
@@ -99,11 +124,13 @@ internal sealed partial class RbpJournalStore : IAsyncDisposable
             IReadOnlyList<RbpJournalMigration> migrations =
                 RbpJournalSchema.BuildMigrationChain(
                     options.AdditionalMigrations);
+            EnsurePreV8RollbackBackup(connection, fullPath, migrations, rollbackBackupSeam);
             int schemaVersion = EnsureSchema(
                 connection,
                 migrations,
                 options.NowMilliseconds?.Invoke() ??
                     DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+            ValidateRecoveryV8Shape(connection, schemaVersion);
             RunQuickCheck(connection);
             ValidateInboundReceiptIntegrity(connection);
             RunTruncateCheckpoint(connection);
@@ -113,6 +140,7 @@ internal sealed partial class RbpJournalStore : IAsyncDisposable
                 connection,
                 lease,
                 resumeTokenProtector,
+                recoveryPayloadProtector,
                 options,
                 durabilityProfile,
                 schemaVersion);
@@ -128,16 +156,149 @@ internal sealed partial class RbpJournalStore : IAsyncDisposable
         }
     }
 
+    private static void EnsurePreV8RollbackBackup(
+        SqliteConnection connection,
+        string databasePath,
+        IReadOnlyList<RbpJournalMigration> migrations,
+        IRbpJournalRollbackBackupSeam seam)
+    {
+        // Versions seven and eight add opaque protected material and recovery
+        // reservation state whose v6 executable
+        // must not attempt to interpret. Before crossing that one-way local
+        // format boundary, make an SQLite-consistent offline rollback image.
+        // Existing images are retained rather than overwritten.
+        if (!TableExists(connection, "journal_meta") ||
+            migrations.Count < RbpJournalSchema.CurrentVersion)
+        {
+            return;
+        }
+        (_, int current) = ReadJournalMeta(connection);
+        if (current != 6)
+        {
+            return;
+        }
+
+        string backupPath = databasePath + ".v6.rollback";
+        if (File.Exists(backupPath))
+        {
+            VerifyRollbackBackup(backupPath, expectedVersion: current, seam.RequiresProtectedAcl);
+            return;
+        }
+        string temporaryPath = backupPath + ".tmp-" + Guid.NewGuid().ToString("N");
+        try
+        {
+            // Create and ACL the empty file before SQLite can copy a byte into
+            // it. The service is LocalSystem, so service and LocalSystem are
+            // the one permitted SID; no administrator/users ACE is granted.
+            seam.CreateTemporary(temporaryPath);
+            seam.ProtectTemporary(temporaryPath);
+            seam.CopyConsistently(connection, temporaryPath);
+            VerifyRollbackBackup(temporaryPath, expectedVersion: current, seam.RequiresProtectedAcl);
+            try
+            {
+                seam.PublishNoOverwrite(temporaryPath, backupPath);
+            }
+            catch (IOException) when (File.Exists(backupPath))
+            {
+                // A concurrent opener won the single publish. Verify it
+                // instead of overwriting its offline rollback image.
+                VerifyRollbackBackup(backupPath, expectedVersion: current, seam.RequiresProtectedAcl);
+            }
+        }
+        finally
+        {
+            seam.CleanupTemporary(temporaryPath);
+        }
+    }
+
+    [SupportedOSPlatform("windows")]
+    internal static void ProtectRollbackBackup(string path)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+        SecurityIdentifier localSystem = new(
+            WellKnownSidType.LocalSystemSid, domainSid: null);
+        new FileInfo(path).SetAccessControl(BuildRollbackBackupSecurity(localSystem));
+    }
+
+    [SupportedOSPlatform("windows")]
+    internal static FileSecurity BuildRollbackBackupSecurity(
+        SecurityIdentifier localSystem)
+    {
+        ArgumentNullException.ThrowIfNull(localSystem);
+        var security = new FileSecurity();
+        security.SetOwner(localSystem);
+        security.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
+        security.AddAccessRule(new FileSystemAccessRule(
+            localSystem,
+            FileSystemRights.FullControl,
+            InheritanceFlags.None,
+            PropagationFlags.None,
+            AccessControlType.Allow));
+        return security;
+    }
+
+    private static void VerifyRollbackBackup(string path, int expectedVersion, bool requireProtectedAcl)
+    {
+        if (requireProtectedAcl && OperatingSystem.IsWindows())
+        {
+            VerifyRollbackBackupAcl(path);
+        }
+        var builder = new SqliteConnectionStringBuilder
+        {
+            DataSource = path,
+            Mode = SqliteOpenMode.ReadOnly,
+            Cache = SqliteCacheMode.Private,
+            Pooling = false,
+        };
+        using var backup = new SqliteConnection(builder.ToString());
+        backup.Open();
+        (_, int version) = ReadJournalMeta(backup);
+        if (version != expectedVersion)
+        {
+            throw new RbpJournalException(
+                RbpJournalErrorCode.UnsupportedSchema,
+                "The pre-v7 rollback backup does not have the expected schema.");
+        }
+    }
+
+    [SupportedOSPlatform("windows")]
+    private static void VerifyRollbackBackupAcl(string path)
+    {
+        var file = new FileInfo(path);
+        FileSecurity security = file.GetAccessControl(AccessControlSections.Access | AccessControlSections.Owner);
+        SecurityIdentifier localSystem = new(WellKnownSidType.LocalSystemSid, domainSid: null);
+        FileSystemAccessRule[] rules = security.GetAccessRules(
+                includeExplicit: true,
+                includeInherited: true,
+                typeof(SecurityIdentifier))
+            .Cast<FileSystemAccessRule>()
+            .ToArray();
+        if (!security.AreAccessRulesProtected ||
+            !Equals(security.GetOwner(typeof(SecurityIdentifier)), localSystem) ||
+            rules.Length != 1 ||
+            rules[0].AccessControlType != AccessControlType.Allow ||
+            !Equals(rules[0].IdentityReference, localSystem) ||
+            (rules[0].FileSystemRights & FileSystemRights.FullControl) != FileSystemRights.FullControl)
+        {
+            throw new RbpJournalException(
+                RbpJournalErrorCode.UnsupportedSchema,
+                "The pre-v7 rollback backup ACL is not protected.");
+        }
+    }
+
     internal async Task<T> ExecuteImmediateAsync<T>(
         Func<RbpJournalWriteContext, T> operation,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(operation);
-        EnsureOpen();
+        using RbpJournalOperationLease admitted = AdmitOperation();
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            EnsureOpen();
+            EnsureAdmittedUsable();
             using SqliteTransaction transaction =
                 _connection.BeginTransaction(deferred: false);
             var context = new RbpJournalWriteContext(
@@ -219,11 +380,11 @@ internal sealed partial class RbpJournalStore : IAsyncDisposable
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(operation);
-        EnsureOpen();
+        using RbpJournalOperationLease admitted = AdmitOperation();
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            EnsureOpen();
+            EnsureAdmittedUsable();
             return operation(_connection);
         }
         finally
@@ -234,29 +395,42 @@ internal sealed partial class RbpJournalStore : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        await _gate.WaitAsync().ConfigureAwait(false);
-        try
+        bool finalize = false;
+        Task wait;
+        lock (_lifetimeSync)
         {
-            if (_closed)
+            switch (_lifetimeState)
+            {
+                case RbpJournalLifetimeState.Open:
+                    _lifetimeState =
+                        RbpJournalLifetimeState.QuarantineRequested;
+                    break;
+                case RbpJournalLifetimeState.Closed:
+                    return;
+            }
+
+            if (_lifetimeState ==
+                    RbpJournalLifetimeState.QuarantineRequested &&
+                _admittedOperationCount == 0)
+            {
+                _lifetimeState = RbpJournalLifetimeState.Finalizing;
+                finalize = true;
+            }
+            wait = _finalized.Task;
+            if (!finalize && _authorityPoisoned.Task.IsCompleted)
             {
                 return;
             }
+        }
 
-            _closed = true;
-            try
-            {
-                RunTruncateCheckpoint(_connection);
-            }
-            finally
-            {
-                _connection.Dispose();
-                _writerLease.Dispose();
-            }
-        }
-        finally
+        if (finalize)
         {
-            _gate.Release();
+            FinalizeStore();
+            return;
         }
+
+        await Task.WhenAny(wait, _authorityPoisoned.Task)
+            .ConfigureAwait(false);
     }
 
     private static bool InitializeSqlite()
@@ -645,6 +819,157 @@ internal sealed partial class RbpJournalStore : IAsyncDisposable
         return migrations.Count;
     }
 
+    private static void ValidateRecoveryV8Shape(
+        SqliteConnection connection,
+        int schemaVersion)
+    {
+        if (schemaVersion < 8) return;
+        var reservationColumns = new List<(string Name, string Type)>
+        {
+            ("recovery_invocation_id", "TEXT"), ("rsid", "TEXT"),
+            ("origin_invocation_id", "TEXT"), ("result_digest", "TEXT"),
+            ("raw_idempotency_key", "TEXT"), ("raw_payload_version", "INTEGER"),
+            ("header_jcs", "TEXT"), ("plaintext_length", "INTEGER"),
+            ("chunk_size", "INTEGER"), ("chunk_count", "INTEGER"),
+            ("phase", "TEXT"), ("chunk_index", "INTEGER"),
+            ("current_reserved_seq", "INTEGER"), ("canonical_envelope_digest", "TEXT"),
+            ("send_started_at_ms", "INTEGER"), ("highest_reserved_seq", "INTEGER"),
+            ("acknowledgement_cursor", "INTEGER"),
+        };
+        reservationColumns.AddRange(
+        [
+            ("plan_version", "INTEGER"), ("created_at_ms", "INTEGER"),
+            ("expires_at_ms", "INTEGER"), ("updated_at_ms", "INTEGER"),
+            ("completed_at_ms", "INTEGER"), ("tombstoned_at_ms", "INTEGER"),
+            ("tombstone_reason", "TEXT"),
+        ]);
+        if (schemaVersion >= 10)
+        {
+            // ALTER TABLE appends this additive v10 column.
+            reservationColumns.Add(("inbound_ack_baseline", "INTEGER"));
+        }
+        RequireExactColumns(connection, "rbp_recovery_carrier_reservations",
+            reservationColumns);
+        RequireExactColumns(connection, "rbp_recovery_sequence_tombstones",
+            new[] { ("rsid", "TEXT"), ("format_version", "INTEGER"),
+                ("tombstoned_at_ms", "INTEGER"), ("reason_code", "TEXT"),
+                ("sequence_high_water", "INTEGER") });
+        RequireIndex(connection, "rbp_recovery_carrier_reservations",
+            "ux_rbp_recovery_carrier_one_fence", unique: true, partial: true,
+            new[] { "rsid" },
+            "CREATE UNIQUE INDEX ux_rbp_recovery_carrier_one_fence ON rbp_recovery_carrier_reservations(rsid) WHERE phase IN ('reserved','send_started','awaiting_ack','tombstoned')");
+        RequireIndex(connection, "rbp_recovery_carrier_reservations",
+            "ix_rbp_recovery_carrier_recovery", unique: false, partial: false,
+            new[] { "recovery_invocation_id", "phase" },
+            "CREATE INDEX ix_rbp_recovery_carrier_recovery ON rbp_recovery_carrier_reservations(recovery_invocation_id,phase)");
+        RequireForeignKey(connection, "rbp_recovery_carrier_reservations", "rsid", "rbp_sessions");
+        RequireForeignKey(connection, "rbp_recovery_sequence_tombstones", "rsid", "rbp_sessions");
+        if (schemaVersion < 9) return;
+        var terminalColumns = new List<(string Name, string Type)>
+        {
+            ("recovery_invocation_id", "TEXT"), ("rsid", "TEXT"),
+            ("plan_version", "INTEGER"), ("final_sequence", "INTEGER"),
+            ("acknowledgement_baseline", "INTEGER"),
+        };
+        terminalColumns.AddRange(
+        [
+            ("terminal_jcs", "TEXT"), ("terminal_digest", "TEXT"),
+            ("payload_commitment", "TEXT"), ("state", "TEXT"),
+            ("created_at_ms", "INTEGER"), ("expires_at_ms", "INTEGER"),
+            ("confirmed_at_ms", "INTEGER"),
+        ]);
+        if (schemaVersion >= 10)
+        {
+            // ALTER TABLE appends this additive v10 column.
+            terminalColumns.Add(("inbound_ack_baseline", "INTEGER"));
+        }
+        RequireExactColumns(connection, "rbp_recovery_terminal_plans",
+            terminalColumns);
+        RequireIndex(connection, "rbp_recovery_terminal_plans",
+            "ux_rbp_recovery_terminal_active_rsid", unique: true, partial: true,
+            new[] { "rsid" },
+            "CREATE UNIQUE INDEX ux_rbp_recovery_terminal_active_rsid ON rbp_recovery_terminal_plans(rsid) WHERE state='reserved'");
+        RequireIndex(connection, "rbp_recovery_terminal_plans",
+            "ix_rbp_recovery_terminal_recovery_state", unique: false, partial: false,
+            new[] { "recovery_invocation_id", "state" },
+            "CREATE INDEX ix_rbp_recovery_terminal_recovery_state ON rbp_recovery_terminal_plans(recovery_invocation_id,state)");
+        RequireForeignKey(connection, "rbp_recovery_terminal_plans", "recovery_invocation_id", "rbp_recovery_carrier_reservations");
+        RequireForeignKey(connection, "rbp_recovery_terminal_plans", "rsid", "rbp_sessions");
+    }
+
+    private static void RequireExactColumns(SqliteConnection connection, string table,
+        IReadOnlyList<(string Name, string Type)> expected)
+    {
+        using SqliteCommand command = CreateCommand(connection, "PRAGMA table_info(" + table + ");");
+        using SqliteDataReader reader = command.ExecuteReader();
+        var actual = new List<(string Name, string Type)>();
+        while (reader.Read()) actual.Add((reader.GetString(1), reader.GetString(2)));
+        if (actual.Count != expected.Count || !actual.SequenceEqual(expected))
+            throw new RbpJournalException(RbpJournalErrorCode.MigrationMismatch,
+                "The C39 recovery schema table shape is invalid.");
+    }
+
+    private static void RequireIndex(SqliteConnection connection, string table,
+        string expectedName, bool unique, bool partial,
+        IReadOnlyList<string> expectedColumns, string expectedSql)
+    {
+        bool found = false;
+        using SqliteCommand command = CreateCommand(connection, "PRAGMA index_list(" + table + ");");
+        using SqliteDataReader reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            if (string.Equals(reader.GetString(1), expectedName, StringComparison.Ordinal) &&
+                reader.GetInt32(2) == (unique ? 1 : 0) && reader.GetInt32(4) == (partial ? 1 : 0))
+            {
+                found = true;
+                break;
+            }
+        }
+        if (!found) throw InvalidRecoveryIndex();
+
+        using (SqliteCommand keys = CreateCommand(connection, "PRAGMA index_xinfo(" + expectedName + ");"))
+        using (SqliteDataReader keyRows = keys.ExecuteReader())
+        {
+            var actual = new List<(int Sequence, string Name, int Descending, string Collation)>();
+            while (keyRows.Read() && !keyRows.IsDBNull(2))
+            {
+                if (keyRows.GetInt32(5) == 1)
+                    actual.Add((keyRows.GetInt32(0), keyRows.GetString(2), keyRows.GetInt32(3), keyRows.GetString(4)));
+            }
+            if (actual.Count != expectedColumns.Count || actual.OrderBy(value => value.Sequence)
+                    .Select(value => value.Name).SequenceEqual(expectedColumns) == false ||
+                actual.Any(value => value.Descending != 0 || !string.Equals(value.Collation, "BINARY", StringComparison.Ordinal)))
+                throw InvalidRecoveryIndex();
+        }
+        using SqliteCommand sql = CreateCommand(connection,
+            "SELECT sql FROM sqlite_master WHERE type='index' AND name=$name;");
+        sql.Parameters.AddWithValue("$name", expectedName);
+        if (sql.ExecuteScalar() is not string actualSql ||
+            !string.Equals(NormalizeSchemaSql(actualSql), NormalizeSchemaSql(expectedSql), StringComparison.Ordinal))
+            throw InvalidRecoveryIndex();
+    }
+
+    private static RbpJournalException InvalidRecoveryIndex() => new(
+        RbpJournalErrorCode.MigrationMismatch,
+        "The C39 recovery schema index is invalid.");
+
+    private static string NormalizeSchemaSql(string sql) => string.Concat(
+        sql.Where(character => !char.IsWhiteSpace(character))).ToLowerInvariant();
+
+    private static void RequireForeignKey(SqliteConnection connection, string table,
+        string from, string target)
+    {
+        using SqliteCommand command = CreateCommand(connection, "PRAGMA foreign_key_list(" + table + ");");
+        using SqliteDataReader reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            if (string.Equals(reader.GetString(2), target, StringComparison.Ordinal) &&
+                string.Equals(reader.GetString(3), from, StringComparison.Ordinal)) return;
+        }
+        throw new RbpJournalException(RbpJournalErrorCode.MigrationMismatch,
+            "The C39 recovery schema foreign key is invalid.");
+    }
+
     private static long ClampMigrationTimestamp(
         SqliteConnection connection,
         long candidate)
@@ -867,15 +1192,28 @@ internal sealed partial class RbpJournalStore : IAsyncDisposable
         }
     }
 
-    private void EnsureOpen()
+    private RbpJournalOperationLease AdmitOperation()
     {
-        if (_closed)
+        lock (_lifetimeSync)
+        {
+            if (_lifetimeState != RbpJournalLifetimeState.Open ||
+                _authorityPoisoned.Task.IsCompleted)
+                throw new RbpJournalException(
+                    RbpJournalErrorCode.StoreClosed,
+                    "The RBP journal store is closed or quarantined.");
+            checked { _admittedOperationCount++; }
+            return new RbpJournalOperationLease(this);
+        }
+    }
+
+    private void EnsureAdmittedUsable()
+    {
+        if (_authorityPoisoned.Task.IsCompleted)
         {
             throw new RbpJournalException(
                 RbpJournalErrorCode.StoreClosed,
-                "The RBP journal store is closed.");
+                "The RBP journal store is quarantined.");
         }
-
         if (_sensitiveCompactionUnproven)
         {
             throw new RbpJournalException(
@@ -884,6 +1222,66 @@ internal sealed partial class RbpJournalStore : IAsyncDisposable
                 "WAL compaction could not be proven.",
                 durableStateObserved: true);
         }
+    }
+
+    private void ReleaseAdmittedOperation()
+    {
+        bool finalize = false;
+        lock (_lifetimeSync)
+        {
+            if (_admittedOperationCount <= 0)
+                throw new InvalidOperationException(
+                    "The RBP journal operation lease was released twice.");
+            _admittedOperationCount--;
+            if (_admittedOperationCount == 0 &&
+                _lifetimeState ==
+                    RbpJournalLifetimeState.QuarantineRequested)
+            {
+                _lifetimeState = RbpJournalLifetimeState.Finalizing;
+                finalize = true;
+            }
+        }
+        if (finalize) FinalizeStore();
+    }
+
+    private void FinalizeStore()
+    {
+        Exception? failure = null;
+        try
+        {
+            if (!_authorityPoisoned.Task.IsCompleted)
+                RunTruncateCheckpoint(_connection);
+        }
+        catch (Exception exception)
+        {
+            failure = exception;
+        }
+        finally
+        {
+            try { _connection.Dispose(); }
+            catch (Exception exception) { failure ??= exception; }
+            try { _writerLease.Dispose(); }
+            catch (Exception exception) { failure ??= exception; }
+            lock (_lifetimeSync)
+            {
+                _lifetimeState = RbpJournalLifetimeState.Closed;
+            }
+            if (failure is null) _finalized.TrySetResult();
+            else _finalized.TrySetException(failure);
+        }
+    }
+
+    internal void PoisonProcessAuthority() =>
+        _authorityPoisoned.TrySetResult();
+
+    private sealed class RbpJournalOperationLease(
+        RbpJournalStore owner) : IDisposable
+    {
+        private RbpJournalStore? _owner = owner;
+
+        public void Dispose() =>
+            Interlocked.Exchange(ref _owner, null)?
+                .ReleaseAdmittedOperation();
     }
 
     private static void RejectEscapedAsynchronousResult<T>(T result)
@@ -923,4 +1321,46 @@ internal sealed partial class RbpJournalStore : IAsyncDisposable
         string Owner,
         string Name,
         string Digest);
+}
+
+internal interface IRbpJournalRollbackBackupSeam
+{
+    bool RequiresProtectedAcl { get; }
+    void CreateTemporary(string path);
+    void ProtectTemporary(string path);
+    void CopyConsistently(SqliteConnection source, string temporaryPath);
+    void PublishNoOverwrite(string temporaryPath, string backupPath);
+    void CleanupTemporary(string temporaryPath);
+}
+
+internal sealed class SystemRbpJournalRollbackBackupSeam : IRbpJournalRollbackBackupSeam
+{
+    internal static readonly SystemRbpJournalRollbackBackupSeam Instance = new();
+    public bool RequiresProtectedAcl => OperatingSystem.IsWindows();
+    public void CreateTemporary(string path)
+    {
+        using FileStream _ = new(path, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None);
+    }
+    public void ProtectTemporary(string path)
+    {
+        if (OperatingSystem.IsWindows()) RbpJournalStore.ProtectRollbackBackup(path);
+    }
+    public void CopyConsistently(SqliteConnection source, string temporaryPath)
+    {
+        using var target = new SqliteConnection(new SqliteConnectionStringBuilder
+        {
+            DataSource = temporaryPath,
+            Mode = SqliteOpenMode.ReadWriteCreate,
+            Cache = SqliteCacheMode.Private,
+            Pooling = false,
+        }.ToString());
+        target.Open();
+        source.BackupDatabase(target);
+    }
+    public void PublishNoOverwrite(string temporaryPath, string backupPath) =>
+        File.Move(temporaryPath, backupPath, overwrite: false);
+    public void CleanupTemporary(string temporaryPath)
+    {
+        if (File.Exists(temporaryPath)) File.Delete(temporaryPath);
+    }
 }

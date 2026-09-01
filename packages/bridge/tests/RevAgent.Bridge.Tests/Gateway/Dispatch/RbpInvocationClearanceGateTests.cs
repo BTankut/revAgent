@@ -1,7 +1,9 @@
 using System.Text;
 using System.Text.Json;
+using Microsoft.Data.Sqlite;
 using RevAgent.Bridge.AddinLoopback;
 using RevAgent.Bridge.Gateway.Dispatch;
+using RevAgent.Bridge.Gateway.Protocol;
 using RevAgent.Bridge.Gateway.Storage;
 using RevAgent.Bridge.Tests.Gateway.Storage;
 
@@ -17,6 +19,58 @@ namespace RevAgent.Bridge.Tests.Gateway.Dispatch;
 /// </summary>
 public sealed class RbpInvocationClearanceGateTests
 {
+    [Fact]
+    public async Task StoredEligibleV1CorrelationIsReadableButCannotClear()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        var fixture = new RbpApplicationErrorSafetyTests.RoutedFixture(
+            "{}", -32603);
+        await using RbpJournalStore store = await OpenAsync(directory, fixture);
+        string holdId = await InstallEvidencedHoldAsync(store, fixture);
+        RbpVerificationHold hold = (await store.GetHoldAsync(Rsid, holdId))!;
+        RbpStoredInvocation read = (await store.GetInvocationAsync(
+            Rsid + "/" + VerificationId))!;
+        JsonElement current = JsonDocument.Parse(
+            read.VerificationCorrelationJson!).RootElement.Clone();
+        string v1 = Rfc8785Json.Canonicalize(
+            JsonSerializer.SerializeToElement(new
+            {
+                schema = "bridge.verification-correlation/v1",
+                rsid = Rsid,
+                invocation_id = VerificationId,
+                verification = current.GetProperty("verification"),
+                terminal = new
+                {
+                    status = "completed",
+                    raw_response_digest = hold.EvidenceDigest,
+                    eligible = true,
+                },
+            }));
+        using (var connection = new SqliteConnection(
+            $"Data Source={directory.JournalPath};Pooling=False"))
+        {
+            connection.Open();
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText = "UPDATE rbp_invocations SET verification_correlation_json=$v1 WHERE idempotency_key=$key;";
+            command.Parameters.AddWithValue("$v1", v1);
+            command.Parameters.AddWithValue("$key", Rsid + "/" + VerificationId);
+            Assert.Equal(1, command.ExecuteNonQuery());
+        }
+
+        RbpInvocationAnswer denied = await Dispatcher(
+            store, new CountingChannel()).DispatchAsync(
+            WriteRequest(clearances: ClearanceArray(
+                holdId, hold.EvidenceDigest!)), CancellationToken.None);
+
+        Assert.Equal("error", denied.Type);
+        Assert.Equal("protocol",
+            denied.Payload.GetProperty("fault_class").GetString());
+        Assert.Equal(RbpHoldState.EvidenceRecorded,
+            (await store.GetHoldAsync(Rsid, holdId))!.State);
+        Assert.Equal(v1, (await store.GetInvocationAsync(
+            Rsid + "/" + VerificationId))!.VerificationCorrelationJson);
+    }
+
     private const string Rsid = "rs-test";
     private const string WriteMethod = "create_wall";
     private const string DocumentScope =
@@ -34,20 +88,19 @@ public sealed class RbpInvocationClearanceGateTests
     private const string AuditId =
         "0197a3c2-0000-7000-8000-000000000102";
 
-    private static readonly string EvidenceDigest =
-        "sha256:" + new string('d', 64);
-
     [Fact]
     public async Task AnInvokeCarryingClearancesClearsItsHoldAndDispatches()
     {
         using var directory = new RbpJournalTestDirectory();
-        await using RbpJournalStore store = await OpenAsync(directory);
-        string holdId = await InstallEvidencedHoldAsync(store);
+        var fixture = new RbpApplicationErrorSafetyTests.RoutedFixture("{}", -32603);
+        await using RbpJournalStore store = await OpenAsync(directory, fixture);
+        string holdId = await InstallEvidencedHoldAsync(store, fixture);
+        string evidenceDigest = (await store.GetHoldAsync(Rsid, holdId))!.EvidenceDigest!;
 
         var channel = new CountingChannel();
         RbpInvocationAnswer answer =
             await Dispatcher(store, channel).DispatchAsync(
-                WriteRequest(clearances: ClearanceArray(holdId)),
+                WriteRequest(clearances: ClearanceArray(holdId, evidenceDigest)),
                 CancellationToken.None);
 
         // Only the clearance-gated admission can move a hold to `cleared`;
@@ -65,14 +118,18 @@ public sealed class RbpInvocationClearanceGateTests
     public async Task AClearanceThatMatchesNoHoldIsTerminalWithoutAddinBytes()
     {
         using var directory = new RbpJournalTestDirectory();
-        await using RbpJournalStore store = await OpenAsync(directory);
-        string holdId = await InstallEvidencedHoldAsync(store);
+        var fixture = new RbpApplicationErrorSafetyTests.RoutedFixture("{}", -32603);
+        await using RbpJournalStore store = await OpenAsync(directory, fixture);
+        string holdId = await InstallEvidencedHoldAsync(store, fixture);
+        string evidenceDigest = (await store.GetHoldAsync(Rsid, holdId))!.EvidenceDigest!;
 
         var channel = new CountingChannel();
         RbpInvocationAnswer answer =
             await Dispatcher(store, channel).DispatchAsync(
                 WriteRequest(
-                    clearances: ClearanceArray("vh:" + new string('a', 64))),
+                    clearances: ClearanceArray(
+                        "vh:" + new string('a', 64),
+                        evidenceDigest)),
                 CancellationToken.None);
 
         // With the gate unwired this clearance would simply be ignored and
@@ -94,8 +151,9 @@ public sealed class RbpInvocationClearanceGateTests
     public async Task AMalformedClearanceEntryFailsClosedAtTheBoundary()
     {
         using var directory = new RbpJournalTestDirectory();
-        await using RbpJournalStore store = await OpenAsync(directory);
-        _ = await InstallEvidencedHoldAsync(store);
+        var fixture = new RbpApplicationErrorSafetyTests.RoutedFixture("{}", -32603);
+        await using RbpJournalStore store = await OpenAsync(directory, fixture);
+        _ = await InstallEvidencedHoldAsync(store, fixture);
 
         var channel = new CountingChannel();
         RbpInvocationAnswer answer =
@@ -118,7 +176,8 @@ public sealed class RbpInvocationClearanceGateTests
     public async Task AnEmptyClearanceArrayKeepsTheOrdinaryAdmission()
     {
         using var directory = new RbpJournalTestDirectory();
-        await using RbpJournalStore store = await OpenAsync(directory);
+        var fixture = new RbpApplicationErrorSafetyTests.RoutedFixture("{}", -32603);
+        await using RbpJournalStore store = await OpenAsync(directory, fixture);
 
         // The hold is on another document, so the Section 6.2.1 conflict
         // block (spec ~480-485) does not apply and this test can isolate the
@@ -127,6 +186,7 @@ public sealed class RbpInvocationClearanceGateTests
         // this write outright, which `RbpInvocationConflictGateTests` covers.
         string holdId = await InstallEvidencedHoldAsync(
             store,
+            fixture,
             OtherDocumentScope);
 
         var channel = new CountingChannel();
@@ -151,14 +211,18 @@ public sealed class RbpInvocationClearanceGateTests
         new(store, channel, new RbpInFlightGate());
 
     private static async Task<RbpJournalStore> OpenAsync(
-        RbpJournalTestDirectory directory)
+        RbpJournalTestDirectory directory,
+        RbpApplicationErrorSafetyTests.RoutedFixture fixture)
     {
         RbpJournalStore store = RbpJournalStore.Open(
             directory.JournalPath,
             new TestResumeTokenProtector(),
             RbpJournalTestData.Options());
         _ = await store.PersistRegisteredSessionAsync(
-            RbpJournalTestData.Registration());
+            RbpJournalTestData.Registration(
+                localSessionKey: fixture.Route.Handle!.LocalSessionKey));
+        await RbpJournalStoreProductionEvidence.BindInvocationAuthorityAsync(
+            store, fixture);
         return store;
     }
 
@@ -169,6 +233,7 @@ public sealed class RbpInvocationClearanceGateTests
     /// </summary>
     private static async Task<string> InstallEvidencedHoldAsync(
         RbpJournalStore store,
+        RbpApplicationErrorSafetyTests.RoutedFixture fixture,
         string scopeJcs = DocumentScope)
     {
         var origin = new RbpInvocationIdentity(
@@ -185,17 +250,20 @@ public sealed class RbpInvocationClearanceGateTests
         RbpInvocationAdmissionResult refused =
             await store.AdmitInvocationAsync(origin);
         string holdId = refused.VerificationHoldId!;
-        _ = await store.RecordHoldVerificationEvidenceAsync(
-            Rsid,
-            new RbpHoldVerificationEvidence(
-                holdId,
-                VerificationId,
-                EvidenceDigest,
-                Conclusive: true));
+        fixture.Transport.SetResponse("""{"success":true}""", null);
+        RbpInvocationAnswer verification = await
+            RbpCorrelatedVerificationFlowTests.DispatchVerificationAsync(
+                Dispatcher(store, fixture.Channel),
+                fixture,
+                VerificationReadRequest(holdId, scopeJcs));
+        Assert.Equal("result", verification.Type);
+        Assert.Equal(
+            RbpHoldState.EvidenceRecorded,
+            (await store.GetHoldAsync(Rsid, holdId))!.State);
         return holdId;
     }
 
-    private static string ClearanceArray(string holdId) =>
+    private static string ClearanceArray(string holdId, string evidenceDigest) =>
         $$"""
         [
           {
@@ -204,7 +272,7 @@ public sealed class RbpInvocationClearanceGateTests
             "resolution_id": "{{ResolutionId}}",
             "basis": "verification_read",
             "verification_invocation_id": "{{VerificationId}}",
-            "evidence_digest": "{{EvidenceDigest}}",
+            "evidence_digest": "{{evidenceDigest}}",
             "decision": "postcondition_verified",
             "audit_id": "{{AuditId}}"
           }
@@ -225,6 +293,32 @@ public sealed class RbpInvocationClearanceGateTests
               "policy": {"class":"confirm","decision":"confirmed","confirmation_id":"c1"},
               "verification": null,
               "recovery_clearances": {{clearances}}
+            }
+            """;
+        using JsonDocument document = JsonDocument.Parse(payload);
+        return RbpInvokeRequest.Parse(Rsid, document.RootElement.Clone());
+    }
+
+    private static RbpInvokeRequest VerificationReadRequest(
+        string holdId,
+        string scopeJcs)
+    {
+        string payload =
+            $$"""
+            {
+              "invocation_id": "{{VerificationId}}",
+              "method": "get_element_parameter",
+              "params": {"element_id": 42},
+              "timeout_ms": 30000,
+              "mutating": false,
+              "mutation_scope": null,
+              "policy": {"class":"read","decision":"allow"},
+              "verification": {
+                "hold_id": "{{holdId}}",
+                "mutation_scope": {{scopeJcs}},
+                "purpose": "resolve_indeterminate"
+              },
+              "recovery_clearances": []
             }
             """;
         using JsonDocument document = JsonDocument.Parse(payload);

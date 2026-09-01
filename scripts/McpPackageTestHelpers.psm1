@@ -114,12 +114,13 @@ function Invoke-McpPackageNpmCi {
 
     $previousNpmIgnoreScripts = [Environment]::GetEnvironmentVariable("npm_config_ignore_scripts", "Process")
     try {
-        # Native runtime dependencies such as better-sqlite3 require their npm
-        # lifecycle install. A user-level ignore-scripts setting on a
-        # self-hosted runner must not silently weaken the canonical CI restore.
-        $env:npm_config_ignore_scripts = "false"
+        # Disposable test copies hydrate strictly from package-lock.json. Do
+        # not run dependency lifecycle hooks here: better-sqlite3 ships the
+        # selected prebuild, and a local node-gyp fallback creates a build
+        # tree that the updater's native/prebuild contract correctly rejects.
+        $env:npm_config_ignore_scripts = "true"
         Invoke-McpPackageCommand -PackageName "$PackageName dependencies" -PackageRoot $PackageRoot -Command {
-            npm ci
+            npm ci --ignore-scripts
         }
     }
     finally {

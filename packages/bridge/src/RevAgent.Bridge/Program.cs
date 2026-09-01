@@ -10,6 +10,7 @@ using RevAgent.Bridge.Bootstrap.Diagnostics;
 using RevAgent.Bridge.Bootstrap.Enrollment;
 using RevAgent.Bridge.Bootstrap.Logging;
 using RevAgent.Bridge.Enrollment;
+using RevAgent.Bridge.Diagnostics;
 using RevAgent.Bridge.Gateway.Connection;
 using RevAgent.Bridge.Runtime;
 
@@ -35,7 +36,8 @@ internal static class Program
 
     public static async Task<int> Main(string[] args)
     {
-        if (AttestationHelperProtocol.IsHelperCommand(args))
+        if (!args.Contains("--diagnostic-state-root", StringComparer.Ordinal) &&
+            AttestationHelperProtocol.IsHelperCommand(args))
         {
             return await WindowsAttestationHelperServer.RunAsync()
                 .ConfigureAwait(false);
@@ -69,6 +71,16 @@ internal static class Program
                     $"Unsupported worker command kind '{command.Kind}'."),
             };
         }
+        catch (WorkerDoctorStateException)
+        {
+            Console.Error.WriteLine("diagnostic_state_invalid");
+            return ConfigurationExitCode;
+        }
+        catch (WorkerCommandLineException)
+        {
+            Console.Error.WriteLine("diagnostic_state_command_invalid");
+            return UsageExitCode;
+        }
         catch (BridgeConfigurationException exception)
         {
             Console.Error.WriteLine(
@@ -95,28 +107,25 @@ internal static class Program
 
     private static async Task<int> RunDoctorAsync(WorkerCommand command)
     {
-        ResolvedBridgeConfiguration configuration =
-            BridgeConfigurationLoader.LoadFromCurrentEnvironment(
-                RequireConfigurationPath(command));
-        BridgeInstallLayout layout = BridgeInstallLayout.Canonical;
-        BridgeDoctorEnrollmentReport enrollment = command.ReEnroll
-            ? await BridgeEnrollmentDoctor.RunReEnrollAsync(
-                    () => BridgeCredentialReader.CreateProduction(layout),
+        BridgeDoctorReport report = await CreateDoctorReportAsync(command,
+            new WorkerDoctorDependencies(
+                () => BridgeCredentialReader.CreateProduction(BridgeInstallLayout.Canonical),
+                isolated => WorkerDoctorState.Open(isolated),
+                lease => lease.CreateReader(),
+                BridgeConfigurationLoader.LoadFromCurrentEnvironment,
+                configuration => BridgeDoctor.RunAsync(configuration),
+                configuration => BridgeEnrollmentDoctor.RunReEnrollAsync(
+                    () => BridgeCredentialReader.CreateProduction(BridgeInstallLayout.Canonical),
                     () => new BridgeEnrollmentCoordinator(
-                        BridgeCredentialMutator.CreateProduction(layout),
+                        BridgeCredentialMutator.CreateProduction(BridgeInstallLayout.Canonical),
                         new BridgeEnrollmentExchangeClient(
                             BridgeEnrollmentExchangeClient
                                 .CreateEnrollmentEndpoint(
                                     configuration.GatewayUri))),
                     Environment.GetEnvironmentVariable(
                         BridgeEnrollmentDoctor
-                            .EnrollmentTokenEnvironmentVariable))
-                .ConfigureAwait(false)
-            : BridgeEnrollmentDoctor.CreateStateReport(
-                () => BridgeCredentialReader.CreateProduction(layout));
-        BridgeDoctorReport report = await BridgeDoctor.RunAsync(configuration)
+                            .EnrollmentTokenEnvironmentVariable))))
             .ConfigureAwait(false);
-        report = report with { Enrollment = enrollment };
         Console.Out.WriteLine(
             JsonSerializer.Serialize(
                 report,
@@ -125,6 +134,39 @@ internal static class Program
                     WriteIndented = false,
                 }));
         return 0;
+    }
+
+    internal static async Task<BridgeDoctorReport> CreateDoctorReportAsync(
+        WorkerCommand command, WorkerDoctorDependencies dependencies)
+    {
+        if (command.DiagnosticStateRoot is not null)
+        {
+            WorkerDoctorState.ValidateCommand(command);
+            try
+            {
+                using WorkerDoctorState lease = dependencies.OpenIsolatedState(command);
+                BridgeDoctorEnrollmentReport enrollment = BridgeEnrollmentDoctor.CreateStateReport(
+                    () => dependencies.CreateIsolatedReader(lease));
+                lease.VerifyEmpty();
+                if (enrollment.Enrolled || enrollment.Error is not null ||
+                    enrollment.ReEnrollAttempted || enrollment.ReEnrollSucceeded is not null)
+                {
+                    throw new WorkerDoctorStateException();
+                }
+                ResolvedBridgeConfiguration configuration = dependencies.LoadConfiguration(RequireConfigurationPath(command));
+                BridgeDoctorReport report = await dependencies.RunProbes(configuration).ConfigureAwait(false);
+                lease.VerifyEmpty();
+                return report with { Enrollment = enrollment, StateScope = "isolated_diagnostic" };
+            }
+            catch { throw new WorkerDoctorStateException(); }
+        }
+
+        ResolvedBridgeConfiguration ordinaryConfiguration = dependencies.LoadConfiguration(RequireConfigurationPath(command));
+        BridgeDoctorEnrollmentReport ordinaryEnrollment = command.ReEnroll
+            ? await dependencies.ReEnroll(ordinaryConfiguration).ConfigureAwait(false)
+            : BridgeEnrollmentDoctor.CreateStateReport(dependencies.CreateCanonicalReader);
+        BridgeDoctorReport ordinaryReport = await dependencies.RunProbes(ordinaryConfiguration).ConfigureAwait(false);
+        return ordinaryReport with { Enrollment = ordinaryEnrollment };
     }
 
     private static async Task<int> RunEnrollmentArtifactAsync(

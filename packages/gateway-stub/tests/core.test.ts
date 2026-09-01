@@ -42,6 +42,7 @@ async function connectedCore(
   clock?: { nowMs(): number },
   options: {
     connectionCapabilities?: readonly string[];
+    carrierReady?: boolean;
     sessionCapabilities?: readonly string[];
     registration?: SessionRegister;
     tokenTable?: StaticTokenTable;
@@ -68,6 +69,9 @@ async function connectedCore(
     ...(options.connectionCapabilities === undefined
       ? {}
       : { connectionCapabilities: options.connectionCapabilities }),
+    ...(options.carrierReady === undefined
+      ? {}
+      : { carrierReady: options.carrierReady }),
     ...(options.sessionCapabilities === undefined
       ? {}
       : { sessionCapabilities: options.sessionCapabilities }),
@@ -100,6 +104,352 @@ async function connectedCore(
 }
 
 describe("Gateway stub shared FSM authority", () => {
+  it("withholds carrier grants when the test carrier store/object composition is not ready", async () => {
+    const path = await statePath("wp11-carrier-readiness");
+    const core = await GatewayStubCore.create({
+      statePath: path,
+      tokenTable,
+      connectionCapabilities: [
+        "journal_v1",
+        "chunked_results",
+        "artifact_result_v1",
+        "transport_streamable_http",
+      ],
+      carrierReady: false,
+    });
+    const device = core.authenticate(TOKEN);
+    const connectionId = await core.allocateConnectionId(device);
+    const transport = new MemoryTransport(connectionId, "wss", device);
+    try {
+      core.attachConnection(transport);
+      const ack = await core.acceptHello(connectionId, hello());
+      expect(ack.payload.granted_capabilities).toEqual([
+        "journal_v1",
+        "transport_streamable_http",
+      ]);
+      core.activateConnection(connectionId);
+      await core.receiveFrame(
+        connectionId,
+        encoder.encode(JSON.stringify(controlEnvelope("session_register", sessionRegister(), 11_900))),
+      );
+      const registered = JSON.parse(transport.sent.at(-1)!) as Extract<RbpEnvelope, { type: "session_registered" }>;
+      await core.dispatchInvoke({
+        rsid: registered.payload.rsid,
+        payload: readInvoke(uuid7(11_901)),
+      });
+      await expect(core.receiveFrame(
+        connectionId,
+        encoder.encode(JSON.stringify({
+          v: 1,
+          type: "partial",
+          id: uuid7(11_902),
+          rsid: registered.payload.rsid,
+          seq: 1,
+          ack: 1,
+          ts: NOW,
+          payload: {
+            kind: "chunk",
+            invocation_id: uuid7(11_901),
+            stream_id: "result",
+            chunk_index: 0,
+            encoding: "base64",
+            content_type: "application/json",
+            data: Buffer.from("{}").toString("base64"),
+          },
+        })),
+      )).rejects.toThrow(/chunked_results/);
+    } finally {
+      await core.close();
+    }
+  });
+
+  it("keeps default connection and session grants in their separate WP-07 domains", async () => {
+    const path = await statePath("wp07-capability-domains");
+    const core = await GatewayStubCore.create({ statePath: path, tokenTable });
+    const device = core.authenticate(TOKEN);
+    const connectionId = await core.allocateConnectionId(device);
+    const transport = new MemoryTransport(connectionId, "wss", device);
+    try {
+      core.attachConnection(transport);
+      await expect(core.acceptHello(connectionId, hello())).resolves.toMatchObject({
+        payload: {
+          granted_capabilities: ["journal_v1", "transport_streamable_http"],
+        },
+      });
+      core.activateConnection(connectionId);
+      await core.receiveFrame(
+        connectionId,
+        encoder.encode(JSON.stringify(controlEnvelope(
+          "session_register",
+          sessionRegister(),
+          1,
+        ))),
+      );
+      expect(JSON.parse(transport.sent.at(-1)!) as RbpEnvelope).toMatchObject({
+        type: "session_registered",
+        payload: {
+          granted_session_capabilities: ["batch_atomic", "doc_context_cached_v1"],
+        },
+      });
+    } finally {
+      await core.close();
+    }
+  });
+
+  it("rejects unprovisioned batch and document-context capability escalation", async () => {
+    const unprovisionedTable = structuredClone(tokenTable);
+    unprovisionedTable[TOKEN]!.provisionedCapabilities = [
+      "journal_v1",
+      "transport_streamable_http",
+    ];
+    const fixture = await connectedCore("wp07-unprovisioned-session", undefined, {
+      tokenTable: unprovisionedTable,
+    });
+    const batchId = uuid7(901);
+    const invocationId = uuid7(902);
+    const digestInput = {
+      batch_id: batchId,
+      atomic: true,
+      timeout_ms: 5_000,
+      recovery_clearances: [],
+      steps: [{
+        invocation_id: invocationId,
+        method: "inspect_fixture",
+        params: { value: 1 },
+        params_digest: makeParamsDigest({ value: 1 }),
+        policy: { class: "auto" as const, decision: "auto" as const, confirmation_id: null },
+        mutating: false as const,
+        mutation_scope: null,
+      }],
+    };
+    try {
+      expect(JSON.parse(fixture.transport.sent.at(-1)!) as RbpEnvelope).toMatchObject({
+        type: "session_registered",
+        payload: { granted_session_capabilities: [] },
+      });
+      await expect(fixture.core.dispatchBatch({
+        rsid: fixture.rsid,
+        payload: {
+          ...digestInput,
+          steps: digestInput.steps as [typeof digestInput.steps[number]],
+          batch_digest: makeBatchDigest(digestInput),
+        },
+      })).rejects.toThrow(/atomic batch is not granted/);
+      await expect(fixture.core.receiveFrame(
+        fixture.transport.connectionId,
+        encoder.encode(JSON.stringify({
+          v: 1,
+          type: "doc_context_update",
+          id: uuid7(903),
+          rsid: fixture.rsid,
+          seq: 1,
+          ack: 0,
+          ts: NOW,
+          payload: {
+            documents: sessionRegister().documents,
+            active_document: "doc-01",
+            active_view: null,
+          },
+        })),
+      )).rejects.toThrow(/doc_context_cached_v1/);
+    } finally {
+      await fixture.core.close();
+    }
+  });
+
+  it("does not retain session grants across an enrolled capability downgrade and revocation", async () => {
+    const path = await statePath("wp07-session-downgrade-revocation");
+    const core = await GatewayStubCore.create({ statePath: path, tokenTable });
+    const device = core.authenticate(TOKEN);
+    const connectionId = await core.allocateConnectionId(device);
+    const transport = new MemoryTransport(connectionId, "wss", device);
+    try {
+      core.attachConnection(transport);
+      await core.acceptHello(connectionId, hello());
+      core.activateConnection(connectionId);
+      device.provisionedCapabilities = device.provisionedCapabilities.filter(
+        (capability) =>
+          capability !== "batch_atomic" &&
+          capability !== "doc_context_cached_v1",
+      );
+      await core.receiveFrame(
+        connectionId,
+        encoder.encode(JSON.stringify(controlEnvelope(
+          "session_register",
+          sessionRegister(),
+          904,
+        ))),
+      );
+      expect(JSON.parse(transport.sent.at(-1)!) as RbpEnvelope).toMatchObject({
+        type: "session_registered",
+        payload: { granted_session_capabilities: [] },
+      });
+      await expect(core.setAuthStatus(TOKEN, "revoked")).resolves.toEqual([
+        connectionId,
+      ]);
+      expect(Object.values(core.snapshot().sessions)).toContainEqual(
+        expect.objectContaining({ revoked: true }),
+      );
+    } finally {
+      await core.close();
+    }
+  });
+
+  it("binds hello and register to the enrolled claim while hostname stays metadata", async () => {
+    const path = await statePath("credential-claim-binding");
+    const core = await GatewayStubCore.create({ statePath: path, tokenTable });
+    const device = core.authenticate(TOKEN);
+    try {
+      const mismatchedConnectionId = await core.allocateConnectionId(device);
+      const mismatchedTransport = new MemoryTransport(
+        mismatchedConnectionId,
+        "wss",
+        device,
+      );
+      core.attachConnection(mismatchedTransport);
+      const mismatchedHello = hello(380);
+      mismatchedHello.payload.machine.fingerprint = `sha256:${"9".repeat(64)}`;
+      await expect(core.acceptHello(
+        mismatchedConnectionId,
+        mismatchedHello,
+      )).rejects.toMatchObject({ faultClass: "auth", closeCode: 4403 });
+
+      const uppercaseConnectionId = await core.allocateConnectionId(device);
+      const uppercaseTransport = new MemoryTransport(
+        uppercaseConnectionId,
+        "wss",
+        device,
+      );
+      core.attachConnection(uppercaseTransport);
+      const uppercaseHello = hello(381);
+      uppercaseHello.payload.machine.fingerprint = `sha256:${"A".repeat(64)}`;
+      await expect(core.acceptHello(
+        uppercaseConnectionId,
+        uppercaseHello,
+      )).rejects.toMatchObject({ faultClass: "auth", closeCode: 4403 });
+
+      const missingConnectionId = await core.allocateConnectionId(device);
+      const missingTransport = new MemoryTransport(missingConnectionId, "wss", device);
+      core.attachConnection(missingTransport);
+      const missingHello = hello(382);
+      delete missingHello.payload.machine.fingerprint;
+      await expect(core.acceptHello(
+        missingConnectionId,
+        missingHello,
+      )).rejects.toMatchObject({ faultClass: "auth", closeCode: 4403 });
+
+      const acceptedConnectionId = await core.allocateConnectionId(device);
+      const acceptedTransport = new MemoryTransport(acceptedConnectionId, "wss", device);
+      core.attachConnection(acceptedTransport);
+      const renamedHello = hello(383);
+      renamedHello.payload.machine.hostname = "renamed-host-metadata-only";
+      await expect(core.acceptHello(
+        acceptedConnectionId,
+        renamedHello,
+      )).resolves.toMatchObject({ type: "hello_ack" });
+      core.activateConnection(acceptedConnectionId);
+
+      const mismatchedRegister = sessionRegister();
+      mismatchedRegister.machine.fingerprint = `sha256:${"8".repeat(64)}`;
+      await expect(core.receiveFrame(
+        acceptedConnectionId,
+        encoder.encode(JSON.stringify(controlEnvelope(
+          "session_register",
+          mismatchedRegister,
+          384,
+        ))),
+      )).rejects.toMatchObject({ faultClass: "auth", closeCode: 4403 });
+
+      // A copied token plus the exact copied claim remains accepted. This is
+      // claim consistency, not an anti-cloning assertion.
+      await expect(core.receiveFrame(
+        acceptedConnectionId,
+        encoder.encode(JSON.stringify(controlEnvelope(
+          "session_register",
+          sessionRegister(),
+          385,
+        ))),
+      )).resolves.toMatchObject({ outcome: "delivered" });
+    } finally {
+      await core.close();
+    }
+  });
+
+  it("durably revokes active sessions with 4403 and blocks restart resume", async () => {
+    const fixture = await connectedCore("durable-active-revocation");
+    expect(await fixture.core.setAuthStatus(TOKEN, "revoked")).toEqual([
+      fixture.transport.connectionId,
+    ]);
+    expect(fixture.core.snapshot().sessions[fixture.rsid]).toMatchObject({
+      revoked: true,
+      liveness: "disconnected",
+      lifecycle: {
+        phase: "unregistered",
+        unregisterReason: "operator_requested",
+      },
+    });
+    expect(() => fixture.core.authenticate(TOKEN)).toThrowError(
+      expect.objectContaining({ faultClass: "auth", closeCode: 4403 }),
+    );
+    await fixture.core.close();
+
+    // Even if a test operator reactivates the static token table, the durable
+    // revoked session cannot be resumed after process restart.
+    const reopened = await GatewayStubCore.create({
+      statePath: fixture.statePath,
+      tokenTable,
+    });
+    const device = reopened.authenticate(TOKEN);
+    const connectionId = await reopened.allocateConnectionId(device);
+    const transport = new MemoryTransport(connectionId, "wss", device);
+    reopened.attachConnection(transport);
+    await reopened.acceptHello(connectionId, hello(386));
+    reopened.activateConnection(connectionId);
+    try {
+      await expect(reopened.receiveFrame(
+        connectionId,
+        encoder.encode(JSON.stringify(controlEnvelope("session_resume", {
+          rsid: fixture.rsid,
+          resume_token: fixture.resumeToken,
+          last_rx_seq: 0,
+        }, 387))),
+      )).rejects.toMatchObject({ faultClass: "auth", closeCode: 4403 });
+    } finally {
+      await reopened.close();
+    }
+  });
+
+  it("rejects resume when the current credential claim differs from the stored session", async () => {
+    const fixture = await connectedCore("resume-claim-mismatch");
+    await fixture.core.close();
+    const changedClaimTable = structuredClone(tokenTable);
+    changedClaimTable[TOKEN]!.machineFingerprint = `sha256:${"7".repeat(64)}`;
+    const reopened = await GatewayStubCore.create({
+      statePath: fixture.statePath,
+      tokenTable: changedClaimTable,
+    });
+    const device = reopened.authenticate(TOKEN);
+    const connectionId = await reopened.allocateConnectionId(device);
+    const transport = new MemoryTransport(connectionId, "wss", device);
+    reopened.attachConnection(transport);
+    const changedHello = hello(388);
+    changedHello.payload.machine.fingerprint = changedClaimTable[TOKEN]!.machineFingerprint;
+    await reopened.acceptHello(connectionId, changedHello);
+    reopened.activateConnection(connectionId);
+    try {
+      await expect(reopened.receiveFrame(
+        connectionId,
+        encoder.encode(JSON.stringify(controlEnvelope("session_resume", {
+          rsid: fixture.rsid,
+          resume_token: fixture.resumeToken,
+          last_rx_seq: 0,
+        }, 389))),
+      )).rejects.toMatchObject({ faultClass: "auth", closeCode: 4403 });
+    } finally {
+      await reopened.close();
+    }
+  });
+
   it("adopts post-rename revoke authority and poisons future updates when durability confirmation fails", async () => {
     let injectPostRenameFailure = false;
     const fixture = await connectedCore("post-rename-revoke", undefined, {
@@ -212,6 +562,8 @@ describe("Gateway stub shared FSM authority", () => {
       fixture.core.attachConnection(otherTransport);
       const otherHello = hello(407);
       otherHello.payload.device_id = "device-02";
+      otherHello.payload.machine.fingerprint =
+        tokens[otherToken]!.machineFingerprint;
       await fixture.core.acceptHello(otherConnectionId, otherHello);
       fixture.core.activateConnection(otherConnectionId);
       await expect(fixture.core.receiveFrame(
@@ -847,7 +1199,14 @@ describe("Gateway stub shared FSM authority", () => {
   });
 
   it("persists chunk bytes through the T2 stream assembler and finalizes only a matching manifest", async () => {
-    const fixture = await connectedCore("carrier");
+    const fixture = await connectedCore("carrier", undefined, {
+      connectionCapabilities: [
+        "journal_v1",
+        "chunked_results",
+        "artifact_result_v1",
+        "transport_streamable_http",
+      ],
+    });
     const invocationId = uuid7(107);
     try {
       await fixture.core.dispatchInvoke({

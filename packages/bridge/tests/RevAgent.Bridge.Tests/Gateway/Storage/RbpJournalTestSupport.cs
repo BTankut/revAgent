@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using Microsoft.Data.Sqlite;
 using RevAgent.Bridge.Gateway.Protocol;
 using RevAgent.Bridge.Gateway.Storage;
 
@@ -88,6 +89,59 @@ internal sealed class RejectingResumeTokenProtector :
         throw new InvalidOperationException("unprotection unavailable");
 }
 
+internal sealed class TestRecoveryPayloadProtector : IRbpRecoveryPayloadProtector
+{
+    private const byte Mask = 0x5C;
+
+    public RbpProtectedRecoveryPayload Protect(ReadOnlySpan<byte> plaintext)
+    {
+        byte[] bytes = plaintext.ToArray();
+        for (int index = 0; index < bytes.Length; index++) bytes[index] ^= Mask;
+        return new RbpProtectedRecoveryPayload("test-recovery-v7", bytes);
+    }
+
+    public byte[] Unprotect(RbpProtectedRecoveryPayload protectedPayload)
+    {
+        if (!string.Equals(protectedPayload.ProtectionScheme, "test-recovery-v7", StringComparison.Ordinal))
+            throw new InvalidOperationException("Unexpected recovery scheme.");
+        byte[] bytes = protectedPayload.CopyCiphertext();
+        for (int index = 0; index < bytes.Length; index++) bytes[index] ^= Mask;
+        return bytes;
+    }
+}
+
+internal sealed class RejectingRecoveryPayloadProtector : IRbpRecoveryPayloadProtector
+{
+    public RbpProtectedRecoveryPayload Protect(ReadOnlySpan<byte> plaintext) =>
+        throw new System.Security.Cryptography.CryptographicException("unavailable");
+
+    public byte[] Unprotect(RbpProtectedRecoveryPayload protectedPayload) =>
+        throw new System.Security.Cryptography.CryptographicException("unavailable");
+}
+
+internal sealed class TestRollbackBackupSeam : IRbpJournalRollbackBackupSeam
+{
+    internal int PublishCount { get; private set; }
+    public bool RequiresProtectedAcl => false;
+    public void CreateTemporary(string path) => File.WriteAllBytes(path, []);
+    public void ProtectTemporary(string path) { }
+    public void CopyConsistently(SqliteConnection source, string temporaryPath)
+    {
+        using var target = new SqliteConnection($"Data Source={temporaryPath};Pooling=False");
+        target.Open();
+        source.BackupDatabase(target);
+    }
+    public void PublishNoOverwrite(string temporaryPath, string backupPath)
+    {
+        PublishCount++;
+        File.Move(temporaryPath, backupPath, overwrite: false);
+    }
+    public void CleanupTemporary(string temporaryPath)
+    {
+        if (File.Exists(temporaryPath)) File.Delete(temporaryPath);
+    }
+}
+
 internal sealed class ArmedJournalFaultInjector :
     IRbpJournalFaultInjector
 {
@@ -110,6 +164,25 @@ internal sealed class ArmedJournalFaultInjector :
     }
 }
 
+/// <summary>Deterministically faults one exact write phase without changing production code.</summary>
+internal sealed class OrdinalJournalFaultInjector : IRbpJournalFaultInjector
+{
+    private readonly RbpJournalFaultPoint _point;
+    private int _remaining;
+
+    internal OrdinalJournalFaultInjector(RbpJournalFaultPoint point, int occurrence)
+    {
+        _point = point;
+        _remaining = occurrence;
+    }
+
+    public void Hit(RbpJournalFaultPoint point)
+    {
+        if (point != _point || Interlocked.Decrement(ref _remaining) != 0) return;
+        throw new IOException($"Injected journal fault at {point}.");
+    }
+}
+
 internal static class RbpJournalTestData
 {
     internal static readonly DateTimeOffset Now =
@@ -118,7 +191,7 @@ internal static class RbpJournalTestData
             System.Globalization.CultureInfo.InvariantCulture);
 
     internal static RbpJournalOpenOptions Options(
-        ArmedJournalFaultInjector? faultInjector = null,
+        IRbpJournalFaultInjector? faultInjector = null,
         IReadOnlyList<RbpJournalMigration>? migrations = null,
         Func<long>? nowMilliseconds = null,
         int busyTimeoutMilliseconds = 5_000) =>

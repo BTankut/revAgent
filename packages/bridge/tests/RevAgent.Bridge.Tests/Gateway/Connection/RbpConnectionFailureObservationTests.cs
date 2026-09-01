@@ -136,6 +136,9 @@ public sealed partial class RbpConnectionCoordinatorTests
         private readonly Queue<Exception> _failures;
         private int _openCount;
 
+        public RbpConnectionBindingKind BindingKind =>
+            RbpConnectionBindingKind.Wss;
+
         internal RefusingConnectionCycleFactory(params Exception[] failures)
         {
             _failures = new Queue<Exception>(failures);

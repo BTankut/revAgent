@@ -1,8 +1,26 @@
 import { describe, expect, it } from "vitest";
 
-import { sanitizedProductionRuntimeEnvironment } from "../src/productionRuntimeIdentity.js";
+import { resolveCanonicalWindowsRoot, sanitizedProductionRuntimeEnvironment } from "../src/productionRuntimeIdentity.js";
 
 describe("production runtime environment", () => {
+  it.runIf(process.platform === "win32")("derives Windows root from GLOBALROOT and rejects ambient substitution", () => {
+    const originalSystemRoot = process.env.SystemRoot;
+    const originalWindir = process.env.WINDIR;
+    try {
+      const canonical = resolveCanonicalWindowsRoot();
+      expect(canonical).toMatch(/^[A-Za-z]:\\/u);
+      process.env.SystemRoot = "C:\\plain-fake-windows";
+      process.env.WINDIR = process.env.SystemRoot;
+      expect(() => resolveCanonicalWindowsRoot()).toThrow(/GLOBALROOT/u);
+      if (originalSystemRoot === undefined) delete process.env.SystemRoot; else process.env.SystemRoot = originalSystemRoot;
+      process.env.WINDIR = "C:\\mismatched-windir";
+      expect(() => resolveCanonicalWindowsRoot()).toThrow(/GLOBALROOT/u);
+    } finally {
+      if (originalSystemRoot === undefined) delete process.env.SystemRoot; else process.env.SystemRoot = originalSystemRoot;
+      if (originalWindir === undefined) delete process.env.WINDIR; else process.env.WINDIR = originalWindir;
+    }
+  });
+
   it("removes every Node and ws resolution switch without mutating unrelated values", () => {
     const result = sanitizedProductionRuntimeEnvironment({
       PATH: "C:/tools",

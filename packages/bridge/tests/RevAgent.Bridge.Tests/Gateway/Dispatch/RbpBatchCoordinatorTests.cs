@@ -1,4 +1,5 @@
 using System.Text.Json;
+using RevAgent.Bridge.Gateway.Protocol;
 using System.Text.Json.Nodes;
 using RevAgent.Bridge.Gateway.Dispatch;
 using RevAgent.Bridge.Gateway.Storage;
@@ -654,17 +655,18 @@ public sealed class RbpBatchCoordinatorTests
         await using RbpJournalStore store = Open(directory);
         await RegisterAsync(store);
 
-        // The first delivery completes step 0 and is lost while step 1 is
-        // executing: exactly the state a crash between Section 12.1 steps 2
-        // and 3 leaves behind.
-        var first = new StubBatchChannel()
-            .Then(Completed("""{"a":1}"""))
-            .Then(_ => throw new OperationCanceledException());
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(
-            () => Coordinator(store, first).DispatchAsync(
-                Rsid,
-                ThreeReadPayload(),
-                CancellationToken.None));
+        // Seed a true interrupted process: caller cancellation is now durably
+        // classified, so throwing OperationCanceledException is not a power cut.
+        RbpBatchRequest interrupted = RbpBatchRequest.Parse(Rsid, ThreeReadPayload());
+        _ = await store.AdmitBatchAsync(interrupted.ToIdentity(), []);
+        await store.MarkBatchDispatchedAsync(interrupted.BatchKey);
+        await store.MarkInvocationExecutingAsync(interrupted.StepKey(0));
+        JsonElement firstEvidence = RbpBatchPayloads.SuccessEvidence(
+            "completed", Json("{\"a\":1}"), null, null, "read_only");
+        await store.PersistInvocationTerminalAsync(interrupted.StepKey(0),
+            new RbpInvocationTerminal(RbpInvocationState.Completed, firstEvidence,
+                Rfc8785Json.Sha256Digest(firstEvidence)));
+        await store.MarkInvocationExecutingAsync(interrupted.StepKey(1));
 
         var second = new StubBatchChannel().Then(Completed("""{"b":2}"""));
         RbpInvocationAnswer resumed = await Coordinator(store, second)
@@ -714,16 +716,15 @@ public sealed class RbpBatchCoordinatorTests
             atomic: true,
             [Write(StepOne), Read(StepTwo)]);
 
-        // The bridge dies after the one atomic dispatch and before a durable
-        // terminal batch outcome.
+        // Cancellation cannot erase possibly dispatched effect uncertainty.
         var lost = new StubBatchChannel()
             .Then(_ => throw new OperationCanceledException());
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(
-            () => Coordinator(
+        RbpInvocationAnswer cancelled = await Coordinator(
                     store,
                     lost,
                     StubBatchCapabilities.Standard(batchAtomicGranted: true))
-                .DispatchAsync(Rsid, payload, CancellationToken.None));
+                .DispatchAsync(Rsid, payload, CancellationToken.None);
+        Assert.Equal("indeterminate", Status(cancelled));
 
         var recovery = new StubBatchChannel();
         RbpInvocationAnswer answer = await Coordinator(

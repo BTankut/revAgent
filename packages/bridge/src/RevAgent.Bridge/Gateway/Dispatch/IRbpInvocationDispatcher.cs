@@ -1,4 +1,5 @@
 using System.Text.Json;
+using RevAgent.Bridge.Gateway.Protocol;
 
 namespace RevAgent.Bridge.Gateway.Dispatch;
 
@@ -16,6 +17,33 @@ namespace RevAgent.Bridge.Gateway.Dispatch;
 internal interface IRbpInvocationClaim : IDisposable
 {
     string Rsid { get; }
+
+    RbpInvocationAuthoritySnapshot? Authority => null;
+}
+
+/// <summary>
+/// Closed Bridge-owned authority captured synchronously by the active
+/// connection cycle before a verification invocation task is scheduled.
+/// </summary>
+/// <remarks>
+/// Principal, seat, effective MCP session and north-session binding are owned
+/// by the Gateway and deliberately do not appear in this internal snapshot.
+/// </remarks>
+internal sealed record RbpInvocationAuthoritySnapshot(
+    string Rsid,
+    string ConnectionId,
+    long ConnectionGeneration,
+    long RouteEpoch,
+    string ConnectionCapabilitiesDigest,
+    string LocalSessionKey,
+    string RegistrationDigest,
+    string SessionCapabilitiesDigest)
+{
+    internal static string CapabilitiesDigest(
+        IReadOnlyList<string> capabilities) =>
+        Rfc8785Json.Sha256Digest(
+            JsonSerializer.SerializeToElement(
+                capabilities.OrderBy(value => value, StringComparer.Ordinal)));
 }
 
 internal interface IRbpInvocationDispatcher
@@ -33,6 +61,16 @@ internal interface IRbpInvocationDispatcher
     IRbpInvocationClaim? TryClaim(string rsid);
 
     /// <summary>
+    /// Claims an invocation with the active connection/session authority.
+    /// Coordinator dispatch must use this overload. There is deliberately no
+    /// legacy/null fallback: loss of the active connection/session authority
+    /// cannot be converted into an unbound claim.
+    /// </summary>
+    IRbpInvocationClaim? TryClaim(
+        string rsid,
+        RbpInvocationAuthoritySnapshot authority);
+
+    /// <summary>
     /// Answers a claimed <c>invoke</c>.
     /// </summary>
     /// <remarks>
@@ -43,6 +81,7 @@ internal interface IRbpInvocationDispatcher
     Task<RbpInvocationAnswer> DispatchClaimedAsync(
         IRbpInvocationClaim claim,
         JsonElement invokePayload,
+        IReadOnlyList<string> grantedConnectionCapabilities,
         CancellationToken cancellationToken);
 
     /// <summary>

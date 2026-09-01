@@ -156,6 +156,38 @@ export interface BindingResult {
 export interface FailureEvidence {
   code: string;
   message: string;
+  diagnostics?: SupervisedFailureDiagnostics;
+}
+
+/** Bounded, value-free diagnosis retained only for supervised real-process failures. */
+export interface SupervisedFailureDiagnostics {
+  schemaVersion: "rbp-real-trio-failure-diagnostics/v1";
+  gatewayAudits: Array<{
+    sessionCount: number;
+    namespaces: string[];
+    sessions: Array<{
+      binding: string;
+      lifecyclePhase: string;
+      dispatchAllowed: boolean;
+      localKeyPresent: boolean;
+      created: boolean;
+      updated: boolean;
+    }>;
+  }>;
+  bridgeTranscript: Array<{
+    stream: "stderr";
+    at: string;
+    line: string;
+  }>;
+  readinessTrace: Array<{
+    outcome: "VALID" | "NO_ROW" | "MULTIPLE" | "LEGACY" | "INVALID_BINDING" | "RSID_MISMATCH" | "MISSING_BATCH" | "INVALID_LIFECYCLE" | "ERROR_TYPE";
+    fingerprint: string | null;
+    rsidEqual: boolean | null;
+    batchAtomicPresent: boolean;
+    grantOrderHash: string | null;
+    stableCount: number;
+    resetReason: "initial" | "fingerprint_changed" | "invalid" | "error";
+  }>;
 }
 
 export interface CaseResult {

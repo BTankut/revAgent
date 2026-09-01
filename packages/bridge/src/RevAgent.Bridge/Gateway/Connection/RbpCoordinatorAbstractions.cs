@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text.Json;
+using RevAgent.Bridge.Gateway.Dispatch;
 using RevAgent.Bridge.Gateway.Protocol;
 using RevAgent.Bridge.Gateway.Storage;
 
@@ -101,7 +102,9 @@ internal sealed record RbpConnectionCoordinatorOptions(
     TimeSpan? HeartbeatCompletionTimeout = null,
     TimeSpan? WakeGapThreshold = null,
     TimeSpan? CloseTimeout = null,
-    TimeSpan? InvocationDrainTimeout = null)
+    TimeSpan? InvocationDrainTimeout = null,
+    IRbpCredentialClaimInvalidator? CredentialClaimInvalidator = null,
+    IRbpSessionRouteBindingAuthority? SessionRouteBindingAuthority = null)
 {
     internal TimeSpan EffectiveHeartbeatAcknowledgementTimeout =>
         HeartbeatAcknowledgementTimeout ?? TimeSpan.FromSeconds(10);
@@ -141,6 +144,7 @@ internal enum RbpCoordinatorErrorCode
     InvalidControlPayload,
     UnexpectedControl,
     SessionAuthorityConflict,
+    SessionRouteBindingFailed,
     InboundJournalUnavailable,
     HeartbeatTimeout,
     HeartbeatApplicationTimeout,
@@ -168,4 +172,5 @@ internal sealed record RbpConnectionCoordinatorSnapshot(
     bool HasActiveConnection,
     IReadOnlyList<string> ActiveRsids,
     int OwnedBackgroundTaskCount,
-    int ActiveInvocationCount = 0);
+    int ActiveInvocationCount = 0,
+    bool RouteRebindProofGranted = false);

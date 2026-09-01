@@ -319,13 +319,14 @@ function terminalAwait(
   suffix: string,
   rsid: string,
   stepSuffix = `await-${suffix}`,
+  timeoutMs = 10_000,
 ): CaseControlStep {
   return harness(`${caseId.toLowerCase()}.${stepSuffix}`, "await_condition", args({
     source: "gateway.compact_snapshot",
     jsonPointer:
       `/sessions/${rsid}/terminalOutcomes/{{ids.${caseId}.${suffix}.invocationId}}/classification`,
     operator: "exists",
-    timeoutMs: 10_000,
+    timeoutMs,
   }), "observation");
 }
 
@@ -665,11 +666,17 @@ function controlsFor(caseId: EarlyProductionCase): CaseControlStep[] {
           "window",
         ),
         dispatch(caseId, "cross-rsid", "{{case.second_rsid}}"),
-        terminalAwait(caseId, "cross-rsid", "{{case.second_rsid}}", "await-cross-rsid"),
+        terminalAwait(
+          caseId,
+          "cross-rsid",
+          "{{case.second_rsid}}",
+          "await-cross-rsid",
+          35_000,
+        ),
         fixture("o1-c12.release-first", "release_stall", args({
           requestId: invocationRef(caseId, "first"),
         })),
-        terminalAwait(caseId, "first", "{{case.rsid}}", "await-first"),
+        terminalAwait(caseId, "first", "{{case.rsid}}", "await-first", 35_000),
       ];
     case "O1-C13":
       return [

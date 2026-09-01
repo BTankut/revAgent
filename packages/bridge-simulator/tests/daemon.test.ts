@@ -2,11 +2,13 @@ import { Buffer } from "node:buffer";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { once } from "node:events";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { afterEach, describe, expect, it } from "vitest";
+import WebSocket, { WebSocketServer } from "ws";
 
 import { atomicBatch, mutationInvoke, readInvoke, uuid } from "./helpers.js";
 
@@ -492,6 +494,185 @@ describe("long-lived Bridge JSONL daemon", () => {
     expect(bridge.exitCode).toBe(0);
     expect(existsSync(stateRoot)).toBe(false);
   });
+
+  it("sends a valid WSS prefix ordinarily before the singular invalid target fault", async () => {
+    const gateway = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+    await once(gateway, "listening");
+    const gatewayPort = (gateway.address() as AddressInfo).port;
+    const rsid = uuid();
+    const invocationId = uuid();
+    let gatewaySocket: WebSocket | null = null;
+    let conformanceFrameCount = 0;
+    gateway.on("connection", (socket) => {
+      gatewaySocket = socket;
+      socket.on("message", (data, binary) => {
+        if (binary) return;
+        const envelope = JSON.parse(data.toString("utf8")) as JsonObject;
+        if (envelope.type === "hello") {
+          socket.send(JSON.stringify({
+            type: "hello_ack",
+            id: uuid(),
+            ts: "2026-07-22T00:00:00.000Z",
+            payload: {
+              protocol: 1,
+              connection_id: "early-prefix-fault",
+              granted_capabilities: [
+                "journal_v1",
+                "chunked_results",
+                "artifact_result_v1",
+                "transport_streamable_http",
+              ],
+              heartbeat_interval_ms: 15_000,
+              limits: {
+                max_params_bytes: 4_194_304,
+                max_result_bytes: 33_554_432,
+                max_partial_bytes: 1_048_576,
+              },
+              manifest: { latest_bridge_version: "bridge-test", manifest_url: "/bridge/update/manifest" },
+            },
+          }));
+          return;
+        }
+        if (envelope.type === "session_register") {
+          const payload = envelope.payload as JsonObject;
+          socket.send(JSON.stringify({
+            v: 1,
+            type: "session_registered",
+            id: envelope.id,
+            ts: "2026-07-22T00:00:01.000Z",
+            payload: {
+              rsid,
+              resume_token: "early-prefix-resume-token",
+              resume_expires_at: "2026-07-23T00:00:00.000Z",
+              principal: { tenant_id: uuid(), user_id: uuid() },
+              seat: { granted: true, seat_id: uuid() },
+              granted_session_capabilities: payload.session_capabilities,
+            },
+          }));
+          return;
+        }
+        if (envelope.type !== "partial" && envelope.type !== "result") return;
+        conformanceFrameCount += 1;
+        if (conformanceFrameCount !== 2) return;
+        socket.send(JSON.stringify({
+          v: 1,
+          type: "error",
+          id: envelope.id,
+          ts: "2026-07-22T00:00:02.000Z",
+          payload: {
+            message: "authenticated early chunk fault",
+            retryable: false,
+            fault_class: "protocol",
+            outcome: "known",
+            verification_required: false,
+          },
+        }), () => socket.close(4400, "early chunk fault"));
+      });
+    });
+
+    const fixture = child(fixtureCli, ["--port", "0"]);
+    children.push(fixture);
+    const fixtureChannel = new JsonLineReader(fixture);
+    const fixtureReady = await fixtureChannel.next();
+    const stateRoot = mkdtempSync(join(tmpdir(), "bridge-daemon-chunk-fault-"));
+    stateRoots.push(stateRoot);
+    const bridge = child(bridgeCli, ["daemon", "--state-root", stateRoot]);
+    children.push(bridge);
+    const bridgeChannel = new JsonLineReader(bridge);
+    await bridgeChannel.next();
+    let stallPlanned = false;
+    try {
+      await expect(bridgeChannel.send(control("discover-chunk", "discover_fixture", {
+        host: fixtureReady.host,
+        port: fixtureReady.port,
+        probeTimeoutMs: 1_000,
+      }))).resolves.toMatchObject({ ok: true });
+      await expect(bridgeChannel.send(control("open-chunk", "open_transport", {
+        kind: "wss",
+        deviceToken: "fixture-device-token",
+        wssUrl: `ws://127.0.0.1:${gatewayPort}/bridge/v1`,
+        endpointPolicy: "loopback_test_readiness",
+        hello: {
+          id: uuid(),
+          ts: "2026-07-22T00:00:00.000Z",
+          bridgeVersion: "0.0.0",
+          deviceId: "fixture-device",
+          hostname: "fixture-host",
+          os: "fixture-os",
+        },
+      }))).resolves.toMatchObject({
+        ok: true,
+        result: { selectedKind: "wss", connectionId: "early-prefix-fault" },
+      });
+      await bridgeChannel.send(control("run-chunk", "start_run_loop"));
+      await bridgeChannel.send(control("register-chunk", "session_register", {
+        probeIndex: 0,
+        userHint: "fixture-user",
+        hostname: "fixture-host",
+        fingerprint: `sha256:${"0".repeat(64)}`,
+        bridgeVersion: "0.0.0",
+      }));
+      for (let attempt = 0; attempt < 50; attempt += 1) {
+        const snapshot = await bridgeChannel.send(control(`registered-chunk-${attempt}`, "snapshot_evidence"));
+        const sessions = (snapshot.result as JsonObject).sessions as JsonObject[];
+        if (sessions.some((session) => session.rsid === rsid)) break;
+        if (attempt === 49) throw new Error("Bridge session did not register");
+        await new Promise<void>((resolveDelay) => setTimeout(resolveDelay, 10));
+      }
+      await fixtureChannel.send(control("plan-chunk-stall", "plan_fault", {
+        requestId: invocationId,
+        fault: { stall: true },
+      }));
+      stallPlanned = true;
+      const openGatewaySocket = gatewaySocket as WebSocket | null;
+      if (openGatewaySocket === null) throw new Error("Gateway WSS did not open");
+      openGatewaySocket.send(JSON.stringify(readInvoke({
+        rsid,
+        seq: 1,
+        invocationId,
+        method: "fixture_echo",
+      })));
+      for (let attempt = 0; attempt < 50; attempt += 1) {
+        const pages = await collectSnapshot(fixtureChannel, `stalled-chunk-${attempt}`);
+        const pending = pages.flatMap((page) => page.pendingStalls as JsonObject[]);
+        if (pending.some((entry) => entry.requestId === invocationId)) break;
+        if (attempt === 49) throw new Error("Fixture invocation did not stall");
+        await new Promise<void>((resolveDelay) => setTimeout(resolveDelay, 10));
+      }
+
+      await expect(bridgeChannel.send(control("send-chunk", "send_chunk_conformance", {
+        vector: "reconstruction_size",
+        rsid,
+        invocationId,
+      }))).resolves.toMatchObject({
+        ok: true,
+        result: {
+          schemaVersion: "bridge-chunk-conformance-evidence/v1",
+          frames: [{ type: "partial" }, { type: "result" }],
+          fault: {
+            binding: "wss",
+            accepted: false,
+            source: "gateway_error_envelope_and_close",
+            faultClass: "protocol",
+            closeCode: 4400,
+            closeReason: "early chunk fault",
+            message: "authenticated early chunk fault",
+          },
+        },
+      });
+      expect(conformanceFrameCount).toBe(2);
+    } finally {
+      if (stallPlanned) {
+        await fixtureChannel.send(control("release-chunk-stall", "release_stall", {
+          requestId: invocationId,
+        })).catch(() => undefined);
+      }
+      await bridgeChannel.send(control("shutdown-chunk-bridge", "shutdown")).catch(() => undefined);
+      await fixtureChannel.send(control("shutdown-chunk-fixture", "shutdown")).catch(() => undefined);
+      (gatewaySocket as WebSocket | null)?.terminate();
+      await new Promise<void>((resolveClose) => gateway.close(() => resolveClose()));
+    }
+  }, 20_000);
 
   it("accepts a bounded absolute persistent state root from the environment", async () => {
     const stateRoot = mkdtempSync(join(tmpdir(), "bridge-daemon-env-state-"));

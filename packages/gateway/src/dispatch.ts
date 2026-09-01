@@ -17,12 +17,14 @@ import {
   confirmationSessionIdFor,
   type GatewayConfirmationAuthority,
 } from "./confirmationAuthority.js";
+import { GatewayRbpFault } from "./bridgeSession.js";
 import {
   REVAGENT_EVENT_SCHEMA,
   type GatewayEventEnvelope,
   type GatewayEventSink,
 } from "./events.js";
 import {
+  assertEffectiveMcpRequestScopeV1,
   createGatewayInvocationContext,
   deriveGatewayInvocationAuthority,
   GatewayInvocationContextError,
@@ -30,14 +32,20 @@ import {
   type GatewayInvocationContext,
   type GatewayInvocationAuthority,
   type GatewayInvocationRoute,
+  type EffectiveMcpRequestScopeV1,
 } from "./invocationContext.js";
-import { gatewayUuidV7 } from "./identifiers.js";
+import { gatewayUuidV7, isGatewayUuidV7 } from "./identifiers.js";
 import type {
   GatewayDurableBatchTerminal,
   GatewayExpectedMutationDispatch,
   GatewayRecoveryAuthority,
   GatewayRecoveryPendingDispatch,
+  GatewayRecoveryReconcileResult,
 } from "./recoveryAuthority.js";
+import {
+  isMutationProbeVerificationWorkflow,
+  type MutationProbeVerificationWorkflow,
+} from "./productionConformanceVerification.js";
 import type {
   GatewayExecutorBinding,
   GatewayToolRecord,
@@ -112,6 +120,12 @@ export interface GatewayExecutor {
 
 export type GatewayExecutorOutcome =
   | {
+      /** Internal Bridge-only result; North converts it to a fixed carrier. */
+      readonly state: "omitted_payload";
+      readonly originInvocationId: string;
+      readonly expectedResultDigest: `sha256:${string}`;
+    }
+  | {
       readonly state: "completed";
       readonly result: GatewayJsonValue;
     }
@@ -129,6 +143,23 @@ export type GatewayExecutorOutcome =
     };
 
 export type GatewayDispatchOutcome =
+  | {
+      readonly ok: true;
+      readonly state: "omitted_payload";
+      readonly toolName: string;
+      readonly toolVersion: string;
+      readonly executor: "bridge";
+      readonly requestId: string;
+      /** Internal sentinel only; North replaces this outcome with a carrier. */
+      readonly result: null;
+      readonly originInvocationId: string;
+      readonly expectedResultDigest: `sha256:${string}`;
+      readonly auditDelivery?: "recorded" | "unavailable";
+      readonly auditError?: {
+        readonly detailCode: string;
+        readonly message: string;
+      };
+    }
   | {
       readonly ok: true;
       readonly state: "completed";
@@ -200,8 +231,22 @@ export type GatewayDispatchOutcome =
           | "recovery_blocked"
           | "recovery_protocol_fault"
           | "recovery_unavailable"
-          | "audit_unavailable";
-        readonly message: string;
+          | "audit_unavailable"
+          /**
+           * Read-only execution failed after immutable route authority was
+           * established. The underlying exception is intentionally never
+           * surfaced through the north result carrier.
+           */
+          | "dispatch_unavailable";
+        /**
+         * Present only on the fixed, read-only dispatch_unavailable carrier.
+         * These are closed diagnostic enums, not executor-provided values.
+         */
+        readonly phase?: DispatchUnavailablePhase;
+        readonly class?: DispatchUnavailableClass;
+        readonly upstreamCode?: GatewayRbpFaultCode;
+        /** Omitted only for the fixed read-only dispatch_unavailable shape. */
+        readonly message?: string;
         readonly executorCode?: string;
         readonly detailCode?: string;
       };
@@ -219,6 +264,32 @@ type GatewaySuccessfulDispatchOutcome = Extract<
   GatewayDispatchOutcome,
   { readonly ok: true }
 >;
+
+type DispatchUnavailablePhase =
+  | "window_acquire"
+  | "executor"
+  | "result_normalize"
+  | "window_release"
+  | "audit_finish";
+
+type DispatchUnavailableClass =
+  | "gateway_rbp_fault"
+  | "abort"
+  | "error"
+  | "unknown";
+
+type GatewayRbpFaultCode =
+  | "auth"
+  | "protocol"
+  | "unsupported"
+  | "unavailable";
+
+const GATEWAY_RBP_FAULT_CODES = new Set<GatewayRbpFaultCode>([
+  "auth",
+  "protocol",
+  "unsupported",
+  "unavailable",
+]);
 
 export type { GatewayInvocationContext } from "./invocationContext.js";
 
@@ -345,6 +416,58 @@ function invalidExecutorResult(input: {
   };
 }
 
+function dispatchUnavailableOutcome(input: {
+  readonly toolName: string;
+  readonly requestId: string;
+  readonly executorReached: boolean;
+  readonly phase: DispatchUnavailablePhase;
+  readonly error: unknown;
+}): GatewayDispatchOutcome {
+  const diagnostic = dispatchUnavailableDiagnostic(input.error);
+  return Object.freeze({
+    ok: false as const,
+    state: "failed" as const,
+    toolName: input.toolName,
+    requestId: input.requestId,
+    executorReached: input.executorReached,
+    error: Object.freeze({
+      code: "dispatch_unavailable" as const,
+      phase: input.phase,
+      class: diagnostic.class,
+      ...(diagnostic.upstreamCode === undefined
+        ? {}
+        : { upstreamCode: diagnostic.upstreamCode }),
+    }),
+  });
+}
+
+function dispatchUnavailableDiagnostic(error: unknown): Readonly<{
+  readonly class: DispatchUnavailableClass;
+  readonly upstreamCode?: GatewayRbpFaultCode;
+}> {
+  if (error instanceof GatewayRbpFault) {
+    return Object.freeze({
+      class: "gateway_rbp_fault",
+      ...(GATEWAY_RBP_FAULT_CODES.has(error.code)
+        ? { upstreamCode: error.code }
+        : {}),
+    });
+  }
+  // A DOMException numeric code is the platform type signal. Deliberately do
+  // not classify by Error.name or arbitrary object fields.
+  if (
+    typeof DOMException !== "undefined" &&
+    error instanceof DOMException &&
+    error.code === DOMException.ABORT_ERR
+  ) {
+    return Object.freeze({ class: "abort" });
+  }
+  if (error instanceof Error) {
+    return Object.freeze({ class: "error" });
+  }
+  return Object.freeze({ class: "unknown" });
+}
+
 function normalizeExecutorOutcome(input: {
   readonly tool: GatewayToolRecord;
   readonly requestId: string;
@@ -397,6 +520,32 @@ function normalizeExecutorOutcome(input: {
         executorCode: failure.code.slice(0, 120),
         message: failure.message.replace(/[\r\n]+/gu, " ").slice(0, 600),
       },
+    };
+  }
+  if (executorOutcome.state === "omitted_payload") {
+    if (
+      input.tool.executor !== "bridge" ||
+      typeof executorOutcome.originInvocationId !== "string" ||
+      !isGatewayUuidV7(executorOutcome.originInvocationId) ||
+      typeof executorOutcome.expectedResultDigest !== "string" ||
+      !/^sha256:[0-9a-f]{64}$/u.test(executorOutcome.expectedResultDigest)
+    ) {
+      return invalidExecutorResult({
+        toolName: input.tool.name,
+        requestId: input.requestId,
+        message: "executor returned an invalid omitted-payload outcome",
+      });
+    }
+    return {
+      ok: true,
+      state: "omitted_payload",
+      toolName: input.tool.name,
+      toolVersion: input.tool.version,
+      executor: "bridge",
+      requestId: input.requestId,
+      result: null,
+      originInvocationId: executorOutcome.originInvocationId,
+      expectedResultDigest: executorOutcome.expectedResultDigest as `sha256:${string}`,
     };
   }
   if (
@@ -579,6 +728,41 @@ function outcomeFromDurableTerminal(input: {
   };
 }
 
+const MUTATION_PROBE_ORIGIN_RECONCILE_ATTEMPTS = 24;
+const MUTATION_PROBE_ORIGIN_RECONCILE_DEADLINE_MS = 5_000;
+const MUTATION_PROBE_ORIGIN_RECONCILE_DELAY_MS = 100;
+
+function isMutationProbeOriginEvidenceRace(
+  result: GatewayRecoveryReconcileResult,
+): boolean {
+  return result.kind === "protocol_fault" &&
+    result.reason === "bridge_evidence_dispatch_evidence_mismatch";
+}
+
+/** @internal Exact pending-read retry; it has deliberately no send/execute input. */
+export async function retryMutationProbeOriginReconcile(input: {
+  readonly initial: GatewayRecoveryReconcileResult;
+  readonly reconcile: () => Promise<GatewayRecoveryReconcileResult>;
+  readonly revalidateCurrentOwner: () => Promise<boolean>;
+  readonly now?: () => number;
+  readonly delay?: (milliseconds: number) => Promise<void>;
+}): Promise<GatewayRecoveryReconcileResult> {
+  let result = input.initial;
+  if (!isMutationProbeOriginEvidenceRace(result)) return result;
+  const now = input.now ?? Date.now;
+  const delay = input.delay ?? (async (milliseconds: number) =>
+    await new Promise<void>((resolve) => setTimeout(resolve, milliseconds)));
+  const deadline = now() + MUTATION_PROBE_ORIGIN_RECONCILE_DEADLINE_MS;
+  for (let attempt = 0; attempt < MUTATION_PROBE_ORIGIN_RECONCILE_ATTEMPTS; attempt += 1) {
+    if (now() >= deadline) return result;
+    await delay(MUTATION_PROBE_ORIGIN_RECONCILE_DELAY_MS);
+    if (now() > deadline || !await input.revalidateCurrentOwner()) return result;
+    result = await input.reconcile();
+    if (!isMutationProbeOriginEvidenceRace(result)) return result;
+  }
+  return result;
+}
+
 export interface GatewayDispatcherOptions {
   readonly eventSink: GatewayEventSink;
   readonly eventSource: GatewayEventEnvelope["source"];
@@ -597,13 +781,20 @@ export interface GatewayDispatcherOptions {
     | "preflightMutation"
     | "prepareMutationDispatch"
     | "reconcilePendingDispatch"
-  >;
+  > & Partial<Pick<GatewayRecoveryAuthority,
+    | "prepareVerificationDispatch"
+    | "recordVerificationEvidence"
+    | "planRecoveryClearances"
+  >>;
+  /** Factory-branded, conformance-only fixed-recipe workflow. */
+  readonly mutationProbeVerification?: MutationProbeVerificationWorkflow;
 }
 
 interface DispatchAuditInput {
   readonly auth: DispatchAuditIdentity;
   readonly route: GatewayInvocationRoute | undefined;
   readonly mcpSessionId: string;
+  readonly effectiveMcpRequestScope?: EffectiveMcpRequestScopeV1;
   readonly toolName: string;
   readonly invocationId: string | null;
   readonly attemptId?: string;
@@ -631,11 +822,23 @@ export interface GatewayDispatchRequest {
   readonly args: unknown;
   readonly auth: AuthContext;
   readonly mcpSessionId: string;
+  /** Required immutable carrier minted once at north ingress. */
+  readonly effectiveMcpRequestScope: EffectiveMcpRequestScopeV1;
+  /** Gateway-owned durable carrier identity for an idempotent C39 retry. */
+  readonly invocationIdOverride?: string;
+  /**
+   * C39-only authority hook. It runs after the immutable context is minted
+   * and the durable RSID window is held, but before any executor contact.
+   */
+  readonly beforeExecute?: (
+    context: GatewayInvocationContext,
+  ) => Promise<boolean> | boolean;
   /** Stable confirmation authority when transport requests are stateless. */
   readonly confirmationSessionId?: string;
   readonly confirmation?: GatewayConfirmationControl;
   readonly resolveRoute: (
     auth: AuthContext,
+    effectiveMcpRequestScope: EffectiveMcpRequestScopeV1,
   ) => GatewayInvocationRoute | Promise<GatewayInvocationRoute>;
 }
 
@@ -710,7 +913,9 @@ function snapshotInvocationRoute(
         });
   return Object.freeze({
     tenantId: route.tenantId,
+    principalKey: route.principalKey,
     mcpSessionId: route.mcpSessionId,
+    effectiveMcpRequestScope: route.effectiveMcpRequestScope,
     rsid: route.rsid,
     documentIdentity,
   });
@@ -807,6 +1012,7 @@ export class GatewayDispatcher {
   readonly #confirmationAuthority:
     | GatewayDispatcherOptions["confirmationAuthority"]
     | undefined;
+  readonly #mutationProbeVerification: MutationProbeVerificationWorkflow | undefined;
   readonly #rsidTails = new Map<string, Promise<void>>();
   #eventSequence = 0;
 
@@ -846,6 +1052,13 @@ export class GatewayDispatcher {
         : () => configuredEventId();
     this.#recoveryAuthority = options.recoveryAuthority;
     this.#confirmationAuthority = options.confirmationAuthority;
+    if (options.mutationProbeVerification !== undefined &&
+        !isMutationProbeVerificationWorkflow(options.mutationProbeVerification, {
+          recoveryAuthority: options.recoveryAuthority as GatewayRecoveryAuthority,
+        })) {
+      throw new TypeError("mutation probe verification workflow is not factory branded");
+    }
+    this.#mutationProbeVerification = options.mutationProbeVerification;
   }
 
   public registry(): GatewayToolRegistry {
@@ -855,6 +1068,39 @@ export class GatewayDispatcher {
   public async dispatch(
     input: GatewayDispatchRequest,
   ): Promise<GatewayDispatchOutcome> {
+    try {
+      assertEffectiveMcpRequestScopeV1({
+        scope: input.effectiveMcpRequestScope,
+        auth: input.auth,
+        mcpSessionId: input.mcpSessionId,
+      });
+      if (
+        input.confirmationSessionId !== undefined &&
+        input.confirmationSessionId !==
+          input.effectiveMcpRequestScope.effectiveMcpSessionId
+      ) {
+        throw new GatewayInvocationContextError(
+          "mcp_session_binding_mismatch",
+          "confirmation authority must use the effective MCP request scope",
+        );
+      }
+    } catch (error) {
+      return Object.freeze({
+        ok: false as const,
+        state: "failed" as const,
+        toolName: input.toolName,
+        requestId: "effective-mcp-scope-rejected",
+        executorReached: false,
+        error: Object.freeze({
+          code: "invalid_invocation_context" as const,
+          detailCode:
+            error instanceof GatewayInvocationContextError
+              ? error.code
+              : "mcp_session_binding_mismatch",
+          message: errorMessage(error),
+        }),
+      });
+    }
     const tool = this.#registry.get(input.toolName);
     if (
       tool?.policyClass === "confirm" &&
@@ -1007,11 +1253,15 @@ export class GatewayDispatcher {
     );
 
     try {
-      route = snapshotInvocationRoute(await input.resolveRoute(auth));
+      route = snapshotInvocationRoute(await input.resolveRoute(
+        auth,
+        input.effectiveMcpRequestScope,
+      ));
       authority = deriveGatewayInvocationAuthority({
         auth,
         route,
         mcpSessionId: input.mcpSessionId,
+        effectiveMcpRequestScope: input.effectiveMcpRequestScope,
         mutationScopePolicy: tool.mutationScopePolicy,
         startedAtMs,
       });
@@ -1086,6 +1336,7 @@ export class GatewayDispatcher {
             auth,
             route: route!,
             mcpSessionId: input.mcpSessionId,
+            effectiveMcpRequestScope: input.effectiveMcpRequestScope,
             invocationId,
             toolName: tool.name,
             toolVersion: tool.version,
@@ -1107,20 +1358,50 @@ export class GatewayDispatcher {
             invocationId,
           });
         }
+        const serverAuthoredReadOnlyPreview =
+          projection.previewExecutorMethod === "get_ui_state";
+        let executorContext = context;
+        if (serverAuthoredReadOnlyPreview) {
+          try {
+            executorContext = createGatewayInvocationContext({
+              auth,
+              route: route!,
+              mcpSessionId: input.mcpSessionId,
+              effectiveMcpRequestScope: input.effectiveMcpRequestScope,
+              invocationId,
+              toolName: tool.name,
+              toolVersion: tool.version,
+              policyClass: "auto",
+              policyDecision: "auto",
+              mutationScopePolicy: "none",
+              executor: tool.executor,
+              args: projection.previewArgs,
+              startedAtMs,
+            });
+          } catch (error) {
+            return finishFailure({
+              code: "invalid_invocation_context",
+              detailCode: error instanceof GatewayInvocationContextError ? error.code : undefined,
+              message: errorMessage(error),
+              invocationId,
+              context,
+            });
+          }
+        }
         const request: GatewayExecutorRequest = {
           toolName: tool.name,
           toolVersion: tool.version,
           executorMethod: projection.previewExecutorMethod,
-          policyClass: tool.policyClass,
+          policyClass: serverAuthoredReadOnlyPreview ? "auto" : tool.policyClass,
           mutationScopePolicy: "none",
           args: projection.previewArgs,
-          context,
+          context: executorContext,
         };
         let rawPreview: Awaited<
           ReturnType<NonNullable<GatewayExecutor["previewConfirmation"]>>
         >;
         try {
-          rawPreview = await runWithGatewayInvocationContext(context, () =>
+          rawPreview = await runWithGatewayInvocationContext(executorContext, () =>
             executor.previewConfirmation!(request),
           );
         } catch (error) {
@@ -1138,10 +1419,9 @@ export class GatewayDispatcher {
           executorOutcome: rawPreview,
           threw: false,
         });
-        const previewIsAuthorizable = isAuthorizableConfirmationPreview(
-          tool,
-          previewOutcome,
-        );
+        const previewIsAuthorizable = serverAuthoredReadOnlyPreview
+          ? previewOutcome.ok && previewOutcome.state === "completed"
+          : isAuthorizableConfirmationPreview(tool, previewOutcome);
         if (!previewIsAuthorizable) {
           return this.#finish(previewOutcome, {
             auth: auditIdentity,
@@ -1182,6 +1462,7 @@ export class GatewayDispatcher {
           userId: auth.actor.userId,
           gatewaySessionId: auth.session.sessionId,
           confirmationSessionId,
+          effectiveMcpRequestScope: input.effectiveMcpRequestScope,
           oauthClientId: auth.session.oauthClientId,
           rsid: route!.rsid,
           toolName: tool.name,
@@ -1215,6 +1496,7 @@ export class GatewayDispatcher {
         const requestedAudit = await this.#emitConfirmationEvent({
           auth: auditIdentity,
           confirmationSessionId,
+          effectiveMcpRequestScope: input.effectiveMcpRequestScope,
           status: "requested",
           tool,
           confirmationId: issued.pendingAction.confirmationId,
@@ -1251,7 +1533,7 @@ export class GatewayDispatcher {
           toolVersion: tool.version,
           executor: tool.executor,
           requestId: invocationId,
-          result: previewOutcome.result,
+          result: previewOutcome.result as GatewayJsonValue,
           confirmation: Object.freeze({
             confirmToken: issued.confirmToken,
             confirmationId: issued.pendingAction.confirmationId,
@@ -1518,11 +1800,15 @@ export class GatewayDispatcher {
     }
 
     try {
-      route = snapshotInvocationRoute(await input.resolveRoute(auth));
+      route = snapshotInvocationRoute(await input.resolveRoute(
+        auth,
+        input.effectiveMcpRequestScope,
+      ));
       authority = deriveGatewayInvocationAuthority({
         auth,
         route,
         mcpSessionId: input.mcpSessionId,
+        effectiveMcpRequestScope: input.effectiveMcpRequestScope,
         mutationScopePolicy: tool.mutationScopePolicy,
         startedAtMs,
       });
@@ -1628,7 +1914,10 @@ export class GatewayDispatcher {
       }
 
       try {
-        const preflight = await recovery.preflightMutation({
+        const planAwareMutationProbeNext =
+          tool.name === "conformance.fixture.mutation_probe_next" &&
+          this.#mutationProbeVerification !== undefined;
+        const preflight = planAwareMutationProbeNext ? { kind: "clear" as const } : await recovery.preflightMutation({
           tenantId: auth.actor.tenantId,
           rsid: route!.rsid,
           mutationScopes: [authority!.mutationScope!],
@@ -1663,6 +1952,7 @@ export class GatewayDispatcher {
             auth,
             route: route!,
             mcpSessionId: input.mcpSessionId,
+            effectiveMcpRequestScope: input.effectiveMcpRequestScope,
             invocationId,
             toolName: tool.name,
             toolVersion: tool.version,
@@ -1742,6 +2032,43 @@ export class GatewayDispatcher {
             context,
           });
         }
+        if (tool.name === "conformance.fixture.mutation_probe_origin") {
+          const admitted = await this.#mutationProbeVerification?.recordOrigin({
+            context,
+            sessionBindingId: draft.sessionBindingId,
+            connectionId: draft.connectionId,
+            envelope: draft.envelope,
+            expected: draft.expected,
+          }) ?? false;
+          if (!admitted) {
+            return finishFailure({
+              code: "recovery_unavailable",
+              detailCode: "mutation_probe_origin_provenance_unavailable",
+              message: "mutation probe origin provenance was not durably admitted",
+              invocationId,
+              context,
+            });
+          }
+        }
+        if (tool.name === "conformance.fixture.mutation_probe_next") {
+          const next = await this.#mutationProbeVerification?.prepareNext({
+            context,
+            sessionBindingId: draft.sessionBindingId,
+            connectionId: draft.connectionId,
+            envelope: draft.envelope,
+            expected: draft.expected,
+          }) ?? null;
+          if (next === null) {
+            return finishFailure({
+              code: "recovery_blocked",
+              detailCode: "mutation_probe_plan_unavailable",
+              message: "mutation probe next has no exact audited recovery plan",
+              invocationId,
+              context,
+            });
+          }
+          draft = next;
+        }
         const prepared = await recovery.prepareMutationDispatch({
           tenantId: auth.actor.tenantId,
           attemptId,
@@ -1756,6 +2083,7 @@ export class GatewayDispatcher {
                   originatingPreviewInvocationId:
                     input.confirmation!.originatingPreviewInvocationId,
                   commitInvocationId: invocationId,
+                  effectiveMcpRequestScope: input.effectiveMcpRequestScope,
                   binding: {
                     tenantId: auth.actor.tenantId,
                     principalKey: auth.principalKey,
@@ -1858,6 +2186,7 @@ export class GatewayDispatcher {
           const approvalAudit = await this.#emitConfirmationEvent({
             auth: auditIdentity,
             confirmationSessionId,
+            effectiveMcpRequestScope: input.effectiveMcpRequestScope,
             status: "approved",
             tool,
             confirmationId,
@@ -1896,11 +2225,29 @@ export class GatewayDispatcher {
           // A transport/parser exception cannot overwrite a persisted terminal.
         }
 
-        const reconciled = await recovery.reconcilePendingDispatch({
+        let reconciled = await recovery.reconcilePendingDispatch({
           tenantId: auth.actor.tenantId,
           rsid: context.rsid,
           envelopeDigest: pending.envelopeDigest,
         });
+        if (tool.name === "conformance.fixture.mutation_probe_origin") {
+          const workflow = this.#mutationProbeVerification!;
+          reconciled = await retryMutationProbeOriginReconcile({
+            initial: reconciled,
+            reconcile: async () => await recovery.reconcilePendingDispatch({
+              tenantId: auth.actor.tenantId,
+              rsid: context.rsid,
+              envelopeDigest: pending.envelopeDigest,
+            }),
+            revalidateCurrentOwner: async () => await workflow.revalidateOriginPending({
+              context,
+              attemptId,
+              sessionBindingId: pending.sessionBindingId,
+              connectionId: pending.preparedConnectionId,
+              envelopeDigest: pending.envelopeDigest,
+            }),
+          });
+        }
         if (reconciled.kind === "indeterminate_recorded") {
           return finishFailure({
             code: "recovery_blocked",
@@ -2007,7 +2354,24 @@ export class GatewayDispatcher {
   ): Promise<GatewayDispatchOutcome> {
     const startedAtMs = this.#clock();
     const attemptId = this.#newAttemptId(startedAtMs);
-    const invocationId = this.#newInvocationId(startedAtMs);
+    const invocationId = input.invocationIdOverride ?? this.#newInvocationId(startedAtMs);
+    if (
+      input.invocationIdOverride !== undefined &&
+      !isGatewayUuidV7(input.invocationIdOverride)
+    ) {
+      return Object.freeze({
+        ok: false as const,
+        state: "failed" as const,
+        toolName: input.toolName,
+        requestId: "effective-mcp-scope-rejected",
+        executorReached: false,
+        error: Object.freeze({
+          code: "invalid_invocation_context" as const,
+          detailCode: "invalid_invocation_route",
+          message: "Gateway-owned invocation identity is invalid",
+        }),
+      });
+    }
     const auth = snapshotAuthContext(input.auth);
     const confirmationSessionId = confirmationSessionIdFor(
       auth,
@@ -2186,7 +2550,10 @@ export class GatewayDispatcher {
 
     let route: GatewayInvocationRoute;
     try {
-      route = snapshotInvocationRoute(await input.resolveRoute(auth));
+      route = snapshotInvocationRoute(await input.resolveRoute(
+        auth,
+        input.effectiveMcpRequestScope,
+      ));
     } catch (error) {
       const outcome: GatewayDispatchOutcome = {
         ok: false,
@@ -2209,19 +2576,14 @@ export class GatewayDispatcher {
       });
     }
 
-    let context: GatewayInvocationContext;
+    let authority: GatewayInvocationAuthority;
     try {
-      context = createGatewayInvocationContext({
+      authority = deriveGatewayInvocationAuthority({
         auth,
         route,
         mcpSessionId: input.mcpSessionId,
-        invocationId,
-        toolName: tool.name,
-        toolVersion: tool.version,
-        policyClass: tool.policyClass,
+        effectiveMcpRequestScope: input.effectiveMcpRequestScope,
         mutationScopePolicy: tool.mutationScopePolicy,
-        executor: tool.executor,
-        args: parsedJsonArgs,
         startedAtMs,
       });
     } catch (error) {
@@ -2243,10 +2605,59 @@ export class GatewayDispatcher {
         route,
         tool,
         context: undefined,
+        authority: undefined,
         paramsDigest,
         executorReached: false,
       });
     }
+
+    // This is deliberately the only broad normalization boundary for the
+    // non-mutating dispatcher. Route/authentication/authority failures above,
+    // durable mutation paths, and north resource delivery remain outside it.
+    let phase: DispatchUnavailablePhase = "window_acquire";
+    let failurePhase: DispatchUnavailablePhase | null = null;
+    let executorReached = false;
+    try {
+      let context: GatewayInvocationContext;
+      try {
+      context = createGatewayInvocationContext({
+        auth,
+        route,
+        mcpSessionId: input.mcpSessionId,
+        effectiveMcpRequestScope: input.effectiveMcpRequestScope,
+        invocationId,
+        toolName: tool.name,
+        toolVersion: tool.version,
+        policyClass: tool.policyClass,
+        mutationScopePolicy: tool.mutationScopePolicy,
+        executor: tool.executor,
+        args: parsedJsonArgs,
+        startedAtMs,
+      });
+      } catch (error) {
+        const outcome: GatewayDispatchOutcome = {
+          ok: false,
+          state: "failed",
+          toolName: input.toolName,
+          requestId: invocationId,
+          error: {
+            code: "invalid_invocation_context",
+            ...(error instanceof GatewayInvocationContextError
+              ? { detailCode: error.code }
+              : {}),
+            message: errorMessage(error),
+          },
+        };
+        return this.#finish(outcome, {
+          ...auditBase,
+          route,
+          tool,
+          context: undefined,
+          authority,
+          paramsDigest,
+          executorReached: false,
+        });
+      }
 
     if (tool.policyClass !== "auto") {
       const outcome: GatewayDispatchOutcome = {
@@ -2264,6 +2675,7 @@ export class GatewayDispatcher {
         route,
         tool,
         context,
+        authority,
         executorReached: false,
       });
     }
@@ -2285,12 +2697,15 @@ export class GatewayDispatcher {
         route,
         tool,
         context,
+        authority,
         executorReached: false,
       });
     }
 
-    return this.#serialize(context.rsid, async () => {
+      phase = "window_acquire";
+      return await this.#serialize(context.rsid, async () => {
       const recovery = this.#recoveryAuthority;
+      phase = "window_acquire";
       const window = await recovery.acquireInvocationWindow({
         tenantId: auth.actor.tenantId,
         rsid: context.rsid,
@@ -2325,60 +2740,209 @@ export class GatewayDispatcher {
                     message: window.message,
                   },
         };
-        return this.#finish(outcome, {
+        phase = "audit_finish";
+        return await this.#finish(outcome, {
           ...auditBase,
           route,
           tool,
           context,
+          authority,
           executorReached: false,
         });
       }
 
       try {
-        let outcome: GatewayDispatchOutcome;
-        try {
-          const executorOutcome: unknown =
-            await runWithGatewayInvocationContext(context, () =>
-              executor.execute({
-                toolName: tool.name,
-                toolVersion: tool.version,
-                executorMethod: tool.executorMethod,
-                policyClass: tool.policyClass,
-                mutationScopePolicy: tool.mutationScopePolicy,
-                args: parsedJsonArgs,
-                context,
-              }),
-            );
-          outcome = normalizeExecutorOutcome({
-            tool,
-            requestId: invocationId,
-            executorOutcome,
-            threw: false,
+        if (tool.name === "conformance.fixture.mutation_probe_verify") {
+          const workflow = this.#mutationProbeVerification;
+          if (workflow === undefined || executor.buildMutationDispatch === undefined ||
+              executor.executePreparedMutation === undefined ||
+              recovery.prepareVerificationDispatch === undefined ||
+              recovery.recordVerificationEvidence === undefined ||
+              recovery.planRecoveryClearances === undefined) {
+            const outcome: GatewayDispatchOutcome = {
+              ok: false, state: "failed", toolName: input.toolName, requestId: invocationId,
+              error: { code: "recovery_unavailable", detailCode: "verification_workflow_unavailable", message: "mutation probe verification workflow is unavailable" },
+              executorReached: false,
+            };
+            return this.#finish(outcome, { ...auditBase, route, tool, context, authority, executorReached: false });
+          }
+          const request: GatewayExecutorRequest = {
+            toolName: tool.name, toolVersion: tool.version, executorMethod: tool.executorMethod,
+            policyClass: tool.policyClass, mutationScopePolicy: tool.mutationScopePolicy,
+            args: parsedJsonArgs, context,
+          };
+          const draft = runWithGatewayInvocationContext(context, () => executor.buildMutationDispatch!(request));
+          const binding = draft.expected.bindings.length === 1 ? draft.expected.bindings[0] : undefined;
+          const verification = binding === undefined ? null : await workflow.prepareVerification({
+            context, sessionBindingId: draft.sessionBindingId, connectionId: draft.connectionId,
+            envelope: draft.envelope, binding,
           });
-        } catch (error) {
-          outcome = normalizeExecutorOutcome({
-            tool,
-            requestId: invocationId,
-            executorError: error,
-            threw: true,
+          if (verification === null) {
+            const outcome: GatewayDispatchOutcome = {
+              ok: false, state: "failed", toolName: input.toolName, requestId: invocationId,
+              error: { code: "recovery_blocked", detailCode: "verification_owner_or_hold_missing", message: "mutation probe verification has no exact owner-bound hold" },
+              executorReached: false,
+            };
+            return this.#finish(outcome, { ...auditBase, route, tool, context, authority, executorReached: false });
+          }
+          const prepared = await recovery.prepareVerificationDispatch({
+            tenantId: auth.actor.tenantId, attemptId,
+            sessionBindingId: verification.sessionBindingId, connectionId: verification.connectionId,
+            envelope: verification.envelope, expected: verification.expected,
           });
+          if (prepared.kind !== "prepared" && prepared.kind !== "already_prepared") {
+            const outcome: GatewayDispatchOutcome = {
+              ok: false, state: "failed", toolName: input.toolName, requestId: invocationId,
+              error: { code: prepared.kind === "blocked" ? "recovery_blocked" : "recovery_unavailable", detailCode: prepared.kind, message: "mutation probe verification prepare failed" },
+              executorReached: false,
+            };
+            return this.#finish(outcome, { ...auditBase, route, tool, context, authority, executorReached: false });
+          }
+          const ownerPrepared = await workflow.recordVerificationPrepared({
+            context,
+            holdId: verification.holdId,
+            sessionBindingId: verification.sessionBindingId,
+            connectionId: verification.connectionId,
+            envelopeDigest: prepared.dispatch.envelopeDigest,
+          });
+          if (!ownerPrepared) {
+            const outcome: GatewayDispatchOutcome = {
+              ok: false, state: "failed", toolName: input.toolName, requestId: invocationId,
+              error: { code: "recovery_unavailable", detailCode: "verification_owner_commit_failed",
+                message: "mutation probe verification provenance was not durably committed" },
+              executorReached: false,
+            };
+            return this.#finish(outcome, { ...auditBase, route, tool, context, authority, executorReached: false });
+          }
+          executorReached = true;
+          try { await runWithGatewayInvocationContext(context, () => executor.executePreparedMutation!(request, prepared.dispatch)); } catch { }
+          const reconciled = await recovery.reconcilePendingDispatch({ tenantId: auth.actor.tenantId, rsid: context.rsid, envelopeDigest: prepared.dispatch.envelopeDigest });
+          if (reconciled.kind !== "verification_evidence_ready") {
+            const outcome: GatewayDispatchOutcome = { ok: false, state: "failed", toolName: input.toolName, requestId: invocationId, error: { code: "recovery_unavailable", detailCode: reconciled.kind, message: "verification terminal was not durably reconciled" }, executorReached: true };
+            return this.#finish(outcome, { ...auditBase, route, tool, context, authority, executorReached: true });
+          }
+          const recorded = await recovery.recordVerificationEvidence({ tenantId: auth.actor.tenantId, rsid: context.rsid, envelopeDigest: prepared.dispatch.envelopeDigest });
+          if (recorded.kind !== "recorded") {
+            const outcome: GatewayDispatchOutcome = { ok: false, state: "failed", toolName: input.toolName, requestId: invocationId, error: { code: "recovery_blocked", detailCode: recorded.kind, message: "verification evidence was not audited" }, executorReached: true };
+            return this.#finish(outcome, { ...auditBase, route, tool, context, authority, executorReached: true });
+          }
+          const planned = await recovery.planRecoveryClearances({
+            tenantId: auth.actor.tenantId,
+            rsid: context.rsid,
+            mutationScopes: [recorded.hold.mutationScope],
+            decisions: [{ holdId: recorded.hold.holdId, decision: "postcondition_verified" }],
+          });
+          if (planned.kind !== "planned" && planned.kind !== "already_planned") {
+            const outcome: GatewayDispatchOutcome = {
+              ok: false, state: "failed", toolName: input.toolName, requestId: invocationId,
+              error: { code: planned.kind === "blocked" || planned.kind === "rejected"
+                ? "recovery_blocked" : "recovery_unavailable", detailCode: planned.kind,
+                message: "mutation probe audited evidence did not produce an exact recovery plan" },
+              executorReached: true,
+            };
+            return this.#finish(outcome, { ...auditBase, route, tool, context, authority,
+              recoveryHoldIds: [recorded.hold.holdId], executorReached: true });
+          }
+          const planProof = await workflow.recordPlan({ context, hold: recorded.hold, plan: planned.plan });
+          if (planProof === null) {
+            const outcome: GatewayDispatchOutcome = {
+              ok: false, state: "failed", toolName: input.toolName, requestId: invocationId,
+              error: { code: "recovery_unavailable", detailCode: "verification_plan_provenance_failed",
+                message: "mutation probe recovery plan provenance was not durably bound" },
+              executorReached: true,
+            };
+            return this.#finish(outcome, { ...auditBase, route, tool, context, authority,
+              recoveryHoldIds: [recorded.hold.holdId], executorReached: true });
+          }
+          const outcome = outcomeFromDurableTerminal({ tool, requestId: invocationId,
+            journalRecords: [planProof.journalRecord], batchTerminal: null });
+          return this.#finish(outcome, { ...auditBase, route, tool, context, authority,
+            recoveryHoldIds: [planProof.holdId], recoveryResolutionIds: [planProof.resolutionId],
+            executorReached: true });
         }
+        if (input.beforeExecute !== undefined) {
+          phase = "executor";
+          const admitted = await input.beforeExecute(context);
+          if (!admitted) {
+            const outcome: GatewayDispatchOutcome = {
+              ok: false,
+              state: "failed",
+              toolName: input.toolName,
+              requestId: invocationId,
+              error: {
+                code: "recovery_unavailable",
+                detailCode: "correlated_recovery_denied",
+                message: "correlated recovery is unavailable",
+              },
+              executorReached: false,
+            };
+            phase = "audit_finish";
+            return await this.#finish(outcome, {
+              ...auditBase, route, tool, context, authority, executorReached: false,
+            });
+          }
+        }
+        phase = "executor";
+        executorReached = true;
+        const executorOutcome: unknown = await runWithGatewayInvocationContext(
+          context,
+          () =>
+            executor.execute({
+              toolName: tool.name,
+              toolVersion: tool.version,
+              executorMethod: tool.executorMethod,
+              policyClass: tool.policyClass,
+              mutationScopePolicy: tool.mutationScopePolicy,
+              args: parsedJsonArgs,
+              context,
+            }),
+        );
+        phase = "result_normalize";
+        const outcome: GatewayDispatchOutcome = normalizeExecutorOutcome({
+          tool,
+          requestId: invocationId,
+          executorOutcome,
+          threw: false,
+        });
 
-        return this.#finish(outcome, {
+        phase = "audit_finish";
+        return await this.#finish(outcome, {
           ...auditBase,
           route,
           tool,
           context,
+          authority,
           executorReached: true,
         });
+      } catch (error) {
+        failurePhase ??= phase;
+        throw error;
       } finally {
-        await recovery.releaseInvocationWindow({
-          tenantId: auth.actor.tenantId,
-          rsid: context.rsid,
-          attemptId,
-        });
+        phase = "window_release";
+        try {
+          await recovery.releaseInvocationWindow({
+            tenantId: auth.actor.tenantId,
+            rsid: context.rsid,
+            attemptId,
+          });
+        } catch (error) {
+          failurePhase ??= phase;
+          throw error;
+        }
       }
     });
+    } catch (error) {
+      if (authority.mutating) {
+        throw error;
+      }
+      return dispatchUnavailableOutcome({
+        toolName: input.toolName,
+        requestId: invocationId,
+        executorReached,
+        phase: failurePhase ?? phase,
+        error,
+      });
+    }
   }
 
   async #serialize<T>(rsid: string, operation: () => Promise<T>): Promise<T> {
@@ -2402,6 +2966,7 @@ export class GatewayDispatcher {
   async #emitConfirmationEvent(input: {
     readonly auth: DispatchAuditIdentity;
     readonly confirmationSessionId: string;
+    readonly effectiveMcpRequestScope?: EffectiveMcpRequestScopeV1;
     readonly status: "requested" | "approved" | "denied" | "expired";
     readonly tool: GatewayToolRecord;
     readonly confirmationId: string | null;
@@ -2422,7 +2987,7 @@ export class GatewayDispatcher {
     const recordedAtMs = this.#clock();
     this.#eventSequence += 1;
     const recordedAt = new Date(recordedAtMs).toISOString();
-    const event: GatewayEventEnvelope = Object.freeze({
+    const event: GatewayEventEnvelope = {
       schema: REVAGENT_EVENT_SCHEMA,
       event_id: this.#newEventId(recordedAtMs),
       event_type: "tool.confirmation",
@@ -2458,7 +3023,16 @@ export class GatewayDispatcher {
         reason: input.reason,
         recorded_at_ms: recordedAtMs,
       }),
-    });
+    };
+    if (input.effectiveMcpRequestScope !== undefined) {
+      Object.defineProperty(event, "effectiveMcpRequestScope", {
+        value: input.effectiveMcpRequestScope,
+        enumerable: false,
+        writable: false,
+        configurable: false,
+      });
+    }
+    Object.freeze(event);
     try {
       const emitted = await this.#eventSink.emit(event);
       return emitted.ok
@@ -2536,7 +3110,7 @@ export class GatewayDispatcher {
       completed_at_ms: completedAtMs,
       duration_ms: Math.max(0, completedAtMs - input.startedAtMs),
     });
-    const event: GatewayEventEnvelope = Object.freeze({
+    const event: GatewayEventEnvelope = {
       schema: REVAGENT_EVENT_SCHEMA,
       event_id: this.#newEventId(completedAtMs),
       event_type: "tool.invocation",
@@ -2552,7 +3126,20 @@ export class GatewayDispatcher {
         input.context?.gatewaySessionId ?? input.auth.session.sessionId,
       seq: this.#eventSequence,
       payload,
-    });
+    };
+    const effectiveMcpRequestScope =
+      input.context?.effectiveMcpRequestScope ??
+      input.route?.effectiveMcpRequestScope ??
+      input.effectiveMcpRequestScope;
+    if (effectiveMcpRequestScope !== undefined) {
+      Object.defineProperty(event, "effectiveMcpRequestScope", {
+        value: effectiveMcpRequestScope,
+        enumerable: false,
+        writable: false,
+        configurable: false,
+      });
+    }
+    Object.freeze(event);
 
     try {
       const emitted = await this.#eventSink.emit(event);

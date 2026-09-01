@@ -24,6 +24,7 @@ import {
   assertPassingRunReport,
   validateRunReportStructure,
 } from "./validator.js";
+import { realTrioFailureDiagnostics } from "./realTrioSupervisor.js";
 import type { ParentStepExecutionEvidence } from "./parentStepEngine.js";
 import type {
   ArtifactEvidence,
@@ -144,21 +145,22 @@ function applyTemplate(template: string, values: Readonly<Record<string, string>
   ));
 }
 
-function artifact(
+async function artifact(
   store: SecureEvidenceStore,
   kind: ArtifactEvidence["kind"],
   path: string,
   contents: string | Buffer,
   mediaType: string,
-): ArtifactEvidence {
-  const stored = store.write(path, contents);
-  return {
+): Promise<ArtifactEvidence> {
+  const bytes = Buffer.isBuffer(contents) ? Buffer.from(contents) : Buffer.from(contents, "utf8");
+  const sha256 = createHash("sha256").update(bytes).digest("hex");
+  return await store.writeAccepted(path, bytes, (candidate) => candidate.acceptExact({ logicalPath: path, absolutePath: store.resolve(path), bytes, sha256 }, {
     kind,
     path,
-    sha256: createHash("sha256").update(stored.bytes).digest("hex"),
-    bytes: stored.bytes.length,
+    sha256,
+    bytes: bytes.length,
     mediaType,
-  };
+  }));
 }
 
 function safeInteger(value: unknown, label: string, minimum = 0): number {
@@ -181,20 +183,20 @@ export function serializedWallDurationMs(
   return finished - started;
 }
 
-export function retainAccountedCaseEvidence(input: {
+export async function retainAccountedCaseEvidence(input: {
   artifactRoot: string;
   runId: string;
   result: RunReport["cases"][number];
   observations: ProcessObservationRecord[];
   executedCases: ExecutedCaseEvidence[];
   retentionFailures: Error[];
-}): void {
+}): Promise<void> {
   input.executedCases.push({
     caseId: input.result.caseId,
     observations: input.observations,
   });
   try {
-    retainSupervisedCaseEvidence({
+    await retainSupervisedCaseEvidence({
       artifactRoot: input.artifactRoot,
       runId: input.runId,
       result: input.result,
@@ -385,7 +387,7 @@ function measuredResourceProfile(
   return profile;
 }
 
-function retainRunArtifacts(report: RunReport, artifactRoot: string): void {
+async function retainRunArtifacts(report: RunReport, artifactRoot: string): Promise<void> {
   const store = new SecureEvidenceStore(artifactRoot);
   for (const component of report.components) {
     if (component.observedIdentity === null) {
@@ -399,7 +401,7 @@ function retainRunArtifacts(report: RunReport, artifactRoot: string): void {
       identity: structuredClone(component.observedIdentity),
       process: structuredClone(component.process),
     };
-    report.artifacts.push(artifact(
+    report.artifacts.push(await artifact(
       store,
       "component_log",
       applyTemplate(canonicalManifest.retainedEvidence.componentLog, {
@@ -417,14 +419,14 @@ function retainRunArtifacts(report: RunReport, artifactRoot: string): void {
     leaks: structuredClone(report.leaks),
     resources: structuredClone(report.resources),
   };
-  report.artifacts.push(artifact(
+  report.artifacts.push(await artifact(
     store,
     "leak_metrics",
     applyTemplate(canonicalManifest.retainedEvidence.leakMetrics, { run_id: report.run.runId }),
     stableJson(metrics),
     "application/json",
   ));
-  report.artifacts.push(artifact(
+  report.artifacts.push(await artifact(
     store,
     "junit",
     applyTemplate(canonicalManifest.retainedEvidence.junit, { run_id: report.run.runId }),
@@ -457,7 +459,34 @@ function markCaseError(
     evidenceSha256: null,
     message: "case execution did not reach parent evaluation",
   }));
-  result.failure = { code: "supervised_case_error", message: error.message };
+  const diagnostics = realTrioFailureDiagnostics(error);
+  result.failure = {
+    code: "supervised_case_error",
+    message: error.message,
+    ...(diagnostics === null ? {} : {
+      diagnostics: {
+        schemaVersion: diagnostics.schemaVersion,
+        gatewayAudits: diagnostics.gatewayAudits.map((audit) => ({
+          sessionCount: audit.sessionCount as number,
+          namespaces: audit.namespaces as string[],
+          sessions: audit.sessions as Array<{
+            binding: string;
+            lifecyclePhase: string;
+            dispatchAllowed: boolean;
+            localKeyPresent: boolean;
+            created: boolean;
+            updated: boolean;
+          }>,
+        })),
+        bridgeTranscript: diagnostics.bridgeTranscript.map((record) => ({
+          stream: "stderr" as const,
+          at: record.at,
+          line: record.line,
+        })),
+        readinessTrace: diagnostics.readinessTrace.map((trace) => ({ ...trace })),
+      },
+    }),
+  };
 }
 
 /**
@@ -533,7 +562,7 @@ export async function executeProductionConformanceRun(
         result.failure = evaluated.failure;
         result.assertions = evaluated.assertions;
         result.bindings = evaluated.bindings;
-        retainAccountedCaseEvidence({
+        await retainAccountedCaseEvidence({
           artifactRoot,
           runId: report.run.runId,
           result,
@@ -653,7 +682,7 @@ export async function executeProductionConformanceRun(
   };
 
   if (infrastructureFailure === undefined) {
-    retainRunArtifacts(report, artifactRoot);
+    await retainRunArtifacts(report, artifactRoot);
   }
   const reportPath = applyTemplate(canonicalManifest.retainedEvidence.runReport, {
     run_id: report.run.runId,
@@ -670,7 +699,15 @@ export async function executeProductionConformanceRun(
       verifyArtifactFiles: true,
     });
   }
-  new SecureEvidenceStore(artifactRoot).write(reportPath, stableJson(report));
+  const reportStore = new SecureEvidenceStore(artifactRoot);
+  const reportBytes = Buffer.from(stableJson(report), "utf8");
+  const reportSha256 = createHash("sha256").update(reportBytes).digest("hex");
+  await reportStore.writeAccepted(reportPath, reportBytes, (candidate) => candidate.acceptExact({
+    logicalPath: reportPath,
+    absolutePath: reportStore.resolve(reportPath),
+    bytes: reportBytes,
+    sha256: reportSha256,
+  }, undefined));
   if (infrastructureFailure !== undefined) {
     const caseSummary = caseExecutionFailures.length === 0
       ? ""

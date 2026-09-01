@@ -33,13 +33,16 @@ import {
   StrictReadyProcess,
   type JsonObject,
   type JsonValue,
+  type ProcessStopResult,
 } from "./processHarness.js";
+import { canonicalManifest } from "./manifest.js";
 import {
   canonicalProductionComponentVersion,
   assertProductionRuntimeLaunchCurrent,
   boundProductionPowerShellExecutable,
 } from "./productionExecutionPlan.js";
 import { sanitizedProductionRuntimeEnvironment } from "./productionRuntimeIdentity.js";
+import { SecureEvidenceStore } from "./secureEvidenceStore.js";
 import type {
   Binding,
   ComponentId,
@@ -153,7 +156,7 @@ export interface StartedStackComponent {
   process: ProcessEvidence;
   readiness: JsonObject;
   jsonl?: StrictJsonlProcess;
-  stop(): Promise<{ killEscalated: boolean }>;
+  stop(): Promise<ProcessStopResult>;
 }
 
 export class GatewayControlRequestError extends Error {
@@ -465,9 +468,10 @@ class ProductionRuntimeLaunchGuardError extends Error {
  * exists to survive, so treating only `EADDRINUSE` as retryable made that loop
  * unreachable for the dominant Windows failure mode.
  *
- * The message branch carries the load here: the failure arrives as the child
- * fixture's stderr text relayed through `readinessExitError`, which has no
- * errno to inspect. The errno branch still matters for in-process bind probes.
+ * The message branch carries a value-safe `bind_error=<code>` marker emitted
+ * only when the child's stderr contained both a listen/bind context and the
+ * canonical code. The errno branch also requires listen/bind context so a
+ * file or process permission failure cannot be mistaken for a port race.
  */
 export function retryableFixtureBindError(error: unknown): boolean {
   if (error instanceof AggregateError) {
@@ -475,9 +479,21 @@ export function retryableFixtureBindError(error: unknown): boolean {
   }
   if (!(error instanceof Error)) return false;
   const code = (error as NodeJS.ErrnoException).code;
-  if (code === "EADDRINUSE" || code === "EACCES" || code === "EADDRNOTAVAIL") return true;
+  const syscall = (error as NodeJS.ErrnoException).syscall;
+  const hasBindContext = syscall === "listen" || syscall === "bind" ||
+    /\b(?:listen|bind)\b/iu.test(error.message);
   if (
-    /\bEADDRINUSE\b|\bEACCES\b|\bWSAEACCES\b|\bEADDRNOTAVAIL\b|address already in use|permission denied/iu.test(
+    hasBindContext &&
+    (
+      code === "EADDRINUSE" || code === "EACCES" || code === "WSAEACCES" ||
+      code === "EADDRNOTAVAIL" ||
+      /\b(?:EADDRINUSE|EACCES|WSAEACCES|EADDRNOTAVAIL)\b/u.test(error.message)
+    )
+  ) {
+    return true;
+  }
+  if (
+    /\bbind_error=(?:EADDRINUSE|EACCES|WSAEACCES|EADDRNOTAVAIL)\b/u.test(
       error.message,
     )
   ) {
@@ -1056,6 +1072,8 @@ export interface CaseStackSupervisorOptions {
   environment?: Readonly<Record<string, string | undefined>>;
   runtimeLaunchGuard?: (plan: ExecutionPlan, repoRoot: string) => void;
   instanceRootRemover?: (instanceRoot: string) => void;
+  /** Explicit caller-owned, test-only retained-evidence root. */
+  teardownEvidenceRoot?: string;
 }
 
 export interface FixtureBindPolicyProbeInput {
@@ -1124,6 +1142,7 @@ export class CaseStackSupervisor {
   readonly #environment: Readonly<Record<string, string | undefined>>;
   readonly #runtimeLaunchGuard: (plan: ExecutionPlan, repoRoot: string) => void;
   readonly #instanceRootRemover: (instanceRoot: string) => void;
+  readonly #teardownEvidenceStore: SecureEvidenceStore | null;
   #active: ActiveStack | null = null;
   #observationOrdinal = 0;
 
@@ -1136,6 +1155,9 @@ export class CaseStackSupervisor {
     this.#instanceRootRemover =
       options.instanceRootRemover ??
       ((instanceRoot) => rmSync(instanceRoot, { recursive: true, force: true }));
+    this.#teardownEvidenceStore = options.teardownEvidenceRoot === undefined
+      ? null
+      : new SecureEvidenceStore(options.teardownEvidenceRoot);
   }
 
   #assertRuntimeLaunchCurrent(): void {
@@ -2253,6 +2275,7 @@ export class CaseStackSupervisor {
   ): Promise<{ result: JsonObject; observations: ProcessObservationRecord[] }> {
     const stack = this.#stack();
     const killEscalated = new Map<ComponentId, boolean>();
+    const stopResults = new Map<StartedStackComponent, ProcessStopResult>();
     const teardownErrors: Error[] = [];
     const components = [...stack.components.values(), ...stack.extraFixtures];
     for (const component of [...components].reverse()) {
@@ -2260,17 +2283,22 @@ export class CaseStackSupervisor {
       try {
         const stopped = await component.stop();
         killEscalated.set(component.componentId, stopped.killEscalated);
+        stopResults.set(component, stopped);
       } catch (error) {
         killEscalated.set(component.componentId, true);
         teardownErrors.push(normalizedError(error));
       }
     }
-    await stack.gatewayProxy.stop().catch((error: unknown) => {
-      teardownErrors.push(normalizedError(error));
-    });
-    await stack.fixtureProxy.stop().catch((error: unknown) => {
-      teardownErrors.push(normalizedError(error));
-    });
+    let gatewayProxyStopped = false;
+    let fixtureProxyStopped = false;
+    await stack.gatewayProxy.stop().then(
+      () => { gatewayProxyStopped = true; },
+      (error: unknown) => { teardownErrors.push(normalizedError(error)); },
+    );
+    await stack.fixtureProxy.stop().then(
+      () => { fixtureProxyStopped = true; },
+      (error: unknown) => { teardownErrors.push(normalizedError(error)); },
+    );
     const pids = components.map(({ pid }) => pid);
     const survivors = await waitForNoSurvivors(pids);
     if (survivors.length > 0) {
@@ -2298,6 +2326,20 @@ export class CaseStackSupervisor {
       survivingPids: survivors,
       killEscalated: Object.fromEntries(killEscalated) as unknown as JsonValue,
     };
+    try {
+      await this.#retainTeardownEvidence({
+        stack,
+        stepId,
+        action,
+        components,
+        stopResults,
+        survivors,
+        gatewayProxyStopped,
+        fixtureProxyStopped,
+      });
+    } catch (error) {
+      teardownErrors.push(normalizedError(error));
+    }
     this.#active = null;
     if (!stack.preserveState && survivors.length === 0) {
       try {
@@ -2314,6 +2356,64 @@ export class CaseStackSupervisor {
       );
     }
     return { result, observations };
+  }
+
+  async #retainTeardownEvidence(input: {
+    readonly stack: ActiveStack;
+    readonly stepId: string;
+    readonly action: string;
+    readonly components: readonly StartedStackComponent[];
+    readonly stopResults: ReadonlyMap<StartedStackComponent, ProcessStopResult>;
+    readonly survivors: readonly number[];
+    readonly gatewayProxyStopped: boolean;
+    readonly fixtureProxyStopped: boolean;
+  }): Promise<void> {
+    if (this.#teardownEvidenceStore === null) return;
+    const runHash = createHash("sha256").update(this.#plan.runId).digest("hex");
+    const stepHash = createHash("sha256").update(input.stepId).digest("hex").slice(0, 16);
+    const instanceHash = input.stack.instanceRootId.replace(/^sha256:/u, "");
+    const relativePath = `${canonicalManifest.retainedEvidence.root}/runs/${runHash}/c29-teardown/${input.stack.caseId}-${input.stack.binding}-${instanceHash}-${stepHash}.json`;
+    const components = input.components.map((component) => {
+      const stop = input.stopResults.get(component);
+      return {
+        componentId: component.componentId,
+        process: { ...component.process },
+        stop: stop === undefined
+          ? { observed: false, killEscalated: null, reason: "stop_result_unavailable" }
+          : {
+              observed: true,
+              stoppedAt: stop.stoppedAt,
+              exitCode: stop.exitCode,
+              killEscalated: stop.killEscalated,
+              telemetry: stop.telemetry,
+              output: stop.evidence,
+            },
+      };
+    });
+    const bytes = Buffer.from(`${JSON.stringify({
+        schemaVersion: "rbp-c29-teardown-evidence/v1",
+        runId: this.#plan.runId,
+        caseId: input.stack.caseId,
+        binding: input.stack.binding,
+        stepId: input.stepId,
+        action: input.action,
+        instanceRootId: input.stack.instanceRootId,
+        stopOrder: [...input.stack.stopOrder],
+        survivors: [...input.survivors],
+        orphanProcessCount: input.survivors.length,
+        proxyDrain: {
+          gatewayProxyStopped: input.gatewayProxyStopped,
+          fixtureProxyStopped: input.fixtureProxyStopped,
+        },
+        components,
+      })}\n`, "utf8");
+    const sha256 = createHash("sha256").update(bytes).digest("hex");
+    await this.#teardownEvidenceStore.writeAccepted(relativePath, bytes, (candidate) => candidate.acceptExact({
+      logicalPath: relativePath,
+      absolutePath: this.#teardownEvidenceStore!.resolve(relativePath),
+      bytes,
+      sha256,
+    }, undefined));
   }
 
   async gatewayControl(
@@ -2510,6 +2610,7 @@ export class CaseStackSupervisor {
     jsonPointer: string;
     operator: string;
     expected?: JsonValue;
+    grantedSessionCapabilities?: readonly string[];
     timeoutMs: number;
     intervalMs?: number;
   }): Promise<JsonObject> {
@@ -2520,6 +2621,13 @@ export class CaseStackSupervisor {
     if (!Number.isSafeInteger(intervalMs) || intervalMs < 1 || intervalMs > 1_000) {
       throw new Error("await_condition intervalMs is outside the parent bound");
     }
+    if (input.grantedSessionCapabilities !== undefined &&
+      (input.grantedSessionCapabilities.length > 128 ||
+        input.grantedSessionCapabilities.some((capability) =>
+          typeof capability !== "string" || capability.length < 1 || capability.length > 128) ||
+        new Set(input.grantedSessionCapabilities).size !== input.grantedSessionCapabilities.length)) {
+      throw new Error("await_condition grantedSessionCapabilities is invalid");
+    }
     const deadline = Date.now() + input.timeoutMs;
     let attempts = 0;
     let lastSnapshot: JsonObject | undefined;
@@ -2528,7 +2636,15 @@ export class CaseStackSupervisor {
       const snapshot = await this.#conditionSource(input.source);
       lastSnapshot = snapshot;
       const value = jsonPointer(snapshot, input.jsonPointer);
-      if (conditionMatches(input.operator, value, input.expected)) {
+      const dynamic = dynamicValues(snapshot);
+      const observedCapabilities = Array.isArray(dynamic.grantedSessionCapabilities)
+        ? dynamic.grantedSessionCapabilities
+        : [];
+      const capabilitiesMatch = input.grantedSessionCapabilities === undefined ||
+        (observedCapabilities.length === input.grantedSessionCapabilities.length &&
+          observedCapabilities.every((capability, index) =>
+            capability === input.grantedSessionCapabilities![index]));
+      if (conditionMatches(input.operator, value, input.expected) && capabilitiesMatch) {
         return {
           matched: true,
           attempts,
@@ -2538,7 +2654,7 @@ export class CaseStackSupervisor {
           expected: input.expected ?? null,
           observed: value ?? null,
           snapshot,
-          dynamic: dynamicValues(snapshot),
+          dynamic,
         };
       }
       await new Promise<void>((resolve) => setTimeout(resolve, intervalMs));
@@ -2645,11 +2761,10 @@ export class CaseStackSupervisor {
         process: processHandle.process,
         readiness: processHandle.readiness,
         stop: async () => {
-          const stopped = await processHandle.stop(
+          return await processHandle.stop(
             command.shutdown.signal === "SIGINT" ? "SIGINT" : "SIGTERM",
             command.shutdown.timeoutMs,
           );
-          return { killEscalated: stopped.killEscalated };
         },
       };
     }
@@ -2686,10 +2801,7 @@ export class CaseStackSupervisor {
       process: processHandle.process,
       readiness: processHandle.readiness,
       jsonl: processHandle,
-      stop: async () => {
-        const stopped = await processHandle.stop();
-        return { killEscalated: stopped.killEscalated };
-      },
+      stop: async () => await processHandle.stop(),
     };
   }
 

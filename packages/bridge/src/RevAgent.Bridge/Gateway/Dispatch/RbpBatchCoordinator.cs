@@ -95,6 +95,7 @@ internal sealed partial class RbpBatchCoordinator
 
     private readonly RbpJournalStore _journal;
     private readonly IRbpInvocationChannel _channel;
+    private readonly RbpDispatchDecisionQuarantine _decisionQuarantine;
     private readonly IRbpBatchCapabilitySource _capabilities;
 
     internal RbpBatchCoordinator(
@@ -104,6 +105,7 @@ internal sealed partial class RbpBatchCoordinator
     {
         _journal = journal ?? throw new ArgumentNullException(nameof(journal));
         _channel = channel ?? throw new ArgumentNullException(nameof(channel));
+        _decisionQuarantine = RbpDispatchDecisionQuarantine.For(channel);
         _capabilities = capabilities ??
             throw new ArgumentNullException(nameof(capabilities));
     }
@@ -169,6 +171,10 @@ internal sealed partial class RbpBatchCoordinator
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
+
+        if (_decisionQuarantine.IsBlocked(request.Rsid))
+            return BatchFault(request.BatchId, "environment",
+                "An earlier dispatch decision is not durably proven; this batch was not dispatched.");
 
         RbpBatchCapability capability = await _capabilities
             .ResolveAsync(request.Rsid, cancellationToken)
@@ -423,6 +429,9 @@ internal sealed partial class RbpBatchCoordinator
         CancellationToken cancellationToken)
     {
         RbpBatchStepRequest step = request.Steps[index];
+        if (!_decisionQuarantine.TryReserve(request.Rsid))
+            throw new RbpDispatchException(RbpDispatchErrorCode.Environment,
+                "The bounded dispatch-decision owner is unavailable.");
         if (claimDispatchOwnership)
         {
             await _journal
@@ -447,20 +456,19 @@ internal sealed partial class RbpBatchCoordinator
                 .ConfigureAwait(false);
         }
         catch (Exception exception)
-            when (exception is not OperationCanceledException)
         {
             // The channel threw rather than reporting dispatch evidence, so
             // non-execution cannot be proved.
-            return await TerminalizeUncertainStepAsync(
-                    request,
-                    index,
-                    exception.Message)
-                .ConfigureAwait(false);
+            outcome = new RbpAddinOutcome(RbpAddinOutcomeKind.PossiblyDispatched,
+                default, [], 0, 0, Message: exception.Message);
         }
 
+        outcome = outcome.ConservativeClassification();
+        _decisionQuarantine.Own(request.Rsid, outcome.Lease);
+        bool durableDecisionProven = false;
         try
         {
-            return outcome.Kind switch
+            RbpBatchStepOutcome answer = outcome.Kind switch
             {
                 RbpAddinOutcomeKind.Completed or
                     RbpAddinOutcomeKind.Guarded =>
@@ -479,6 +487,13 @@ internal sealed partial class RbpBatchCoordinator
                             outcome)
                         .ConfigureAwait(false),
 
+                RbpAddinOutcomeKind.ApplicationError when !step.Mutating =>
+                    await TerminalizeKnownStepFailureAsync(request, index,
+                        outcome with { Retryable = false }).ConfigureAwait(false),
+
+                RbpAddinOutcomeKind.PossiblyDispatched when !step.Mutating && outcome.Retryable == false =>
+                    await TerminalizeKnownStepFailureAsync(request, index, outcome).ConfigureAwait(false),
+
                 _ => await TerminalizeUncertainStepAsync(
                             request,
                             index,
@@ -486,13 +501,16 @@ internal sealed partial class RbpBatchCoordinator
                                 "The add-in dispatch outcome is unknown.")
                         .ConfigureAwait(false),
             };
+            durableDecisionProven = true;
+            return answer;
         }
         finally
         {
             // Only after the step's fate is durable; releasing earlier would
             // reopen the add-in session while the outcome lives solely in
             // memory.
-            outcome.Lease?.ReleaseAfterDurableDecision();
+            if (durableDecisionProven)
+                _decisionQuarantine.ReleaseProven(request.Rsid, outcome.Lease);
         }
     }
 
@@ -571,7 +589,7 @@ internal sealed partial class RbpBatchCoordinator
                 RbpInvocationPayloads.KnownError(
                     step.InvocationId,
                     faultClass,
-                    Retryable(faultClass, step.Mutating),
+                    outcome.Retryable ?? Retryable(faultClass, step.Mutating),
                     outcome.Message ?? "The add-in could not be reached.",
                     outcome.AddinError),
                 replayed: false),
@@ -622,8 +640,8 @@ internal sealed partial class RbpBatchCoordinator
         // indeterminate terminal, and writes its own durable rule 4 evidence
         // body, so no outcome is supplied here.
         string? holdId = await _journal
-            .PersistInvocationTerminalAsync(
-                request.StepKey(index),
+            .PersistBatchStepDecisionAsync(
+                request.ToIdentity(), index,
                 new RbpInvocationTerminal(
                     RbpInvocationState.Indeterminate,
                     Outcome: default,
@@ -662,8 +680,8 @@ internal sealed partial class RbpBatchCoordinator
         string? resultDigest)
     {
         await _journal
-            .PersistInvocationTerminalAsync(
-                request.StepKey(index),
+            .PersistBatchStepDecisionAsync(
+                request.ToIdentity(), index,
                 new RbpInvocationTerminal(state, evidence, resultDigest),
                 DurableDecisionToken)
             .ConfigureAwait(false);
@@ -707,20 +725,10 @@ internal sealed partial class RbpBatchCoordinator
             return RbpInvocationAnswer.Result(carrier);
         }
 
-        RbpStoredBatch? stored = await _journal
-            .GetBatchAsync(request.BatchKey, DurableDecisionToken)
-            .ConfigureAwait(false);
-        if (stored is not null && stored.State != RbpBatchState.Terminal)
-        {
-            await _journal
-                .PersistBatchTerminalAsync(
-                    request.BatchKey,
-                    new RbpBatchTerminal(
-                        carrier,
-                        Rfc8785Json.Sha256Digest(carrier)),
-                    DurableDecisionToken)
-                .ConfigureAwait(false);
-        }
+        await _journal.PersistBatchTerminalAsync(
+            request.BatchKey,
+            new RbpBatchTerminal(carrier, Rfc8785Json.Sha256Digest(carrier)),
+            DurableDecisionToken, expectedIdentity: request.ToIdentity()).ConfigureAwait(false);
 
         return RbpInvocationAnswer.Result(carrier);
     }

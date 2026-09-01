@@ -52,43 +52,83 @@ internal sealed partial class RbpJournalStore
         VerifyBatchDigestBinding(normalized);
         string stepsJcs = BuildStepsJcs(normalized);
         long now = NowMilliseconds();
-        return ExecuteImmediateAsync(
-            context =>
-            {
-                RequireActiveSession(context, normalized.Rsid);
-                RbpStoredBatch? existing =
-                    ReadBatch(context, normalized.BatchKey);
-                if (existing is null)
-                {
-                    return AdmitFreshBatch(
-                        context,
-                        normalized,
-                        clearances,
-                        stepsJcs,
-                        now);
-                }
-
-                // Spec ~1102-1105: the coordination row is checked before
-                // any step row; any changed element is a terminal protocol
-                // fault, while an RFC 8785-identical reserialization is not
-                // a mismatch.
+        RbpBatchGatedAdmission Operation(RbpJournalWriteContext context)
+        {
+            RequireActiveSession(context, normalized.Rsid);
+            RbpStoredBatch? existing =
+                ReadBatch(context, normalized.BatchKey);
+            if (existing is not null)
                 RequireIdenticalBatch(existing, normalized, stepsJcs);
-                IReadOnlyList<string> scopes = MutatingScopes(normalized);
-                foreach (RbpRecoveryClearance clearance in clearances)
+            IReadOnlyList<string> scopes = MutatingScopes(normalized);
+            bool mutationDispatchCapable = existing is null
+                ? scopes.Count != 0
+                : ExistingBatchReplayMayDispatchMutation(context, existing,
+                    normalized);
+            bool safetyBypassReplay = existing is not null &&
+                !mutationDispatchCapable;
+            RbpAdmissionConsumer consumer = BatchConsumer(normalized,
+                existing is not null);
+            RbpClearancePlan clearancePlan = ValidateClearancePlan(context,
+                consumer, normalized.RecoveryClearancesJcs, clearances, now);
+            RbpLegacySafetyPlan safety = scopes.Count == 0
+                ? BuildLegacyPlan(
+                        RbpLegacySafetyQuery.ForAdmission(normalized.Rsid, scopes,
+                        existing?.BatchKey, safetyBypassReplay),
+                    RbpLegacySafetyOutcome.Safe,
+                    Array.Empty<RbpLegacyUnsafeGroup>(),
+                    Array.Empty<RbpLegacyHoldPlan>(),
+                    RbpRetentionSafetyPlan.Empty, null)
+                : ClassifyLegacySafety(context,
+                        RbpLegacySafetyQuery.ForAdmission(normalized.Rsid, scopes,
+                        existing?.BatchKey, safetyBypassReplay),
+                    clearancePlan.ProjectedView,
+                    RbpLegacySafetyBudget.Admission);
+            if (safety.Outcome == RbpLegacySafetyOutcome.InventoryLimit)
+                throw LegacyAdmissionFault("legacy_inventory_limit");
+            if (mutationDispatchCapable &&
+                HasUnsafeExternalPredecessor(safety, normalized.Rsid))
+                throw LegacyAdmissionFault("legacy_outcome_unverified");
+            if (existing is not null && mutationDispatchCapable &&
+                safety.Outcome == RbpLegacySafetyOutcome.Unsafe)
+            {
+                if (clearances.Count != 0)
+                    throw LegacyAdmissionFault("legacy_outcome_unverified");
+                InstallLegacyHoldPlans(context, safety.NewHoldPlans, now);
+                foreach (string scope in scopes)
                 {
-                    AcceptClearance(
-                        context,
-                        normalized.Rsid,
-                        scopes,
-                        clearance,
-                        now);
+                    RbpVerificationHold? blocking = FindConflictingHold(
+                        context, normalized.Rsid, scope);
+                    if (blocking is not null)
+                        return new RbpBatchGatedAdmission(null, blocking);
                 }
+                throw LegacyAdmissionFault("legacy_outcome_unverified");
+            }
+            if (safety.Outcome == RbpLegacySafetyOutcome.Unsafe &&
+                clearances.Count != 0)
+                throw LegacyAdmissionFault("legacy_outcome_unverified");
+            InstallLegacyHoldPlans(context, safety.NewHoldPlans, now);
+            if (safety.Outcome == RbpLegacySafetyOutcome.Safe)
+                ApplyClearancePlan(context, clearancePlan, now);
+            if (existing is null)
+            {
+                return AdmitFreshBatch(context, normalized, stepsJcs, now);
+            }
 
-                return new RbpBatchGatedAdmission(
-                    ArbitrateRedelivery(context, existing, normalized, now),
-                    null);
-            },
-            cancellationToken);
+            return new RbpBatchGatedAdmission(
+                ArbitrateRedelivery(context, existing, normalized, now), null);
+        }
+
+        if (clearances.Count == 0)
+            return ExecuteImmediateAsync(Operation, cancellationToken);
+        string[] invocationKeys = Enumerable.Range(0, normalized.Steps.Count)
+            .Select(index => StepInvocationIdentity(normalized, index)
+                .IdempotencyKey).ToArray();
+        IReadOnlyDictionary<string, string> holdRsids = clearances
+            .ToDictionary(clearance => clearance.HoldId,
+                _ => normalized.Rsid, StringComparer.Ordinal);
+        return ExecuteProvenDecisionAsync(Operation, invocationKeys,
+            normalized.BatchKey, cancellationToken, allowRetry: true,
+            additionalHoldRsids: holdRsids);
     }
 
     /// <summary>
@@ -136,14 +176,29 @@ internal sealed partial class RbpJournalStore
     internal Task<RbpStoredBatch> PersistBatchTerminalAsync(
         string batchKey,
         RbpBatchTerminal terminal,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        RbpBatchIdentity? expectedIdentity = null)
     {
         ValidateIdentifier(batchKey, nameof(batchKey), 293);
         ArgumentNullException.ThrowIfNull(terminal);
         RequireSha256(terminal.ResultDigest, nameof(terminal));
         string outcomeJson = Rfc8785Json.Canonicalize(terminal.Outcome);
         long now = NowMilliseconds();
-        return ExecuteImmediateAsync(
+        // The exact ordered member keys participate in aggregate readback.
+        // They are loaded from the durable binding, never caller reconstruction.
+        return PersistBatchDecisionAsync(batchKey, terminal, outcomeJson, now, cancellationToken, expectedIdentity);
+    }
+
+    private async Task<RbpStoredBatch> PersistBatchDecisionAsync(
+        string batchKey, RbpBatchTerminal terminal, string outcomeJson, long now,
+        CancellationToken cancellationToken, RbpBatchIdentity? expectedIdentity)
+    {
+        RbpStoredBatch binding = await GetBatchAsync(batchKey, cancellationToken).ConfigureAwait(false) ??
+            throw MissingStepRow();
+        using JsonDocument ordered = JsonDocument.Parse(binding.StepsJcs);
+        string[] keys = ordered.RootElement.EnumerateArray()
+            .Select(step => binding.Rsid + "/" + step.GetProperty("invocation_id").GetString()).ToArray();
+        return await ExecuteProvenDecisionAsync(
             context =>
             {
                 RbpStoredBatch existing =
@@ -151,8 +206,21 @@ internal sealed partial class RbpJournalStore
                     throw new RbpJournalException(
                         RbpJournalErrorCode.ProtocolConflict,
                         "An unknown batch cannot be terminalized.");
+                if (expectedIdentity is not null)
+                {
+                    RbpBatchIdentity normalized = NormalizeBatchIdentity(expectedIdentity);
+                    RequireIdenticalBatch(existing, normalized, BuildStepsJcs(normalized));
+                    for (int index = 0; index < normalized.Steps.Count; index++)
+                    {
+                        RbpInvocationIdentity member = StepInvocationIdentity(normalized, index);
+                        RequireIdenticalIdentity((ReadInvocation(context, member.IdempotencyKey) ?? throw MissingStepRow()).Identity, member);
+                    }
+                }
                 if (existing.State == RbpBatchState.Terminal)
                 {
+                    if (expectedIdentity is not null && existing.TerminalOutcomeJson == outcomeJson &&
+                        existing.ResultDigest == terminal.ResultDigest)
+                        return existing;
                     throw new RbpJournalException(
                         RbpJournalErrorCode.ProtocolConflict,
                         "A terminal batch outcome is immutable.");
@@ -170,7 +238,48 @@ internal sealed partial class RbpJournalStore
                            "The terminalized batch row disappeared inside " +
                            "its own transaction.");
             },
-            cancellationToken);
+            keys, batchKey, cancellationToken).ConfigureAwait(false);
+    }
+
+    internal Task<string?> PersistBatchStepDecisionAsync(
+        RbpBatchIdentity identity, int index, RbpInvocationTerminal terminal,
+        CancellationToken cancellationToken = default) =>
+        PersistInvocationTerminalAsync(StepInvocationIdentity(identity, index).IdempotencyKey,
+            terminal, cancellationToken, StepInvocationIdentity(identity, index));
+
+    /// <summary>First-delivery failure, not a synthetic admission/redelivery.</summary>
+    internal Task<RbpBatchAdmissionResult> PersistAtomicDispatchFailureAsync(
+        RbpBatchIdentity identity, string? applicationFaultClass = null,
+        CancellationToken cancellationToken = default)
+    {
+        ValidateBatchIdentity(identity);
+        RbpBatchIdentity normalized = NormalizeBatchIdentity(identity);
+        VerifyBatchDigestBinding(normalized);
+        if (!normalized.Atomic || applicationFaultClass is not (null or "unsupported" or "parameter" or "revit_api" or "protocol"))
+            throw new ArgumentException("Invalid atomic dispatch failure classification.");
+        string stepsJcs = BuildStepsJcs(normalized);
+        string[] keys = Enumerable.Range(0, normalized.Steps.Count)
+            .Select(index => StepInvocationIdentity(normalized, index).IdempotencyKey).ToArray();
+        long now = NowMilliseconds();
+        return ExecuteProvenDecisionAsync(context =>
+        {
+            RbpStoredBatch stored = ReadBatch(context, normalized.BatchKey) ?? throw MissingStepRow();
+            RequireIdenticalBatch(stored, normalized, stepsJcs);
+            if (stored.State != RbpBatchState.Dispatched || stored.DispatchedAtMilliseconds is null)
+                throw new RbpJournalException(RbpJournalErrorCode.IntegrityCheckFailed,
+                    "Only the exact dispatched atomic batch can record this decision.");
+            for (int index = 0; index < normalized.Steps.Count; index++)
+            {
+                RbpStoredInvocation row = ReadInvocation(context, keys[index]) ?? throw MissingStepRow();
+                RequireIdenticalIdentity(row.Identity, StepInvocationIdentity(normalized, index));
+                if (row.IsTerminal)
+                    throw new RbpJournalException(RbpJournalErrorCode.IntegrityCheckFailed,
+                        "A first-delivery atomic failure cannot replace an immutable member terminal.");
+            }
+            return ArbitrateAtomicDispatchLoss(context, stored, normalized, now, applicationFaultClass, requireExactOrigins: true)
+                with
+            { ReplayPermitted = false };
+        }, keys, normalized.BatchKey, cancellationToken);
     }
 
     /// <summary>
@@ -202,15 +311,10 @@ internal sealed partial class RbpJournalStore
     private static RbpBatchGatedAdmission AdmitFreshBatch(
         RbpJournalWriteContext context,
         RbpBatchIdentity identity,
-        IReadOnlyList<RbpRecoveryClearance> clearances,
         string stepsJcs,
         long now)
     {
         IReadOnlyList<string> scopes = MutatingScopes(identity);
-        foreach (RbpRecoveryClearance clearance in clearances)
-        {
-            AcceptClearance(context, identity.Rsid, scopes, clearance, now);
-        }
 
         // Section 21 item 28: every step scope is checked against Section
         // 6.2.1 before any step row is created or dispatched. A residual
@@ -223,7 +327,7 @@ internal sealed partial class RbpJournalStore
                 FindConflictingHold(context, identity.Rsid, scope);
             if (blocking is not null)
             {
-                if (clearances.Count > 0)
+                if (identity.RecoveryClearancesJcs != "[]")
                 {
                     throw ClearanceFault(
                         "the clearance envelope does not cover every hold " +
@@ -306,6 +410,14 @@ internal sealed partial class RbpJournalStore
 
         return ArbitrateOrderedSteps(context, stored, identity, now);
     }
+
+    private static bool ExistingBatchReplayMayDispatchMutation(
+        RbpJournalWriteContext context,
+        RbpStoredBatch stored,
+        RbpBatchIdentity identity) =>
+        identity.Atomic && identity.Steps.Any(step => step.Mutating) &&
+        stored.State == RbpBatchState.Received &&
+        AllStepsStillReceived(context, identity);
 
     private static RbpBatchAdmissionResult BuildTerminalReplay(
         RbpJournalWriteContext context,
@@ -542,7 +654,9 @@ internal sealed partial class RbpJournalStore
         RbpJournalWriteContext context,
         RbpStoredBatch stored,
         RbpBatchIdentity identity,
-        long now)
+        long now,
+        string? applicationFaultClass = null,
+        bool requireExactOrigins = false)
     {
         // Spec ~477-480: for an uncertain atomic batch each scope's origin
         // list holds, in input order, every possibly executed mutating step
@@ -553,7 +667,7 @@ internal sealed partial class RbpJournalStore
         // indeterminate; deriving step by step would bind each earlier step
         // to an id the next step's origin invalidates.
         IReadOnlyDictionary<string, string> holdByStepKey =
-            InstallAtomicBatchHolds(context, identity, now);
+            InstallAtomicBatchHolds(context, identity, now, requireExactOrigins);
         var steps =
             new List<RbpBatchStepArbitration>(identity.Steps.Count);
         var holdIds = new List<string>();
@@ -633,7 +747,7 @@ internal sealed partial class RbpJournalStore
                 // Spec ~985-986, ~1128-1129: a read result lost with the
                 // missing carrier is terminalized as the narrow known
                 // environment failure, never as a synthetic success.
-                TerminalizeEnvironmentRead(context, row.Identity, now);
+                TerminalizeEnvironmentRead(context, row.Identity, now, applicationFaultClass);
                 RbpStoredInvocation failed =
                     ReadInvocation(context, stepIdentity.IdempotencyKey) ??
                     throw MissingStepRow();
@@ -694,7 +808,8 @@ internal sealed partial class RbpJournalStore
     private static IReadOnlyDictionary<string, string> InstallAtomicBatchHolds(
         RbpJournalWriteContext context,
         RbpBatchIdentity identity,
-        long now)
+        long now,
+        bool requireExactOrigins = false)
     {
         var uncertain = new List<(string Key, string ScopeJcs)>();
         for (int index = 0; index < identity.Steps.Count; index++)
@@ -711,81 +826,101 @@ internal sealed partial class RbpJournalStore
             }
         }
 
-        var holdByStepKey =
-            new Dictionary<string, string>(StringComparer.Ordinal);
-        if (uncertain.Count == 0)
+        HashSet<string> originSet = uncertain.Select(value => value.Key)
+            .ToHashSet(StringComparer.Ordinal);
+        IReadOnlyList<(string Scope, IReadOnlyList<string> Origins)> groups =
+            PlanAtomicHoldGroups(identity, originSet);
+        return InstallPlannedHolds(context, identity.Rsid, groups, now,
+            requireExactOrigins);
+    }
+
+    private static IReadOnlyList<(string Scope, IReadOnlyList<string> Origins)>
+        PlanAtomicLegacyGroups(RbpBatchIdentity identity)
+    {
+        HashSet<string> allMutations = Enumerable.Range(0, identity.Steps.Count)
+            .Select(index => StepInvocationIdentity(identity, index))
+            .Where(step => step.Mutating)
+            .Select(step => step.IdempotencyKey)
+            .ToHashSet(StringComparer.Ordinal);
+        return PlanAtomicHoldGroups(identity, allMutations);
+    }
+
+    private static IReadOnlyList<(string Scope, IReadOnlyList<string> Origins)>
+        PlanAtomicHoldGroups(
+            RbpBatchIdentity identity,
+            IReadOnlySet<string> possiblyExecutedMutationKeys)
+    {
+        var ordered = new List<(string Key, string Scope)>();
+        for (int index = 0; index < identity.Steps.Count; index++)
         {
-            return holdByStepKey;
+            RbpInvocationIdentity step = StepInvocationIdentity(identity, index);
+            if (!possiblyExecutedMutationKeys.Contains(step.IdempotencyKey))
+                continue;
+            if (!step.Mutating || step.MutationScopeJcs is null)
+                throw RbpJournalSerialization.Corrupt(
+                    "An atomic mutation origin has no canonical scope.");
+            ordered.Add((step.IdempotencyKey, step.MutationScopeJcs));
         }
+        if (ordered.Count != possiblyExecutedMutationKeys.Count)
+            throw RbpJournalSerialization.Corrupt(
+                "An atomic hold plan names an unbound mutation origin.");
+        if (ordered.Count == 0)
+            return Array.Empty<(string, IReadOnlyList<string>)>();
 
-        string? sessionScopeJcs = null;
-        foreach ((string _, string scopeJcs) in uncertain)
-        {
-            if (string.Equals(
-                    ReadScopeShape(scopeJcs).ScopeKind,
-                    "session",
-                    StringComparison.Ordinal))
-            {
-                sessionScopeJcs = scopeJcs;
-                break;
-            }
-        }
-
-        if (sessionScopeJcs is not null)
-        {
-            var subsumedOrigins = new List<string>(uncertain.Count);
-            foreach ((string key, string _) in uncertain)
-            {
-                subsumedOrigins.Add(key);
-            }
-
-            string sessionHoldId = InstallHold(
-                context,
-                identity.Rsid,
-                sessionScopeJcs,
-                subsumedOrigins,
-                now);
-            foreach (string key in subsumedOrigins)
-            {
-                holdByStepKey[key] = sessionHoldId;
-            }
-
-            return holdByStepKey;
-        }
+        string? sessionScope = ordered.Select(value => value.Scope)
+            .FirstOrDefault(scope => ReadScopeShape(scope).ScopeKind == "session");
+        if (sessionScope is not null)
+            return new[] { (sessionScope,
+                (IReadOnlyList<string>)ordered.Select(value => value.Key).ToArray()) };
 
         var scopeOrder = new List<string>();
-        var originsByScope =
-            new Dictionary<string, List<string>>(StringComparer.Ordinal);
-        foreach ((string key, string scopeJcs) in uncertain)
+        var originsByScope = new Dictionary<string, List<string>>(
+            StringComparer.Ordinal);
+        foreach ((string key, string scope) in ordered)
         {
-            if (!originsByScope.TryGetValue(
-                    scopeJcs,
-                    out List<string>? scopeOrigins))
+            if (!originsByScope.TryGetValue(scope, out List<string>? origins))
             {
-                scopeOrigins = [];
-                originsByScope.Add(scopeJcs, scopeOrigins);
-                scopeOrder.Add(scopeJcs);
+                origins = [];
+                originsByScope.Add(scope, origins);
+                scopeOrder.Add(scope);
             }
+            origins.Add(key);
+        }
+        return scopeOrder.Select(scope => (scope,
+                (IReadOnlyList<string>)originsByScope[scope].ToArray()))
+            .ToArray();
+    }
 
-            scopeOrigins.Add(key);
+    private static IReadOnlyDictionary<string, string> InstallPlannedHolds(
+        RbpJournalWriteContext context,
+        string rsid,
+        IReadOnlyList<(string Scope, IReadOnlyList<string> Origins)> groups,
+        long now,
+        bool requireExactOrigins)
+    {
+        foreach ((string scope, IReadOnlyList<string> origins) in groups)
+        {
+            using JsonDocument scopeDocument = JsonDocument.Parse(scope);
+            string expectedId = Rfc8785Json.MakeVerificationHoldId(rsid,
+                scopeDocument.RootElement, origins);
+            RbpVerificationHold? existing = FindHoldByExactScope(context, rsid, scope);
+            if (existing is not null &&
+                (existing.VerificationHoldId != expectedId ||
+                 !existing.OrderedOriginIdempotencyKeys.SequenceEqual(origins,
+                     StringComparer.Ordinal)))
+                throw new RbpJournalException(RbpJournalErrorCode.ProtocolConflict,
+                    "An existing hold cannot represent the complete atomic origin group.");
         }
 
-        foreach (string scopeJcs in scopeOrder)
+        var byOrigin = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach ((string scope, IReadOnlyList<string> origins) in groups)
         {
-            List<string> scopeOrigins = originsByScope[scopeJcs];
-            string holdId = InstallHold(
-                context,
-                identity.Rsid,
-                scopeJcs,
-                scopeOrigins,
-                now);
-            foreach (string key in scopeOrigins)
-            {
-                holdByStepKey[key] = holdId;
-            }
+            string holdId = InstallHold(context, rsid, scope, origins, now);
+            if (requireExactOrigins)
+                RequireExactDecisionHold(context, rsid, scope, origins, holdId);
+            foreach (string origin in origins) byOrigin.Add(origin, holdId);
         }
-
-        return holdByStepKey;
+        return byOrigin;
     }
 
     private static bool AllStepsStillReceived(
@@ -812,10 +947,12 @@ internal sealed partial class RbpJournalStore
     private static void TerminalizeEnvironmentRead(
         RbpJournalWriteContext context,
         RbpInvocationIdentity identity,
-        long now)
+        long now,
+        string? applicationFaultClass = null)
     {
         (string outcomeJson, string outcomeDigest) =
-            BuildEnvironmentReadOutcome();
+            applicationFaultClass is null ? BuildEnvironmentReadOutcome() :
+                BuildApplicationReadOutcome(applicationFaultClass);
         using SqliteCommand update = context.CreateCommand(
             """
             UPDATE rbp_invocations
@@ -866,6 +1003,24 @@ internal sealed partial class RbpJournalStore
         return (
             Rfc8785Json.Canonicalize(built.RootElement),
             Rfc8785Json.Sha256Digest(built.RootElement));
+    }
+
+    private static (string Json, string Digest) BuildApplicationReadOutcome(string faultClass)
+    {
+        JsonElement body = JsonSerializer.SerializeToElement(new
+        {
+            status = "failed",
+            effect_state = "read_only",
+            error = new
+            {
+                fault_class = faultClass,
+                message = "The add-in atomic response reported an application failure or was unusable.",
+                outcome = "known",
+                retryable = false,
+                verification_required = false,
+            },
+        });
+        return (Rfc8785Json.Canonicalize(body), Rfc8785Json.Sha256Digest(body));
     }
 
     private static (string Json, string Digest) BuildDispatchLossOutcome(
@@ -1175,6 +1330,78 @@ internal sealed partial class RbpJournalStore
 
         using JsonDocument built = JsonDocument.Parse(buffer.ToArray());
         return Rfc8785Json.Canonicalize(built.RootElement);
+    }
+
+    private static RbpBatchIdentity RehydrateStoredBatchIdentity(
+        RbpStoredBatch stored)
+    {
+        using JsonDocument document = JsonDocument.Parse(stored.StepsJcs);
+        if (document.RootElement.ValueKind != JsonValueKind.Array ||
+            document.RootElement.GetArrayLength() != stored.StepCount)
+            throw RbpJournalSerialization.Corrupt(
+                "A retained batch has an incomplete ordered step binding.");
+        if (Rfc8785Json.Canonicalize(document.RootElement) != stored.StepsJcs)
+            throw RbpJournalSerialization.Corrupt(
+                "A retained batch step binding is not canonical.");
+        var steps = new List<RbpBatchStepIdentity>((int)stored.StepCount);
+        foreach (JsonElement value in document.RootElement.EnumerateArray())
+        {
+            if (value.ValueKind != JsonValueKind.Object ||
+                value.EnumerateObject().Count() != 6)
+                throw RbpJournalSerialization.Corrupt(
+                    "A retained batch step has an invalid closed shape.");
+            JsonElement policy = value.GetProperty("policy");
+            if (policy.ValueKind != JsonValueKind.Object ||
+                policy.EnumerateObject().Count() != 3)
+                throw RbpJournalSerialization.Corrupt(
+                    "A retained batch step policy has an invalid closed shape.");
+            JsonElement mutationScope = value.GetProperty("mutation_scope");
+            steps.Add(new RbpBatchStepIdentity(
+                value.GetProperty("invocation_id").GetString() ??
+                    throw RbpJournalSerialization.Corrupt(
+                        "A retained batch invocation id is absent."),
+                value.GetProperty("method").GetString() ??
+                    throw RbpJournalSerialization.Corrupt(
+                        "A retained batch method is absent."),
+                value.GetProperty("mutating").GetBoolean(),
+                mutationScope.ValueKind == JsonValueKind.Null ? null :
+                    Rfc8785Json.Canonicalize(mutationScope),
+                value.GetProperty("params_digest").GetString() ??
+                    throw RbpJournalSerialization.Corrupt(
+                        "A retained batch params digest is absent."),
+                policy.GetProperty("class").GetString() ??
+                    throw RbpJournalSerialization.Corrupt(
+                        "A retained batch policy class is absent."),
+                policy.GetProperty("confirmation_id").ValueKind == JsonValueKind.Null
+                    ? null
+                    : policy.GetProperty("confirmation_id").GetString(),
+                policy.GetProperty("decision").GetString() ??
+                    throw RbpJournalSerialization.Corrupt(
+                        "A retained batch policy decision is absent.")));
+        }
+        var identity = new RbpBatchIdentity(stored.Rsid, stored.BatchId,
+            stored.BatchDigest, stored.Atomic, stored.TimeoutMilliseconds,
+            stored.RecoveryClearancesJcs, steps.AsReadOnly());
+        ValidateBatchIdentity(identity);
+        RbpBatchIdentity normalized = NormalizeBatchIdentity(identity);
+        VerifyBatchDigestBinding(normalized);
+        RequireIdenticalBatch(stored, normalized, BuildStepsJcs(normalized));
+        return normalized;
+    }
+
+    private static void VerifyStoredBatchMembers(
+        RbpBatchIdentity identity,
+        IReadOnlyDictionary<string, RbpStoredInvocation> byKey)
+    {
+        for (int index = 0; index < identity.Steps.Count; index++)
+        {
+            RbpInvocationIdentity expected = StepInvocationIdentity(identity, index);
+            if (!byKey.TryGetValue(expected.IdempotencyKey,
+                    out RbpStoredInvocation? stored))
+                throw RbpJournalSerialization.Corrupt(
+                    "A retained batch references a missing member invocation.");
+            RequireIdenticalIdentity(stored.Identity, expected);
+        }
     }
 
     private static void VerifyBatchDigestBinding(RbpBatchIdentity identity)

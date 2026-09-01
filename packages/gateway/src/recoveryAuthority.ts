@@ -237,10 +237,20 @@ export interface GatewayRecoveryEvidenceDecisionAudit {
 export interface GatewayBridgeCumulativeAckReceipt {
   /** Persisted output of the trusted RBP sequence authority, never caller input. */
   readonly source: "durable_rbp_sequence";
+  readonly receiptVersion?: 1;
+  readonly tenantId?: string;
   readonly rsid: string;
   readonly sessionBindingId: string;
   readonly acceptedConnectionId: string;
   readonly authorizedSessionVersion: number;
+  readonly invocationId?: string;
+  readonly correlationId?: string;
+  /** Digest-only nominal proof and route coordinates; never wire material. */
+  readonly proofDigest?: `sha256:${string}`;
+  readonly routeSnapshotDigest?: `sha256:${string}`;
+  readonly egressEpoch?: number;
+  readonly leaseTicket?: number;
+  readonly intent?: "dispatch";
   readonly gatewaySequence: number;
   readonly cumulativeAck: number;
   readonly envelopeDigest: `sha256:${string}`;
@@ -296,9 +306,45 @@ export interface GatewayDurableBatchTerminal {
   readonly resultDigest: `sha256:${string}`;
 }
 
+/**
+ * A Gateway-authored, digest-only receipt that proves a specific dispatch
+ * reservation was cancelled before the WSS/SSE invocation boundary.  It is
+ * not north-client input and it can never authorize a replay.
+ */
+export interface GatewayBridgeNoSendReceipt {
+  readonly schema: "gateway.dispatch-no-send/v1";
+  readonly tenantId: string;
+  readonly rsid: string;
+  readonly effectiveMcpSessionId: string;
+  readonly principalKey: string;
+  readonly effectiveScopeDigest: `sha256:${string}`;
+  readonly sessionBindingId: string;
+  readonly acceptedConnectionId: string;
+  readonly durableSessionVersion: number;
+  readonly invocationId: string;
+  readonly correlationId: string;
+  readonly envelopeDigest: `sha256:${string}`;
+  readonly gatewaySequence: number;
+  readonly durableSequenceVersion: number;
+  readonly egressEpoch: number;
+  readonly leaseVersion: 1;
+  readonly leaseTicket: number;
+  readonly leaseHolderInstanceId: string;
+  readonly proofDigest: `sha256:${string}`;
+  readonly routeSnapshotDigest: `sha256:${string}`;
+  readonly intentDigest: `sha256:${string}`;
+  /** Must equal the Gateway-retained reservation authority digest. */
+  readonly authorityDigest: `sha256:${string}`;
+  readonly transportStarted: false;
+  readonly cumulativeAck: null;
+  readonly recordedAtMs: number;
+}
+
 export interface GatewayDurableDispatchObservation {
   readonly acceptance: GatewayBridgeCumulativeAckReceipt | null;
   readonly journal: GatewayVerifiedBridgeJournalEvidence | null;
+  /** Undefined is legacy/no-observation; only a validated receipt is truth. */
+  readonly noSend?: GatewayBridgeNoSendReceipt | null;
 }
 
 export type GatewayBridgeEvidenceLookup =
@@ -1045,22 +1091,82 @@ function assertPlanIntegrity(
 function assertReceiptIntegrity(
   receipt: GatewayBridgeCumulativeAckReceipt,
   pending: GatewayRecoveryPendingDispatch,
+  tenantId?: string,
 ): void {
+  const derived = deriveEnvelope(pending.envelope, pending.envelope.rsid);
+  const optionalReceiptFields = [
+    receipt.invocationId,
+    receipt.correlationId,
+    receipt.proofDigest,
+    receipt.routeSnapshotDigest,
+    receipt.egressEpoch,
+    receipt.leaseTicket,
+    receipt.intent,
+  ];
+  const optionalReceiptFieldCount = optionalReceiptFields.filter(
+    (value) => value !== undefined,
+  ).length;
+  const fullReceipt = optionalReceiptFieldCount === optionalReceiptFields.length;
+  const reconstructedReceipt = optionalReceiptFieldCount === 0;
   if (
     receipt.source !== "durable_rbp_sequence" ||
+    receipt.receiptVersion !== 1 ||
+    (tenantId !== undefined && receipt.tenantId !== tenantId) ||
     receipt.rsid !== pending.envelope.rsid ||
     receipt.sessionBindingId !== pending.sessionBindingId ||
     receipt.acceptedConnectionId !== pending.preparedConnectionId ||
     receipt.authorizedSessionVersion !== pending.authorizedSessionVersion ||
     receipt.gatewaySequence !== pending.gatewaySequence ||
     receipt.envelopeDigest !== pending.envelopeDigest ||
-    receipt.cumulativeAck < pending.gatewaySequence
+    !Number.isSafeInteger(receipt.cumulativeAck) ||
+    receipt.cumulativeAck < pending.gatewaySequence ||
+    receipt.durableSequenceVersion !== pending.authorizedSessionVersion ||
+    !Number.isSafeInteger(receipt.acceptedAtMs) || receipt.acceptedAtMs < 0 ||
+    (!fullReceipt && !reconstructedReceipt)
   ) {
     throw new TypeError(
       "Bridge cumulative ACK is not bound to the pending dispatch",
     );
   }
+  if (typeof receipt.tenantId !== "string") {
+    throw new TypeError("accepted tenantId is missing");
+  }
+  assertBoundedString(receipt.tenantId, "accepted tenantId", 512);
   assertBoundedString(receipt.acceptedConnectionId, "acceptedConnectionId");
+  assertSafePositiveInteger(
+    receipt.authorizedSessionVersion,
+    "accepted authorizedSessionVersion",
+  );
+  assertSafePositiveInteger(receipt.gatewaySequence, "gatewaySequence");
+  assertSafeNonNegativeInteger(receipt.cumulativeAck, "cumulativeAck");
+  assertSafePositiveInteger(
+    receipt.durableSequenceVersion,
+    "durableSequenceVersion",
+  );
+  assertSafeNonNegativeInteger(receipt.acceptedAtMs, "acceptedAtMs");
+  if (reconstructedReceipt) return;
+  if (receipt.invocationId !== derived.correlationId ||
+      receipt.correlationId !== derived.correlationId || receipt.intent !== "dispatch") {
+    throw new TypeError("Bridge cumulative ACK full receipt identity is invalid");
+  }
+  assertBoundedString(receipt.invocationId!, "accepted invocationId");
+  assertBoundedString(receipt.correlationId!, "accepted correlationId");
+  if (
+    typeof receipt.proofDigest !== "string" ||
+    typeof receipt.routeSnapshotDigest !== "string" ||
+    !digestPattern.test(receipt.proofDigest) ||
+    !digestPattern.test(receipt.routeSnapshotDigest)
+  ) {
+    throw new TypeError("accepted dispatch receipt proof is invalid");
+  }
+  if (
+    typeof receipt.egressEpoch !== "number" ||
+    typeof receipt.leaseTicket !== "number"
+  ) {
+    throw new TypeError("accepted dispatch receipt fence is missing");
+  }
+  assertSafeNonNegativeInteger(receipt.egressEpoch, "accepted egressEpoch");
+  assertSafePositiveInteger(receipt.leaseTicket, "accepted leaseTicket");
   assertSafePositiveInteger(
     receipt.authorizedSessionVersion,
     "accepted authorizedSessionVersion",
@@ -1328,12 +1434,54 @@ function assertJournalEvidenceIntegrity(
 function assertObservationIntegrity(
   observation: GatewayDurableDispatchObservation,
   pending: GatewayRecoveryPendingDispatch,
+  tenantId: string,
 ): void {
   if (observation.acceptance !== null) {
-    assertReceiptIntegrity(observation.acceptance, pending);
+    assertReceiptIntegrity(observation.acceptance, pending, tenantId);
   }
   if (observation.journal !== null) {
     assertJournalEvidenceIntegrity(observation.journal, pending);
+  }
+  const noSend = observation.noSend ?? null;
+  if (noSend !== null) {
+    const derived = deriveEnvelope(pending.envelope, pending.envelope.rsid);
+    if (
+      noSend.schema !== "gateway.dispatch-no-send/v1" ||
+      noSend.tenantId !== tenantId ||
+      noSend.rsid !== pending.envelope.rsid ||
+      noSend.invocationId !== derived.correlationId ||
+      noSend.correlationId !== derived.correlationId ||
+      noSend.envelopeDigest !== pending.envelopeDigest ||
+      noSend.sessionBindingId !== pending.sessionBindingId ||
+      noSend.acceptedConnectionId !== pending.preparedConnectionId ||
+      noSend.durableSessionVersion !== pending.authorizedSessionVersion ||
+      noSend.gatewaySequence !== pending.gatewaySequence ||
+      noSend.durableSequenceVersion !== pending.authorizedSessionVersion ||
+      noSend.leaseVersion !== 1 ||
+      !Number.isSafeInteger(noSend.leaseTicket) ||
+      noSend.leaseTicket < 1 ||
+      !Number.isSafeInteger(noSend.egressEpoch) ||
+      noSend.egressEpoch < 0 ||
+      typeof noSend.leaseHolderInstanceId !== "string" ||
+      noSend.leaseHolderInstanceId.length === 0 ||
+      typeof noSend.effectiveMcpSessionId !== "string" ||
+      noSend.effectiveMcpSessionId.length === 0 ||
+      typeof noSend.principalKey !== "string" ||
+      noSend.principalKey.length === 0 ||
+      !digestPattern.test(noSend.effectiveScopeDigest) ||
+      !digestPattern.test(noSend.proofDigest) ||
+      !digestPattern.test(noSend.routeSnapshotDigest) ||
+      !digestPattern.test(noSend.intentDigest) ||
+      !digestPattern.test(noSend.authorityDigest) ||
+      noSend.transportStarted !== false ||
+      noSend.cumulativeAck !== null ||
+      !Number.isSafeInteger(noSend.recordedAtMs) ||
+      noSend.recordedAtMs < 0 ||
+      observation.acceptance !== null ||
+      observation.journal?.kind !== "known_terminal"
+    ) {
+      throw new TypeError("no-send receipt is not bound to the exact pending dispatch");
+    }
   }
 }
 
@@ -1575,6 +1723,7 @@ function assertPendingIntegrity(
 function assertHistoryIntegrity(
   history: GatewayRecoveryDispatchHistory,
   rsid: string,
+  tenantId?: string,
 ): void {
   const derived = deriveEnvelope(history.envelope, rsid);
   if (
@@ -1675,13 +1824,14 @@ function assertHistoryIntegrity(
       bridgeAcceptance: null,
       preparedAtMs: history.recordedAtMs,
     };
-    assertReceiptIntegrity(history.bridgeAcceptance, pendingShape);
+    assertReceiptIntegrity(history.bridgeAcceptance, pendingShape, tenantId);
   }
 }
 
 function decodeRecord(
   value: GatewayJsonValue,
   rsid: string,
+  tenantId?: string,
 ): GatewayRecoveryRecord {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
     throw new TypeError("persisted recovery record must be an object");
@@ -1770,7 +1920,7 @@ function decodeRecord(
   }
   const historyDigests = new Set<string>();
   for (const history of candidate.dispatchHistory) {
-    assertHistoryIntegrity(history, rsid);
+    assertHistoryIntegrity(history, rsid, tenantId);
     if (historyDigests.has(history.envelopeDigest)) {
       throw new TypeError(
         "persisted recovery history repeats an envelope digest",
@@ -1801,7 +1951,9 @@ async function loadRecord(
   const stored = await tx.read(GATEWAY_RECOVERY_NAMESPACE, rsid);
   return {
     value:
-      stored === null ? emptyRecord(rsid) : decodeRecord(stored.value, rsid),
+      stored === null
+        ? emptyRecord(rsid)
+        : decodeRecord(stored.value, rsid, stored.tenantId),
     stored,
   };
 }
@@ -1902,6 +2054,32 @@ function snapshotInput<T>(input: T): T | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * structuredClone deliberately drops frozen descriptors. Confirmation proof
+ * scope is an authority carrier, so restore it as a fresh frozen v1 object at
+ * the recovery boundary before it reaches confirmation validation.
+ */
+function restoreFrozenConfirmationScope<T extends {
+  readonly confirmationProof?: GatewayConfirmationProof;
+}>(input: T): T {
+  if (input.confirmationProof === undefined) return input;
+  const carried = input.confirmationProof.effectiveMcpRequestScope;
+  const effectiveMcpRequestScope = Object.freeze({
+    contractVersion: carried.contractVersion,
+    principalKey: carried.principalKey,
+    effectiveMcpSessionId: carried.effectiveMcpSessionId,
+    transportMcpSessionId: carried.transportMcpSessionId,
+    identityMcpSessionId: carried.identityMcpSessionId,
+  });
+  return Object.freeze({
+    ...input,
+    confirmationProof: Object.freeze({
+      ...input.confirmationProof,
+      effectiveMcpRequestScope,
+    }),
+  }) as T;
 }
 
 function protocolFault(reason: string): GatewayRecoveryProtocolFault {
@@ -2466,8 +2644,9 @@ export class GatewayRecoveryAuthority {
     readonly expected: GatewayExpectedMutationDispatch;
     readonly confirmationProof?: GatewayConfirmationProof;
   }): Promise<GatewayRecoveryPrepareResult> {
-    const frozen = snapshotInput(input);
-    if (frozen === null) return protocolFault("invalid_input");
+    const snapshot = snapshotInput(input);
+    if (snapshot === null) return protocolFault("invalid_input");
+    const frozen = restoreFrozenConfirmationScope(snapshot);
     let derived: DerivedEnvelope;
     let confirmedPolicyId: string | null = null;
     try {
@@ -3204,7 +3383,7 @@ export class GatewayRecoveryAuthority {
         };
       }
       try {
-        assertObservationIntegrity(lookup.observation, pending);
+        assertObservationIntegrity(lookup.observation, pending, frozen.tenantId);
       } catch {
         return protocolFault("bridge_evidence_binding_mismatch");
       }
@@ -3295,6 +3474,49 @@ export class GatewayRecoveryAuthority {
               : ("accepted" as const),
           installedHoldIds: [],
           clearedHoldIds,
+        };
+      }
+
+      // A no-send receipt is authoritative only with the exact terminal
+      // journal retained by the durable RBP session.  It proves that neither
+      // WSS nor HTTP/SSE crossed its invocation boundary, so it closes this
+      // exact pending record without treating a missing ACK as an unknown
+      // mutation and without licensing a replay.
+      if ((lookup.observation.noSend ?? null) !== null) {
+        if (pending.originRedelivery) {
+          return protocolFault("origin_redelivery_no_send_not_authoritative");
+        }
+        const history: GatewayRecoveryDispatchHistory = {
+          status: "terminal",
+          envelope: pending.envelope,
+          envelopeDigest: pending.envelopeDigest,
+          sessionBindingId: pending.sessionBindingId,
+          authorizedSessionVersion: pending.authorizedSessionVersion,
+          requiredSessionCapabilities: pending.requiredSessionCapabilities,
+          mutationEntries: pending.mutationEntries,
+          journalRecords: journalEvidence.journalRecords,
+          batchTerminal: null,
+          journalAttestation: journalAttestation(journalEvidence),
+          // No mutation was admitted to the bridge. Existing recovery holds
+          // remain untouched; this cancellation creates no new hold and
+          // clears no unrelated hold.
+          holdIds: pending.recoveryHoldIds,
+          bridgeAcceptance: null,
+          recordedAtMs: this.#clock(),
+        };
+        assertHistoryIntegrity(history, frozen.rsid);
+        stageRecord(tx, loaded, {
+          ...record,
+          ledger,
+          pendingDispatch: null,
+          dispatchHistory: historyWith(record.dispatchHistory, history),
+        });
+        return {
+          kind: "terminal_recorded" as const,
+          installedHoldIds: [],
+          clearedHoldIds: [],
+          terminalJournalRecords: structuredClone(journalEvidence.journalRecords),
+          terminalBatch: null,
         };
       }
 

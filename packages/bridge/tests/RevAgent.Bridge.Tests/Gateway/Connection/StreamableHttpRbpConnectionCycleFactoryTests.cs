@@ -74,12 +74,12 @@ public sealed class StreamableHttpRbpConnectionCycleFactoryTests
     }
 
     [Theory]
-    [InlineData("wss://127.0.0.1/bridge/v1")]
-    [InlineData("wss://[::1]/bridge/v1")]
-    [InlineData("wss://gateway.revagent.example/other")]
-    [InlineData("https://gateway.revagent.example/bridge/v1")]
-    [InlineData("wss://gateway.revagent.example/bridge/v1?x=1")]
-    public async Task EndpointMustDeriveFromExactWssDnsAuthority(
+    [InlineData("https://127.0.0.1/bridge/v1")]
+    [InlineData("https://[::1]/bridge/v1")]
+    [InlineData("https://gateway.revagent.example/other")]
+    [InlineData("wss://gateway.revagent.example/bridge/v1")]
+    [InlineData("https://gateway.revagent.example/bridge/v1?x=1")]
+    public async Task EndpointMustUseExactHttpsDnsAuthority(
         string endpoint)
     {
         var handler = new ScriptedHttpMessageHandler(
@@ -171,6 +171,96 @@ public sealed class StreamableHttpRbpConnectionCycleFactoryTests
             await OpenFailureAsync(handler);
 
         Assert.Equal(RbpGatewayFailureKind.Protocol, exception.Kind);
+    }
+
+    [Theory]
+    [InlineData(false, true, true)]
+    [InlineData(true, false, true)]
+    [InlineData(true, true, false)]
+    public async Task FallbackRejectsWhenAnyCapabilityAuthorityIsAbsent(
+        bool provisioned,
+        bool declared,
+        bool granted)
+    {
+        var handler = new ScriptedHttpMessageHandler(
+            (_, _) => Task.FromResult(
+                StreamableHttpResponses.Created(
+                    "conn-test",
+                    StreamableHttpRbpConnectionCycleTests.HelloAck(
+                        "conn-test",
+                        grantFallback: granted))));
+        var factory = new StreamableHttpRbpConnectionCycleFactory(
+            new FixedEnrollmentProvider(
+                StreamableHttpRbpConnectionCycleTests.Credential()),
+            provisioned
+                ? new[] { RbpTransportCapabilities.StreamableHttp }
+                : Array.Empty<string>(),
+            new FixedHttpClientFactory(handler));
+        var profile = new RbpHelloProfile(
+            "0.1.0-test",
+            "host",
+            "Windows",
+            Array.Empty<string>(),
+            declared
+                ? new[] { RbpTransportCapabilities.StreamableHttp }
+                : Array.Empty<string>());
+
+        RbpGatewayTransportException exception =
+            await Assert.ThrowsAsync<RbpGatewayTransportException>(
+                () => factory.OpenAsync(
+                    StreamableHttpRbpConnectionCycleTests.Endpoint(),
+                    profile));
+
+        Assert.Equal(RbpGatewayFailureKind.Protocol, exception.Kind);
+        if (!provisioned || !declared)
+        {
+            Assert.Empty(handler.Requests);
+        }
+        else
+        {
+            Assert.Single(handler.Requests);
+        }
+    }
+
+    [Fact]
+    public async Task FallbackDeniesAWithdrawnTransportCapabilityAfterGrant()
+    {
+        var events = new PushSseStream();
+        int requestNumber = 0;
+        var handler = new ScriptedHttpMessageHandler(
+            (_, _) => Task.FromResult(
+                Interlocked.Increment(ref requestNumber) == 1
+                    ? StreamableHttpResponses.Created(
+                        "conn-test",
+                        StreamableHttpRbpConnectionCycleTests.HelloAck(
+                            "conn-test"))
+                    : StreamableHttpResponses.Events(events)));
+        var factory = Factory(handler);
+
+        await using (IRbpConnectionCycle granted = await factory.OpenAsync(
+                         StreamableHttpRbpConnectionCycleTests.Endpoint(),
+                         StreamableHttpRbpConnectionCycleTests.Profile()))
+        {
+            Assert.Contains(
+                RbpTransportCapabilities.StreamableHttp,
+                granted.Acknowledgement.GrantedCapabilities);
+        }
+
+        int requestCountBeforeWithdrawal = handler.Requests.Count;
+        var withdrawn = new RbpHelloProfile(
+            "0.1.0-test",
+            "fixture-host",
+            "Windows test",
+            Array.Empty<string>());
+        RbpGatewayTransportException exception =
+            await Assert.ThrowsAsync<RbpGatewayTransportException>(
+                () => factory.OpenAsync(
+                    StreamableHttpRbpConnectionCycleTests.Endpoint(),
+                    withdrawn));
+
+        Assert.Equal(RbpGatewayFailureKind.Protocol, exception.Kind);
+        Assert.Equal(requestCountBeforeWithdrawal, handler.Requests.Count);
+        events.Dispose();
     }
 
     [Fact]

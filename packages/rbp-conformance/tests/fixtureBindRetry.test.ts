@@ -76,6 +76,15 @@ describe("retryableFixtureBindError", () => {
         ),
       ),
     ).toBe(false);
+    expect(
+      retryableFixtureBindError(
+        Object.assign(new Error("open failed with EACCES"), {
+          code: "EACCES",
+          syscall: "open",
+        }),
+      ),
+    ).toBe(false);
+    expect(retryableFixtureBindError(new Error("permission check EACCES"))).toBe(false);
     expect(retryableFixtureBindError("listen EACCES")).toBe(false);
   });
 });

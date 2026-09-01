@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using Newtonsoft.Json.Linq;
 using RevAgent.Bridge.AddinLoopback;
@@ -34,6 +35,7 @@ namespace RevAgent.Bridge.Gateway.Dispatch;
 /// </remarks>
 internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
 {
+    internal const string DispatchPayloadRecoveryMethod = "dispatch_payload_recovery";
     /// <summary>
     /// Section 12.1 step 3 must not be cancellable.
     /// </summary>
@@ -52,23 +54,35 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
 
     private readonly RbpJournalStore _journal;
     private readonly IRbpInvocationChannel _channel;
+    private readonly RbpDispatchDecisionQuarantine _decisionQuarantine;
     private readonly IRbpInFlightGate _inFlightGate;
     private readonly IRbpRevitBusyProbe? _busyProbe;
     private readonly TimeProvider _timeProvider;
+    private readonly RbpArtifactCarrierProducer? _carrierProducer;
+    private readonly RbpConformanceOmittedOriginObservation _omittedOriginObservation;
+    private readonly AsyncLocal<IReadOnlyList<string>?> _connectionCapabilities = new();
+    private readonly AsyncLocal<RbpInvocationAuthoritySnapshot?>
+        _invocationAuthority = new();
 
     internal RbpInvocationDispatcher(
         RbpJournalStore journal,
         IRbpInvocationChannel channel,
         IRbpInFlightGate inFlightGate,
         IRbpRevitBusyProbe? busyProbe = null,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null,
+        RbpArtifactCarrierProducer? carrierProducer = null,
+        RbpConformanceOmittedOriginObservation? omittedOriginObservation = null)
     {
         _journal = journal ?? throw new ArgumentNullException(nameof(journal));
         _channel = channel ?? throw new ArgumentNullException(nameof(channel));
+        _decisionQuarantine = RbpDispatchDecisionQuarantine.For(channel);
         _inFlightGate = inFlightGate ??
             throw new ArgumentNullException(nameof(inFlightGate));
         _busyProbe = busyProbe;
         _timeProvider = timeProvider ?? TimeProvider.System;
+        _carrierProducer = carrierProducer;
+        _omittedOriginObservation = omittedOriginObservation ??
+            RbpConformanceOmittedOriginObservation.Never;
     }
 
     /// <summary>
@@ -112,6 +126,21 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
         RbpInvokeRequest request,
         CancellationToken cancellationToken)
     {
+        if (_decisionQuarantine.IsBlocked(request.Rsid))
+            return RbpInvocationAnswer.Error(RbpInvocationPayloads.KnownError(
+                request.InvocationId, "environment", false,
+                "An earlier dispatch decision is not durably proven; this request was not dispatched."));
+        RbpPayloadRecoveryRequest? recovery = null;
+        if (string.Equals(request.Method, DispatchPayloadRecoveryMethod, StringComparison.Ordinal))
+        {
+            try { recovery = RbpPayloadRecoveryRequest.Parse(request); }
+            catch (RbpDispatchException)
+            {
+                return RbpInvocationAnswer.Error(RbpInvocationPayloads.KnownError(
+                    request.InvocationId, "protocol", false,
+                    "The correlated recovery request is invalid."));
+            }
+        }
         RbpInvocationIdentity identity = request.ToIdentity();
         (RbpInvocationAdmissionResult? admitted, RbpInvocationAnswer? answered)
             = await AdmitAsync(request, identity, cancellationToken)
@@ -130,7 +159,9 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
         switch (admission.Admission)
         {
             case RbpInvocationAdmission.ReplayTerminal:
-                return ReplayTerminal(admission.Stored);
+                return await ReplayTerminalAsync(
+                        request, admission.Stored, cancellationToken)
+                    .ConfigureAwait(false);
 
             case RbpInvocationAdmission.ReplayLateAfterIndeterminate:
                 return ReplayLate(admission.Stored);
@@ -152,7 +183,7 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
                         request,
                         identity,
                         claimDispatchOwnership: true,
-                        cancellationToken)
+                        cancellationToken, recovery)
                     .ConfigureAwait(false);
 
             case RbpInvocationAdmission.RetryNonMutating:
@@ -166,7 +197,7 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
                         claimDispatchOwnership:
                             admission.Stored.State ==
                                 RbpInvocationState.Received,
-                        cancellationToken)
+                        cancellationToken, recovery)
                     .ConfigureAwait(false);
 
             default:
@@ -226,6 +257,19 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
             return (null, ProtocolFault(request, exception.Message));
         }
 
+        if (request.Verification.ValueKind is not (JsonValueKind.Null or JsonValueKind.Undefined) &&
+            (request.Mutating || request.MutationScope.ValueKind is not (JsonValueKind.Null or JsonValueKind.Undefined) ||
+             clearances.Count != 0 || request.Method == DispatchPayloadRecoveryMethod))
+            return (null, ProtocolFault(request, "Verification requires an ordinary non-mutating add-in read without clearances."));
+
+        RbpInvocationAuthoritySnapshot? authority = _invocationAuthority.Value;
+        if (authority is not null &&
+            !string.Equals(authority.Rsid, request.Rsid,
+                StringComparison.Ordinal))
+            return (null, ProtocolFault(
+                request,
+                "The invocation authority names a different RBP session."));
+
         if (clearances.Count == 0)
         {
             // Durability step 1. Section 12.2 rule 5 (a changed digest,
@@ -236,7 +280,11 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
             {
                 return (
                     await _journal
-                        .AdmitInvocationAsync(identity, cancellationToken)
+                        .AdmitInvocationAsync(
+                            identity,
+                            cancellationToken,
+                            request.Verification,
+                            authority)
                         .ConfigureAwait(false),
                     null);
             }
@@ -320,6 +368,20 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
     public IRbpInvocationClaim? TryClaim(string rsid) =>
         _inFlightGate.TryEnter(rsid) ? new GateClaim(_inFlightGate, rsid) : null;
 
+    public IRbpInvocationClaim? TryClaim(
+        string rsid,
+        RbpInvocationAuthoritySnapshot authority)
+    {
+        ArgumentNullException.ThrowIfNull(authority);
+        if (!string.Equals(rsid, authority.Rsid, StringComparison.Ordinal))
+            throw new ArgumentException(
+                "The invocation authority must name the claimed RBP session.",
+                nameof(authority));
+        return _inFlightGate.TryEnter(rsid)
+            ? new GateClaim(_inFlightGate, rsid, authority)
+            : null;
+    }
+
     public RbpInvocationAnswer RejectConcurrent(string invocationId) =>
         RbpInvocationAnswer.Error(
             RbpInvocationPayloads.KnownError(
@@ -342,28 +404,57 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
     public async Task<RbpInvocationAnswer> DispatchClaimedAsync(
         IRbpInvocationClaim claim,
         JsonElement invokePayload,
+        IReadOnlyList<string> grantedConnectionCapabilities,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(claim);
-
-        RbpInvokeRequest request;
+        ArgumentNullException.ThrowIfNull(grantedConnectionCapabilities);
+        IReadOnlyList<string>? prior = _connectionCapabilities.Value;
+        RbpInvocationAuthoritySnapshot? priorAuthority =
+            _invocationAuthority.Value;
+        _connectionCapabilities.Value = grantedConnectionCapabilities;
+        _invocationAuthority.Value = claim.Authority;
         try
         {
-            request = RbpInvokeRequest.Parse(claim.Rsid, invokePayload);
-        }
-        catch (RbpDispatchException exception)
-            when (exception.ErrorCode == RbpDispatchErrorCode.Protocol)
-        {
-            return RbpInvocationAnswer.Error(
-                RbpInvocationPayloads.KnownError(
-                    ReadInvocationId(invokePayload),
-                    faultClass: "protocol",
-                    retryable: false,
-                    message: exception.Message));
-        }
+            if (claim.Authority is { } authority &&
+                !string.Equals(
+                    authority.ConnectionCapabilitiesDigest,
+                    RbpInvocationAuthoritySnapshot.CapabilitiesDigest(
+                        grantedConnectionCapabilities),
+                    StringComparison.Ordinal))
+            {
+                return RbpInvocationAnswer.Error(
+                    RbpInvocationPayloads.KnownError(
+                        ReadInvocationId(invokePayload),
+                        "protocol",
+                        false,
+                        "The claimed connection capability authority changed before dispatch."));
+            }
 
-        return await DispatchUnderGateAsync(request, cancellationToken)
-            .ConfigureAwait(false);
+            RbpInvokeRequest request;
+            try
+            {
+                request = RbpInvokeRequest.Parse(claim.Rsid, invokePayload);
+            }
+            catch (RbpDispatchException exception)
+                when (exception.ErrorCode == RbpDispatchErrorCode.Protocol)
+            {
+                return RbpInvocationAnswer.Error(
+                    RbpInvocationPayloads.KnownError(
+                        ReadInvocationId(invokePayload),
+                        faultClass: "protocol",
+                        retryable: false,
+                        message: exception.Message));
+            }
+
+            return await DispatchUnderGateAsync(request, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        finally
+        {
+            _connectionCapabilities.Value = prior;
+            _invocationAuthority.Value = priorAuthority;
+        }
     }
 
     private static string ReadInvocationId(JsonElement payload) =>
@@ -374,17 +465,40 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
             ? text
             : "00000000-0000-7000-8000-000000000000";
 
-    private static RbpInvocationAnswer ReplayTerminal(
-        RbpStoredInvocation stored)
+    private async Task<RbpInvocationAnswer> ReplayTerminalAsync(
+        RbpInvokeRequest request,
+        RbpStoredInvocation stored,
+        CancellationToken cancellationToken)
     {
         if (stored.State == RbpInvocationState.Indeterminate)
         {
             return ReplayIndeterminate(stored);
         }
 
+        RbpConformanceOmittedOriginReplay? omitted = await _omittedOriginObservation
+            .TryPrepareReplayAsync(request, stored, _journal, cancellationToken)
+            .ConfigureAwait(false);
+        if (omitted is not null)
+        {
+            return RbpInvocationAnswer.Result(
+                RbpInvocationPayloads.ConformanceOmittedOriginReplay(
+                    omitted.OriginInvocationId, omitted.ResultDigest),
+                omittedOriginReplay: omitted);
+        }
+
         JsonElement outcome = RequireOutcome(
             stored.TerminalOutcomeJson,
             "terminal");
+        if (stored.CarrierPlan is { } plan)
+        {
+            IReadOnlyList<RbpInvocationAnswer> prefixes = plan.OrderedPrefixes
+                .Select(frame => new RbpInvocationAnswer(frame.Type, frame.Payload))
+                .ToArray();
+            return RbpInvocationAnswer.Result(
+                RbpInvocationPayloads.ReplayTerminal(plan.TerminalPayload),
+                prefixes,
+                plan.CarrierKey);
+        }
         return RbpInvocationAnswer.Result(
             RbpInvocationPayloads.ReplayTerminal(outcome));
     }
@@ -478,8 +592,12 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
         RbpInvokeRequest request,
         RbpInvocationIdentity identity,
         bool claimDispatchOwnership,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        RbpPayloadRecoveryRequest? recovery)
     {
+        if (recovery is null && !_decisionQuarantine.TryReserve(request.Rsid))
+            throw new RbpDispatchException(RbpDispatchErrorCode.Environment,
+                "The bounded dispatch-decision owner is unavailable.");
         // Durability step 2, before dispatch ownership.
         if (claimDispatchOwnership)
         {
@@ -487,6 +605,12 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
                 .MarkInvocationExecutingAsync(
                     identity.IdempotencyKey,
                     cancellationToken)
+                .ConfigureAwait(false);
+        }
+
+        if (recovery is not null)
+        {
+            return await ReservePayloadRecoveryAsync(request, identity, recovery)
                 .ConfigureAwait(false);
         }
 
@@ -505,20 +629,18 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
                     cancellationToken)
                 .ConfigureAwait(false);
         }
-        catch (Exception exception) when (exception is not OperationCanceledException)
+        catch (Exception exception)
         {
             // The channel threw rather than reporting dispatch evidence, so we
             // cannot prove the add-in was untouched. Treat it as possibly
             // dispatched: Section 15 forbids labelling an unknown write as a
             // retryable environment fault.
-            return await TerminalizeUnknownAsync(
-                    request,
-                    identity,
-                    exception.Message,
-                    faultClassHint: null,
-                    cancellationToken)
-                .ConfigureAwait(false);
+            outcome = new RbpAddinOutcome(RbpAddinOutcomeKind.PossiblyDispatched,
+                default, [], 0, 0, Message: exception.Message);
         }
+
+        outcome = outcome.ConservativeClassification();
+        _decisionQuarantine.Own(request.Rsid, outcome.Lease);
 
         var metrics = new RbpInvocationMetrics(
             (long)Stopwatch
@@ -527,9 +649,10 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
             outcome.RequestBytes,
             outcome.ResponseBytes);
 
+        bool durableDecisionProven = false;
         try
         {
-            return outcome.Kind switch
+            RbpInvocationAnswer answer = outcome.Kind switch
             {
                 RbpAddinOutcomeKind.Completed or RbpAddinOutcomeKind.Guarded =>
                     await TerminalizeSuccessAsync(
@@ -537,7 +660,8 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
                             identity,
                             outcome,
                             metrics,
-                            cancellationToken)
+                            cancellationToken,
+                            () => durableDecisionProven = true)
                         .ConfigureAwait(false),
 
                 RbpAddinOutcomeKind.KnownNotDispatched =>
@@ -548,15 +672,26 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
                             cancellationToken)
                         .ConfigureAwait(false),
 
+                RbpAddinOutcomeKind.ApplicationError when !request.Mutating =>
+                    await TerminalizeKnownFailureAsync(request, identity,
+                        outcome with { Retryable = false }, DurableDecisionToken).ConfigureAwait(false),
+
+                RbpAddinOutcomeKind.PossiblyDispatched when !request.Mutating && outcome.Retryable == false =>
+                    await TerminalizeKnownFailureAsync(request, identity,
+                        outcome, DurableDecisionToken).ConfigureAwait(false),
+
                 _ => await TerminalizeUnknownAsync(
                             request,
                             identity,
                             outcome.Message ??
                                 "The add-in dispatch outcome is unknown.",
                             outcome.FaultClass,
-                            cancellationToken)
+                            cancellationToken,
+                            outcome)
                         .ConfigureAwait(false),
             };
+            durableDecisionProven = true;
+            return answer;
         }
         finally
         {
@@ -564,8 +699,82 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
             // the add-in session while this invocation's fate lives solely in
             // memory; a crash in that window lets a redelivery dispatch again
             // against a row the journal still reports as `executing`.
-            outcome.Lease?.ReleaseAfterDurableDecision();
+            if (durableDecisionProven)
+                _decisionQuarantine.ReleaseProven(request.Rsid, outcome.Lease);
         }
+    }
+
+    private async Task<RbpInvocationAnswer> ReservePayloadRecoveryAsync(
+        RbpInvokeRequest request, RbpInvocationIdentity identity,
+        RbpPayloadRecoveryRequest recovery)
+    {
+        RbpRecoveredPayload? lease = await _journal.GetCorrelatedRecoveryPayloadAsync(
+            request.Rsid, recovery.OriginInvocationId, recovery.ExpectedResultDigest,
+            DurableDecisionToken).ConfigureAwait(false);
+        if (lease is null)
+            return await TerminalizeRecoveryUnavailableAsync(request, identity).ConfigureAwait(false);
+        using (lease)
+        {
+            if (lease.RawResponseBytes.Length is <= 0 or > RbpArtifactCarrierProducer.MaximumCombinedBytes ||
+                !(_connectionCapabilities.Value ?? Array.Empty<string>()).Contains("chunked_results", StringComparer.Ordinal))
+                return await TerminalizeRecoveryUnavailableAsync(request, identity).ConfigureAwait(false);
+            try
+            {
+                RbpRecoveryCarrierReservation reservation = await _journal
+                    .PersistProtectedRecoveryTerminalAndReserveAsync(
+                        new RbpRecoveryCarrierReservationRequest(request.Rsid, request.InvocationId,
+                            recovery.OriginInvocationId, recovery.ExpectedResultDigest,
+                            RbpArtifactCarrierProducer.MaximumChunkBytes,
+                            new RbpRecoveryCarrierHeader("application/json", "base64"),
+                            recovery.EnvelopeDigest(request.InvocationId),
+                            DateTimeOffset.UtcNow.Add(RbpJournalStore.DefaultRetentionPeriod)),
+                        DurableDecisionToken).ConfigureAwait(false);
+                return RbpInvocationAnswer.Recovery(reservation);
+            }
+            catch (Exception)
+            {
+                RbpRecoveryCarrierReservation? readback = await _journal
+                    .GetRecoveryCarrierReservationAsync(request.InvocationId, DurableDecisionToken)
+                    .ConfigureAwait(false);
+                if (readback is not null && readback.Phase != RbpRecoveryCarrierPhase.Tombstoned)
+                    return RbpInvocationAnswer.Recovery(readback);
+                return await TerminalizeRecoveryUnavailableAsync(request, identity).ConfigureAwait(false);
+            }
+        }
+    }
+
+    private async Task<RbpInvocationAnswer> TerminalizeRecoveryUnavailableAsync(
+        RbpInvokeRequest request, RbpInvocationIdentity identity)
+    {
+        JsonElement body = RbpInvocationPayloads.KnownError(request.InvocationId,
+            "environment", false, "The correlated recovery payload is unavailable.");
+        Exception? failure = null;
+        try
+        {
+            await _journal.PersistInvocationTerminalAsync(identity.IdempotencyKey,
+                new RbpInvocationTerminal(RbpInvocationState.Failed, body,
+                    JournalEvidenceDigest(body)), DurableDecisionToken).ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            failure = exception;
+        }
+        RbpStoredInvocation? stored = await _journal
+            .GetInvocationAsync(identity.IdempotencyKey, DurableDecisionToken)
+            .ConfigureAwait(false);
+        string digest = JournalEvidenceDigest(body);
+        if (stored?.State == RbpInvocationState.Failed &&
+            string.Equals(stored.ResultDigest, digest, StringComparison.Ordinal) &&
+            stored.TerminalOutcomeJson is { Length: > 0 } terminal &&
+            string.Equals(Rfc8785Json.Canonicalize(JsonDocument.Parse(terminal).RootElement),
+                Rfc8785Json.Canonicalize(body), StringComparison.Ordinal))
+        {
+            return RbpInvocationAnswer.Error(body);
+        }
+        if (failure is not null) System.Runtime.ExceptionServices.ExceptionDispatchInfo
+            .Capture(failure).Throw();
+        throw new RbpDispatchException(RbpDispatchErrorCode.Environment,
+            "The recovery terminal was not durably recorded.");
     }
 
     private async Task<RbpInvocationAnswer> TerminalizeSuccessAsync(
@@ -573,7 +782,8 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
         RbpInvocationIdentity identity,
         RbpAddinOutcome outcome,
         RbpInvocationMetrics metrics,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Action durableDecisionProven)
     {
         bool guarded = outcome.Kind == RbpAddinOutcomeKind.Guarded;
 
@@ -599,20 +809,86 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
             digestRequired ? digest : null,
             metrics);
 
+        // The producer runs above binding selection and before the terminal
+        // decision is persisted.  Therefore the journal stores the exact
+        // manifest that will follow durable chunk frames, rather than an
+        // inline body that a reconnect could reinterpret differently.
+        IReadOnlyList<RbpInvocationAnswer> prefixes =
+            Array.AsReadOnly(Array.Empty<RbpInvocationAnswer>());
+        string? carrierKey = null;
+        RbpInvocationState terminalState = guarded
+            ? RbpInvocationState.Guarded
+            : RbpInvocationState.Completed;
+        if (_carrierProducer is not null)
+        {
+            try
+            {
+                RbpCarrierEmission? carrier = await _carrierProducer
+                    .TryPrepareAsync(
+                        request.Rsid,
+                        body,
+                        outcome.Result,
+                        _connectionCapabilities.Value ?? Array.Empty<string>(),
+                        DurableDecisionToken)
+                    .ConfigureAwait(false);
+                if (carrier is not null)
+                {
+                    body = carrier.TerminalPayload;
+                    prefixes = carrier.Prefixes;
+                    carrierKey = carrier.CarrierKey;
+                }
+            }
+            catch (Exception exception) when (
+                exception is RbpArtifactCarrierException or IOException or
+                    UnauthorizedAccessException or System.Security.SecurityException)
+            {
+                // The add-in has already answered. Persist a narrow terminal
+                // error rather than leaving the invocation executing or
+                // exposing a raw local artifact/path in an inline result.
+                body = RbpInvocationPayloads.KnownError(
+                    request.InvocationId,
+                    faultClass: "environment",
+                    retryable: false,
+                    message: "The bridge could not durably prepare the result carrier.");
+                prefixes = Array.AsReadOnly(Array.Empty<RbpInvocationAnswer>());
+                carrierKey = null;
+                terminalState = RbpInvocationState.Failed;
+            }
+        }
+
+        // The sealed production policy is Never. Only the real-worker host
+        // can arm this after the routed channel carried its verified fixture
+        // process attestation; ordinary completed terminals stay unchanged.
+        bool armSuppressedOrigin = _omittedOriginObservation.TryArm(
+            request, identity, outcome, digest);
+
         // Durability step 3, before the answer leaves the bridge.
         await _journal
             .PersistInvocationTerminalAsync(
                 identity.IdempotencyKey,
                 new RbpInvocationTerminal(
-                    guarded
-                        ? RbpInvocationState.Guarded
-                        : RbpInvocationState.Completed,
+                    terminalState,
                     body,
-                    digest),
-                DurableDecisionToken)
+                    digest,
+                    carrierKey is null
+                        ? null
+                        : CreateCarrierPlan(carrierKey, prefixes, body),
+                    (IsOmittedPayload(body) || armSuppressedOrigin)
+                        ? new RbpRecoveryPayload(digest, outcome.RawResponsePayload)
+                        : null),
+                DurableDecisionToken, expectedIdentity: identity, responseEvidence: outcome)
             .ConfigureAwait(false);
 
-        return RbpInvocationAnswer.Result(body);
+        durableDecisionProven();
+
+        if (armSuppressedOrigin)
+        {
+            throw new RbpConformanceOriginSuppressedException();
+        }
+
+        return terminalState == RbpInvocationState.Failed
+            ? RbpInvocationAnswer.Error(body)
+            : RbpInvocationAnswer.Result(body, prefixes, carrierKey);
     }
 
     private async Task<RbpInvocationAnswer> TerminalizeKnownFailureAsync(
@@ -621,9 +897,9 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
         RbpAddinOutcome outcome,
         CancellationToken cancellationToken)
     {
-        // Reached only when the channel can prove no add-in byte was written,
-        // so the outcome really is known and a read may be retried by the
-        // orchestrator.
+        // Known no-send failures, or known non-mutating application failures.
+        // A mutation with any application/dispatch uncertainty never enters
+        // this path. Application failures explicitly remain nonretryable.
         (string faultClass, bool retryable, string message) =
             await EnrichFailureWithLocalStatusAsync(
                     request.Rsid,
@@ -646,7 +922,7 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
                     RbpInvocationState.Failed,
                     body,
                     JournalEvidenceDigest(body)),
-                DurableDecisionToken)
+                DurableDecisionToken, expectedIdentity: identity, responseEvidence: outcome)
             .ConfigureAwait(false);
 
         return RbpInvocationAnswer.Error(body);
@@ -657,7 +933,8 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
         RbpInvocationIdentity identity,
         string message,
         string? faultClassHint,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        RbpAddinOutcome? responseEvidence = null)
     {
         if (!request.Mutating)
         {
@@ -686,7 +963,7 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
                         RbpInvocationState.Failed,
                         readBody,
                         JournalEvidenceDigest(readBody)),
-                    DurableDecisionToken)
+                    DurableDecisionToken, expectedIdentity: identity, responseEvidence: responseEvidence)
                 .ConfigureAwait(false);
             return RbpInvocationAnswer.Error(readBody);
         }
@@ -702,7 +979,7 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
                     RbpInvocationState.Indeterminate,
                     Outcome: default,
                     ResultDigest: null),
-                DurableDecisionToken)
+                DurableDecisionToken, expectedIdentity: identity)
             .ConfigureAwait(false);
 
         if (holdId is not { Length: > 0 })
@@ -795,10 +1072,51 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
     private static string JournalEvidenceDigest(JsonElement body) =>
         Rfc8785Json.Sha256Digest(body);
 
+    private static RbpCarrierPlan CreateCarrierPlan(
+        string carrierKey,
+        IReadOnlyList<RbpInvocationAnswer> prefixes,
+        JsonElement terminal)
+    {
+        if (prefixes.Count == 0)
+        {
+            throw new RbpDispatchException(
+                RbpDispatchErrorCode.Environment,
+                "A carrier terminal cannot be persisted without prefix frames.");
+        }
+
+        RbpCarrierPlanFrame[] frames = prefixes
+            .Select(value => new RbpCarrierPlanFrame(value.Type, value.Payload.Clone()))
+            .ToArray();
+        JsonElement serializedPrefixes = JsonSerializer.SerializeToElement(
+            frames.Select(frame => new { type = frame.Type, payload = frame.Payload }));
+        string prefixDigest = RawJsonDigest(serializedPrefixes.GetRawText());
+        string terminalDigest = RawJsonDigest(terminal.GetRawText());
+        byte[] identity = Encoding.UTF8.GetBytes(
+            carrierKey + "\n" + prefixDigest + "\n" + terminalDigest);
+        string planId = "sha256:" + Convert.ToHexString(SHA256.HashData(identity))
+            .ToLowerInvariant();
+        return new RbpCarrierPlan(
+            planId,
+            carrierKey,
+            Array.AsReadOnly(frames),
+            terminal.Clone(),
+            prefixDigest,
+            terminalDigest);
+    }
+
+    private static string RawJsonDigest(string json) => "sha256:" +
+        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(json)))
+            .ToLowerInvariant();
+
     private static string ComputeResultDigest(byte[] rawResponsePayload) =>
         "sha256:" +
         Convert.ToHexString(SHA256.HashData(rawResponsePayload))
             .ToLowerInvariant();
+
+    private static bool IsOmittedPayload(JsonElement body) =>
+        body.ValueKind == JsonValueKind.Object &&
+        body.TryGetProperty("payload_omitted", out JsonElement omitted) &&
+        omitted.ValueKind is JsonValueKind.True;
 
     private static JsonElement RequireOutcome(string? json, string what)
     {
@@ -818,11 +1136,28 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
 /// What the bridge sends back for one invocation: a Section 10.3 <c>result</c>
 /// or a Section 15 <c>error</c>, already terminal and already durable.
 /// </summary>
-internal sealed record RbpInvocationAnswer(string Type, JsonElement Payload)
+internal sealed record RbpInvocationAnswer(
+    string Type,
+    JsonElement Payload,
+    IReadOnlyList<RbpInvocationAnswer>? Prefixes = null,
+    string? CarrierKey = null,
+    RbpRecoveryCarrierReservation? RecoveryReservation = null,
+    RbpConformanceOmittedOriginReplay? OmittedOriginReplay = null)
 {
-    internal static RbpInvocationAnswer Result(JsonElement payload) =>
-        new("result", payload);
+    internal static RbpInvocationAnswer Result(
+        JsonElement payload,
+        IReadOnlyList<RbpInvocationAnswer>? prefixes = null,
+        string? carrierKey = null,
+        RbpConformanceOmittedOriginReplay? omittedOriginReplay = null) =>
+        new("result", payload, prefixes, carrierKey,
+            OmittedOriginReplay: omittedOriginReplay);
 
     internal static RbpInvocationAnswer Error(JsonElement payload) =>
         new("error", payload);
+
+    internal static RbpInvocationAnswer Partial(JsonElement payload) =>
+        new("partial", payload);
+
+    internal static RbpInvocationAnswer Recovery(RbpRecoveryCarrierReservation reservation) =>
+        new("recovery_carrier", default, RecoveryReservation: reservation);
 }

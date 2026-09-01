@@ -13,6 +13,7 @@ import {
 } from "./preProductionComposition.js";
 import { GatewayToolRegistry } from "./registry.js";
 import { createFailClosedPorts, startGatewayServer } from "./server.js";
+import { createPreProductionRuntimeAdapters } from "./preProductionRuntimeAdapters.js";
 import {
   createCapturingEventSink,
   createReadOnlyRecoveryAuthorityFixture,
@@ -122,6 +123,18 @@ function request(authorization: string): IncomingMessage {
 }
 
 describe("M4-02 pre-production LAN/test composition", () => {
+  it("refuses C39 key configuration because this graph has no durable key inventory", () => {
+    const configured = loadGatewayConfig({
+      NODE_ENV: "test",
+      LOG_LEVEL: "fatal",
+      GATEWAY_BIND_HOST: "127.0.0.1",
+      GATEWAY_PUBLIC_URL: "https://gateway.lan.test",
+      C39_PROTECTED_OBJECT_KEY_FILE: "/run/revagent/c39-key.json",
+    });
+    expect(() => createPreProductionLanTestComposition(options({ config: configured }))).toThrowError(
+      expect.objectContaining({ code: "c39_protected_object_unavailable" }) as PreProductionCompositionError,
+    );
+  });
   it("refuses invalid or production Gateway configuration before store/ingress side effects", () => {
     expect(() =>
       createPreProductionLanTestComposition(
@@ -190,6 +203,21 @@ describe("M4-02 pre-production LAN/test composition", () => {
       composition.bridgeAuthority.store,
     );
     expect(composition.rbpIngress.kind).toBe("preproduction");
+  });
+
+  it("binds the private session view without creating a public carrier graph", async () => {
+    const adapters = createPreProductionRuntimeAdapters();
+    const composition = createPreProductionLanTestComposition(options({
+      protocolStore: adapters.protocolStore,
+      servingOwnership: adapters.servingOwnership,
+    }));
+    await composition.bridgeAuthority.open();
+    expect(composition.ports.protocolStore).toBe(adapters.servingOwnership.protocolStore);
+    expect(adapters.servingOwnership.durabilityProfile()).toMatchObject({
+      mode: "private_object", maxPartialBytes: 1, resourceCarrierReady: false,
+    });
+    expect(composition.ports.objectStore.kind).toBe("unavailable");
+    await composition.bridgeAuthority.close();
   });
 
   it("refuses mixed pre-production authority graphs before ingress or listener side effects", async () => {
@@ -363,7 +391,7 @@ describe("M4-02 pre-production LAN/test composition", () => {
       deviceId: "device-m4-02",
       seatId: "seat-m4-02",
       machineFingerprint: MACHINE_FINGERPRINT,
-      grantedSessionCapabilities: ["transport_streamable_http"],
+      grantedConnectionCapabilities: ["transport_streamable_http"],
     });
     expect(issue.ok).toBe(true);
     if (!issue.ok) return;

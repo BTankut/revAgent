@@ -20,8 +20,8 @@ const seed = verifyRegistrySeed(
 const catalog = buildCatalog(seed);
 
 describe("catalog", () => {
-  it("covers all forty tools with a published name and a policy class", () => {
-    expect(catalog).toHaveLength(40);
+  it("covers all collected tools with a published name and a policy class", () => {
+    expect(catalog).toHaveLength(41);
     for (const entry of catalog) {
       expect(entry.name).toMatch(/^core\.[a-z0-9_.]+$/u);
       expect(["auto", "confirm", "gated"]).toContain(entry.policyClass);

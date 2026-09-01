@@ -342,6 +342,19 @@ const IMF_FIXDATE_PATTERN = /^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), [0-9]{2} (?:Jan|F
 const CONTROL_VALIDATION_ID = "018f0000-0000-7000-8000-000000000000";
 const CONTROL_VALIDATION_TS = "2026-07-22T00:00:00.000Z";
 
+function safeWssFrameCorrelationId(frame: Buffer): string | undefined {
+  try {
+    const value = JSON.parse(
+      new TextDecoder("utf-8", { fatal: true }).decode(frame),
+    ) as unknown;
+    if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined;
+    const id = (value as { readonly id?: unknown }).id;
+    return typeof id === "string" && UUID_V7_PATTERN.test(id) ? id : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function controlRsid(value: unknown, label = "rsid"): string {
   const parsed = controlString(value, label);
   if (parsed.length > 256) throw new HttpRequestError(400, `${label} exceeds the RBP rsid limit`);
@@ -1202,7 +1215,7 @@ export async function startGatewayStub(options: GatewayStubServerOptions): Promi
           {
             let affected: string[];
             try {
-              affected = core.setAuthStatus(body.token, body.status);
+              affected = await core.setAuthStatus(body.token, body.status);
             } catch (error) {
               if (error instanceof Error && error.message === "unknown static test token") {
                 throw new HttpRequestError(404, error.message);
@@ -1214,7 +1227,7 @@ export async function startGatewayStub(options: GatewayStubServerOptions): Promi
                 await closeConnection(
                   connectionId,
                   `auth_${body.status}`,
-                  body.status === "seat_denied" ? 4403 : 4401,
+                  4403,
                 );
               }
             }
@@ -1342,6 +1355,7 @@ export async function startGatewayStub(options: GatewayStubServerOptions): Promi
         let receiveFailed = false;
         let receiveChain: Promise<void> = Promise.resolve();
         websocket.on("message", (data, isBinary) => {
+          let faultCorrelationId: string | undefined;
           const received = receiveChain.then(async () => {
             if (receiveFailed) return;
             if (isBinary) {
@@ -1352,6 +1366,7 @@ export async function startGatewayStub(options: GatewayStubServerOptions): Promi
               : Array.isArray(data)
                 ? Buffer.concat(data)
                 : Buffer.from(data);
+            faultCorrelationId = safeWssFrameCorrelationId(frame);
             if (firstFrame) {
               firstFrame = false;
               const hello = parseHelloFrame(frame);
@@ -1380,7 +1395,7 @@ export async function startGatewayStub(options: GatewayStubServerOptions): Promi
             const fault = error instanceof GatewayStubFault
               ? error
               : new GatewayStubFault(error instanceof Error ? error.message : "protocol failure", "protocol", 4400);
-            await core.sendConnectionFault(connectionId, fault).catch(() => undefined);
+            await core.sendConnectionFault(connectionId, fault, faultCorrelationId).catch(() => undefined);
             const closeReason = fault.closeCode === 4426
               ? JSON.stringify({
                   min_protocol: Math.min(...core.supportedProtocols),

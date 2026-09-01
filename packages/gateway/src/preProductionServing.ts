@@ -46,7 +46,8 @@ export type PreProductionServingErrorReason =
   | "invalid_gateway_configuration"
   | "invalid_registry_seed"
   | "runtime_adapter_unavailable"
-  | "enrollment_issue_refused";
+  | "enrollment_issue_refused"
+  | "c39_protected_object_unavailable";
 
 export class PreProductionServingError extends Error {
   readonly code = "preproduction_serving_refused" as const;
@@ -104,7 +105,7 @@ export interface PreparedPreProductionServing {
   readonly composition: PreProductionLanTestComposition;
   readonly enrollment: PreProductionEnrollmentIssue;
   start(tls: GatewayServerTlsMaterial): Promise<GatewayServerHandle>;
-  revokeConfiguredDevice(): PreProductionIdentityResult<unknown>;
+  revokeConfiguredDevice(): Promise<PreProductionIdentityResult<unknown>>;
   exportAuditSnapshot(): Promise<PreProductionAuditExportBundle>;
 }
 
@@ -185,6 +186,11 @@ export async function preparePreProductionServing(
   if (!loadedConfig.ok || loadedConfig.value.nodeEnv !== "preproduction") {
     refused("invalid_gateway_configuration");
   }
+  if (loadedConfig.value.objectStore.protectedObjectKeyFile != null) {
+    // The serving simulator owns no durable C39 receipt inventory and cannot
+    // turn a key path into a fixture/provider selection.
+    refused("c39_protected_object_unavailable");
+  }
 
   let credential: PreProductionCredentialMaterial;
   try {
@@ -252,6 +258,7 @@ export async function preparePreProductionServing(
       ],
     },
     protocolStore: adapters.protocolStore,
+    servingOwnership: adapters.servingOwnership,
     entitlement: adapters.entitlement,
     events: adapters.events,
     objectStore: createUnavailableObjectStore(),
@@ -293,7 +300,7 @@ export async function preparePreProductionServing(
       );
       return {
         catalogViewFor: () => entitledCatalog,
-        invocationRouteFor: (authenticated, mcpSessionId) => {
+        invocationRouteFor: (authenticated, _mcpSessionId, effectiveMcpRequestScope) => {
           if (
             authenticated.authContext.actor.tenantId !== principal.tenantId ||
             authenticated.authContext.actor.userId !== principal.userId
@@ -304,7 +311,7 @@ export async function preparePreProductionServing(
             tenantId: principal.tenantId,
             userId: principal.userId,
             deviceId: device.deviceId,
-            mcpSessionId,
+            effectiveMcpRequestScope,
           });
         },
         dispatcher,
@@ -367,8 +374,28 @@ export async function preparePreProductionServing(
         throw error;
       }
     },
-    revokeConfiguredDevice: () =>
-      composition.identity.revokeDevice(device.deviceId),
+    async revokeConfiguredDevice(): Promise<PreProductionIdentityResult<unknown>> {
+      const revoked = composition.identity.revokeDevice(device.deviceId);
+      if (
+        revoked.ok &&
+        composition.bridgeAuthority.lifecycle().state === "open"
+      ) {
+        await composition.bridgeAuthority.revokeIdentityAuthority({
+          tenantId: principal.tenantId,
+          kind: "device",
+          deviceId: device.deviceId,
+          seatId: device.seatId,
+          authorizationVersion: revoked.value.authorizationVersion,
+          identityRecordVersion: revoked.value.identityRecordVersion,
+          connectionCapabilityVersion:
+            revoked.value.connectionCapabilityVersion,
+          sessionCapabilityVersion: revoked.value.sessionCapabilityVersion,
+          seatAuthorityVersion: revoked.value.seatAuthorityVersion,
+          seatRecordVersion: revoked.value.seatRecordVersion,
+        });
+      }
+      return revoked;
+    },
     async exportAuditSnapshot(): Promise<PreProductionAuditExportBundle> {
       if (auditExportAttempted) {
         throw new PreProductionAuditExportError("already_attempted");

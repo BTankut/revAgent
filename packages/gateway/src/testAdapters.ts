@@ -13,9 +13,17 @@ import type {
 } from "./events.js";
 import { REVAGENT_EVENT_SCHEMA } from "./events.js";
 import type { GatewayPortResult } from "./gatewayPorts.js";
+import {
+  GatewayServingOwnership,
+  bindBundledTestServingOwnership,
+} from "./gatewayServingOwnership.js";
 import type {
+  GatewayOwnedPrivateObjectMetadata,
+  GatewayPrivateObjectBinding,
   GatewayProtocolStore,
-  ObjectStorePort,
+  GatewayStartupCoordinator,
+  GatewayStartupLease,
+  PrivateObjectStoreBackendPort,
   StoreExpectation,
   StoreOutcome,
   StoreTransaction,
@@ -89,6 +97,14 @@ function device(
     }),
     connectionId: `conn-${deviceId}`,
     deviceStatus: status,
+    machineFingerprint: `sha256:${"1".repeat(64)}`,
+    authorizationVersion: 1,
+    identityRecordVersion: 1,
+    connectionCapabilityVersion: 1,
+    sessionCapabilityVersion: 1,
+    seatAuthorityVersion: 1,
+    seatRecordVersion: 1,
+    grantedConnectionCapabilities: Object.freeze([]),
     grantedSessionCapabilities: Object.freeze([]),
     deviceTokenDigest: `sha256:${"0".repeat(64)}` as const,
   });
@@ -340,6 +356,8 @@ interface MemoryState {
   records: Map<string, StoredRecord>;
   nextVersion: number;
   open: boolean;
+  startupTail: Promise<void>;
+  startupEpoch: number;
 }
 
 function recordKey(namespace: string, tenantId: string, key: string): string {
@@ -350,6 +368,42 @@ function buildMemoryStore(state: MemoryState): GatewayProtocolStore {
   return {
     kind: "memory" as const,
     contractVersion: GATEWAY_STORE_CONTRACT_VERSION,
+    startupCoordinator: Object.freeze({
+      contractVersion: "revagent.protocol-store-startup/v1" as const,
+      async runExclusive<T>(work: (lease: GatewayStartupLease) => Promise<StoreOutcome<T>>): Promise<StoreOutcome<T>> {
+        const prior = state.startupTail;
+        let release!: () => void;
+        state.startupTail = new Promise<void>((resolve) => { release = resolve; });
+        await prior;
+        state.startupEpoch += 1;
+        let current = true;
+        const lease: GatewayStartupLease = Object.freeze({
+          contractVersion: "revagent.protocol-store-startup-lease/v1" as const,
+          identity: `memory:${state.startupEpoch}`,
+          epoch: state.startupEpoch,
+          isCurrent: () => current,
+        });
+        try { return await work(lease); } finally { current = false; release(); }
+      },
+      async listTenantIds(limit: number): Promise<StoreOutcome<readonly string[]>> {
+        if (!state.open || !Number.isSafeInteger(limit) || limit < 1 || limit > 10_000) {
+          return Object.freeze({ ok: false as const, code: "unavailable" as const, message: "startup inventory unavailable" });
+        }
+        const ids = [...new Set([...state.records.values()].map((record) => record.tenantId))].sort();
+        return ids.length > limit
+          ? Object.freeze({ ok: false as const, code: "invalid_record" as const, message: "startup inventory exceeds limit" })
+          : Object.freeze({ ok: true as const, value: Object.freeze(ids) });
+      },
+      async listKeys(tenantId: string, namespace: string, limit: number): Promise<StoreOutcome<readonly string[]>> {
+        if (!state.open || !Number.isSafeInteger(limit) || limit < 1 || limit > 10_000) {
+          return Object.freeze({ ok: false as const, code: "unavailable" as const, message: "startup inventory unavailable" });
+        }
+        const keys = [...state.records.values()].filter((record) => record.tenantId === tenantId && record.namespace === namespace).map((record) => record.key).sort();
+        return keys.length > limit
+          ? Object.freeze({ ok: false as const, code: "invalid_record" as const, message: "startup inventory exceeds limit" })
+          : Object.freeze({ ok: true as const, value: Object.freeze(keys) });
+      },
+    } satisfies GatewayStartupCoordinator),
     async open(): Promise<StoreOutcome<void>> {
       state.open = true;
       return Object.freeze({ ok: true as const, value: undefined });
@@ -439,7 +493,10 @@ function buildMemoryStore(state: MemoryState): GatewayProtocolStore {
             tenantId: scope.tenantId,
             key: write.key,
             value: write.value,
-            version: state.nextVersion,
+            // CAS versions are record-local. A normalized root can therefore
+            // prove a child's next committed version without depending on
+            // unrelated writes elsewhere in the tenant.
+            version: (state.records.get(composite)?.version ?? 0) + 1,
             updatedAtMs: 0,
           }),
         );
@@ -458,9 +515,22 @@ export function createRestartableTestStore(): RestartableTestStore {
     records: new Map(),
     nextVersion: 0,
     open: false,
+    startupTail: Promise.resolve(),
+    startupEpoch: 0,
+  };
+  const privateObjects = createMemoryObjectStore();
+  const buildBundledStore = (): GatewayProtocolStore => {
+    const store = buildMemoryStore(state);
+    const ownership = new GatewayServingOwnership({
+      protocolStore: store,
+      privateObjectStore: privateObjects,
+      profile: "bundled_test",
+    });
+    bindBundledTestServingOwnership(store, ownership);
+    return store;
   };
   return {
-    store: buildMemoryStore(state),
+    store: buildBundledStore(),
     snapshot(): GatewayProtocolStoreSnapshot {
       return Object.freeze({
         records: [...state.records.values()],
@@ -469,12 +539,12 @@ export function createRestartableTestStore(): RestartableTestStore {
     },
     restart(): GatewayProtocolStore {
       state.open = false;
-      return buildMemoryStore(state);
+      return buildBundledStore();
     },
   };
 }
 
-export interface MemoryObjectStore extends ObjectStorePort {
+export interface MemoryObjectStore extends PrivateObjectStoreBackendPort {
   corrupt(storageKey: string, bytes: Uint8Array): void;
   keys(): readonly string[];
 }
@@ -489,6 +559,7 @@ export function createMemoryObjectStore(): MemoryObjectStore {
       readonly contentType: string;
     }
   >();
+  const owned = new Map<string, GatewayPrivateObjectBinding>();
   const ok = <T>(value: T): GatewayPortResult<T> =>
     Object.freeze({ ok: true as const, value });
   const missing = <T>(): GatewayPortResult<T> =>
@@ -509,6 +580,7 @@ export function createMemoryObjectStore(): MemoryObjectStore {
           contentType: input.contentType,
         }),
       );
+      owned.delete(input.storageKey);
       return ok({ storageKey: input.storageKey });
     },
     async get(input) {
@@ -520,6 +592,12 @@ export function createMemoryObjectStore(): MemoryObjectStore {
             contentType: found.contentType,
           });
     },
+    async getOptional(input) {
+      const found = objects.get(input.storageKey);
+      return found === undefined || found.tenantId !== input.tenantId
+        ? ok(null)
+        : ok({ bytes: new Uint8Array(found.bytes), contentType: found.contentType });
+    },
     async head(input) {
       const found = objects.get(input.storageKey);
       return found === undefined || found.tenantId !== input.tenantId
@@ -530,8 +608,47 @@ export function createMemoryObjectStore(): MemoryObjectStore {
       const found = objects.get(input.storageKey);
       if (found !== undefined && found.tenantId === input.tenantId) {
         objects.delete(input.storageKey);
+        owned.delete(input.storageKey);
       }
       return ok(undefined);
+    },
+    async putOwned(input) {
+      objects.set(input.binding.storageKey, Object.freeze({
+        tenantId: input.binding.tenantId,
+        bytes: new Uint8Array(input.bytes),
+        contentType: input.binding.contentType,
+      }));
+      owned.set(input.binding.storageKey, Object.freeze({ ...input.binding }));
+      return ok({ storageKey: input.binding.storageKey });
+    },
+    async getOwnedOptional(input) {
+      const metadata = owned.get(input.binding.storageKey);
+      const found = objects.get(input.binding.storageKey);
+      if (metadata === undefined || found === undefined ||
+          metadata.tenantId !== input.binding.tenantId ||
+          metadata.rsid !== input.binding.rsid ||
+          metadata.purpose !== input.binding.purpose) return ok(null);
+      return ok({ bytes: new Uint8Array(found.bytes), contentType: found.contentType });
+    },
+    async deleteOwned(input) {
+      const metadata = owned.get(input.binding.storageKey);
+      if (metadata === undefined) return ok({ state: "missing" as const });
+      if (metadata.tenantId !== input.binding.tenantId ||
+          metadata.rsid !== input.binding.rsid ||
+          metadata.purpose !== input.binding.purpose) return missing();
+      owned.delete(input.binding.storageKey);
+      objects.delete(input.binding.storageKey);
+      return ok({ state: "deleted" as const });
+    },
+    async scanOwned(input) {
+      const rows: GatewayOwnedPrivateObjectMetadata[] = [...owned.values()]
+        .filter((value) => value.tenantId === input.tenantId &&
+          value.rsid === input.rsid &&
+          (input.purpose === undefined || value.purpose === input.purpose) &&
+          (input.afterKey === null || value.storageKey > input.afterKey))
+        .sort((left, right) => left.storageKey.localeCompare(right.storageKey))
+        .slice(0, input.limit);
+      return ok(Object.freeze(rows));
     },
     corrupt(storageKey, bytes): void {
       const found = objects.get(storageKey);

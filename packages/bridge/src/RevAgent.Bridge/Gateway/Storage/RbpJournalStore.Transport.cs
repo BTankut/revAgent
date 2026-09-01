@@ -1,10 +1,196 @@
+using System.Security.Cryptography;
+using System.Text.Json;
 using Microsoft.Data.Sqlite;
 using RevAgent.Bridge.Gateway.Protocol;
+using RevAgent.Bridge.Gateway.Dispatch;
 
 namespace RevAgent.Bridge.Gateway.Storage;
 
 internal sealed partial class RbpJournalStore
 {
+    /// <summary>
+    /// Reserves C39's sole terminal after the final protected partial ACK.
+    /// The v8 reservation is read-only evidence here: all terminal state is a
+    /// new v9 row, so a v8 row can never be rewritten into a terminal plan.
+    /// </summary>
+    internal Task<RbpRecoveryTerminalPlan> ReserveRecoveryTerminalAsync(
+        string recoveryInvocationId, string rsid,
+        CancellationToken cancellationToken = default)
+    {
+        ValidateUuidV7(recoveryInvocationId, nameof(recoveryInvocationId));
+        ValidateIdentifier(rsid, nameof(rsid), maximumLength: 256);
+        long now = NowMilliseconds();
+        return ExecuteImmediateAsync(context =>
+        {
+            RequireActiveSession(context, rsid);
+            RbpRecoveryTerminalPlan? existing = ReadRecoveryTerminalPlan(context, recoveryInvocationId);
+            if (existing is not null)
+            {
+                if (!string.Equals(existing.Rsid, rsid, StringComparison.Ordinal))
+                    throw new RbpJournalException(RbpJournalErrorCode.ProtocolConflict,
+                        "The recovery terminal plan belongs to a different session.");
+                return existing;
+            }
+
+            RbpRecoveryCarrierReservation reservation = ReadRecoveryCarrierReservation(context, recoveryInvocationId) ??
+                throw new RbpJournalException(RbpJournalErrorCode.ProtocolConflict, "Recovery reservation is missing.");
+            if (!string.Equals(reservation.Rsid, rsid, StringComparison.Ordinal) ||
+                reservation.PlanVersion != 1 || reservation.Phase != RbpRecoveryCarrierPhase.Completed ||
+                reservation.ExpiresAtMilliseconds <= now)
+            {
+                throw new RbpJournalException(RbpJournalErrorCode.ProtocolConflict,
+                    "Only an unexpired completed v8 recovery carrier can seed a v9 terminal.");
+            }
+
+            LoadedSequence sequence = LoadSequence(context, rsid);
+            long terminalSequence = sequence.State.NextTxSequence ?? throw new RbpJournalException(
+                RbpJournalErrorCode.ProtocolConflict, "Sequence exhausted before recovery terminal reservation.");
+            if (terminalSequence > RbpSequenceReducer.MaximumSafeSequence ||
+                sequence.State.LastPeerAcknowledgement != reservation.CurrentReservedSequence ||
+                sequence.State.HighestTxSequence != reservation.CurrentReservedSequence ||
+                ReadTombstone(context, rsid) is not null ||
+                HasRecoverySequenceTombstone(context, rsid) ||
+                HasOutboxSequence(context, rsid, terminalSequence))
+            {
+                throw new RbpJournalException(RbpJournalErrorCode.ProtocolConflict,
+                    "The recovery terminal authority snapshot is not current.");
+            }
+
+            JsonElement terminal = BuildRecoveryTerminalPayload(reservation);
+            string terminalJcs = Rfc8785Json.Canonicalize(terminal);
+            string digest = Rfc8785Json.Sha256Digest(terminal);
+            string commitment = RbpRecoveryTerminalCommitment.Compute(
+                rsid, recoveryInvocationId, terminalSequence,
+                sequence.State.LastPeerAcknowledgement,
+                reservation.InboundAcknowledgementBaseline, digest, terminalJcs,
+                reservation.ExpiresAtMilliseconds);
+            using SqliteCommand insert = context.CreateCommand("""
+                INSERT INTO rbp_recovery_terminal_plans(recovery_invocation_id,rsid,plan_version,final_sequence,acknowledgement_baseline,inbound_ack_baseline,terminal_jcs,terminal_digest,payload_commitment,state,created_at_ms,expires_at_ms,confirmed_at_ms)
+                VALUES($recovery,$rsid,9,$seq,$ack,$inbound_ack,$jcs,$digest,$commitment,'reserved',$now,$expires,NULL);
+                """);
+            insert.Parameters.AddWithValue("$recovery", recoveryInvocationId);
+            insert.Parameters.AddWithValue("$rsid", rsid);
+            insert.Parameters.AddWithValue("$seq", terminalSequence);
+            insert.Parameters.AddWithValue("$ack", sequence.State.LastPeerAcknowledgement);
+            insert.Parameters.AddWithValue("$inbound_ack", reservation.InboundAcknowledgementBaseline);
+            insert.Parameters.AddWithValue("$jcs", terminalJcs);
+            insert.Parameters.AddWithValue("$digest", digest);
+            insert.Parameters.AddWithValue("$commitment", commitment);
+            insert.Parameters.AddWithValue("$now", now);
+            insert.Parameters.AddWithValue("$expires", reservation.ExpiresAtMilliseconds);
+            if (insert.ExecuteNonQuery() != 1)
+                throw RbpJournalSerialization.Corrupt("Recovery terminal reservation insert failed.");
+            _faultInjector?.Hit(RbpJournalFaultPoint.RecoveryTerminalPlanInserted);
+            RbpSequenceState reserved = sequence.State with
+            {
+                HighestTxSequence = terminalSequence,
+                NextTxSequence = terminalSequence == RbpSequenceReducer.MaximumSafeSequence
+                    ? null : terminalSequence + 1,
+            };
+            PersistSequenceState(context, reserved, now);
+            _faultInjector?.Hit(RbpJournalFaultPoint.RecoveryTerminalSequenceReserved);
+            return ReadRecoveryTerminalPlan(context, recoveryInvocationId) ??
+                throw RbpJournalSerialization.Corrupt("Recovery terminal plan disappeared after reservation.");
+        }, cancellationToken);
+    }
+
+    /// <summary>
+    /// Rechecks the v9 terminal plan immediately before C1d-b's sole socket
+    /// write.  The caller supplies the exact immutable commitment, not JSON,
+    /// so this API cannot become a second raw-payload or outbox path.
+    /// </summary>
+    internal Task<RbpRecoveryTerminalPlan?> ReadRecoveryTerminalPlanForMaterializationAsync(
+        string recoveryInvocationId, string rsid, int planVersion, long sequence,
+        string payloadCommitment, CancellationToken cancellationToken = default)
+    {
+        ValidateUuidV7(recoveryInvocationId, nameof(recoveryInvocationId));
+        ValidateIdentifier(rsid, nameof(rsid), maximumLength: 256);
+        RequireSha256(payloadCommitment, nameof(payloadCommitment));
+        if (planVersion != RbpRecoveryTerminalCommitment.PlanVersion || sequence < 1)
+            throw new ArgumentOutOfRangeException(nameof(planVersion));
+        return ReadAsync(connection =>
+        {
+            RbpRecoveryTerminalPlan? plan = ReadRecoveryTerminalPlan(connection, recoveryInvocationId);
+            if (plan is null || !IsCurrentTerminalMaterializationPlan(
+                    connection, plan, rsid, planVersion, sequence, payloadCommitment))
+            {
+                return null;
+            }
+            return plan;
+        }, cancellationToken);
+    }
+
+    /// <summary>Future C1d-b confirmation seam; this method intentionally has no side effect.</summary>
+    internal async Task<bool> ConfirmRecoveryTerminalMaterializationAsync(
+        string recoveryInvocationId, string rsid, int planVersion, long sequence,
+        string payloadCommitment, CancellationToken cancellationToken = default)
+    {
+        bool confirmed = await ReadRecoveryTerminalPlanForMaterializationAsync(
+            recoveryInvocationId, rsid, planVersion, sequence, payloadCommitment,
+            cancellationToken).ConfigureAwait(false) is not null;
+        if (confirmed)
+            _faultInjector?.Hit(RbpJournalFaultPoint.RecoveryTerminalMaterializationConfirmed);
+        return confirmed;
+    }
+
+    /// <summary>
+    /// Applies only a terminal acknowledgement.  A lower ACK is a no-op;
+    /// equal ACK completes only after the Gateway has recorded its delivery
+    /// receipt and declared the protected source releasable.  Above or unsent
+    /// ACKs tombstone the v9 plan and the session recovery authority.
+    /// </summary>
+    internal Task<RbpRecoveryTerminalPlan?> ApplyRecoveryTerminalAcknowledgementAsync(
+        string rsid, long acknowledgement, bool gatewayDeliveryReceiptRecorded,
+        bool sourceReleaseEligible, CancellationToken cancellationToken = default)
+    {
+        ValidateIdentifier(rsid, nameof(rsid), maximumLength: 256);
+        if (acknowledgement < 0) throw new ArgumentOutOfRangeException(nameof(acknowledgement));
+        long now = NowMilliseconds();
+        return ExecuteImmediateAsync(context =>
+        {
+            RbpRecoveryTerminalPlan? current = ReadActiveRecoveryTerminalPlan(context, rsid);
+            if (current is null || current.State != "reserved") return current;
+            if (acknowledgement < current.FinalSequence) return current;
+
+            LoadedSequence sequence = LoadSequence(context, rsid);
+            bool exactAuthority = sequence.State.LastPeerAcknowledgement == current.AcknowledgementBaseline &&
+                                  sequence.State.HighestTxSequence == current.FinalSequence &&
+                                  sequence.State.NextTxSequence == (current.FinalSequence == RbpSequenceReducer.MaximumSafeSequence
+                                      ? null : current.FinalSequence + 1) &&
+                                  ReadTombstone(context, rsid) is null &&
+                                  !HasRecoverySequenceTombstone(context, rsid) &&
+                                  !HasOutboxSequence(context, rsid, current.FinalSequence);
+            if (acknowledgement > current.FinalSequence || !exactAuthority ||
+                !gatewayDeliveryReceiptRecorded || !sourceReleaseEligible)
+            {
+                TombstoneRecoveryTerminalPlan(context, current, now,
+                    acknowledgement > current.FinalSequence ? "ack_above_reserved" :
+                    !gatewayDeliveryReceiptRecorded ? "ack_without_delivery_receipt" :
+                    !sourceReleaseEligible ? "ack_without_source_release" : "sequence_authority_mismatch");
+                return ReadRecoveryTerminalPlan(context, current.RecoveryInvocationId);
+            }
+
+            using (SqliteCommand complete = context.CreateCommand("""
+                UPDATE rbp_recovery_terminal_plans
+                SET state='confirmed',confirmed_at_ms=$now
+                WHERE recovery_invocation_id=$recovery AND state='reserved'
+                  AND final_sequence=$ack AND payload_commitment=$commitment;
+                """))
+            {
+                complete.Parameters.AddWithValue("$now", now);
+                complete.Parameters.AddWithValue("$recovery", current.RecoveryInvocationId);
+                complete.Parameters.AddWithValue("$ack", acknowledgement);
+                complete.Parameters.AddWithValue("$commitment", current.PayloadCommitment);
+                if (complete.ExecuteNonQuery() != 1)
+                    throw RbpJournalSerialization.Corrupt("The recovery terminal acknowledgement CAS failed.");
+            }
+            PersistSequenceState(context, sequence.State with { LastPeerAcknowledgement = acknowledgement }, now);
+            _faultInjector?.Hit(RbpJournalFaultPoint.RecoveryTerminalEqualAcknowledgement);
+            DeleteRecoverySourceAfterConfirmedTerminal(context, current.RecoveryInvocationId);
+            return ReadRecoveryTerminalPlan(context, current.RecoveryInvocationId) ??
+                throw RbpJournalSerialization.Corrupt("The confirmed recovery terminal plan disappeared.");
+        }, cancellationToken);
+    }
     internal Task<RbpSequenceState> LoadSequenceAsync(
         string rsid,
         CancellationToken cancellationToken = default)
@@ -29,6 +215,529 @@ internal sealed partial class RbpJournalStore
                     loaded.LastJournaledReceivedSequence);
             },
             cancellationToken);
+    }
+
+    /// <summary>
+    /// Atomically pins an already protected, exact terminal payload and
+    /// reserves the current outbound sequence for its C39 carrier.  No wire
+    /// envelope or payload bytes are written here; the coordinator owns
+    /// framing and must first mark this immutable reservation send-started.
+    /// </summary>
+    internal Task<RbpRecoveryCarrierReservation>
+        PersistProtectedRecoveryTerminalAndReserveAsync(
+            RbpRecoveryCarrierReservationRequest request,
+            CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        ValidateIdentifier(request.Rsid, nameof(request), 256);
+        ValidateRecoveryReservationRequest(request);
+        long now = NowMilliseconds();
+        long expiry = request.ExpiresAt.ToUnixTimeMilliseconds();
+        return ExecuteImmediateAsync(
+            context =>
+            {
+                RequireActiveSession(context, request.Rsid);
+                RbpRecoveryCarrierReservation? existing =
+                    ReadRecoveryCarrierReservation(
+                        context, request.RecoveryInvocationId);
+                if (existing is not null)
+                {
+                    RequireExactRecoveryReservation(existing, request);
+                    return existing;
+                }
+
+                if (ReadActiveRecoveryCarrierReservation(context, request.Rsid) is not null)
+                {
+                    throw new RbpJournalException(
+                        RbpJournalErrorCode.ProtocolConflict,
+                        "The RBP session has an active recovery carrier fence.");
+                }
+
+                (string rawIdempotencyKey, int plaintextLength) = ReadExactRecoveryPayloadKey(
+                    context, request);
+                _faultInjector?.Hit(RbpJournalFaultPoint.RecoveryValidatedRaw);
+                int chunkCount = checked((plaintextLength + request.ChunkSize - 1) / request.ChunkSize);
+                string headerJcs = CanonicalRecoveryCarrierHeader(request.Header);
+                LoadedSequence loaded = LoadSequence(context, request.Rsid);
+                long sequence = loaded.State.NextTxSequence ?? throw new RbpJournalException(
+                    RbpJournalErrorCode.ProtocolConflict,
+                    "The RBP session cannot reserve a recovery sequence after exhaustion.");
+                RbpSequenceState reserved = loaded.State with
+                {
+                    NextTxSequence = sequence == RbpSequenceReducer.MaximumSafeSequence
+                        ? null : sequence + 1,
+                    HighestTxSequence = sequence,
+                };
+                using (SqliteCommand insert = context.CreateCommand("""
+                    INSERT INTO rbp_recovery_carrier_reservations(
+                      recovery_invocation_id,rsid,origin_invocation_id,result_digest,
+                      raw_idempotency_key,raw_payload_version,header_jcs,plaintext_length,chunk_size,
+                      chunk_count,phase,chunk_index,current_reserved_seq,
+                      canonical_envelope_digest,send_started_at_ms,highest_reserved_seq,
+                      acknowledgement_cursor,inbound_ack_baseline,plan_version,created_at_ms,expires_at_ms,
+                      updated_at_ms,completed_at_ms,tombstoned_at_ms,tombstone_reason)
+                    VALUES($recovery,$rsid,$origin,$digest,$raw,7,$header,$length,
+                           $chunk_size,$chunk_count,'reserved',0,$seq,$envelope,
+                           NULL,$seq,$ack,$inbound_ack,1,$now,$expires,$now,NULL,NULL,NULL);
+                    """))
+                {
+                    insert.Parameters.AddWithValue("$recovery", request.RecoveryInvocationId);
+                    insert.Parameters.AddWithValue("$rsid", request.Rsid);
+                    insert.Parameters.AddWithValue("$origin", request.OriginInvocationId);
+                    insert.Parameters.AddWithValue("$digest", request.ResultDigest);
+                    insert.Parameters.AddWithValue("$raw", rawIdempotencyKey);
+                    insert.Parameters.AddWithValue("$length", plaintextLength);
+                    insert.Parameters.AddWithValue("$chunk_size", request.ChunkSize);
+                    insert.Parameters.AddWithValue("$chunk_count", chunkCount);
+                    insert.Parameters.AddWithValue("$seq", sequence);
+                    insert.Parameters.AddWithValue("$header", headerJcs);
+                    insert.Parameters.AddWithValue("$envelope", request.CanonicalEnvelopeDigest);
+                    insert.Parameters.AddWithValue("$ack", loaded.State.LastPeerAcknowledgement);
+                    insert.Parameters.AddWithValue("$inbound_ack", loaded.State.LastRxSequence);
+                    insert.Parameters.AddWithValue("$now", now);
+                    insert.Parameters.AddWithValue("$expires", expiry);
+                    if (insert.ExecuteNonQuery() != 1)
+                    {
+                        throw RbpJournalSerialization.Corrupt("The recovery carrier reservation was not persisted.");
+                    }
+                }
+                _faultInjector?.Hit(RbpJournalFaultPoint.RecoveryPlanInserted);
+                PersistSequenceState(context, reserved, now);
+                string recoveryKey = request.Rsid + "/" + request.RecoveryInvocationId;
+                string terminal = JsonSerializer.Serialize(new
+                {
+                    kind = "invocation",
+                    invocation_id = request.RecoveryInvocationId,
+                    status = "completed",
+                    result = new { },
+                    replayed = false,
+                    payload_omitted = false,
+                    late_after_indeterminate = false,
+                    result_digest = request.ResultDigest,
+                    metrics = new { execute_ms = 0, request_bytes = 0, response_bytes = 0, framing = "length-prefixed" },
+                });
+                using (SqliteCommand terminalize = context.CreateCommand("""
+                    UPDATE rbp_invocations SET state='completed',terminal_outcome_json=$outcome,
+                    result_digest=$digest,finished_at_ms=$now
+                    WHERE idempotency_key=$key AND state='executing';
+                    """))
+                {
+                    terminalize.Parameters.AddWithValue("$outcome", terminal);
+                    terminalize.Parameters.AddWithValue("$digest", request.ResultDigest);
+                    terminalize.Parameters.AddWithValue("$now", now);
+                    terminalize.Parameters.AddWithValue("$key", recoveryKey);
+                    int updated = terminalize.ExecuteNonQuery();
+                    if (updated != 1)
+                        throw RbpJournalSerialization.Corrupt(
+                            "The recovery terminal did not transition exactly one executing invocation.");
+                }
+                _faultInjector?.Hit(RbpJournalFaultPoint.RecoverySequenceReserved);
+                RefreshRecoveryCarrierCommitment(context, request.RecoveryInvocationId);
+                return ReadRecoveryCarrierReservation(context, request.RecoveryInvocationId) ??
+                    throw RbpJournalSerialization.Corrupt("The recovery carrier reservation disappeared after persistence.");
+            }, cancellationToken);
+    }
+
+    internal Task<RbpRecoveryCarrierReservation?> GetRecoveryCarrierReservationAsync(
+        string recoveryInvocationId,
+        CancellationToken cancellationToken = default)
+    {
+        ValidateUuidV7(recoveryInvocationId, nameof(recoveryInvocationId));
+        return ReadAsync(connection =>
+        {
+            RbpRecoveryCarrierReservation? reservation = ReadRecoveryCarrierReservation(connection, recoveryInvocationId);
+            if (reservation is null || reservation.Phase == RbpRecoveryCarrierPhase.Tombstoned)
+                return reservation;
+            using RbpRecoveredPayload? raw = ReadCorrelatedRecoveryPayload(connection, reservation.Rsid,
+                reservation.OriginInvocationId, reservation.ResultDigest);
+            return raw is not null && raw.RawResponseBytes.Length == reservation.PlaintextLength
+                ? reservation : null;
+        }, cancellationToken);
+    }
+
+    /// <summary>
+    /// Lists only currently actionable C39 fences.  It exposes metadata, not
+    /// payload material, so reconnect scheduling cannot become a second
+    /// protected-payload read path.
+    /// </summary>
+    internal Task<IReadOnlyList<RbpRecoveryCarrierReservation>>
+        ListActiveRecoveryCarrierReservationsAsync(
+            CancellationToken cancellationToken = default) =>
+        ReadAsync(connection =>
+        {
+            using SqliteCommand command = CreateCommand(connection, """
+                SELECT recovery_invocation_id,rsid,origin_invocation_id,result_digest,
+                       raw_idempotency_key,raw_payload_version,header_jcs,plaintext_length,chunk_size,
+                       chunk_count,phase,chunk_index,current_reserved_seq,
+                       canonical_envelope_digest,send_started_at_ms,highest_reserved_seq,
+                       acknowledgement_cursor,inbound_ack_baseline,plan_version,created_at_ms,expires_at_ms,
+                       updated_at_ms,completed_at_ms,tombstoned_at_ms,tombstone_reason
+                FROM rbp_recovery_carrier_reservations
+                WHERE phase IN ('reserved','send_started')
+                ORDER BY rsid,current_reserved_seq,recovery_invocation_id;
+                """);
+            command.CommandTimeout = _commandTimeoutSeconds;
+            using SqliteDataReader reader = command.ExecuteReader();
+            var values = new List<RbpRecoveryCarrierReservation>();
+            while (reader.Read())
+            {
+                values.Add(MaterializeRecoveryCarrierReservation(reader));
+            }
+
+            return (IReadOnlyList<RbpRecoveryCarrierReservation>)
+                values.AsReadOnly();
+        }, cancellationToken);
+
+    /// <summary>
+    /// Lists the durable v9 terminal plans that still require a single direct
+    /// transport write.  These plans contain the already-public terminal
+    /// result body only; the protected recovery bytes remain unavailable to
+    /// this scheduling surface.
+    /// </summary>
+    internal Task<IReadOnlyList<RbpRecoveryTerminalPlan>>
+        ListActiveRecoveryTerminalPlansAsync(
+            CancellationToken cancellationToken = default) =>
+        ReadAsync(connection =>
+        {
+            using SqliteCommand command = CreateCommand(connection, """
+                SELECT recovery_invocation_id,rsid,plan_version,final_sequence,
+                       acknowledgement_baseline,inbound_ack_baseline,terminal_jcs,terminal_digest,
+                       payload_commitment,state,created_at_ms,expires_at_ms,
+                       confirmed_at_ms
+                FROM rbp_recovery_terminal_plans
+                WHERE state='reserved'
+                ORDER BY rsid,final_sequence,recovery_invocation_id;
+                """);
+            command.CommandTimeout = _commandTimeoutSeconds;
+            using SqliteDataReader reader = command.ExecuteReader();
+            var values = new List<RbpRecoveryTerminalPlan>();
+            while (reader.Read())
+            {
+                values.Add(MaterializeRecoveryTerminalPlan(reader));
+            }
+
+            return (IReadOnlyList<RbpRecoveryTerminalPlan>)
+                values.AsReadOnly();
+        }, cancellationToken);
+
+    /// <summary>
+    /// Revalidates the full durable fence after the coordinator has built the
+    /// exact outer frame and before its only socket write.  Digest values are
+    /// validation inputs only; no outer frame, base64, or payload bytes are
+    /// persisted by this acknowledgement.
+    /// </summary>
+    internal Task<bool> ConfirmRecoveryCarrierMaterializationAsync(
+        string recoveryInvocationId,
+        string rsid,
+        int planVersion,
+        long sequence,
+        string payloadDigest,
+        string outerEnvelopeDigest,
+        CancellationToken cancellationToken = default)
+    {
+        ValidateUuidV7(recoveryInvocationId, nameof(recoveryInvocationId));
+        ValidateIdentifier(rsid, nameof(rsid), maximumLength: 256);
+        RequireSha256(payloadDigest, nameof(payloadDigest));
+        RequireSha256(outerEnvelopeDigest, nameof(outerEnvelopeDigest));
+        if (planVersion != 1 || sequence < 1)
+        {
+            throw new ArgumentOutOfRangeException(nameof(planVersion));
+        }
+
+        return ReadAsync(connection =>
+        {
+            RbpRecoveryCarrierReservation? reservation =
+                ReadRecoveryCarrierReservation(connection, recoveryInvocationId);
+            if (reservation is null ||
+                !string.Equals(reservation.Rsid, rsid, StringComparison.Ordinal) ||
+                reservation.Phase != RbpRecoveryCarrierPhase.SendStarted ||
+                reservation.PlanVersion != planVersion ||
+                reservation.CurrentReservedSequence != sequence ||
+                reservation.ExpiresAtMilliseconds <= NowMilliseconds() ||
+                !string.Equals(reservation.CanonicalEnvelopeDigest,
+                    RbpRecoveryCarrierCommitment.Compute(reservation, sequence + 1),
+                    StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            // The provided digests must remain distinct domains.  Equal
+            // hashes would mean the caller confused the chunk payload with
+            // its RBP outer framing, which is never a valid recovery send.
+            if (string.Equals(payloadDigest, outerEnvelopeDigest,
+                StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            using SqliteCommand state = CreateCommand(connection, """
+                SELECT sequence.last_peer_ack,sequence.highest_tx_seq,sequence.next_tx_seq
+                FROM rbp_sessions AS session
+                JOIN rbp_session_sequence AS sequence ON sequence.rsid=session.rsid
+                WHERE session.rsid=$rsid
+                  AND NOT EXISTS(SELECT 1 FROM rbp_unregister_tombstones WHERE rsid=$rsid)
+                  AND NOT EXISTS(SELECT 1 FROM rbp_recovery_sequence_tombstones WHERE rsid=$rsid)
+                  AND NOT EXISTS(SELECT 1 FROM rbp_outbox WHERE rsid=$rsid AND seq=$seq);
+                """);
+            state.Parameters.AddWithValue("$rsid", rsid);
+            state.Parameters.AddWithValue("$seq", sequence);
+            using SqliteDataReader reader = state.ExecuteReader();
+            return reader.Read() &&
+                   reader.GetInt64(0) == reservation.AcknowledgementCursor &&
+                   reader.GetInt64(1) == sequence &&
+                   reader.GetInt64(2) == sequence + 1;
+        }, cancellationToken);
+    }
+
+    internal Task<RbpRecoveryCarrierMaterializationSnapshot?>
+        ReadRecoveryCarrierMaterializationSnapshotAsync(
+            string recoveryInvocationId, string rsid,
+            CancellationToken cancellationToken = default) =>
+        ReadAsync(connection =>
+        {
+            RbpRecoveryCarrierReservation? reservation =
+                ReadRecoveryCarrierReservation(connection, recoveryInvocationId);
+            if (reservation is null || !string.Equals(reservation.Rsid, rsid, StringComparison.Ordinal) ||
+                reservation.Phase != RbpRecoveryCarrierPhase.SendStarted ||
+                reservation.RawPayloadVersion != 7 || reservation.PlanVersion != 1 ||
+                reservation.ExpiresAtMilliseconds <= NowMilliseconds() ||
+                reservation.ChunkCount != checked((reservation.PlaintextLength + reservation.ChunkSize - 1) / reservation.ChunkSize) ||
+                !string.Equals(reservation.HeaderJcs,
+                    "{\"content_encoding\":\"base64\",\"content_type\":\"application/json\",\"v\":1}", StringComparison.Ordinal) ||
+                !string.Equals(reservation.CanonicalEnvelopeDigest,
+                    RbpRecoveryCarrierCommitment.Compute(reservation, reservation.CurrentReservedSequence + 1),
+                    StringComparison.Ordinal)) return null;
+            using SqliteCommand state = CreateCommand(connection, """
+                SELECT sequence.last_peer_ack,sequence.highest_tx_seq,sequence.next_tx_seq
+                FROM rbp_sessions AS session JOIN rbp_session_sequence AS sequence ON sequence.rsid=session.rsid
+                WHERE session.rsid=$rsid
+                  AND NOT EXISTS(SELECT 1 FROM rbp_unregister_tombstones WHERE rsid=$rsid)
+                  AND NOT EXISTS(SELECT 1 FROM rbp_recovery_sequence_tombstones WHERE rsid=$rsid)
+                  AND NOT EXISTS(SELECT 1 FROM rbp_outbox WHERE rsid=$rsid AND seq=$seq);
+                """);
+            state.Parameters.AddWithValue("$rsid", rsid); state.Parameters.AddWithValue("$seq", reservation.CurrentReservedSequence);
+            using SqliteDataReader reader = state.ExecuteReader();
+            if (!reader.Read() || reader.GetInt64(0) != reservation.AcknowledgementCursor ||
+                reader.GetInt64(1) != reservation.CurrentReservedSequence ||
+                reader.GetInt64(2) != reservation.CurrentReservedSequence + 1) return null;
+            RbpRecoveredPayload? raw = ReadCorrelatedRecoveryPayload(connection, rsid,
+                reservation.OriginInvocationId, reservation.ResultDigest);
+            if (raw is null || raw.RawResponseBytes.Length != reservation.PlaintextLength) { raw?.Dispose(); return null; }
+            return new RbpRecoveryCarrierMaterializationSnapshot(reservation, raw);
+        }, cancellationToken);
+
+    internal Task<RbpRecoveryCarrierReservation> MarkRecoveryCarrierSendStartedAsync(
+        string recoveryInvocationId,
+        CancellationToken cancellationToken = default)
+    {
+        ValidateUuidV7(recoveryInvocationId, nameof(recoveryInvocationId));
+        long now = NowMilliseconds();
+        return ExecuteImmediateAsync(context =>
+        {
+            RbpRecoveryCarrierReservation current = ReadRecoveryCarrierReservation(context, recoveryInvocationId) ??
+                throw new RbpJournalException(RbpJournalErrorCode.ProtocolConflict, "The recovery carrier reservation is missing.");
+            if (current.Phase is RbpRecoveryCarrierPhase.Completed or RbpRecoveryCarrierPhase.Tombstoned)
+            {
+                return current;
+            }
+            if (current.RawPayloadVersion != RbpRecoveryPayloadEnvelope.Version ||
+                current.CurrentReservedSequence < 1)
+            {
+                TombstoneRecoveryCarrierReservation(context, current.RecoveryInvocationId, now, "predecessor_not_acknowledged");
+                return ReadRecoveryCarrierReservation(context, recoveryInvocationId)!;
+            }
+            if (LoadSequence(context, current.Rsid).State.LastPeerAcknowledgement < current.CurrentReservedSequence - 1)
+            {
+                // A lower generic sequence must drain before this reserved
+                // carrier; retain the fence and retry on its heartbeat ACK.
+                return current;
+            }
+            using SqliteCommand update = context.CreateCommand("""
+                UPDATE rbp_recovery_carrier_reservations
+                SET phase='send_started',send_started_at_ms=COALESCE(send_started_at_ms,$now),
+                    updated_at_ms=MAX(updated_at_ms,$now)
+                WHERE recovery_invocation_id=$recovery
+                  AND phase IN ('reserved','send_started','awaiting_ack');
+                """);
+            update.Parameters.AddWithValue("$now", now);
+            update.Parameters.AddWithValue("$recovery", recoveryInvocationId);
+            if (update.ExecuteNonQuery() != 1)
+            {
+                throw new RbpJournalException(RbpJournalErrorCode.ProtocolConflict, "The recovery carrier reservation changed during send-start.");
+            }
+            _faultInjector?.Hit(RbpJournalFaultPoint.RecoverySendStarted);
+            RefreshRecoveryCarrierCommitment(context, recoveryInvocationId);
+            return ReadRecoveryCarrierReservation(context, recoveryInvocationId) ??
+                throw RbpJournalSerialization.Corrupt("The recovery carrier reservation disappeared during send-start.");
+        }, cancellationToken);
+    }
+
+    /// <summary>
+    /// Applies an acknowledgement only to the currently reserved recovery
+    /// fence. A lower acknowledgement is deliberately a no-op. An equal
+    /// acknowledgement consumes exactly that sent sequence and either reserves
+    /// the next chunk or completes the plan. Above/unsent acknowledgements are
+    /// recorded as an immutable tombstone so ordinary dispatch remains blocked.
+    /// </summary>
+    internal Task<RbpRecoveryCarrierReservation?> ApplyRecoveryCarrierFenceAcknowledgementAsync(
+        string rsid,
+        long acknowledgement,
+        CancellationToken cancellationToken = default)
+    {
+        ValidateIdentifier(rsid, nameof(rsid), 256);
+        if (acknowledgement < 0) throw new ArgumentOutOfRangeException(nameof(acknowledgement));
+        long now = NowMilliseconds();
+        return ExecuteImmediateAsync(context =>
+        {
+            RbpRecoveryCarrierReservation? current =
+                ReadRecoveryCarrierAcknowledgementReservation(context, rsid);
+            if (current is null || current.Phase is RbpRecoveryCarrierPhase.Completed or
+                RbpRecoveryCarrierPhase.Tombstoned)
+            {
+                // A completed v8 carrier is historical fence evidence only.
+                // Its successor v9 terminal owns any later acknowledgement.
+                return current;
+            }
+            if (acknowledgement < current.CurrentReservedSequence)
+            {
+                return current;
+            }
+            if (acknowledgement > current.CurrentReservedSequence || current.Phase != RbpRecoveryCarrierPhase.SendStarted)
+            {
+                TombstoneRecoveryCarrierReservation(context, current.RecoveryInvocationId, now,
+                    acknowledgement > current.CurrentReservedSequence ? "ack_above_reserved" : "ack_before_send_started");
+                return ReadRecoveryCarrierReservation(context, current.RecoveryInvocationId);
+            }
+
+            LoadedSequence loaded = LoadSequence(context, rsid);
+            if (loaded.State.LastPeerAcknowledgement != current.AcknowledgementCursor ||
+                loaded.State.HighestTxSequence != current.CurrentReservedSequence)
+            {
+                TombstoneRecoveryCarrierReservation(context, current.RecoveryInvocationId, now, "sequence_authority_mismatch");
+                return ReadRecoveryCarrierReservation(context, current.RecoveryInvocationId);
+            }
+
+            if (current.ChunkIndex + 1 >= current.ChunkCount)
+            {
+                RbpSequenceState completed = loaded.State with { LastPeerAcknowledgement = acknowledgement };
+                PersistSequenceState(context, completed, now);
+                _faultInjector?.Hit(RbpJournalFaultPoint.RecoveryEqualAcknowledgement);
+                using SqliteCommand complete = context.CreateCommand("""
+                    UPDATE rbp_recovery_carrier_reservations
+                    SET phase='completed',acknowledgement_cursor=$ack,completed_at_ms=$now,updated_at_ms=MAX(updated_at_ms,$now)
+                    WHERE recovery_invocation_id=$recovery AND phase='send_started'
+                      AND current_reserved_seq=$ack;
+                    """);
+                complete.Parameters.AddWithValue("$ack", acknowledgement);
+                complete.Parameters.AddWithValue("$now", now);
+                complete.Parameters.AddWithValue("$recovery", current.RecoveryInvocationId);
+                if (complete.ExecuteNonQuery() != 1) throw RbpJournalSerialization.Corrupt("The recovery completion CAS failed.");
+                RefreshRecoveryCarrierCommitment(context, current.RecoveryInvocationId);
+            }
+            else
+            {
+                long next = loaded.State.NextTxSequence ?? throw new RbpJournalException(
+                    RbpJournalErrorCode.ProtocolConflict, "The recovery carrier cannot reserve a next chunk after sequence exhaustion.");
+                RbpSequenceState advanced = loaded.State with
+                {
+                    LastPeerAcknowledgement = acknowledgement,
+                    HighestTxSequence = next,
+                    NextTxSequence = next == RbpSequenceReducer.MaximumSafeSequence ? null : next + 1,
+                };
+                using SqliteCommand advance = context.CreateCommand("""
+                    UPDATE rbp_recovery_carrier_reservations
+                    SET phase='reserved',chunk_index=chunk_index+1,current_reserved_seq=$next,
+                        highest_reserved_seq=$next,acknowledgement_cursor=$ack,
+                        send_started_at_ms=NULL,updated_at_ms=MAX(updated_at_ms,$now)
+                    WHERE recovery_invocation_id=$recovery AND phase='send_started'
+                      AND current_reserved_seq=$ack;
+                    """);
+                advance.Parameters.AddWithValue("$next", next);
+                advance.Parameters.AddWithValue("$ack", acknowledgement);
+                advance.Parameters.AddWithValue("$now", now);
+                advance.Parameters.AddWithValue("$recovery", current.RecoveryInvocationId);
+                if (advance.ExecuteNonQuery() != 1) throw RbpJournalSerialization.Corrupt("The recovery advance CAS failed.");
+                PersistSequenceState(context, advanced, now);
+                RefreshRecoveryCarrierCommitment(context, current.RecoveryInvocationId);
+            }
+            return ReadRecoveryCarrierReservation(context, current.RecoveryInvocationId) ??
+                throw RbpJournalSerialization.Corrupt("The recovery carrier reservation disappeared after acknowledgement.");
+        }, cancellationToken);
+    }
+
+    private void TombstoneRecoveryCarrierReservation(
+        RbpJournalWriteContext context, string recoveryInvocationId, long now, string reason)
+    {
+        string? rawKey;
+        string? rsid = null;
+        long highWater = 0;
+        using (SqliteCommand read = context.CreateCommand("SELECT rsid,current_reserved_seq,raw_idempotency_key FROM rbp_recovery_carrier_reservations WHERE recovery_invocation_id=$recovery;"))
+        {
+            read.Parameters.AddWithValue("$recovery", recoveryInvocationId);
+            using SqliteDataReader reader = read.ExecuteReader();
+            if (!reader.Read()) throw RbpJournalSerialization.Corrupt("The recovery reservation is missing before tombstone.");
+            rsid = reader.GetString(0);
+            highWater = reader.GetInt64(1);
+            rawKey = reader.GetString(2);
+        }
+        using SqliteCommand update = context.CreateCommand("""
+            UPDATE rbp_recovery_carrier_reservations
+            SET phase='tombstoned',tombstone_reason=$reason,tombstoned_at_ms=$now,updated_at_ms=MAX(updated_at_ms,$now)
+            WHERE recovery_invocation_id=$recovery AND phase<>'completed';
+            """);
+        update.Parameters.AddWithValue("$reason", reason);
+        update.Parameters.AddWithValue("$now", now);
+        update.Parameters.AddWithValue("$recovery", recoveryInvocationId);
+        if (update.ExecuteNonQuery() != 1) throw RbpJournalSerialization.Corrupt("The recovery carrier tombstone CAS failed.");
+        using (SqliteCommand minimal = context.CreateCommand("""
+            INSERT INTO rbp_recovery_sequence_tombstones(rsid,format_version,tombstoned_at_ms,reason_code,sequence_high_water)
+            VALUES($rsid,1,$now,$reason,$high)
+            ON CONFLICT(rsid) DO NOTHING;
+            """))
+        {
+            minimal.Parameters.AddWithValue("$rsid", rsid);
+            minimal.Parameters.AddWithValue("$now", now);
+            minimal.Parameters.AddWithValue("$reason", string.Equals(reason, "session_unregistered", StringComparison.Ordinal) ? "session_closed" : "recovery_fence_fault");
+            minimal.Parameters.AddWithValue("$high", highWater);
+            if (minimal.ExecuteNonQuery() > 1) throw RbpJournalSerialization.Corrupt("The minimal recovery tombstone is not unique.");
+        }
+        _faultInjector?.Hit(RbpJournalFaultPoint.RecoveryMinimalTombstonePersisted);
+        if (rawKey is not null)
+        {
+            using SqliteCommand delete = context.CreateCommand("DELETE FROM rbp_recovery_payloads WHERE idempotency_key=$key;");
+            delete.Parameters.AddWithValue("$key", rawKey);
+            _ = delete.ExecuteNonQuery();
+            _faultInjector?.Hit(RbpJournalFaultPoint.RecoveryTombstoneRawDeleted);
+        }
+    }
+
+    private static void ValidateRecoveryReservationRequest(RbpRecoveryCarrierReservationRequest request)
+    {
+        ValidateUuidV7(request.RecoveryInvocationId, nameof(request));
+        ValidateUuidV7(request.OriginInvocationId, nameof(request));
+        RequireSha256(request.ResultDigest, nameof(request));
+        RequireSha256(request.CanonicalEnvelopeDigest, nameof(request));
+        if (request.Header is null || request.ChunkSize is < 1 or > 1_048_576 ||
+            request.ExpiresAt.ToUnixTimeMilliseconds() < 0)
+        {
+            throw new ArgumentException("Recovery carrier reservation metadata is invalid.", nameof(request));
+        }
+    }
+
+    private static string CanonicalRecoveryCarrierHeader(RbpRecoveryCarrierHeader header)
+    {
+        if (!string.Equals(header.ContentType, RbpRecoveryCarrierHeader.RequiredContentType, StringComparison.Ordinal) ||
+            !string.Equals(header.ContentEncoding, RbpRecoveryCarrierHeader.RequiredContentEncoding, StringComparison.Ordinal))
+            throw new ArgumentException("The recovery carrier header is not an allowlisted JSON/base64 header.", nameof(header));
+        return "{\"content_encoding\":\"base64\",\"content_type\":\"application/json\",\"v\":1}";
+    }
+
+    private static void ValidateUuidV7(string value, string parameterName)
+    {
+        if (!RbpRecoveryClearance.IsUuidV7(value))
+        {
+            throw new ArgumentException("The recovery carrier identity must be UUIDv7.", parameterName);
+        }
     }
 
     internal Task<IReadOnlyList<RbpSessionAcknowledgement>>
@@ -92,6 +801,12 @@ internal sealed partial class RbpJournalStore
                         RequireActiveSession(context, rsid);
                         LoadedSequence loaded =
                             LoadSequence(context, rsid);
+                        if (ReadActiveRecoveryCarrierReservation(context, rsid) is not null)
+                        {
+                            throw new RbpJournalException(
+                                RbpJournalErrorCode.ProtocolConflict,
+                                "Outbound data is blocked by the active recovery carrier fence.");
+                        }
                         if (draft.Acknowledgement is { } acknowledgement &&
                             acknowledgement >
                             loaded.LastJournaledReceivedSequence)
@@ -473,6 +1188,7 @@ internal sealed partial class RbpJournalStore
             sequenceCommand,
             () => ReadOutbox(context, rsid),
             () => ReadInboundSummary(context, rsid),
+            () => ReadActiveRecoveryCarrierReservedSequence(context, rsid),
             rsid);
     }
 
@@ -494,6 +1210,7 @@ internal sealed partial class RbpJournalStore
             sequenceCommand,
             () => ReadOutbox(connection, rsid),
             () => ReadInboundSummary(connection, rsid),
+            () => ReadActiveRecoveryCarrierReservedSequence(connection, rsid),
             rsid);
     }
 
@@ -501,6 +1218,7 @@ internal sealed partial class RbpJournalStore
         SqliteCommand sequenceCommand,
         Func<IReadOnlyList<RbpRetainedOutboundData>> readOutbox,
         Func<LoadedInboundSummary> readInboundSummary,
+        Func<long?> readReservedSequence,
         string rsid)
     {
         long? nextTx;
@@ -527,6 +1245,7 @@ internal sealed partial class RbpJournalStore
         IReadOnlyList<RbpRetainedOutboundData> outbox = readOutbox();
         LoadedInboundSummary inbound =
             readInboundSummary();
+        long? reservedSequence = readReservedSequence();
         ValidateSequenceMaterial(
             rsid,
             nextTx,
@@ -535,6 +1254,7 @@ internal sealed partial class RbpJournalStore
             lastJournaledRx,
             lastPeerAcknowledgement,
             outbox,
+            reservedSequence,
             inbound);
         return new LoadedSequence(
             new RbpSequenceState(
@@ -563,6 +1283,492 @@ internal sealed partial class RbpJournalStore
         command.Parameters.AddWithValue("$rsid", rsid);
         using SqliteDataReader reader = command.ExecuteReader();
         return MaterializeOutbox(reader, rsid);
+    }
+
+    private static long? ReadActiveRecoveryCarrierReservedSequence(
+        RbpJournalWriteContext context,
+        string rsid)
+    {
+        using SqliteCommand command = context.CreateCommand("""
+            SELECT current_reserved_seq AS reserved_seq
+            FROM rbp_recovery_carrier_reservations
+            WHERE rsid=$rsid
+              AND phase IN ('reserved','send_started','awaiting_ack','tombstoned')
+            UNION ALL
+            SELECT final_sequence AS reserved_seq
+            FROM rbp_recovery_terminal_plans
+            WHERE rsid=$rsid AND state='reserved';
+            """);
+        command.Parameters.AddWithValue("$rsid", rsid);
+        using SqliteDataReader reader = command.ExecuteReader();
+        if (!reader.Read()) return null;
+        long sequence = reader.GetInt64(0);
+        if (reader.Read()) throw RbpJournalSerialization.Corrupt(
+            "Multiple active recovery sequence reservations exist.");
+        return sequence;
+    }
+
+    private long? ReadActiveRecoveryCarrierReservedSequence(
+        SqliteConnection connection,
+        string rsid)
+    {
+        using SqliteCommand command = CreateCommand(connection, """
+            SELECT current_reserved_seq AS reserved_seq
+            FROM rbp_recovery_carrier_reservations
+            WHERE rsid=$rsid
+              AND phase IN ('reserved','send_started','awaiting_ack','tombstoned')
+            UNION ALL
+            SELECT final_sequence AS reserved_seq
+            FROM rbp_recovery_terminal_plans
+            WHERE rsid=$rsid AND state='reserved';
+            """);
+        command.CommandTimeout = _commandTimeoutSeconds;
+        command.Parameters.AddWithValue("$rsid", rsid);
+        using SqliteDataReader reader = command.ExecuteReader();
+        if (!reader.Read()) return null;
+        long sequence = reader.GetInt64(0);
+        if (reader.Read()) throw RbpJournalSerialization.Corrupt(
+            "Multiple active recovery sequence reservations exist.");
+        return sequence;
+    }
+
+    private static RbpRecoveryCarrierReservation? ReadActiveRecoveryCarrierReservation(
+        RbpJournalWriteContext context,
+        string rsid)
+    {
+        using SqliteCommand command = context.CreateCommand("""
+            SELECT recovery_invocation_id,rsid,origin_invocation_id,result_digest,
+                   raw_idempotency_key,raw_payload_version,header_jcs,plaintext_length,chunk_size,
+                   chunk_count,phase,chunk_index,current_reserved_seq,
+                   canonical_envelope_digest,send_started_at_ms,highest_reserved_seq,
+                   acknowledgement_cursor,inbound_ack_baseline,plan_version,created_at_ms,expires_at_ms,
+                   updated_at_ms,completed_at_ms,tombstoned_at_ms,tombstone_reason
+            FROM rbp_recovery_carrier_reservations
+            WHERE rsid=$rsid AND phase IN ('reserved','send_started','awaiting_ack','tombstoned');
+            """);
+        command.Parameters.AddWithValue("$rsid", rsid);
+        using SqliteDataReader reader = command.ExecuteReader();
+        return MaterializeSingleRecoveryCarrierReservation(reader);
+    }
+
+    private static RbpRecoveryCarrierReservation?
+        ReadRecoveryCarrierAcknowledgementReservation(
+            RbpJournalWriteContext context, string rsid)
+    {
+        using SqliteCommand command = context.CreateCommand("""
+            SELECT recovery_invocation_id,rsid,origin_invocation_id,result_digest,
+                   raw_idempotency_key,raw_payload_version,header_jcs,plaintext_length,chunk_size,
+                   chunk_count,phase,chunk_index,current_reserved_seq,
+                   canonical_envelope_digest,send_started_at_ms,highest_reserved_seq,
+                   acknowledgement_cursor,inbound_ack_baseline,plan_version,created_at_ms,expires_at_ms,
+                   updated_at_ms,completed_at_ms,tombstoned_at_ms,tombstone_reason
+            FROM rbp_recovery_carrier_reservations
+            WHERE rsid=$rsid AND phase IN ('reserved','send_started','awaiting_ack','completed','tombstoned')
+            ORDER BY CASE phase
+              WHEN 'reserved' THEN 0 WHEN 'send_started' THEN 0
+              WHEN 'awaiting_ack' THEN 0 WHEN 'tombstoned' THEN 0 ELSE 1 END,
+              current_reserved_seq DESC
+            LIMIT 1;
+            """);
+        command.Parameters.AddWithValue("$rsid", rsid);
+        using SqliteDataReader reader = command.ExecuteReader();
+        return MaterializeSingleRecoveryCarrierReservation(reader);
+    }
+
+    private static void RequireNoUnresolvedRecoveryTerminalAcknowledgement(
+        RbpJournalWriteContext context, string rsid, long acknowledgement)
+    {
+        if (HasRecoverySequenceTombstone(context, rsid))
+        {
+            throw new RbpJournalException(RbpJournalErrorCode.ProtocolConflict,
+                "Recovery authority is tombstoned and cannot reopen through a generic acknowledgement.");
+        }
+
+        RbpRecoveryCarrierReservation? completed =
+            ReadRecoveryCarrierAcknowledgementReservation(context, rsid);
+        if (completed?.Phase != RbpRecoveryCarrierPhase.Completed ||
+            acknowledgement <= completed.CurrentReservedSequence)
+        {
+            return;
+        }
+
+        RbpRecoveryTerminalPlan? terminal = ReadRecoveryTerminalPlan(
+            context, completed.RecoveryInvocationId);
+        if (terminal is null || terminal.State != "confirmed")
+        {
+            throw new RbpJournalException(RbpJournalErrorCode.ProtocolConflict,
+                "A completed recovery carrier cannot acknowledge an unresolved terminal through the generic reducer.");
+        }
+    }
+
+    private static RbpRecoveryTerminalPlan? ReadActiveRecoveryTerminalPlan(
+        RbpJournalWriteContext context, string rsid)
+    {
+        using SqliteCommand command = context.CreateCommand(RecoveryTerminalPlanByRsidSql);
+        command.Parameters.AddWithValue("$rsid", rsid);
+        using SqliteDataReader reader = command.ExecuteReader();
+        return MaterializeSingleRecoveryTerminalPlan(reader);
+    }
+
+    private static RbpRecoveryTerminalPlan? ReadRecoveryTerminalPlan(
+        RbpJournalWriteContext context, string recoveryInvocationId)
+    {
+        using SqliteCommand command = context.CreateCommand(RecoveryTerminalPlanByIdSql);
+        command.Parameters.AddWithValue("$recovery", recoveryInvocationId);
+        using SqliteDataReader reader = command.ExecuteReader();
+        return MaterializeSingleRecoveryTerminalPlan(reader);
+    }
+
+    private RbpRecoveryTerminalPlan? ReadRecoveryTerminalPlan(
+        SqliteConnection connection, string recoveryInvocationId)
+    {
+        using SqliteCommand command = CreateCommand(connection, RecoveryTerminalPlanByIdSql);
+        command.CommandTimeout = _commandTimeoutSeconds;
+        command.Parameters.AddWithValue("$recovery", recoveryInvocationId);
+        using SqliteDataReader reader = command.ExecuteReader();
+        return MaterializeSingleRecoveryTerminalPlan(reader);
+    }
+
+    private const string RecoveryTerminalPlanColumns = """
+        recovery_invocation_id,rsid,plan_version,final_sequence,acknowledgement_baseline,inbound_ack_baseline,
+        terminal_jcs,terminal_digest,payload_commitment,state,created_at_ms,expires_at_ms,
+        confirmed_at_ms
+        """;
+
+    private const string RecoveryTerminalPlanByIdSql = """
+        SELECT recovery_invocation_id,rsid,plan_version,final_sequence,acknowledgement_baseline,inbound_ack_baseline,
+               terminal_jcs,terminal_digest,payload_commitment,state,created_at_ms,expires_at_ms,
+               confirmed_at_ms
+        FROM rbp_recovery_terminal_plans
+        WHERE recovery_invocation_id=$recovery;
+        """;
+
+    private const string RecoveryTerminalPlanByRsidSql = """
+        SELECT recovery_invocation_id,rsid,plan_version,final_sequence,acknowledgement_baseline,inbound_ack_baseline,
+               terminal_jcs,terminal_digest,payload_commitment,state,created_at_ms,expires_at_ms,
+               confirmed_at_ms
+        FROM rbp_recovery_terminal_plans
+        WHERE rsid=$rsid AND state='reserved';
+        """;
+
+    private static RbpRecoveryTerminalPlan? MaterializeSingleRecoveryTerminalPlan(SqliteDataReader reader)
+    {
+        if (!reader.Read()) return null;
+        RbpRecoveryTerminalPlan plan = MaterializeRecoveryTerminalPlan(reader);
+        if (reader.Read())
+            throw RbpJournalSerialization.Corrupt("A recovery terminal plan is not unique.");
+        return plan;
+    }
+
+    private static RbpRecoveryTerminalPlan MaterializeRecoveryTerminalPlan(SqliteDataReader reader)
+    {
+        if (reader.IsDBNull(5) || reader.GetInt64(5) < 0)
+            throw RbpJournalSerialization.Corrupt("Recovery terminal inbound acknowledgement baseline is missing or invalid.");
+        string terminalJcs = reader.GetString(6);
+        string terminalDigest = reader.GetString(7);
+        string commitment = reader.GetString(8);
+        string state = reader.GetString(9);
+        if (reader.GetInt32(2) != RbpRecoveryTerminalCommitment.PlanVersion ||
+            state is not ("reserved" or "confirmed" or "tombstoned") ||
+            !RbpJournalSerialization.IsSha256Digest(terminalDigest) ||
+            !RbpJournalSerialization.IsSha256Digest(commitment))
+        {
+            throw RbpJournalSerialization.Corrupt("Recovery terminal plan metadata is invalid.");
+        }
+        JsonElement terminal;
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(terminalJcs);
+            terminal = document.RootElement.Clone();
+        }
+        catch (JsonException exception)
+        {
+            throw RbpJournalSerialization.Corrupt("Recovery terminal plan JSON is invalid.", exception);
+        }
+        if (!string.Equals(Rfc8785Json.Canonicalize(terminal), terminalJcs, StringComparison.Ordinal) ||
+            !string.Equals(Rfc8785Json.Sha256Digest(terminal), terminalDigest, StringComparison.Ordinal) ||
+            !string.Equals(commitment, RbpRecoveryTerminalCommitment.Compute(
+                    reader.GetString(1), reader.GetString(0), reader.GetInt64(3), reader.GetInt64(4),
+                    reader.GetInt64(5), terminalDigest, terminalJcs, reader.GetInt64(11)), StringComparison.Ordinal))
+        {
+            throw RbpJournalSerialization.Corrupt("Recovery terminal plan integrity is invalid.");
+        }
+        long? confirmed = reader.IsDBNull(12) ? null : reader.GetInt64(12);
+        if ((state == "confirmed") != (confirmed is not null) ||
+            (state != "confirmed" && confirmed is not null))
+        {
+            throw RbpJournalSerialization.Corrupt("Recovery terminal plan state is invalid.");
+        }
+        return new RbpRecoveryTerminalPlan(reader.GetString(0), reader.GetString(1), reader.GetInt32(2),
+            reader.GetInt64(3), reader.GetInt64(4), reader.GetInt64(5), terminal, terminalDigest, commitment, state,
+            reader.GetInt64(10), reader.GetInt64(11), confirmed);
+    }
+
+    private static JsonElement BuildRecoveryTerminalPayload(RbpRecoveryCarrierReservation reservation)
+        => RbpInvocationPayloads.ChunkedRecoveryTerminal(
+            reservation.RecoveryInvocationId, reservation.ChunkCount,
+            reservation.PlaintextLength, reservation.ResultDigest);
+
+    private bool IsCurrentTerminalMaterializationPlan(
+        SqliteConnection connection, RbpRecoveryTerminalPlan plan, string rsid,
+        int planVersion, long sequence, string payloadCommitment)
+    {
+        if (!string.Equals(plan.Rsid, rsid, StringComparison.Ordinal) ||
+            plan.PlanVersion != planVersion || plan.FinalSequence != sequence ||
+            plan.State != "reserved" || plan.ExpiresAtMilliseconds <= NowMilliseconds() ||
+            !string.Equals(plan.PayloadCommitment, payloadCommitment, StringComparison.Ordinal) ||
+            ReadTombstone(connection, rsid) is not null ||
+            HasRecoverySequenceTombstone(connection, rsid) ||
+            HasOutboxSequence(connection, rsid, sequence))
+        {
+            return false;
+        }
+        RbpRecoveryCarrierReservation? reservation = ReadRecoveryCarrierReservation(
+            connection, plan.RecoveryInvocationId);
+        if (reservation is null || reservation.Phase != RbpRecoveryCarrierPhase.Completed ||
+            !string.Equals(reservation.Rsid, rsid, StringComparison.Ordinal) ||
+            reservation.ExpiresAtMilliseconds != plan.ExpiresAtMilliseconds ||
+            reservation.CurrentReservedSequence != plan.AcknowledgementBaseline ||
+            reservation.InboundAcknowledgementBaseline != plan.InboundAcknowledgementBaseline)
+        {
+            return false;
+        }
+        LoadedSequence loaded = LoadSequence(connection, rsid);
+        return loaded.State.LastPeerAcknowledgement == plan.AcknowledgementBaseline &&
+               loaded.State.HighestTxSequence == plan.FinalSequence &&
+               loaded.State.NextTxSequence == (plan.FinalSequence == RbpSequenceReducer.MaximumSafeSequence
+                   ? null : plan.FinalSequence + 1);
+    }
+
+    private static bool HasRecoverySequenceTombstone(RbpJournalWriteContext context, string rsid)
+    {
+        using SqliteCommand command = context.CreateCommand(
+            "SELECT 1 FROM rbp_recovery_sequence_tombstones WHERE rsid=$rsid;");
+        command.Parameters.AddWithValue("$rsid", rsid);
+        return command.ExecuteScalar() is not null;
+    }
+
+    private bool HasRecoverySequenceTombstone(SqliteConnection connection, string rsid)
+    {
+        using SqliteCommand command = CreateCommand(connection,
+            "SELECT 1 FROM rbp_recovery_sequence_tombstones WHERE rsid=$rsid;");
+        command.CommandTimeout = _commandTimeoutSeconds;
+        command.Parameters.AddWithValue("$rsid", rsid);
+        return command.ExecuteScalar() is not null;
+    }
+
+    private static bool HasOutboxSequence(RbpJournalWriteContext context, string rsid, long sequence)
+    {
+        using SqliteCommand command = context.CreateCommand(
+            "SELECT 1 FROM rbp_outbox WHERE rsid=$rsid AND seq=$seq;");
+        command.Parameters.AddWithValue("$rsid", rsid);
+        command.Parameters.AddWithValue("$seq", sequence);
+        return command.ExecuteScalar() is not null;
+    }
+
+    private bool HasOutboxSequence(SqliteConnection connection, string rsid, long sequence)
+    {
+        using SqliteCommand command = CreateCommand(connection,
+            "SELECT 1 FROM rbp_outbox WHERE rsid=$rsid AND seq=$seq;");
+        command.CommandTimeout = _commandTimeoutSeconds;
+        command.Parameters.AddWithValue("$rsid", rsid);
+        command.Parameters.AddWithValue("$seq", sequence);
+        return command.ExecuteScalar() is not null;
+    }
+
+    private void TombstoneRecoveryTerminalPlan(
+        RbpJournalWriteContext context, RbpRecoveryTerminalPlan current, long now, string reason)
+    {
+        using (SqliteCommand update = context.CreateCommand("""
+            UPDATE rbp_recovery_terminal_plans
+            SET state='tombstoned'
+            WHERE recovery_invocation_id=$recovery AND state='reserved'
+              AND payload_commitment=$commitment;
+            """))
+        {
+            update.Parameters.AddWithValue("$recovery", current.RecoveryInvocationId);
+            update.Parameters.AddWithValue("$commitment", current.PayloadCommitment);
+            if (update.ExecuteNonQuery() != 1)
+                throw RbpJournalSerialization.Corrupt("The recovery terminal tombstone CAS failed.");
+        }
+        using (SqliteCommand tombstone = context.CreateCommand("""
+            INSERT INTO rbp_recovery_sequence_tombstones(rsid,format_version,tombstoned_at_ms,reason_code,sequence_high_water)
+            VALUES($rsid,1,$now,'recovery_fence_fault',$high)
+            ON CONFLICT(rsid) DO NOTHING;
+            """))
+        {
+            tombstone.Parameters.AddWithValue("$rsid", current.Rsid);
+            tombstone.Parameters.AddWithValue("$now", now);
+            tombstone.Parameters.AddWithValue("$high", current.FinalSequence);
+            if (tombstone.ExecuteNonQuery() > 1)
+                throw RbpJournalSerialization.Corrupt("The recovery terminal tombstone is not unique.");
+        }
+        _faultInjector?.Hit(RbpJournalFaultPoint.RecoveryMinimalTombstonePersisted);
+        // An above/unsent acknowledgement has no equal Gateway receipt. Keep
+        // the protected source through retention for forensic recovery; the
+        // durable session tombstone is what prevents another send attempt.
+    }
+
+    private static void DeleteRecoverySourceAfterConfirmedTerminal(
+        RbpJournalWriteContext context, string recoveryInvocationId)
+    {
+        using SqliteCommand delete = context.CreateCommand("""
+            DELETE FROM rbp_recovery_payloads
+            WHERE idempotency_key=(
+              SELECT raw_idempotency_key
+              FROM rbp_recovery_carrier_reservations
+              WHERE recovery_invocation_id=$recovery
+            );
+            """);
+        delete.Parameters.AddWithValue("$recovery", recoveryInvocationId);
+        _ = delete.ExecuteNonQuery();
+    }
+
+    private static RbpRecoveryCarrierReservation? ReadRecoveryCarrierReservation(
+        RbpJournalWriteContext context,
+        string recoveryInvocationId)
+    {
+        using SqliteCommand command = context.CreateCommand(RecoveryCarrierReservationByIdSql);
+        command.Parameters.AddWithValue("$recovery", recoveryInvocationId);
+        using SqliteDataReader reader = command.ExecuteReader();
+        return MaterializeSingleRecoveryCarrierReservation(reader);
+    }
+
+    private RbpRecoveryCarrierReservation? ReadRecoveryCarrierReservation(
+        SqliteConnection connection,
+        string recoveryInvocationId)
+    {
+        using SqliteCommand command = CreateCommand(connection, RecoveryCarrierReservationByIdSql);
+        command.CommandTimeout = _commandTimeoutSeconds;
+        command.Parameters.AddWithValue("$recovery", recoveryInvocationId);
+        using SqliteDataReader reader = command.ExecuteReader();
+        return MaterializeSingleRecoveryCarrierReservation(reader);
+    }
+
+    private const string RecoveryCarrierReservationByIdSql = """
+        SELECT recovery_invocation_id,rsid,origin_invocation_id,result_digest,
+               raw_idempotency_key,raw_payload_version,header_jcs,plaintext_length,chunk_size,
+               chunk_count,phase,chunk_index,current_reserved_seq,
+               canonical_envelope_digest,send_started_at_ms,highest_reserved_seq,
+               acknowledgement_cursor,inbound_ack_baseline,plan_version,created_at_ms,expires_at_ms,
+               updated_at_ms,completed_at_ms,tombstoned_at_ms,tombstone_reason
+        FROM rbp_recovery_carrier_reservations
+        WHERE recovery_invocation_id=$recovery;
+        """;
+
+    private static RbpRecoveryCarrierReservation? MaterializeSingleRecoveryCarrierReservation(SqliteDataReader reader)
+    {
+        if (!reader.Read()) return null;
+        RbpRecoveryCarrierReservation result = MaterializeRecoveryCarrierReservation(reader);
+        if (reader.Read()) throw RbpJournalSerialization.Corrupt("A recovery carrier reservation is not unique.");
+        return result;
+    }
+
+    private static RbpRecoveryCarrierReservation MaterializeRecoveryCarrierReservation(SqliteDataReader reader)
+    {
+        if (reader.IsDBNull(17) || reader.GetInt64(17) < 0)
+            throw RbpJournalSerialization.Corrupt("Recovery carrier inbound acknowledgement baseline is missing or invalid.");
+        return new(
+            reader.GetString(1), reader.GetString(0), reader.GetString(2), reader.GetString(3),
+            reader.GetString(4), reader.GetString(6), reader.GetInt32(7), reader.GetInt32(8), reader.GetInt32(9),
+            reader.GetString(10) switch
+            {
+                "reserved" => RbpRecoveryCarrierPhase.Reserved,
+                "send_started" => RbpRecoveryCarrierPhase.SendStarted,
+                "awaiting_ack" => RbpRecoveryCarrierPhase.AwaitingAcknowledgement,
+                "completed" => RbpRecoveryCarrierPhase.Completed,
+                "tombstoned" => RbpRecoveryCarrierPhase.Tombstoned,
+                _ => throw RbpJournalSerialization.Corrupt("The recovery carrier phase is invalid."),
+            }, reader.GetInt32(11), reader.GetInt64(12), reader.GetInt32(5), reader.GetString(13),
+            reader.IsDBNull(14) ? null : reader.GetInt64(14), reader.GetInt64(15), reader.GetInt64(16), reader.GetInt64(17),
+            reader.GetInt32(18), reader.GetInt64(19), reader.GetInt64(20), reader.GetInt64(21),
+            reader.IsDBNull(22) ? null : reader.GetInt64(22), reader.IsDBNull(23) ? null : reader.GetInt64(23),
+            reader.IsDBNull(24) ? null : reader.GetString(24));
+    }
+
+    private (string Key, int Length) ReadExactRecoveryPayloadKey(
+        RbpJournalWriteContext context,
+        RbpRecoveryCarrierReservationRequest request)
+    {
+        using SqliteCommand command = context.CreateCommand("""
+            SELECT payload.idempotency_key,payload.protection_scheme,payload.protected_envelope,
+                   payload.plaintext_length,payload.created_at_ms,payload.retention_expires_at_ms
+            FROM rbp_recovery_payloads AS payload
+            JOIN rbp_invocations AS invocation
+              ON invocation.idempotency_key=payload.idempotency_key
+            WHERE payload.rsid=$rsid
+              AND payload.invocation_id=$origin
+              AND payload.result_digest=$digest
+              AND invocation.rsid=$rsid
+              AND invocation.invocation_id=$origin
+              AND invocation.result_digest=$digest
+              AND invocation.state IN ('completed','guarded');
+            """);
+        command.Parameters.AddWithValue("$rsid", request.Rsid);
+        command.Parameters.AddWithValue("$origin", request.OriginInvocationId);
+        command.Parameters.AddWithValue("$digest", request.ResultDigest);
+        using SqliteDataReader reader = command.ExecuteReader();
+        if (!reader.Read())
+        {
+            throw new RbpJournalException(RbpJournalErrorCode.ProtocolConflict,
+                "The exact protected terminal recovery payload is unavailable.");
+        }
+        string key = reader.GetString(0);
+        string scheme = reader.GetString(1);
+        byte[] ciphertext = (byte[])reader.GetValue(2);
+        int length = reader.GetInt32(3);
+        long created = reader.GetInt64(4);
+        long expires = reader.GetInt64(5);
+        if (reader.Read() || length is < 1 or > RbpRecoveryPayloadEnvelope.MaxBytes ||
+            expires <= NowMilliseconds())
+            throw new RbpJournalException(RbpJournalErrorCode.IntegrityCheckFailed, "Recovery payload metadata is invalid.");
+        byte[] envelope = _recoveryPayloadProtector.Unprotect(new RbpProtectedRecoveryPayload(scheme, ciphertext));
+        try
+        {
+            byte[] raw = RbpRecoveryPayloadEnvelope.Read(request.Rsid, request.OriginInvocationId,
+                key, request.ResultDigest, created, expires, envelope);
+            try
+            {
+                if (raw.Length != length || !string.Equals(RawResponseDigest(raw), request.ResultDigest, StringComparison.Ordinal))
+                    throw new RbpJournalException(RbpJournalErrorCode.IntegrityCheckFailed, "Recovery payload digest is invalid.");
+                return (key, length);
+            }
+            finally { CryptographicOperations.ZeroMemory(raw); }
+        }
+        finally { CryptographicOperations.ZeroMemory(envelope); }
+    }
+
+    private static void RequireExactRecoveryReservation(
+        RbpRecoveryCarrierReservation existing,
+        RbpRecoveryCarrierReservationRequest request)
+    {
+        if (!string.Equals(existing.Rsid, request.Rsid, StringComparison.Ordinal) ||
+            !string.Equals(existing.OriginInvocationId, request.OriginInvocationId, StringComparison.Ordinal) ||
+            !string.Equals(existing.ResultDigest, request.ResultDigest, StringComparison.Ordinal) ||
+            !string.Equals(existing.HeaderJcs, CanonicalRecoveryCarrierHeader(request.Header), StringComparison.Ordinal) ||
+            existing.ChunkSize != request.ChunkSize)
+        {
+            throw new RbpJournalException(RbpJournalErrorCode.ProtocolConflict,
+                "The recovery carrier reservation is immutable.");
+        }
+    }
+
+    private static void RefreshRecoveryCarrierCommitment(
+        RbpJournalWriteContext context, string recoveryInvocationId)
+    {
+        RbpRecoveryCarrierReservation reservation = ReadRecoveryCarrierReservation(context, recoveryInvocationId) ??
+            throw RbpJournalSerialization.Corrupt("The recovery commitment row is missing.");
+        string commitment = RbpRecoveryCarrierCommitment.Compute(
+            reservation, reservation.CurrentReservedSequence + 1);
+        using SqliteCommand update = context.CreateCommand("""
+            UPDATE rbp_recovery_carrier_reservations
+            SET canonical_envelope_digest=$commitment
+            WHERE recovery_invocation_id=$recovery;
+            """);
+        update.Parameters.AddWithValue("$commitment", commitment);
+        update.Parameters.AddWithValue("$recovery", recoveryInvocationId);
+        if (update.ExecuteNonQuery() != 1)
+            throw RbpJournalSerialization.Corrupt("The recovery commitment update failed.");
     }
 
     private IReadOnlyList<RbpRetainedOutboundData> ReadOutbox(
@@ -894,6 +2100,7 @@ internal sealed partial class RbpJournalStore
         long lastJournaledRx,
         long lastPeerAcknowledgement,
         IReadOnlyList<RbpRetainedOutboundData> outbox,
+        long? reservedSequence,
         LoadedInboundSummary inbound)
     {
         bool validCounters =
@@ -934,6 +2141,14 @@ internal sealed partial class RbpJournalStore
             previousOutbox = retained.Envelope.Sequence;
         }
 
+        // C39 reserves exactly one current sequence outside rbp_outbox so no
+        // payload/frame material is ever journaled as ordinary transport data.
+        if (reservedSequence is { } reserved &&
+            reserved == previousOutbox + 1 &&
+            reserved == highestTx)
+        {
+            previousOutbox = reserved;
+        }
         if (previousOutbox != highestTx)
         {
             throw RbpJournalSerialization.Corrupt(
@@ -969,6 +2184,8 @@ internal sealed partial class RbpJournalStore
               ) THEN 1 ELSE 0 END,
               CASE WHEN EXISTS(
                 SELECT 1 FROM rbp_unregister_tombstones WHERE rsid=$rsid
+              ) OR EXISTS(
+                SELECT 1 FROM rbp_recovery_sequence_tombstones WHERE rsid=$rsid
               ) THEN 1 ELSE 0 END;
             """);
         command.Parameters.AddWithValue("$rsid", rsid);
@@ -1002,6 +2219,8 @@ internal sealed partial class RbpJournalStore
               ) THEN 1 ELSE 0 END,
               CASE WHEN EXISTS(
                 SELECT 1 FROM rbp_unregister_tombstones WHERE rsid=$rsid
+              ) OR EXISTS(
+                SELECT 1 FROM rbp_recovery_sequence_tombstones WHERE rsid=$rsid
               ) THEN 1 ELSE 0 END;
             """);
         command.CommandTimeout = _commandTimeoutSeconds;
@@ -1032,4 +2251,14 @@ internal sealed partial class RbpJournalStore
         long MaximumSequence,
         long ContiguousJournaledSequence);
 
+}
+
+internal sealed class RbpRecoveryCarrierMaterializationSnapshot : IDisposable
+{
+    internal RbpRecoveryCarrierMaterializationSnapshot(
+        RbpRecoveryCarrierReservation reservation, RbpRecoveredPayload raw)
+    { Reservation = reservation; Raw = raw; }
+    internal RbpRecoveryCarrierReservation Reservation { get; }
+    internal RbpRecoveredPayload Raw { get; }
+    public void Dispose() => Raw.Dispose();
 }

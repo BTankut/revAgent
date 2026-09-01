@@ -1,0 +1,67 @@
+{
+  "id": "WP-12",
+  "title": "Real C# Bridge to production TS Gateway conformance",
+  "wave": "I",
+  "findings": [
+    "RA-GW-001",
+    "RA-GW-002",
+    "RA-GW-003",
+    "RA-GW-004",
+    "RA-GW-005",
+    "RA-GW-006",
+    "RA-GW-007",
+    "RA-GW-008",
+    "RA-GW-009",
+    "RA-GW-011",
+    "RA-GW-012"
+  ],
+  "depends_on": [
+    "WP-02",
+    "WP-03",
+    "WP-04",
+    "WP-06",
+    "WP-07",
+    "WP-08",
+    "WP-09",
+    "WP-10",
+    "WP-11"
+  ],
+  "agents": [
+    "integration_reviewer",
+    "critical_ts_worker",
+    "critical_csharp_worker",
+    "test_engineer",
+    "security_reviewer"
+  ],
+  "write_scope": [
+    "packages/rbp-conformance/**",
+    "packages/bridge/**",
+    "packages/gateway/**",
+    "packages/addin-loopback-fixture/**",
+    ".github/workflows/**",
+    "scripts/**/*conformance*",
+    "packages/protocol/schemas/addin-loopback/v1/get-document-context.schema.json",
+    "packages/protocol/tests/addinLoopbackSchemas.test.ts",
+    "packages/protocol/schemas/rbp/v1/payloads.schema.json",
+    "packages/protocol/src/generated/envelope.ts",
+    "packages/protocol/src/generated/schema.ts",
+    "packages/protocol/conformance/fixtures/envelopes.json",
+    "docs/specs/O1-bridge-gateway-protocol.md",
+    "docs/implementation-plan/01-protocol-O1.md",
+    "docs/plan/M1_O1_FREEZE_EVIDENCE.md"
+  ],
+  "matrices": [
+    "session lifecycle",
+    "capabilities",
+    "mutation evidence",
+    "transport faults",
+    "revocation",
+    "result delivery",
+    "recovery"
+  ],
+  "exit": [
+    "WSS and HTTP/SSE green",
+    "production interoperability no longer simulator-only",
+    "protected required check"
+  ]
+}

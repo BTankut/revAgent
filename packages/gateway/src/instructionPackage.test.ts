@@ -41,7 +41,7 @@ describe("GW-19 instruction and O6 module package", () => {
       module: "core",
       moduleVersion: PHASE1_INSTRUCTION_VERSION,
     });
-    expect(core.manifest.tools).toHaveLength(40);
+    expect(core.manifest.tools).toHaveLength(41);
     for (const entry of fullView.entries()) {
       expect(core.manifest.tools).toContainEqual({
         name: entry.name,

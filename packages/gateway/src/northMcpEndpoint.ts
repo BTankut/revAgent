@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import {
   createServer,
   type IncomingMessage,
@@ -17,6 +17,7 @@ import {
   type McpRequestContext,
   type RequestStateCodec,
 } from "@modelcontextprotocol/server";
+import { canonicalizeJson, type JsonValue } from "@revagent/protocol";
 import { z } from "zod";
 import type { AuthContext, IdentityPort } from "./authContext.js";
 import type { GatewayPortAdapterKind } from "./gatewayPorts.js";
@@ -28,8 +29,13 @@ import type {
   GatewayDispatcher,
   GatewayJsonValue,
 } from "./dispatch.js";
-import type { CatalogEntry, EntitledCatalogView } from "./entitledRegistry.js";
-import type { GatewayInvocationRoute } from "./invocationContext.js";
+import { EntitledCatalogView, type CatalogEntry } from "./entitledRegistry.js";
+import {
+  createEffectiveMcpRequestScopeV1,
+  GatewayInvocationContextError,
+  type EffectiveMcpRequestScopeV1,
+  type GatewayInvocationRoute,
+} from "./invocationContext.js";
 import {
   PHASE1_INSTRUCTION_VERSION,
   buildGatewayInstructionPackage,
@@ -43,9 +49,10 @@ import {
   type ModeAActivationResult,
 } from "./modeADiscovery.js";
 import type { GatewayToolRegistry } from "./registry.js";
+import { C39_PAYLOAD_RECOVERY_CALLABLE } from "./northFirstSlice.js";
 import {
   GatewayResourceError,
-  resourceScopeFromAuth,
+  resourceScopeFromEffectiveMcpRequestScope,
   type GatewayResourceAuthority,
 } from "./resourceAuthority.js";
 
@@ -65,6 +72,54 @@ export const NORTH_MODE_A_PINNED_TOOLS = Object.freeze([
   "core.session.status",
 ] as const);
 const DEFAULT_MODE_A_SESSION_TTL_MS = 30 * 60 * 1_000;
+const TEST_EFFECTIVE_SCOPE_OBSERVER = "__revAgentTestObserveEffectiveMcpScope";
+export const OMITTED_PAYLOAD_COORDINATE_CARRIER_VERSION =
+  "c39.omitted-recovery-coordinate/v1" as const;
+export const OMITTED_PAYLOAD_COORDINATE_RECOVERY_TOOL =
+  "core.dispatch.payload_recovery" as const;
+export const OMITTED_PAYLOAD_COORDINATE_RECOVERY_TOOL_VERSION = "1.0.0" as const;
+const OMITTED_PAYLOAD_COORDINATE_CODE = "payload_omitted" as const;
+const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
+const SHA256 = /^sha256:[0-9a-f]{64}$/u;
+
+export interface OmittedPayloadCoordinateCarrierV1 {
+  readonly code: typeof OMITTED_PAYLOAD_COORDINATE_CODE;
+  readonly origin_invocation_id: string;
+  readonly expected_result_digest: `sha256:${string}`;
+  readonly recovery_tool: typeof OMITTED_PAYLOAD_COORDINATE_RECOVERY_TOOL;
+  readonly recovery_tool_version: typeof OMITTED_PAYLOAD_COORDINATE_RECOVERY_TOOL_VERSION;
+  readonly carrier_version: typeof OMITTED_PAYLOAD_COORDINATE_CARRIER_VERSION;
+}
+
+/** Strict public parser: near matches never become recovery coordinates. */
+export function parseOmittedPayloadCoordinateCarrier(
+  value: unknown,
+): OmittedPayloadCoordinateCarrierV1 | null {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const keys = Object.keys(record).sort();
+  const expected = ["carrier_version", "code", "expected_result_digest", "origin_invocation_id", "recovery_tool", "recovery_tool_version"];
+  if (keys.length !== expected.length || keys.some((key, index) => key !== expected[index])) return null;
+  return record.code === OMITTED_PAYLOAD_COORDINATE_CODE &&
+    typeof record.origin_invocation_id === "string" && UUID_V7.test(record.origin_invocation_id) &&
+    typeof record.expected_result_digest === "string" && SHA256.test(record.expected_result_digest) &&
+    record.recovery_tool === OMITTED_PAYLOAD_COORDINATE_RECOVERY_TOOL &&
+    record.recovery_tool_version === OMITTED_PAYLOAD_COORDINATE_RECOVERY_TOOL_VERSION &&
+    record.carrier_version === OMITTED_PAYLOAD_COORDINATE_CARRIER_VERSION
+    ? Object.freeze(record as unknown as OmittedPayloadCoordinateCarrierV1)
+    : null;
+}
+
+function omittedPayloadCoordinateResult(
+  carrier: OmittedPayloadCoordinateCarrierV1,
+) {
+  const text = canonicalizeJson(carrier as unknown as JsonValue);
+  return {
+    content: [{ type: "text" as const, text }],
+    structuredContent: carrier as unknown as Record<string, unknown>,
+    isError: false as const,
+  };
+}
 
 type AuthenticatedIncomingMessage = IncomingMessage & {
   auth?: AuthInfo;
@@ -148,6 +203,8 @@ export interface NorthMcpEndpointOptions {
   readonly invocationRouteFor: (
     authenticated: AuthorizedNorthMcpRequest,
     mcpSessionId: string,
+    /** Immutable ingress authority; resolvers must not reconstruct scope. */
+    effectiveMcpRequestScope: EffectiveMcpRequestScopeV1,
   ) => GatewayInvocationRoute | Promise<GatewayInvocationRoute>;
   readonly dispatcher: GatewayDispatcher;
   /** GW-9 scoped artifact/result resources; absent means no dynamic resource surface. */
@@ -156,6 +213,29 @@ export interface NorthMcpEndpointOptions {
     "boundResult" | "readResource"
   >;
   readonly resourceMaxInlineResultBytes?: number;
+  /** C39 is absent unless its production provider and durable authority pass readiness. */
+  readonly payloadRecovery?: {
+    readonly ready: () => boolean;
+    admit(input: {
+      readonly tenantId: string;
+      readonly userId: string;
+      readonly effectiveMcpSessionId: string;
+      readonly rsid: string;
+      readonly originInvocationId: string;
+      readonly originResultDigest: `sha256:${string}`;
+    }): Promise<{
+      readonly kind: "admitted" | "resume" | "completed" | "guarded";
+      readonly record?: { readonly carrierRecoveryInvocationId: string };
+    }>;
+    replayCompleted(input: {
+      readonly tenantId: string;
+      readonly userId: string;
+      readonly effectiveMcpSessionId: string;
+      readonly effectiveMcpRequestScope: EffectiveMcpRequestScopeV1;
+      readonly rsid: string;
+      readonly carrierRecoveryInvocationId: string;
+    }): Promise<GatewayJsonValue | null>;
+  };
   /** O6 instruction package pin; independent from callable tool schemas. */
   readonly instructionVersion?: string;
   /** Complete executable registry when Mode A is enabled. */
@@ -179,6 +259,32 @@ export interface NorthMcpEndpointOptions {
   ) => void | Promise<void>;
   readonly host?: "127.0.0.1" | "localhost";
   readonly port?: number;
+}
+
+type EffectiveScopeObservationBoundary =
+  | "mode_a"
+  | "resource"
+  | "route"
+  | "dispatch"
+  | "result";
+
+/**
+ * A deliberately non-enumerable, test-only hook. Production options have no
+ * serializable observer field and cannot receive raw identities through this
+ * seam; focused conformance tests install it with Object.defineProperty.
+ */
+function observeEffectiveScopeForTest(
+  options: NorthMcpEndpointOptions,
+  boundary: EffectiveScopeObservationBoundary,
+  scope: EffectiveMcpRequestScopeV1,
+): void {
+  const observer = Object.getOwnPropertyDescriptor(
+    options,
+    TEST_EFFECTIVE_SCOPE_OBSERVER,
+  )?.value;
+  if (typeof observer === "function") {
+    observer(Object.freeze({ boundary, scope }));
+  }
 }
 
 export interface NorthMcpEndpointHandle {
@@ -309,6 +415,14 @@ function authBindingKey(authenticated: AuthorizedNorthMcpRequest): string {
   ]);
 }
 
+function effectiveScopeKey(scope: EffectiveMcpRequestScopeV1): string {
+  const hash = (value: string) =>
+    createHash("sha256").update(value).digest("hex");
+  // Never retain raw principal/session identifiers in the long-lived Mode-A
+  // discovery map. These two hashes are the durable key prefix.
+  return `p:${hash(scope.principalKey)}/s:${hash(scope.effectiveMcpSessionId)}`;
+}
+
 async function readJsonBody(request: IncomingMessage): Promise<unknown> {
   const chunks: Buffer[] = [];
   let size = 0;
@@ -391,6 +505,73 @@ function toolResult(
     ],
     structuredContent: structuredContent as Record<string, unknown>,
     isError: forceError || !outcome.ok,
+  };
+}
+
+type PostDispatchDeliveryState =
+  | "completed"
+  | "guarded"
+  | "confirmation_required"
+  | "failed";
+
+/**
+ * Only expose the fixed dispatch classification after result delivery fails.
+ * This must not turn a completed/guarded executor outcome into a new executor
+ * result, nor leak an exception, request id, audit record, or tool payload.
+ */
+function postDispatchDeliveryState(
+  outcome: Awaited<ReturnType<GatewayDispatcher["dispatch"]>>,
+): PostDispatchDeliveryState {
+  switch (outcome.state) {
+    case "completed":
+    case "guarded":
+    case "confirmation_required":
+    case "failed":
+      return outcome.state;
+    default:
+      // A future or malformed dispatcher state is not evidence that delivery
+      // was safe. Keep the public diagnostic fixed and fail closed.
+      return "failed";
+  }
+}
+
+function postDispatchRequestIdDigest(requestId: string): `sha256:${string}` {
+  return `sha256:${createHash("sha256")
+    .update("revagent:north-mcp:post-dispatch-delivery:v1\0", "utf8")
+    .update(requestId, "utf8")
+    .digest("hex")}`;
+}
+
+function postDispatchDeliveryFailureResult(
+  outcome: Awaited<ReturnType<GatewayDispatcher["dispatch"]>>,
+) {
+  const dispatchState = postDispatchDeliveryState(outcome);
+  const terminalKnown = dispatchState === "completed" || dispatchState === "guarded"
+    ? dispatchState
+    : null;
+  const structuredContent = Object.freeze({
+    ok: false as const,
+    state: "failed" as const,
+    toolName: outcome.toolName,
+    requestIdDigest: postDispatchRequestIdDigest(outcome.requestId),
+    error: Object.freeze({ code: "result_delivery_unavailable" as const }),
+    delivery: Object.freeze({
+      phase: "post_dispatch" as const,
+      dispatchState,
+      dispatchOk: outcome.ok,
+      executorReached: outcome.ok ? true : outcome.executorReached === true,
+      terminalKnown,
+      mutationDisposition: "not_reclassified" as const,
+    }),
+    resultContractVersion: 2 as const,
+  });
+  // Canonicalize exactly once. The same frozen object is carried as structured
+  // content, so text and structured MCP representations cannot diverge.
+  const text = canonicalizeJson(structuredContent as unknown as JsonValue);
+  return {
+    content: [{ type: "text" as const, text }],
+    structuredContent: structuredContent as Record<string, unknown>,
+    isError: true as const,
   };
 }
 
@@ -510,16 +691,20 @@ function assertCallableCatalogCoherence(
 function registerGatewayResources(
   server: McpServer,
   authenticated: AuthorizedNorthMcpRequest,
+  effectiveScope: EffectiveMcpRequestScopeV1,
   authority: Pick<GatewayResourceAuthority, "readResource">,
 ): void {
-  const scope = resourceScopeFromAuth(
+  const scope = resourceScopeFromEffectiveMcpRequestScope(
     authenticated.authContext,
-    authenticated.authContext.session.mcpSessionId ??
-      authenticated.authContext.session.sessionId,
+    effectiveScope,
   );
   const read = async (uri: URL) => {
     try {
-      const resource = await authority.readResource(scope, uri);
+      const resource = await authority.readResource(
+        scope,
+        effectiveScope,
+        uri,
+      );
       return {
         contents: [
           {
@@ -547,13 +732,19 @@ function registerGatewayResources(
   };
   server.registerResource(
     "artifact-ref",
-    new ResourceTemplate("revagent://artifact/{ref_id}", { list: undefined }),
+    new ResourceTemplate(
+      "revagent://artifact/p/{principal_sha256}/s/{session_sha256}/t/{tenant_sha256}/a/{actor_sha256}/r/{resource_sha256}",
+      { list: undefined },
+    ),
     { description: "Authenticated, expiring revAgent artifact." },
     read,
   );
   server.registerResource(
     "result-ref-page",
-    new ResourceTemplate("revagent://result/{ref_id}/{page}", { list: undefined }),
+    new ResourceTemplate(
+      "revagent://result/p/{principal_sha256}/s/{session_sha256}/t/{tenant_sha256}/a/{actor_sha256}/r/{resource_sha256}/page/{page}",
+      { list: undefined },
+    ),
     { description: "Authenticated, paged revAgent structured result." },
     read,
   );
@@ -614,19 +805,34 @@ function createSessionServer(input: {
   readonly registry: GatewayToolRegistry;
   readonly modeASession?: ModeADiscoverySession;
   readonly notifyToolsChanged: () => void;
-  readonly requestScopeId: string;
+  readonly effectiveMcpRequestScope: EffectiveMcpRequestScopeV1;
+  readonly observeEffectiveScope?: (
+    boundary: EffectiveScopeObservationBoundary,
+    scope: EffectiveMcpRequestScopeV1,
+  ) => void;
   readonly resourceAuthority?: Pick<
     GatewayResourceAuthority,
     "boundResult" | "readResource"
   >;
   readonly resourceMaxInlineResultBytes: number;
+  readonly payloadRecovery?: NorthMcpEndpointOptions["payloadRecovery"];
   readonly invocationRouteFor: NorthMcpEndpointOptions["invocationRouteFor"];
   readonly instructionVersion: string;
   readonly verifyRequestState: RequestStateCodec["verify"];
 }): McpServer {
-  const capabilityIndexBytes = input.catalogView.capabilityIndexBytes();
+  // C39 readiness is a registration boundary, not a callable error branch:
+  // an unavailable provider must not leak the tool through the capability
+  // index, instructions, search, or schema activation.
+  const catalogView =
+    input.payloadRecovery?.ready() === true
+      ? input.catalogView
+      : new EntitledCatalogView(
+          input.catalogView.entries(),
+          (entry) => entry.name !== C39_PAYLOAD_RECOVERY_CALLABLE,
+        );
+  const capabilityIndexBytes = catalogView.capabilityIndexBytes();
   const instructionPackage = buildGatewayInstructionPackage(
-    input.catalogView,
+    catalogView,
     input.instructionVersion,
   );
   const dispatcher = input.dispatcher;
@@ -663,7 +869,12 @@ function createSessionServer(input: {
   );
   registerInstructionResources(server, instructionPackage);
   if (input.resourceAuthority !== undefined) {
-    registerGatewayResources(server, input.authenticated, input.resourceAuthority);
+    registerGatewayResources(
+      server,
+      input.authenticated,
+      input.effectiveMcpRequestScope,
+      input.resourceAuthority,
+    );
   }
   if (input.modeASession !== undefined) {
     registerModeAMetaTools(
@@ -675,7 +886,13 @@ function createSessionServer(input: {
 
 
   for (const record of input.registry.records()) {
-    const catalogEntry = input.catalogView.get(record.name);
+    if (
+      record.name === C39_PAYLOAD_RECOVERY_CALLABLE &&
+      (input.payloadRecovery === undefined || !input.payloadRecovery.ready())
+    ) {
+      continue;
+    }
+    const catalogEntry = catalogView.get(record.name);
     if (
       catalogEntry === undefined ||
       (input.modeASession !== undefined &&
@@ -699,14 +916,102 @@ function createSessionServer(input: {
           }
         }
         const call = splitGatewayConfirmationArguments(record, args);
+        if (
+          ctx.sessionId !== undefined &&
+          ctx.sessionId !== input.effectiveMcpRequestScope.effectiveMcpSessionId
+        ) {
+          return toolResult(
+            Object.freeze({
+              ok: false as const,
+              state: "failed" as const,
+              toolName: record.name,
+              requestId: "effective-mcp-scope-rejected",
+              executorReached: false,
+              error: Object.freeze({
+                code: "invalid_invocation_context",
+                detailCode: "mcp_session_binding_mismatch",
+                message: "MCP request context changed after ingress binding",
+              }),
+            }),
+          );
+        }
         const mcpSessionId =
-          ctx.sessionId ??
-          input.authenticated.authContext.session.mcpSessionId ??
-          `stateless-request:${input.requestScopeId}`;
-        const confirmationSessionId =
-          input.authenticated.authContext.session.mcpSessionId ??
-          ctx.sessionId ??
-          input.authenticated.authContext.session.sessionId;
+          input.effectiveMcpRequestScope.effectiveMcpSessionId;
+        input.observeEffectiveScope?.(
+          "dispatch",
+          input.effectiveMcpRequestScope,
+        );
+        let carrierRecoveryInvocationId: string | undefined;
+        if (record.name === C39_PAYLOAD_RECOVERY_CALLABLE) {
+          const raw = call.args as {
+            readonly origin_invocation_id?: unknown;
+            readonly expected_result_digest?: unknown;
+          };
+          if (
+            input.payloadRecovery === undefined ||
+            typeof raw.origin_invocation_id !== "string" ||
+            typeof raw.expected_result_digest !== "string"
+          ) {
+            return toolResult(Object.freeze({
+              ok: false as const, state: "failed" as const, toolName: record.name,
+              requestId: "correlated-recovery-guarded", executorReached: false,
+              error: Object.freeze({ code: "recovery_unavailable" as const }),
+            }));
+          }
+          try {
+            const route = await input.invocationRouteFor(
+              input.authenticated,
+              mcpSessionId,
+              input.effectiveMcpRequestScope,
+            );
+            const claim = await input.payloadRecovery.admit({
+              tenantId: input.authenticated.authContext.actor.tenantId,
+              userId: input.authenticated.authContext.actor.userId,
+              effectiveMcpSessionId: mcpSessionId,
+              rsid: route.rsid,
+              originInvocationId: raw.origin_invocation_id,
+              originResultDigest: raw.expected_result_digest as `sha256:${string}`,
+            });
+            if (claim.kind === "guarded" || claim.record === undefined) {
+              return toolResult(Object.freeze({
+                ok: false as const, state: "failed" as const, toolName: record.name,
+                requestId: "correlated-recovery-guarded", executorReached: false,
+                error: Object.freeze({ code: "recovery_unavailable" as const }),
+              }));
+            }
+            carrierRecoveryInvocationId = claim.record.carrierRecoveryInvocationId;
+            if (claim.kind === "completed") {
+              const replay = await input.payloadRecovery.replayCompleted({
+                tenantId: input.authenticated.authContext.actor.tenantId,
+                userId: input.authenticated.authContext.actor.userId,
+                effectiveMcpSessionId: mcpSessionId,
+                effectiveMcpRequestScope:
+                  input.effectiveMcpRequestScope,
+                rsid: route.rsid,
+                carrierRecoveryInvocationId,
+              });
+              if (replay === null) {
+                return toolResult(Object.freeze({
+                  ok: false as const, state: "failed" as const, toolName: record.name,
+                  requestId: "correlated-recovery-guarded", executorReached: false,
+                  error: Object.freeze({ code: "recovery_unavailable" as const }),
+                }));
+              }
+              return modeAToolResult(Object.freeze({
+                ok: true,
+                state: "completed",
+                toolName: record.name,
+                result: replay,
+              }));
+            }
+          } catch {
+            return toolResult(Object.freeze({
+              ok: false as const, state: "failed" as const, toolName: record.name,
+              requestId: "correlated-recovery-guarded", executorReached: false,
+              error: Object.freeze({ code: "recovery_unavailable" as const }),
+            }));
+          }
+        }
         const outcome = await trackPromise(
           input.inflightOperations,
           dispatcher.dispatch({
@@ -714,28 +1019,90 @@ function createSessionServer(input: {
             args: call.args,
             auth: input.authenticated.authContext,
             mcpSessionId,
-            confirmationSessionId,
+            confirmationSessionId: mcpSessionId,
+            effectiveMcpRequestScope: input.effectiveMcpRequestScope,
+            ...(carrierRecoveryInvocationId === undefined
+              ? {}
+              : { invocationIdOverride: carrierRecoveryInvocationId }),
             ...(call.confirmation === undefined
               ? {}
               : { confirmation: call.confirmation }),
-            resolveRoute: (authContext) =>
-              input.invocationRouteFor(
+            resolveRoute: (authContext) => {
+              if (
+                authContext.principalKey !==
+                input.effectiveMcpRequestScope.principalKey
+              ) {
+                throw new GatewayInvocationContextError(
+                  "mcp_session_binding_mismatch",
+                  "effective MCP route authority principal changed before dispatch",
+                );
+              }
+              input.observeEffectiveScope?.(
+                "route",
+                input.effectiveMcpRequestScope,
+              );
+              return input.invocationRouteFor(
                 Object.freeze({ ...input.authenticated, authContext }),
                 mcpSessionId,
-              ),
+                input.effectiveMcpRequestScope,
+              );
+            },
           }),
         );
+        if (outcome.state === "omitted_payload") {
+          if (input.payloadRecovery === undefined || !input.payloadRecovery.ready()) {
+            return toolResult(Object.freeze({
+              ok: false as const, state: "failed" as const, toolName: record.name,
+              requestId: "correlated-recovery-guarded", executorReached: true,
+              error: Object.freeze({ code: "recovery_unavailable" as const }),
+            }));
+          }
+          try {
+            const route = await input.invocationRouteFor(
+              input.authenticated,
+              mcpSessionId,
+              input.effectiveMcpRequestScope,
+            );
+            const claim = await input.payloadRecovery.admit({
+              tenantId: input.authenticated.authContext.actor.tenantId,
+              userId: input.authenticated.authContext.actor.userId,
+              effectiveMcpSessionId: mcpSessionId,
+              rsid: route.rsid,
+              originInvocationId: outcome.originInvocationId,
+              originResultDigest: outcome.expectedResultDigest,
+            });
+            if (claim.kind === "guarded") throw new Error("guarded");
+            return omittedPayloadCoordinateResult(Object.freeze({
+              code: OMITTED_PAYLOAD_COORDINATE_CODE,
+              origin_invocation_id: outcome.originInvocationId,
+              expected_result_digest: outcome.expectedResultDigest,
+              recovery_tool: OMITTED_PAYLOAD_COORDINATE_RECOVERY_TOOL,
+              recovery_tool_version: OMITTED_PAYLOAD_COORDINATE_RECOVERY_TOOL_VERSION,
+              carrier_version: OMITTED_PAYLOAD_COORDINATE_CARRIER_VERSION,
+            }));
+          } catch {
+            return toolResult(Object.freeze({
+              ok: false as const, state: "failed" as const, toolName: record.name,
+              requestId: "correlated-recovery-guarded", executorReached: true,
+              error: Object.freeze({ code: "recovery_unavailable" as const }),
+            }));
+          }
+        }
         if (input.resourceAuthority === undefined) {
           return toolResult(outcome);
         }
-        const resourceScope = resourceScopeFromAuth(
+        const resourceScope = resourceScopeFromEffectiveMcpRequestScope(
           input.authenticated.authContext,
-          input.authenticated.authContext.session.mcpSessionId ??
-            input.authenticated.authContext.session.sessionId,
+          input.effectiveMcpRequestScope,
         );
         try {
+          input.observeEffectiveScope?.(
+            "result",
+            input.effectiveMcpRequestScope,
+          );
           const bounded = await input.resourceAuthority.boundResult({
             scope: resourceScope,
+            effectiveMcpRequestScope: input.effectiveMcpRequestScope,
             value: outcome as unknown as GatewayJsonValue,
             maxInlineBytes: input.resourceMaxInlineResultBytes,
           });
@@ -744,22 +1111,8 @@ function createSessionServer(input: {
             outcome,
             content as unknown as Readonly<Record<string, unknown>>,
           );
-        } catch (error) {
-          return toolResult(
-            outcome,
-            Object.freeze({
-              ok: false,
-              state: outcome.state,
-              toolName: outcome.toolName,
-              requestId: outcome.requestId,
-              executorOutcomePreserved: true,
-              error: Object.freeze({
-                code: "result_delivery_unavailable",
-                message: error instanceof Error ? error.message : String(error),
-              }),
-            }),
-            true,
-          );
+        } catch {
+          return postDispatchDeliveryFailureResult(outcome);
         }
       },
     );
@@ -809,7 +1162,7 @@ export function createNorthMcpHttpHandler(
   function modeASessionFor(
     authenticated: AuthorizedNorthMcpRequest,
     catalogView: EntitledCatalogView,
-    mcpConnectionId: string | null,
+    effectiveMcpRequestScope: EffectiveMcpRequestScopeV1,
   ): ModeADiscoverySession | undefined {
     if (options.modeA === undefined) {
       return undefined;
@@ -824,9 +1177,7 @@ export function createNorthMcpHttpHandler(
       }
     }
 
-    const key = `${authBindingKey(authenticated)}\0${
-      mcpConnectionId ?? "initial-or-legacy"
-    }`;
+    const key = effectiveScopeKey(effectiveMcpRequestScope);
     const capabilityIndexDigest = catalogView.capabilityIndexDigest();
     const current = modeASessions.get(key);
     if (
@@ -920,10 +1271,30 @@ export function createNorthMcpHttpHandler(
       ) {
         throw new Error("invalid MCP connection identifier");
       }
+      const effectiveMcpRequestScope = createEffectiveMcpRequestScopeV1({
+        principalKey: authenticated.principalKey,
+        transportMcpSessionId: mcpConnectionId,
+        identityMcpSessionId: authenticated.authContext.session.mcpSessionId,
+        nowMs: Date.now(),
+      });
+      if (options.modeA !== undefined) {
+        observeEffectiveScopeForTest(
+          options,
+          "mode_a",
+          effectiveMcpRequestScope,
+        );
+      }
+      if (options.resourceAuthority !== undefined) {
+        observeEffectiveScopeForTest(
+          options,
+          "resource",
+          effectiveMcpRequestScope,
+        );
+      }
       const modeASession = modeASessionFor(
         authenticated,
         catalogView,
-        mcpConnectionId,
+        effectiveMcpRequestScope,
       );
       return createSessionServer({
         catalogView,
@@ -940,9 +1311,14 @@ export function createNorthMcpHttpHandler(
         ...(options.resourceAuthority === undefined
           ? {}
           : { resourceAuthority: options.resourceAuthority }),
+        ...(options.payloadRecovery === undefined
+          ? {}
+          : { payloadRecovery: options.payloadRecovery }),
         notifyToolsChanged: () => mcpHandler.notify.toolsChanged(),
         registry: options.registry,
-        requestScopeId: randomUUID(),
+        effectiveMcpRequestScope,
+        observeEffectiveScope: (boundary, scope) =>
+          observeEffectiveScopeForTest(options, boundary, scope),
         verifyRequestState: requestStateCodec.verify,
       });
     },

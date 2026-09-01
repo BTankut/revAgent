@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.RegularExpressions;
 
 namespace RevAgent.Bridge.Gateway.Connection;
@@ -38,13 +40,47 @@ internal sealed class RbpDeviceCredential
         }
 
         MachineFingerprint = machineFingerprint;
+        CredentialBindingDigest = CreateBindingDigest(
+            DeviceId,
+            _token,
+            MachineFingerprint);
     }
 
     internal string DeviceId { get; }
 
     internal string MachineFingerprint { get; }
 
+    internal string CredentialBindingDigest { get; }
+
     internal string CreateAuthorizationHeader() => "Bearer " + _token;
+
+    internal static string CreateBindingDigest(
+        string deviceId,
+        string token,
+        string machineFingerprint)
+    {
+        byte[] deviceBytes = Encoding.UTF8.GetBytes(deviceId);
+        byte[] tokenBytes = Encoding.UTF8.GetBytes(token);
+        byte[] claimBytes = Encoding.UTF8.GetBytes(machineFingerprint);
+        try
+        {
+            using IncrementalHash hash =
+                IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+            hash.AppendData(deviceBytes);
+            hash.AppendData(stackalloc byte[] { 0 });
+            hash.AppendData(tokenBytes);
+            hash.AppendData(stackalloc byte[] { 0 });
+            hash.AppendData(claimBytes);
+            return Convert.ToHexString(hash.GetHashAndReset())
+                .ToLowerInvariant();
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(deviceBytes);
+            CryptographicOperations.ZeroMemory(tokenBytes);
+            CryptographicOperations.ZeroMemory(claimBytes);
+        }
+    }
 
     public override string ToString() =>
         $"RbpDeviceCredential(DeviceId={DeviceId}, Token=[REDACTED])";

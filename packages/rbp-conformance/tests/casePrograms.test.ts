@@ -119,6 +119,41 @@ describe("exact forty-case control and observation catalog", () => {
     }
   });
 
+  it("lets C12 observe terminals through the invocation timeout boundary", () => {
+    const program = earlyProductionCaseProgram("O1-C12");
+    for (const stepId of ["o1-c12.await-cross-rsid", "o1-c12.await-first"]) {
+      expect(program.steps.find((step) => step.stepId === stepId)).toMatchObject({
+        action: "await_condition",
+        arguments: { common: { timeoutMs: 35_000 } },
+      });
+    }
+  });
+
+  it("pins C29 to an exact atomic-session capability grant before dispatch", () => {
+    const program = CASE_CONTROL_OBSERVATION_MAP.get("O1-C29");
+    expect(program).toBeDefined();
+    expect(program!.steps[0]).toMatchObject({
+      channel: "parent_harness",
+      action: "restart_case_stack",
+      arguments: {
+        common: {
+          startupOverrides: {
+            sessionCapabilities: ["batch_atomic", "doc_context_cached_v1"],
+          },
+        },
+      },
+    });
+    expect(program!.steps.find(({ stepId }) => stepId === "o1-c29.await-register"))
+      .toMatchObject({
+        action: "await_condition",
+        arguments: {
+          common: {
+            grantedSessionCapabilities: ["batch_atomic", "doc_context_cached_v1"],
+          },
+        },
+      });
+  });
+
   it("maps all cases and all 167 assertions in canonical order", () => {
     expect([...CASE_CONTROL_OBSERVATION_MAP.keys()]).toEqual(canonicalManifest.cases.map(({ id }) => id));
     const probes = [...CASE_CONTROL_OBSERVATION_MAP.values()].flatMap(({ assertionProbes }) => assertionProbes);
@@ -129,6 +164,23 @@ describe("exact forty-case control and observation catalog", () => {
     expect(probes.every(({ evaluationOwner, operator, expected }) =>
       evaluationOwner === "parent_runner" && operator === "canonical_subvector" && expected === true)).toBe(true);
     expect(JSON.stringify(probes)).not.toContain("passed");
+  });
+
+  it("grants carriers only to the five cases whose frozen oracles require them", () => {
+    const carrierCases = new Set(["O1-C01", "O1-C15", "O1-C32", "O1-C39", "O1-C40"]);
+    const expected = [
+      "journal_v1", "chunked_results", "artifact_result_v1", "transport_streamable_http",
+    ];
+    for (const program of CASE_CONTROL_OBSERVATION_MAP.values()) {
+      const startup = (program.steps[0]!.arguments as {
+        readonly common?: { readonly startupOverrides?: { readonly connectionCapabilities?: readonly string[] } };
+      }).common?.startupOverrides?.connectionCapabilities;
+      if (carrierCases.has(program.caseId)) {
+        expect(startup, program.caseId).toEqual(expected);
+      } else {
+        expect(startup, program.caseId).toBeUndefined();
+      }
+    }
   });
 
   it("uses only exact T3/T4/T5 controls and has resolvable same-case observation sources", () => {
@@ -394,6 +446,19 @@ describe("exact forty-case control and observation catalog", () => {
           parentTimeoutMs: 90_000,
         },
       ]);
+    const carrierCapabilities = [
+      "journal_v1", "chunked_results", "artifact_result_v1", "transport_streamable_http",
+    ];
+    expect(c32.steps
+      .filter(({ action, stepId }) =>
+        action === "restart_case_stack" && stepId !== "o1-c32.resource-baseline-start")
+      .map(({ stepId, arguments: input }) => ({
+        stepId,
+        connectionCapabilities: input.common?.startupOverrides?.connectionCapabilities,
+      }))).toEqual([
+        "o1-c32.isolated-stack",
+        ...vectors.slice(1).map((vector) => `o1-c32.${vector}.restart-stack`),
+      ].map((stepId) => ({ stepId, connectionCapabilities: carrierCapabilities })));
     expect(c32.steps.find(
       ({ stepId }) => stepId === "o1-c32.resource-baseline-start",
     )?.captures).toEqual([{
