@@ -2359,3 +2359,25 @@ M4 acceptance ledger synchronization | `MASTER_PLAN.md` M4 row | milestone owner
 This scope record precedes the documentation-only acceptance synchronization.
 It authorizes neither product work nor a deployment, release, NAS publication,
 pilot, fleet cutover, or M5 implementation.
+
+## EU-00 — M4 milestone-owner acceptance (2026-09-01)
+
+**Decision:** **A. ACCEPT M4 with the recorded evidence ceiling.**
+
+**Protected-main acceptance anchor:**
+`fcf764e5c1149ebb425553fadef1265137f5d70d`.
+
+The authoritative acceptance evidence is
+[WP12_WP13_REMEDIATION_CLOSURE.md](WP12_WP13_REMEDIATION_CLOSURE.md). It records
+the M4 read, confirm-class write, originating preview, confirmation, commit,
+independent readback, restore to the original value, and no persistent RVT
+modification as satisfied.
+
+This acceptance preserves the stated evidence ceiling: live request-argument
+manifests are not retained, and the installed runtime was not mechanically
+bound to engineering SHA `029a164b8f9395c76052de65717f686b32d83234`.
+
+This forward pointer supersedes only the current M4 ledger state. Historical
+session records remain intact. Accepting M4 does not authorize deployment,
+release, NAS publication, pilot, fleet cutover, or M5 implementation; M5 through
+M10 remain unchanged.
