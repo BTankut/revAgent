@@ -7,7 +7,8 @@ to a **Bridge** running on the user's workstation, which drives a **Revit add-in
 against the live model. The `README.md` at the repository root documents the
 *legacy* workstation package; the migration is tracked here.
 
-**State as of `main` = `422b6862`** (2026-08-20).
+**Programme state synchronized through protected-main M4 acceptance anchor
+**`fcf764e5c1149ebb425553fadef1265137f5d70d`** (2026-09-01).**
 
 | Milestone | Subject | State |
 | --- | --- | --- |
