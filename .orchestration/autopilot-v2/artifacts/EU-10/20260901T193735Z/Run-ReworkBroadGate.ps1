@@ -13,12 +13,14 @@ $nodeExe = Join-Path $NodeBin "node.exe"
 $nodeVersion = (& $nodeExe --version).Trim()
 $npmVersion = (& $nodeExe "C:\Program Files\nodejs\node_modules\npm\bin\npm-cli.js" --version).Trim()
 $psi = [System.Diagnostics.ProcessStartInfo]::new()
-$psi.FileName = "C:\Program Files\nodejs\npm.cmd"
+$npmCli = "C:\Program Files\nodejs\node_modules\npm\bin\npm-cli.js"
+$psi.FileName = $nodeExe
 $psi.WorkingDirectory = $RepoRoot
 $psi.UseShellExecute = $false
 $psi.RedirectStandardOutput = $true
 $psi.RedirectStandardError = $true
 $psi.CreateNoWindow = $true
+$psi.ArgumentList.Add($npmCli)
 $psi.ArgumentList.Add("test")
 $psi.Environment["Path"] = "$NodeBin;$([Environment]::GetEnvironmentVariable('Path'))"
 $process = [System.Diagnostics.Process]::new()
