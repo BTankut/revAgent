@@ -31,6 +31,6 @@ secret boundary through a separately approved milestone rather than reusing this
 
 EU-10 tracks the RES-22 recommended Keycloak-in-Compose choice. The realm export contains no user, password, client secret, or production credential. The Gateway remains provider-neutral: it consumes only issuer, audience/client id, and JWKS URI through `OIDC_*` configuration and validates bearer JWTs as an OAuth resource server.
 
-The checked-in `start-dev` command is a bounded Compose/integration choice for M5 evidence; it is not production deployment approval. Production hardening, secrets, DNS, host provisioning, backups, and dispatch remain later gated work. An eventual Entra selection changes the deployment adapter and `OIDC_*` values, not the Gateway identity contract.
+The checked-in `start-dev` command is a bounded Compose/integration choice for M5 evidence; it is not production deployment approval. The bootstrap credential is read from the host-only file selected by `KEYCLOAK_BOOTSTRAP_CREDENTIAL_FILE`; it is never a Compose environment literal or tracked value. Production hardening, secrets, DNS, host provisioning, backups, and dispatch remain later gated work. An eventual Entra selection changes the deployment adapter and `OIDC_*` values, not the Gateway identity contract.
 
 The Cloudflare tunnel, production secret files, host provisioning, backups, and deployment automation belong to later WP5 tasks and are not part of W1-6.

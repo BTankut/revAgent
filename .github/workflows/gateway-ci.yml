@@ -69,14 +69,20 @@ jobs:
           echo "EU10_KEYCLOAK_ISSUER=http://127.0.0.1:58080/identity/realms/revagent" >> "$GITHUB_ENV"
           echo "EU10_KEYCLOAK_ADMIN_USERNAME=eu10admin" >> "$GITHUB_ENV"
           echo "EU10_KEYCLOAK_ADMIN_PASSWORD=$admin_password" >> "$GITHUB_ENV"
-          docker run --rm -d --name revagent-eu10-keycloak \
-            -p 127.0.0.1:58080:8080 \
-            -e KC_BOOTSTRAP_ADMIN_USERNAME=eu10admin \
-            -e KC_BOOTSTRAP_ADMIN_PASSWORD="$admin_password" \
-            -e KC_HTTP_RELATIVE_PATH=/identity \
-            -e KC_HOSTNAME=http://127.0.0.1:58080/identity \
-            -v "$GITHUB_WORKSPACE/deploy/phase1/keycloak/realm-revagent.json:/opt/keycloak/data/import/realm-revagent.json:ro" \
-            quay.io/keycloak/keycloak:26.4.7 start-dev --import-realm
+          credential_file="$RUNNER_TEMP/eu10-keycloak-bootstrap"
+          keycloak_data="$RUNNER_TEMP/eu10-keycloak-data"
+          printf '%s' "$admin_password" > "$credential_file"
+          chmod 600 "$credential_file"
+          mkdir -p "$keycloak_data"
+          export KEYCLOAK_BOOTSTRAP_CREDENTIAL_FILE="$credential_file"
+          export KEYCLOAK_DATA_HOST_PATH="$keycloak_data"
+          export KEYCLOAK_ADMIN_USERNAME=eu10admin
+          docker compose \
+            --project-name revagent-eu10-ci \
+            --env-file deploy/phase1/.env.example \
+            --file deploy/phase1/docker-compose.yml \
+            --file deploy/phase1/keycloak/docker-compose.test.yml \
+            up --detach keycloak
           for attempt in $(seq 1 60); do
             if curl --fail --silent \
               http://127.0.0.1:58080/identity/realms/revagent/.well-known/openid-configuration \

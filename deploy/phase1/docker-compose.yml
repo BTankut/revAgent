@@ -73,10 +73,10 @@ services:
   keycloak:
     image: quay.io/keycloak/keycloak:26.4.7
     restart: unless-stopped
+    entrypoint: ["/bin/sh", "/opt/revagent/start-keycloak.sh"]
     command: ["start-dev", "--import-realm"]
     environment:
       KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN_USERNAME:?set KEYCLOAK_ADMIN_USERNAME}
-      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?set KEYCLOAK_ADMIN_PASSWORD}
       KC_HEALTH_ENABLED: "true"
       KC_HOSTNAME: https://${GATEWAY_DOMAIN}/identity
       KC_HTTP_RELATIVE_PATH: /identity
@@ -87,6 +87,9 @@ services:
         source: ${KEYCLOAK_DATA_HOST_PATH:-/opt/revagent/data/keycloak}
         target: /opt/keycloak/data
       - ./keycloak/realm-revagent.json:/opt/keycloak/data/import/realm-revagent.json:ro
+      - ./keycloak/start-keycloak.sh:/opt/revagent/start-keycloak.sh:ro
+    secrets:
+      - keycloak_bootstrap_credential
     security_opt:
       - no-new-privileges:true
     networks:
@@ -122,3 +125,7 @@ networks:
   edge:
   data:
     internal: true
+
+secrets:
+  keycloak_bootstrap_credential:
+    file: ${KEYCLOAK_BOOTSTRAP_CREDENTIAL_FILE:?set KEYCLOAK_BOOTSTRAP_CREDENTIAL_FILE}
