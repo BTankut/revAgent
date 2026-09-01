@@ -21,6 +21,7 @@
     "test": "npm run build && npm run build --workspace @revagent/addin-loopback-fixture && npm run build --workspace @revagent/bridge-simulator && npm run package:handlers && vitest run",
     "collect:registry": "node scripts/collect-registry.mjs",
     "package:handlers": "node scripts/package-handlers.mjs",
+    "migrate:up": "npm run build && node dist/migrate.js",
     "readiness:gw13": "node scripts/run-gw13-readiness.mjs",
     "smoke:gw13": "node scripts/gw13-live-smoke.mjs",
     "start": "node dist/main.js",
@@ -36,13 +37,16 @@
     "@modelcontextprotocol/server": "2.0.0",
     "@revagent/protocol": "0.0.0",
     "ajv": "^8.20.0",
-    "better-sqlite3": "13.0.3",
     "ajv-formats": "^3.0.1",
+    "better-sqlite3": "13.0.3",
     "fastify": "^5.11.0",
+    "jose": "^6.2.10",
+    "pg": "^8.23.0",
     "ws": "^8.20.1",
     "zod": "^4.2.0"
   },
   "devDependencies": {
+    "@types/pg": "^8.23.1",
     "esbuild": "^0.28.1"
   }
 }

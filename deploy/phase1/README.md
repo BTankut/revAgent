@@ -1,6 +1,6 @@
 # revAgent Phase-1 Compose Skeleton
 
-This M0 skeleton fixes the intended service and configuration boundaries without claiming a deployable Gateway image exists yet. It defines the Gateway, PostgreSQL 16, and a loopback-only Caddy origin. Cloudflare terminates public TLS; Caddy accepts plain HTTP only through the host connector at `127.0.0.1:8081`. Large result objects use the Phase-1 filesystem driver on a dedicated host bind mount; MinIO is intentionally absent.
+This skeleton defines the Gateway, PostgreSQL 16, the tracked Keycloak identity choice, and a loopback-only Caddy origin. Cloudflare terminates public TLS; Caddy accepts plain HTTP only through the host connector at `127.0.0.1:8081`. Large result objects use the Phase-1 filesystem driver on a dedicated host bind mount; MinIO is intentionally absent.
 
 ## Validate
 
@@ -27,11 +27,10 @@ installation, subscription, and user session are user responsibilities; revAgent
 and end-to-end compatibility verification. A future in-house-loop profile must add its provider settings and
 secret boundary through a separately approved milestone rather than reusing this M0 skeleton silently.
 
-## DP-5 identity gate
+## DP-5 identity selection
 
-RES-22 recommends Keycloak-in-Compose, but DP-5 is still an operator decision. This skeleton therefore exposes only provider-neutral `OIDC_*` inputs and does not silently provision either Keycloak or Entra ID.
+EU-10 tracks the RES-22 recommended Keycloak-in-Compose choice. The realm export contains no user, password, client secret, or production credential. The Gateway remains provider-neutral: it consumes only issuer, audience/client id, and JWKS URI through `OIDC_*` configuration and validates bearer JWTs as an OAuth resource server.
 
-- If DP-5 confirms Keycloak, add its service, realm-as-code, persistent volume, and heap-tuned settings in a dedicated follow-up PR.
-- If DP-5 selects Entra ID, keep this Compose topology and point the generic OIDC inputs at the verified app registration.
+The checked-in `start-dev` command is a bounded Compose/integration choice for M5 evidence; it is not production deployment approval. Production hardening, secrets, DNS, host provisioning, backups, and dispatch remain later gated work. An eventual Entra selection changes the deployment adapter and `OIDC_*` values, not the Gateway identity contract.
 
 The Cloudflare tunnel, production secret files, host provisioning, backups, and deployment automation belong to later WP5 tasks and are not part of W1-6.

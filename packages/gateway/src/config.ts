@@ -10,10 +10,8 @@
  * variables (this project is developed alongside AI tooling) can be refused
  * boot by a denylist false positive.
  *
- * `OIDC_ISSUER_URL`, `OIDC_CLIENT_ID` and `OIDC_CLIENT_SECRET` are deliberately
- * absent. `deploy/phase1/docker-compose.yml` still injects them for WP4's
- * benefit; the Phase-1 process never reads them, which is what makes "no real
- * OIDC is implemented here" true in code rather than in prose.
+ * EU-10 adds only the provider-neutral resource-server inputs needed to verify
+ * north-MCP bearer tokens. No provider password or client secret is retained.
  */
 
 export const GATEWAY_CONFIG_ENV_ALLOWLIST = Object.freeze([
@@ -26,6 +24,9 @@ export const GATEWAY_CONFIG_ENV_ALLOWLIST = Object.freeze([
   "OBJECT_STORE_ROOT",
   "C39_PROTECTED_OBJECT_KEY_FILE",
   "DATABASE_URL",
+  "OIDC_ISSUER_URL",
+  "OIDC_CLIENT_ID",
+  "OIDC_JWKS_URI",
 ] as const);
 
 export type GatewayConfigEnvName = (typeof GATEWAY_CONFIG_ENV_ALLOWLIST)[number];
@@ -105,6 +106,12 @@ export interface GatewayConfig {
   };
   /** Presence only. The connection string itself is validated and discarded. */
   readonly credentialsPresent: { readonly databaseUrl: boolean };
+  readonly oidc?: {
+    readonly configured: boolean;
+    readonly issuerUrl: string | null;
+    readonly clientId: string | null;
+    readonly jwksUri: string | null;
+  };
   readonly ingress: {
     readonly northMcpMountPath: "/mcp";
     readonly rbpMountPrefix: "/bridge/v1";
@@ -273,6 +280,30 @@ export function loadGatewayConfig(
     }
   }
 
+  const rawOidcIssuer = readValue(env, "OIDC_ISSUER_URL");
+  const oidcClientId = readValue(env, "OIDC_CLIENT_ID") ?? null;
+  const rawOidcJwks = readValue(env, "OIDC_JWKS_URI");
+  let oidcIssuerUrl: string | null = null;
+  let oidcJwksUri: string | null = null;
+  for (const [name, raw, assign] of [
+    ["OIDC_ISSUER_URL", rawOidcIssuer, (value: string) => { oidcIssuerUrl = value; }],
+    ["OIDC_JWKS_URI", rawOidcJwks, (value: string) => { oidcJwksUri = value; }],
+  ] as const) {
+    if (raw === undefined) continue;
+    try {
+      const parsed = new URL(raw);
+      if ((nodeEnv === "production" || nodeEnv === "preproduction") && parsed.protocol !== "https:") {
+        problems.push(problem(name, "insecure_scheme"));
+      } else assign(parsed.toString());
+    } catch { problems.push(problem(name, "malformed_url")); }
+  }
+  const oidcValues = [oidcIssuerUrl, oidcClientId, oidcJwksUri];
+  if (oidcValues.some((value) => value !== null) && oidcValues.some((value) => value === null)) {
+    for (const [name, value] of [
+      ["OIDC_ISSUER_URL", oidcIssuerUrl], ["OIDC_CLIENT_ID", oidcClientId], ["OIDC_JWKS_URI", oidcJwksUri],
+    ] as const) if (value === null) problems.push(problem(name, "missing_required"));
+  }
+
   if (problems.length > 0) {
     return Object.freeze({
       ok: false as const,
@@ -294,6 +325,12 @@ export function loadGatewayConfig(
         protectedObjectKeyFile,
       }),
       credentialsPresent: Object.freeze({ databaseUrl: databaseUrlPresent }),
+      oidc: Object.freeze({
+        configured: oidcValues.every((value) => value !== null),
+        issuerUrl: oidcIssuerUrl,
+        clientId: oidcClientId,
+        jwksUri: oidcJwksUri,
+      }),
       ingress: Object.freeze({
         northMcpMountPath: "/mcp" as const,
         rbpMountPrefix: "/bridge/v1" as const,
@@ -318,6 +355,7 @@ export const GATEWAY_STARTUP_LOG_FIELD_ALLOWLIST = Object.freeze([
   "objectStoreRoot",
   "protectedObjectKeyFileConfigured",
   "databaseUrlPresent",
+  "oidcConfigured",
   "northMcpMountPath",
   "rbpMountPrefix",
 ] as const);
@@ -335,6 +373,7 @@ export function startupLogFields(
     objectStoreRoot: config.objectStore.root,
     protectedObjectKeyFileConfigured: config.objectStore.protectedObjectKeyFile != null,
     databaseUrlPresent: config.credentialsPresent.databaseUrl,
+    oidcConfigured: config.oidc?.configured ?? false,
     northMcpMountPath: config.ingress.northMcpMountPath,
     rbpMountPrefix: config.ingress.rbpMountPrefix,
   });
