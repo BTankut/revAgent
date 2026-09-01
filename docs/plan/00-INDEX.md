@@ -15,14 +15,17 @@ against the live model. The `README.md` at the repository root documents the
 | M1 | O1/RBP v1.0 freeze | **closed** — tag `rbp/v1.0.0` created and identity-validated 2026-07-31 |
 | M2 | Gateway core / conformance vectors | accepted |
 | M3 | Bridge + add-in live chain | accepted — proven live on a real Revit 2022 workstation |
-| M4 | Pre-production-auth vertical slice | **`in_progress`** |
+| M4 | Pre-production-auth vertical slice | **accepted 2026-09-01 — recorded evidence ceiling retained** |
 
-**Why M4 is still open, precisely.** M4 acceptance names *one read **and one
-confirm-class write*** with originating-preview/approval/commit audit evidence.
-The read is proven end to end through the real chain. The write is not — see
-"already found" below. The `M4-04/B` gate itself is **`passed`** against its own
-seven-gate scope, which contains no write gate. Those two facts are different and
-this repository keeps them apart deliberately.
+**M4 acceptance, precisely.** The milestone owner accepted M4 on 2026-09-01
+with the recorded evidence ceiling. The canonical
+[`WP12_WP13_REMEDIATION_CLOSURE.md`](WP12_WP13_REMEDIATION_CLOSURE.md) records
+the live read, non-committing preview, confirmed temporary write, independent
+readback, verified restore, and byte-identical disposable-model closure. The
+earlier `M4-04/B` gate remains **`passed`** against its distinct seven-gate
+scope. The acceptance retains the closure record's limits: no exact
+request-argument manifests and no mechanical binding of the installed runtime
+to engineering SHA `029a164b...`.
 
 ---
 
@@ -98,10 +101,10 @@ exist yet.
 - **The single-callable entitlement (finding 9)** is an **M2 scaffold**, not a
   defect. M4 correctly built transport, identity, secret handling and the client
   path *around* it.
-- **`M4-WRITE-CONFIRM`** — the missing confirm-class write. It is recommended,
-  not decided, that it be sequenced with the M5 OAuth/entitlement lane rather than
-  back-fitted onto a pre-production scaffold. Widening an entitlement to make a
-  gate pass is a change this project declined to make under gate pressure.
+- **`M4-WRITE-CONFIRM`** — this was outside the historical `M4-04/B` seven-gate
+  scope. The later WP-12 / WP-13 closure records the accepted M4 temporary
+  confirm-class write and restoration; no entitlement widening was made under
+  gate pressure.
 - **`RES-30`** is **two-thirds** proven: real Gateway token exchange and
   revoked-device refusal at handshake are both proven live. Device-token
   persistence across reboot is **not**, and reboot is not authorized by any
@@ -121,10 +124,6 @@ exist yet.
 We have not covered these, and we would rather you spent time here than
 re-deriving the list above:
 
-- **The confirm-class write path has never been executed end to end.** Preview →
-  approval → commit, the originating-preview binding, confirm-token replay
-  refusal, and the audit chain are implemented and unit-tested but have never run
-  against a live Revit document.
 - **Concurrency and crash-recovery on the invoke path.** A recorded residual
   window exists: the conflict index knows holds, not in-flight uncertainty, so a
   mutation left `executing` by a crash installs no hold until redelivery.
