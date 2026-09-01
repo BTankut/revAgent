@@ -1754,7 +1754,7 @@ public sealed partial class RbpConnectionCoordinatorTests
 
         Assert.Single(await catalog.ReadAsync());
 
-        currentToken = "rotated-0123456789ABCDEFGHIJKLMNOP";
+        currentToken += "-rotated";
         RbpGatewayTransportException mismatch =
             await Assert.ThrowsAsync<RbpGatewayTransportException>(
                 () => catalog.ReadAsync());
