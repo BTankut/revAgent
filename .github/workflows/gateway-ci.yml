@@ -30,7 +30,7 @@ jobs:
         image: postgres:16
         env:
           POSTGRES_DB: revagent_eu10
-          POSTGRES_PASSWORD: eu10-ci-only
+          POSTGRES_HOST_AUTH_METHOD: trust
           POSTGRES_USER: postgres
         ports:
           - 5432:5432
@@ -41,7 +41,7 @@ jobs:
           --health-retries 10
     env:
       EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-      EU10_DATABASE_URL: postgresql://postgres:eu10-ci-only@127.0.0.1:5432/revagent_eu10
+      EU10_DATABASE_URL: postgresql://postgres@127.0.0.1:5432/revagent_eu10
 
     steps:
       - name: Checkout the exact triggering head
@@ -59,6 +59,34 @@ jobs:
           test "$actual_head" = "$EXPECTED_HEAD_SHA"
           git diff --cached --quiet HEAD --
           git diff --quiet --
+
+      - name: Start local Keycloak OIDC evidence service
+        shell: bash
+        run: |
+          set -euo pipefail
+          admin_password="$(openssl rand -hex 32)"
+          echo "::add-mask::$admin_password"
+          echo "EU10_KEYCLOAK_ISSUER=http://127.0.0.1:58080/identity/realms/revagent" >> "$GITHUB_ENV"
+          echo "EU10_KEYCLOAK_ADMIN_USERNAME=eu10admin" >> "$GITHUB_ENV"
+          echo "EU10_KEYCLOAK_ADMIN_PASSWORD=$admin_password" >> "$GITHUB_ENV"
+          docker run --rm -d --name revagent-eu10-keycloak \
+            -p 127.0.0.1:58080:8080 \
+            -e KC_BOOTSTRAP_ADMIN_USERNAME=eu10admin \
+            -e KC_BOOTSTRAP_ADMIN_PASSWORD="$admin_password" \
+            -e KC_HTTP_RELATIVE_PATH=/identity \
+            -e KC_HOSTNAME=http://127.0.0.1:58080/identity \
+            -v "$GITHUB_WORKSPACE/deploy/phase1/keycloak/realm-revagent.json:/opt/keycloak/data/import/realm-revagent.json:ro" \
+            quay.io/keycloak/keycloak:26.4.7 start-dev --import-realm
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent \
+              http://127.0.0.1:58080/identity/realms/revagent/.well-known/openid-configuration \
+              > /dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs revagent-eu10-keycloak
+          exit 1
 
       - name: Scan tracked history for secrets
         uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2.3.9

@@ -27,6 +27,8 @@ export interface OidcIdentityOptions {
   readonly requiredScopes?: readonly string[];
   readonly keyResolver?: JWTVerifyGetKey;
   readonly now?: () => number;
+  /** Value-free diagnostic seam; never receives a token or claim value. */
+  readonly reportRefusal?: (reason: "missing_bearer" | "jwt_verification" | "claims_identity" | "claims_time" | "claims_authority" | "tenant_repository") => void;
 }
 
 function stableUuid(value: string): string {
@@ -72,7 +74,8 @@ export function createOidcIdentityPort(options: OidcIdentityOptions): IdentityPo
     kind: "oidc" as const,
     async authenticateNorthRequest(input: { readonly authorization: string | undefined }): Promise<GatewayPortResult<AuthContext>> {
       const token = bearer(input.authorization);
-      if (token === null) return refusal();
+      if (token === null) { options.reportRefusal?.("missing_bearer"); return refusal(); }
+      let payload: JWTPayload;
       try {
         const verified = await jwtVerify(token, keyResolver, {
           issuer: options.issuer,
@@ -80,24 +83,33 @@ export function createOidcIdentityPort(options: OidcIdentityOptions): IdentityPo
           currentDate: new Date(now()),
           algorithms: ["RS256"],
         });
-        const payload = verified.payload;
+        payload = verified.payload;
+      } catch {
+        options.reportRefusal?.("jwt_verification");
+        return refusal();
+      }
+      try {
         const tenantId = claimString(payload, "tenant_id");
         const subject = payload.sub ?? null;
         const role = roleFrom(payload);
         const scopes = scopesFrom(payload);
         const requiredScopes = options.requiredScopes ?? ["mcp:read"];
-        if (
-          tenantId === null || subject === null || role === null ||
-          typeof payload.iat !== "number" || typeof payload.exp !== "number" || payload.exp <= payload.iat ||
-          !ROLES.includes(role) || requiredScopes.some((scope) => !scopes.includes(scope))
-        ) return refusal();
+        if (tenantId === null || subject === null || role === null) {
+          options.reportRefusal?.("claims_identity"); return refusal();
+        }
+        if (typeof payload.iat !== "number" || typeof payload.exp !== "number" || payload.exp <= payload.iat) {
+          options.reportRefusal?.("claims_time"); return refusal();
+        }
+        if (!ROLES.includes(role) || requiredScopes.some((scope) => !scopes.includes(scope))) {
+          options.reportRefusal?.("claims_authority"); return refusal();
+        }
         const sessionId = stableUuid(`${options.issuer}\0${tenantId}\0${subject}\0${claimString(payload, "sid") ?? payload.jti ?? "default"}`);
         const principal = await options.repository.upsertOidcPrincipal({
           tenantId, issuer: options.issuer, subject,
           email: claimString(payload, "email"),
           displayName: claimString(payload, "name"), role, sessionId, clientType: "mcp",
         });
-        if (principal === null) return refusal();
+        if (principal === null) { options.reportRefusal?.("tenant_repository"); return refusal(); }
         const issuedAtMs = payload.iat * 1000;
         const expiresAtMs = payload.exp * 1000;
         return Object.freeze({ ok: true as const, value: Object.freeze({
@@ -110,6 +122,7 @@ export function createOidcIdentityPort(options: OidcIdentityOptions): IdentityPo
           issuedAtMs, expiresAtMs,
         }) });
       } catch {
+        options.reportRefusal?.("tenant_repository");
         return refusal();
       }
     },

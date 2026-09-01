@@ -4,7 +4,12 @@ DO $$ BEGIN
   CREATE ROLE revagent_app NOLOGIN;
 EXCEPTION WHEN duplicate_object THEN NULL;
 END $$;
-GRANT revagent_app TO CURRENT_USER;
+DO $$ BEGIN
+  CREATE ROLE revagent_runtime LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION;
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+ALTER ROLE revagent_runtime NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION;
+GRANT revagent_app TO revagent_runtime;
 
 CREATE TABLE IF NOT EXISTS schema_migrations (
   version text PRIMARY KEY,
@@ -31,17 +36,20 @@ CREATE TABLE users (
   status text NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'disabled')),
   created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
   last_login_at timestamptz NOT NULL DEFAULT clock_timestamp(),
-  UNIQUE (tenant_id, oidc_issuer, oidc_subject)
+  UNIQUE (tenant_id, oidc_issuer, oidc_subject),
+  UNIQUE (tenant_id, id)
 );
 
 CREATE TABLE sessions (
   id uuid PRIMARY KEY,
   tenant_id uuid NOT NULL REFERENCES tenants(id),
-  user_id uuid NOT NULL REFERENCES users(id),
+  user_id uuid NOT NULL,
   client_type text NOT NULL CHECK (client_type IN ('web', 'mcp', 'bridge')),
   state text NOT NULL DEFAULT 'active',
   started_at timestamptz NOT NULL DEFAULT clock_timestamp(),
-  last_activity_at timestamptz NOT NULL DEFAULT clock_timestamp()
+  last_activity_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+  UNIQUE (tenant_id, id),
+  FOREIGN KEY (tenant_id, user_id) REFERENCES users(tenant_id, id)
 );
 
 CREATE TABLE devices (
@@ -58,8 +66,8 @@ CREATE TABLE devices (
 CREATE TABLE tool_invocations (
   id uuid PRIMARY KEY,
   tenant_id uuid NOT NULL REFERENCES tenants(id),
-  session_id uuid NOT NULL REFERENCES sessions(id),
-  actor_user_id uuid NOT NULL REFERENCES users(id),
+  session_id uuid NOT NULL,
+  actor_user_id uuid NOT NULL,
   tool_name text NOT NULL,
   tool_version text NOT NULL,
   policy_class text NOT NULL CHECK (policy_class IN ('auto', 'confirm', 'gated')),
@@ -70,8 +78,14 @@ CREATE TABLE tool_invocations (
   started_at timestamptz NOT NULL,
   finished_at timestamptz NOT NULL,
   duration_ms integer NOT NULL CHECK (duration_ms >= 0),
-  UNIQUE (tenant_id, idempotency_key)
+  UNIQUE (tenant_id, idempotency_key),
+  FOREIGN KEY (tenant_id, session_id) REFERENCES sessions(tenant_id, id),
+  FOREIGN KEY (tenant_id, actor_user_id) REFERENCES users(tenant_id, id)
 );
+
+INSERT INTO tenants(id, slug, name)
+VALUES ('10000000-0000-4000-8000-000000000001', 'tenant-1', 'Tenant 1')
+ON CONFLICT (id) DO NOTHING;
 
 GRANT SELECT, INSERT, UPDATE ON tenants, users, sessions, devices, tool_invocations TO revagent_app;
 

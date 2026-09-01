@@ -133,7 +133,7 @@ export class PostgresTenantStore implements GatewayEventSink {
       }
       const paramsDigest = required.paramsDigest.slice("sha256:".length);
       await this.#tenantTransaction(event.tenant_id, async (client) => {
-        await client.query(
+        const written = await client.query<{ id: string }>(
           `INSERT INTO tool_invocations(
              id, tenant_id, session_id, actor_user_id, tool_name, tool_version,
              policy_class, executor, params_digest, outcome, idempotency_key,
@@ -141,13 +141,25 @@ export class PostgresTenantStore implements GatewayEventSink {
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,to_timestamp($12 / 1000.0),to_timestamp($13 / 1000.0),$14)
            ON CONFLICT (tenant_id, idempotency_key) DO UPDATE SET
              outcome = EXCLUDED.outcome, finished_at = EXCLUDED.finished_at,
-             duration_ms = EXCLUDED.duration_ms`,
+             duration_ms = EXCLUDED.duration_ms
+           WHERE tool_invocations.session_id = EXCLUDED.session_id
+             AND tool_invocations.actor_user_id = EXCLUDED.actor_user_id
+             AND tool_invocations.tool_name = EXCLUDED.tool_name
+             AND tool_invocations.tool_version = EXCLUDED.tool_version
+             AND tool_invocations.policy_class = EXCLUDED.policy_class
+             AND tool_invocations.executor = EXCLUDED.executor
+             AND tool_invocations.params_digest = EXCLUDED.params_digest
+             AND tool_invocations.started_at = EXCLUDED.started_at
+           RETURNING id`,
           [event.event_id, event.tenant_id, event.session_id, event.actor.user_id,
             required.toolName, required.toolVersion, required.policyClass,
             required.executor, paramsDigest, required.outcome,
             required.idempotencyKey, required.startedAtMs, required.completedAtMs,
             required.durationMs],
         );
+        if (written.rowCount !== 1) {
+          throw new Error("idempotent tool invocation replay changed immutable fields");
+        }
       });
       return Object.freeze({ ok: true as const, value: undefined });
     } catch {

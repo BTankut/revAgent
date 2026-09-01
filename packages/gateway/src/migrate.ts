@@ -6,7 +6,18 @@ import pg from "pg";
 
 const { Pool } = pg;
 
-export async function migrateUp(databaseUrl: string): Promise<readonly string[]> {
+export interface MigrationOptions {
+  /** Runtime credential supplied out-of-repo; never written to migration SQL. */
+  readonly appPassword: string;
+}
+
+export async function migrateUp(
+  databaseUrl: string,
+  options: MigrationOptions,
+): Promise<readonly string[]> {
+  if (options.appPassword.length < 24 || options.appPassword.length > 512) {
+    throw new Error("revagent runtime database password must be 24-512 characters");
+  }
   const pool = new Pool({ connectionString: databaseUrl, max: 1 });
   const migrationsDirectory = fileURLToPath(new URL("../migrations/", import.meta.url));
   const applied: string[] = [];
@@ -45,6 +56,13 @@ export async function migrateUp(databaseUrl: string): Promise<readonly string[]>
         client.release();
       }
     }
+    const passwordSql = await pool.query<{ sql: string }>(
+      "SELECT format('ALTER ROLE revagent_runtime PASSWORD %L', $1::text) AS sql",
+      [options.appPassword],
+    );
+    const statement = passwordSql.rows[0]?.sql;
+    if (statement === undefined) throw new Error("failed to prepare runtime database credential");
+    await pool.query(statement);
     return Object.freeze(applied);
   } finally {
     await pool.end();
@@ -53,9 +71,13 @@ export async function migrateUp(databaseUrl: string): Promise<readonly string[]>
 
 if (process.argv[1] !== undefined && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
   const databaseUrl = process.env.DATABASE_URL;
+  const appPassword = process.env.REVAGENT_APP_DATABASE_PASSWORD;
   if (databaseUrl === undefined || databaseUrl.trim() === "") {
     throw new Error("DATABASE_URL is required");
   }
-  const applied = await migrateUp(databaseUrl);
+  if (appPassword === undefined || appPassword === "") {
+    throw new Error("REVAGENT_APP_DATABASE_PASSWORD is required");
+  }
+  const applied = await migrateUp(databaseUrl, { appPassword });
   process.stdout.write(`${JSON.stringify({ migrated: applied })}\n`);
 }

@@ -17,7 +17,7 @@ docker compose \
 
 Before an actual deployment, replace `GATEWAY_IMAGE` with an immutable GHCR digest and supply real Postgres and OIDC credentials from the root-owned host environment. The confirmed `revagent-gateway-prod` tunnel (`bb68cbcb-eedf-474e-aaee-145d160ed004`) routes `gateway.revagent.app` to `http://127.0.0.1:8081`. Only Caddy publishes that loopback host port; PostgreSQL remains on an internal Compose network. Do not change `CADDY_ORIGIN_BIND` to a LAN/WAN address: doing so bypasses the Cloudflare ingress and access-policy boundary.
 
-The external `DATABASE_URL` must use the Compose service name `postgres` and credentials matching `POSTGRES_USER`, `POSTGRES_PASSWORD`, and `POSTGRES_DB`. Compose receives sensitive values by environment name; the YAML contains neither secret values nor secret-scanner suppressions.
+`DATABASE_URL` must use the Compose service name `postgres` and the non-owner `revagent_runtime` login. The one-shot migration command uses `DATABASE_MIGRATION_URL` plus `REVAGENT_APP_DATABASE_PASSWORD` to create/rotate that login; neither value is passed to the Gateway service. `POSTGRES_USER` is the migration owner only. All populated values remain in the host-only env file; the YAML and realm export contain no credential values.
 
 ## Phase-1 agent-loop boundary
 
