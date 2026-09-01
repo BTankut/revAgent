@@ -633,8 +633,8 @@ describe("long-lived Bridge JSONL daemon", () => {
         method: "fixture_echo",
       })));
       for (let attempt = 0; attempt < 50; attempt += 1) {
-        const snapshot = await fixtureChannel.send(control(`stalled-chunk-${attempt}`, "snapshot_evidence"));
-        const pending = (snapshot.result as JsonObject).pendingStalls as JsonObject[];
+        const pages = await collectSnapshot(fixtureChannel, `stalled-chunk-${attempt}`);
+        const pending = pages.flatMap((page) => page.pendingStalls as JsonObject[]);
         if (pending.some((entry) => entry.requestId === invocationId)) break;
         if (attempt === 49) throw new Error("Fixture invocation did not stall");
         await new Promise<void>((resolveDelay) => setTimeout(resolveDelay, 10));
