@@ -2350,3 +2350,12 @@ This forward pointer submits the remediation evidence for protected delivery
 review. It does not alter this milestone ledger: M4 remains
 `in_progress / not_submitted` until the milestone owner explicitly changes
 its state.
+
+## EU-00 — M4 acceptance ledger synchronization scope (2026-09-01)
+
+Hedef | Plan satırı | Kabul | Kapsam | Forecast
+M4 acceptance ledger synchronization | `MASTER_PLAN.md` M4 row | milestone owner: **A. ACCEPT M4 with the recorded evidence ceiling.** | docs-only changes to `MASTER_PLAN.md`, `00-INDEX.md`, and this append-only evidence file | 30m
+
+This scope record precedes the documentation-only acceptance synchronization.
+It authorizes neither product work nor a deployment, release, NAS publication,
+pilot, fleet cutover, or M5 implementation.
