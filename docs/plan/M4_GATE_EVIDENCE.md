@@ -2350,3 +2350,20 @@ This forward pointer submits the remediation evidence for protected delivery
 review. It does not alter this milestone ledger: M4 remains
 `in_progress / not_submitted` until the milestone owner explicitly changes
 its state.
+
+## EU-00 — milestone-owner acceptance record (2026-09-01)
+
+Hedef | Plan satırı | Kabul | Kapsam | Forecast
+M4 acceptance | `MASTER_PLAN.md` M4 row | milestone owner: **A. ACCEPT M4 with the recorded evidence ceiling.** | docs-only ledger synchronization in `MASTER_PLAN.md`, `00-INDEX.md`, and this append-only pointer | 30m
+
+The milestone owner accepted M4 on 2026-09-01. The canonical supporting record
+is [WP12_WP13_REMEDIATION_CLOSURE.md](WP12_WP13_REMEDIATION_CLOSURE.md): it
+records the live read, non-committing preview, confirmed temporary write,
+independent readback, verified restore, byte-identical disposable-model
+closure, and the protected-delivery review boundary.
+
+The acceptance retains the closure record's stated evidence ceiling: the live
+results retain task/result data rather than exact request-argument manifests,
+and the installed runtime was not mechanically bound to engineering SHA
+`029a164b8f9395c76052de65717f686b32d83234`. It does not rewrite or erase
+earlier bounded-session records.
