@@ -148,6 +148,8 @@ public sealed class RbpJournalPowerCutTests
     private static readonly TimeSpan RecoveryOpenRetryDelay =
         TimeSpan.FromMilliseconds(25);
 
+    private const int SqliteIoError = 10;
+
     /// <summary>
     /// Kill point (a). Section 12.1 step 1: <c>received</c> plus
     /// <c>params_digest</c> are durable on their own commit, before the first
@@ -577,6 +579,21 @@ public sealed class RbpJournalPowerCutTests
                 // killed harness and the recovery open can briefly contend on
                 // the just-released writer lease. Retry only that exact
                 // handoff; every other recovery failure remains immediate.
+                if (elapsed.Elapsed >= timeout)
+                {
+                    throw;
+                }
+
+                await Task.Delay(RecoveryOpenRetryDelay)
+                    .ConfigureAwait(false);
+            }
+            catch (SqliteException exception)
+                when (exception.SqliteErrorCode == SqliteIoError)
+            {
+                // A forced child-process termination can leave the Windows
+                // filesystem briefly finishing WAL handle teardown. Retry
+                // only SQLite's transient I/O handoff within the same bounded
+                // recovery window; any persistent I/O error still surfaces.
                 if (elapsed.Elapsed >= timeout)
                 {
                     throw;
