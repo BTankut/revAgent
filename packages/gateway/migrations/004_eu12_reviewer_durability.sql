@@ -121,7 +121,19 @@ ALTER TABLE result_refs
   ADD COLUMN IF NOT EXISTS row_count integer CHECK (row_count IS NULL OR row_count >= 0),
   ADD COLUMN IF NOT EXISTS lifecycle text NOT NULL DEFAULT 'active' CHECK (lifecycle IN ('active', 'deleting', 'expired'));
 
-UPDATE result_refs SET ref_label = COALESCE(ref_label, 'R17') WHERE ref_label IS NULL;
+WITH ranked_legacy_refs AS (
+  SELECT id,
+         'R' || (16 + row_number() OVER (
+           PARTITION BY tenant_id, session_id
+           ORDER BY created_at, id
+         ))::text AS deterministic_label
+  FROM result_refs
+  WHERE ref_label IS NULL
+)
+UPDATE result_refs AS ref
+SET ref_label = ranked_legacy_refs.deterministic_label
+FROM ranked_legacy_refs
+WHERE ref.id = ranked_legacy_refs.id;
 ALTER TABLE result_refs
   ALTER COLUMN ref_label SET NOT NULL,
   ADD CONSTRAINT result_refs_ref_label_check CHECK (ref_label ~ '^R[1-9][0-9]{0,5}$'),

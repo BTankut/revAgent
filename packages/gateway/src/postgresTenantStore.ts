@@ -1,14 +1,9 @@
 import pg, { type PoolClient } from "pg";
+
 import type { GatewayRole } from "./authContext.js";
-import type { GatewayJsonObject } from "./dispatch.js";
 import type { GatewayEventEnvelope, GatewayEventSink } from "./events.js";
-import {
-  eventEnvelopeDigest,
-  eventIdempotencyDigest,
-  routeEu12Event,
-  validateEu12EventEnvelope,
-} from "./eventPersistence.js";
 import type { GatewayPortResult } from "./gatewayPorts.js";
+import { PostgresEu12EventPersistence } from "./postgresEu12EventPersistence.js";
 
 const { Pool } = pg;
 
@@ -31,22 +26,22 @@ export interface TenantDeviceSummary {
   readonly status: "active" | "revoked";
 }
 
+/** Identity/read repository plus a delegated single authority for O7 routing. */
 export class PostgresTenantStore implements GatewayEventSink {
-  readonly kind = "postgres" as const;
+  public readonly kind = "postgres" as const;
   readonly #pool: pg.Pool;
+  readonly #events: PostgresEu12EventPersistence;
 
   public constructor(databaseUrl: string) {
     this.#pool = new Pool({ connectionString: databaseUrl });
+    this.#events = new PostgresEu12EventPersistence(databaseUrl);
   }
 
   public async close(): Promise<void> {
-    await this.#pool.end();
+    await Promise.all([this.#pool.end(), this.#events.close()]);
   }
 
-  async #tenantTransaction<T>(
-    tenantId: string,
-    action: (client: PoolClient) => Promise<T>,
-  ): Promise<T> {
+  async #tenantTransaction<T>(tenantId: string, action: (client: PoolClient) => Promise<T>): Promise<T> {
     const client = await this.#pool.connect();
     try {
       await client.query("BEGIN");
@@ -63,29 +58,26 @@ export class PostgresTenantStore implements GatewayEventSink {
     }
   }
 
-  public async upsertOidcPrincipal(input: OidcPrincipalInput): Promise<{
-    readonly userId: string;
-  } | null> {
+  public async upsertOidcPrincipal(input: OidcPrincipalInput): Promise<{ readonly userId: string } | null> {
     return await this.#tenantTransaction(input.tenantId, async (client) => {
       const tenant = await client.query("SELECT id FROM tenants WHERE id = $1 AND status = 'active'", [input.tenantId]);
       if (tenant.rowCount !== 1) return null;
       const user = await client.query<{ id: string }>(
-        `INSERT INTO users(tenant_id, oidc_issuer, oidc_subject, email, display_name, role)
-         VALUES ($1, $2, $3, $4, $5, $6)
-         ON CONFLICT (tenant_id, oidc_issuer, oidc_subject) DO UPDATE SET
-           email = EXCLUDED.email, display_name = EXCLUDED.display_name,
-           role = EXCLUDED.role, last_login_at = clock_timestamp()
+        `INSERT INTO users(tenant_id,oidc_issuer,oidc_subject,email,display_name,role)
+         VALUES($1,$2,$3,$4,$5,$6)
+         ON CONFLICT (tenant_id,oidc_issuer,oidc_subject) DO UPDATE SET
+           email=EXCLUDED.email,display_name=EXCLUDED.display_name,role=EXCLUDED.role,last_login_at=clock_timestamp()
          RETURNING id`,
-        [input.tenantId, input.issuer, input.subject, input.email, input.displayName, input.role],
+        [input.tenantId,input.issuer,input.subject,input.email,input.displayName,input.role],
       );
       const userId = user.rows[0]?.id;
       if (userId === undefined) return null;
       await client.query(
-        `INSERT INTO sessions(id, tenant_id, user_id, client_type)
-         VALUES ($1, $2, $3, $4)
-         ON CONFLICT (id) DO UPDATE SET last_activity_at = clock_timestamp()
-         WHERE sessions.tenant_id = EXCLUDED.tenant_id AND sessions.user_id = EXCLUDED.user_id`,
-        [input.sessionId, input.tenantId, userId, input.clientType],
+        `INSERT INTO sessions(id,tenant_id,user_id,client_type)
+         VALUES($1,$2,$3,$4)
+         ON CONFLICT (id) DO UPDATE SET last_activity_at=clock_timestamp()
+         WHERE sessions.tenant_id=EXCLUDED.tenant_id AND sessions.user_id=EXCLUDED.user_id`,
+        [input.sessionId,input.tenantId,userId,input.clientType],
       );
       return Object.freeze({ userId });
     });
@@ -94,176 +86,33 @@ export class PostgresTenantStore implements GatewayEventSink {
   public async listDevices(auth: { readonly actor: { readonly tenantId: string } }, limit = 32): Promise<readonly TenantDeviceSummary[]> {
     const boundedLimit = Math.max(1, Math.min(limit, 32));
     return await this.#tenantTransaction(auth.actor.tenantId, async (client) => {
-      const result = await client.query<{
-        id: string; machine_name: string; bridge_version: string | null;
-        addin_version: string | null; status: "active" | "revoked";
-      }>(
-        `SELECT id, machine_name, bridge_version, addin_version, status
-         FROM devices ORDER BY machine_name, id LIMIT $1`,
+      const result = await client.query<{ id: string; machine_name: string; bridge_version: string | null; addin_version: string | null; status: "active" | "revoked" }>(
+        `SELECT id,machine_name,bridge_version,addin_version,status FROM devices ORDER BY machine_name,id LIMIT $1`,
         [boundedLimit],
       );
       return Object.freeze(result.rows.map((row) => Object.freeze({
-        deviceId: row.id,
-        machineName: row.machine_name,
-        bridgeVersion: row.bridge_version,
-        addinVersion: row.addin_version,
-        status: row.status,
+        deviceId: row.id, machineName: row.machine_name, bridgeVersion: row.bridge_version,
+        addinVersion: row.addin_version, status: row.status,
       })));
     });
   }
 
   public async emit(event: GatewayEventEnvelope): Promise<GatewayPortResult<void>> {
     try {
-      const validated = validateEu12EventEnvelope(event);
-      await this.#tenantTransaction(validated.tenant_id, async (client) => {
-        const inserted = await this.#writeEnvelope(client, validated);
-        if (!inserted) return;
-        if (routeEu12Event(validated) === "tool_invocations") {
-          await this.#writeToolInvocation(client, validated);
-        } else if (routeEu12Event(validated) === "llm_calls") {
-          await this.#writeMeteringRecord(client, validated);
-        }
-      });
+      await this.#events.write([event]);
       return Object.freeze({ ok: true as const, value: undefined });
     } catch {
-      return Object.freeze({
-        ok: false as const, port: "event_sink" as const, code: "unavailable" as const,
-        message: "tenant audit persistence failed",
-      });
+      return Object.freeze({ ok: false as const, port: "event_sink" as const, code: "unavailable" as const, message: "tenant audit persistence failed" });
     }
-  }
-
-  async #writeEnvelope(client: PoolClient, event: GatewayEventEnvelope): Promise<boolean> {
-    const envelopeDigest = eventEnvelopeDigest(event).slice("sha256:".length);
-    const idempotencyDigest = eventIdempotencyDigest(event).slice("sha256:".length);
-    const payload = event.payload as GatewayJsonObject;
-    const idempotencyKey = typeof payload.idempotency_key === "string" ? payload.idempotency_key : null;
-    const sameId = await client.query<{ tenant_id: string; envelope_digest: string }>(
-      "SELECT tenant_id::text, envelope_digest FROM events WHERE id=$1",
-      [event.event_id],
-    );
-    if (sameId.rowCount === 1) {
-      const prior = sameId.rows[0];
-      if (prior?.tenant_id !== event.tenant_id || prior.envelope_digest !== envelopeDigest) {
-        throw new Error("event_id replay changed immutable event evidence");
-      }
-      return false;
-    }
-    if (idempotencyKey !== null) {
-      const sameKey = await client.query<{ id: string; idempotency_digest: string }>(
-        "SELECT id::text, idempotency_digest FROM events WHERE tenant_id=$1 AND idempotency_key=$2",
-        [event.tenant_id, idempotencyKey],
-      );
-      if (sameKey.rowCount === 1) {
-        if (sameKey.rows[0]?.idempotency_digest !== idempotencyDigest) {
-          throw new Error("idempotency_key replay changed immutable event evidence");
-        }
-        return false;
-      }
-    }
-    await client.query(
-      `INSERT INTO events(
-         id,tenant_id,event_type,occurred_at,recorded_at,source,actor,session_id,
-         turn_id,sequence,payload,envelope_digest,idempotency_digest,idempotency_key)
-       VALUES (
-         $1,$2,$3,$4,$5,$6::jsonb,$7::jsonb,$8,$9,$10,$11::jsonb,$12,$13,$14
-       )`,
-      [event.event_id, event.tenant_id, event.event_type, event.occurred_at,
-        event.recorded_at, JSON.stringify(event.source), JSON.stringify(event.actor),
-        event.session_id ?? null, event.turn_id ?? null, event.seq,
-        JSON.stringify(event.payload), envelopeDigest, idempotencyDigest, idempotencyKey],
-    );
-    return true;
-  }
-
-  async #writeToolInvocation(client: PoolClient, event: GatewayEventEnvelope): Promise<void> {
-    const payload = event.payload as GatewayJsonObject;
-    const required = {
-      idempotencyKey: payload.idempotency_key,
-      toolName: payload.tool_name,
-      toolVersion: payload.tool_version,
-      policyClass: payload.policy_class,
-      executor: payload.executor,
-      paramsDigest: payload.params_digest,
-      outcome: payload.outcome,
-      startedAtMs: payload.started_at_ms,
-      completedAtMs: payload.completed_at_ms,
-      durationMs: payload.duration_ms,
-    };
-    if (event.session_id === undefined || event.actor.user_id === undefined ||
-      !Object.values(required).every((value) => typeof value === "string" || typeof value === "number")) {
-      throw new Error("tool invocation evidence is incomplete");
-    }
-    if (typeof required.paramsDigest !== "string" || !/^sha256:[0-9a-f]{64}$/u.test(required.paramsDigest)) {
-      throw new Error("tool invocation params digest is invalid");
-    }
-    const optionalNumber = (value: unknown): number | null =>
-      typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
-    const written = await client.query<{ id: string }>(
-      `INSERT INTO tool_invocations(
-         id, tenant_id, session_id, actor_user_id, tool_name, tool_version,
-         policy_class, executor, params_digest, outcome, idempotency_key,
-         started_at, finished_at, duration_ms, params_summary, code_summary,
-         request_bytes, response_bytes, event_id)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,to_timestamp($12 / 1000.0),to_timestamp($13 / 1000.0),$14,$15::jsonb,$16::jsonb,$17,$18,$19)
-       ON CONFLICT (tenant_id, idempotency_key) DO UPDATE SET
-         outcome = EXCLUDED.outcome, finished_at = EXCLUDED.finished_at,
-         duration_ms = EXCLUDED.duration_ms,
-         params_summary = EXCLUDED.params_summary, code_summary = EXCLUDED.code_summary,
-         request_bytes = EXCLUDED.request_bytes, response_bytes = EXCLUDED.response_bytes,
-         event_id = COALESCE(tool_invocations.event_id, EXCLUDED.event_id)
-       WHERE tool_invocations.session_id = EXCLUDED.session_id
-         AND tool_invocations.actor_user_id = EXCLUDED.actor_user_id
-         AND tool_invocations.tool_name = EXCLUDED.tool_name
-         AND tool_invocations.tool_version = EXCLUDED.tool_version
-         AND tool_invocations.policy_class = EXCLUDED.policy_class
-         AND tool_invocations.executor = EXCLUDED.executor
-         AND tool_invocations.params_digest = EXCLUDED.params_digest
-         AND tool_invocations.started_at = EXCLUDED.started_at
-       RETURNING id`,
-      [event.event_id, event.tenant_id, event.session_id, event.actor.user_id,
-        required.toolName, required.toolVersion, required.policyClass, required.executor,
-        required.paramsDigest.slice("sha256:".length), required.outcome, required.idempotencyKey,
-        required.startedAtMs, required.completedAtMs, required.durationMs,
-        JSON.stringify(payload.params_summary ?? {}), JSON.stringify(payload.code ?? {}),
-        optionalNumber(payload.request_bytes), optionalNumber(payload.response_bytes), event.event_id],
-    );
-    if (written.rowCount !== 1) throw new Error("idempotent tool invocation replay changed immutable fields");
-  }
-
-  async #writeMeteringRecord(client: PoolClient, event: GatewayEventEnvelope): Promise<void> {
-    const payload = event.payload as GatewayJsonObject;
-    const fields = ["input_tokens", "output_tokens", "cache_read_tokens", "cache_creation_tokens", "duration_ms", "latency_ms", "cost_microusd"] as const;
-    if (event.session_id === undefined || fields.some((field) => typeof payload[field] !== "number" || !Number.isFinite(payload[field] as number) || (payload[field] as number) < 0)) {
-      throw new Error("llm call instrumentation is incomplete");
-    }
-    const requiredText = ["upstream_name", "model_name", "role", "engine_mode", "outcome"] as const;
-    if (requiredText.some((field) => typeof payload[field] !== "string") ||
-      (payload.stop_reason !== null && typeof payload.stop_reason !== "string")) {
-      throw new Error("llm call dimensions are incomplete");
-    }
-    await client.query(
-      `INSERT INTO llm_calls(
-         id,event_id,tenant_id,session_id,turn_id,provider,model,role,engine_mode,
-         input_tokens,output_tokens,cache_read_tokens,cache_creation_input_tokens,
-         duration_ms,latency_ms,stop_reason,outcome,cost,cost_microusd)
-       VALUES ($1,$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
-       ON CONFLICT (event_id) DO NOTHING`,
-      [event.event_id, event.tenant_id, event.session_id, event.turn_id ?? null,
-        payload.upstream_name, payload.model_name, payload.role, payload.engine_mode,
-        payload.input_tokens, payload.output_tokens, payload.cache_read_tokens,
-        payload.cache_creation_tokens, payload.duration_ms, payload.latency_ms,
-        payload.stop_reason, payload.outcome,
-        Number(payload.cost_microusd) / 1_000_000, payload.cost_microusd],
-    );
   }
 
   public async emitBatch(events: readonly GatewayEventEnvelope[]): Promise<GatewayPortResult<void>> {
-    for (const event of events) {
-      const emitted = await this.emit(event);
-      if (!emitted.ok) return emitted;
+    try {
+      await this.#events.write(events);
+      return Object.freeze({ ok: true as const, value: undefined });
+    } catch {
+      return Object.freeze({ ok: false as const, port: "event_sink" as const, code: "unavailable" as const, message: "tenant audit persistence failed" });
     }
-    return Object.freeze({ ok: true as const, value: undefined });
   }
 
   public async flush(): Promise<GatewayPortResult<void>> {

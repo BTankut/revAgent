@@ -382,8 +382,13 @@ export {
 } from "./resultReferenceStore.js";
 export {
   PostgresEu12DataStore,
+  RetentionLeaseError,
+  canonicalDurableReleaseManifest,
   type PostgresEu12DataStoreOptions,
+  type PersistedParityAttribution,
+  type RetentionSurface,
 } from "./postgresEu12DataStore.js";
+export { PostgresEu12EventPersistence } from "./postgresEu12EventPersistence.js";
 export {
   RetentionArchiveRunner,
   parseArchivedEventNdjson,
@@ -414,8 +419,10 @@ export {
 } from "./metricParity.js";
 export {
   Eu12InvocationRecorder,
+  type Eu12InvocationEventWriter,
   type Eu12InvocationInput,
   type Eu12InvocationReceipt,
+  type Eu12InvocationResultWriter,
 } from "./eventResultLifecycle.js";
 export {
   GATEWAY_STORE_CONTRACT_VERSION,

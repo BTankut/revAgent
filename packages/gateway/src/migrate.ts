@@ -9,6 +9,8 @@ const { Pool } = pg;
 export interface MigrationOptions {
   /** Runtime credential supplied out-of-repo; never written to migration SQL. */
   readonly appPassword: string;
+  /** Test-only bounded upgrade point for replaying a historical schema state. */
+  readonly throughVersion?: string;
 }
 
 export interface MigrationCliConfiguration {
@@ -41,6 +43,9 @@ export async function migrateUp(
   if (options.appPassword.length < 24 || options.appPassword.length > 512) {
     throw new Error("revagent runtime database password must be 24-512 characters");
   }
+  if (options.throughVersion !== undefined && !/^\d+_[a-z0-9_]+\.sql$/u.test(options.throughVersion)) {
+    throw new Error("throughVersion must name one migration file");
+  }
   const pool = new Pool({ connectionString: databaseUrl, max: 1 });
   const migrationsDirectory = fileURLToPath(new URL("../migrations/", import.meta.url));
   const applied: string[] = [];
@@ -52,6 +57,7 @@ export async function migrateUp(
     )`);
     const files = (await readdir(migrationsDirectory))
       .filter((name) => /^\d+_[a-z0-9_]+\.sql$/u.test(name))
+      .filter((name) => options.throughVersion === undefined || name <= options.throughVersion)
       .sort();
     for (const file of files) {
       const sql = await readFile(new URL(`../migrations/${file}`, import.meta.url), "utf8");

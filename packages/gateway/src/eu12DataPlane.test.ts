@@ -374,6 +374,7 @@ describe("EU-12 M5 event/result/retention/release/parity vertical", () => {
       events: [tool, connected, disconnected, update, metering],
       devices: [{ tenantId: TENANT_A, deviceId: "device-a", machineName: "A-WS", userId: USER_A, bridgeVersion: "1.2.3", lastSeenAtMs: 1 }],
       currentReleaseByChannel: { pilot: "release-1" },
+      activeTaskCount: 0,
     });
     expect(report.survivingDerivable).toBe(true);
     expect(report.dyingClassified).toBe(true);

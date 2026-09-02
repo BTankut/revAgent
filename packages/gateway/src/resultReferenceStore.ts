@@ -157,6 +157,9 @@ export class ResultReferenceStore {
     readonly scope: ResultReferenceScope;
     readonly payload: GatewayJsonValue;
     readonly idempotencyKey?: string;
+    /** Durable stores persist this link; memory conformance stores deliberately ignore it. */
+    readonly invocationId?: string;
+    readonly refLabel?: string;
     readonly expiresAtMs?: number;
     readonly pageSizeBytes?: number;
   }): Promise<ResultReference> {

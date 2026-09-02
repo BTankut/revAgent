@@ -1,8 +1,23 @@
 import type { GatewayJsonObject, GatewayJsonValue } from "./dispatch.js";
 import type { GatewayEventEnvelope } from "./events.js";
 import { summarizeAuditInput, validateEu12EventEnvelope } from "./eventPersistence.js";
-import type { BoundedEu12EventWriter, Eu12EventWriteReceipt } from "./eventPersistence.js";
-import type { ResultReference, ResultReferenceStore } from "./resultReferenceStore.js";
+import type { Eu12EventWriteReceipt } from "./eventPersistence.js";
+import type { ResultReference, ResultReferenceScope } from "./resultReferenceStore.js";
+
+export interface Eu12InvocationEventWriter {
+  write(events: readonly GatewayEventEnvelope[]): Promise<readonly Eu12EventWriteReceipt[]>;
+}
+
+export interface Eu12InvocationResultWriter {
+  put(input: {
+    readonly scope: ResultReferenceScope;
+    readonly payload: GatewayJsonValue;
+    readonly idempotencyKey?: string;
+    readonly invocationId?: string;
+    readonly refLabel?: string;
+    readonly expiresAtMs?: number;
+  }): Promise<ResultReference>;
+}
 
 export interface Eu12InvocationInput {
   readonly eventId: string;
@@ -42,10 +57,10 @@ export interface Eu12InvocationReceipt {
  * loop. An external client remains responsible for the invocation itself.
  */
 export class Eu12InvocationRecorder {
-  readonly #events: BoundedEu12EventWriter;
-  readonly #results: ResultReferenceStore;
+  readonly #events: Eu12InvocationEventWriter;
+  readonly #results: Eu12InvocationResultWriter;
 
-  public constructor(input: { readonly events: BoundedEu12EventWriter; readonly results: ResultReferenceStore }) {
+  public constructor(input: { readonly events: Eu12InvocationEventWriter; readonly results: Eu12InvocationResultWriter }) {
     this.#events = input.events;
     this.#results = input.results;
   }
@@ -94,6 +109,9 @@ export class Eu12InvocationRecorder {
       scope: { tenantId: input.tenantId, sessionId: input.sessionId },
       payload: input.result,
       idempotencyKey: `result-${input.idempotencyKey}`,
+      invocationId: input.invocationId ?? input.idempotencyKey,
+      // Durable stores allocate R17 then non-colliding labels on the same session.
+      refLabel: undefined,
       expiresAtMs: input.resultExpiresAtMs,
     });
     return Object.freeze({ event, eventWrite, resultRef });

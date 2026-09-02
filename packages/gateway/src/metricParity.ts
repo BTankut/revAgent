@@ -17,6 +17,10 @@ export interface MetricParitySource {
   readonly events: readonly GatewayEventEnvelope[];
   readonly devices: readonly MetricParityDevice[];
   readonly currentReleaseByChannel: Readonly<Record<string, string | undefined>>;
+  /** Derived from typed durable tables when a production store is available. */
+  readonly activeTaskCount?: number;
+  readonly toolUserAttribution?: Readonly<Record<string, Readonly<Record<string, number>>>>;
+  readonly modelUserAttribution?: Readonly<Record<string, Readonly<Record<string, number>>>>;
 }
 
 export interface MetricParityRow {
@@ -84,6 +88,30 @@ function countBy(events: readonly GatewayEventEnvelope[], field: string): Record
     counts[key] = (counts[key] ?? 0) + 1;
   }
   return counts;
+}
+
+function eventToolUserAttribution(events: readonly GatewayEventEnvelope[]): Record<string, Record<string, number>> {
+  const result: Record<string, Record<string, number>> = {};
+  for (const event of events) {
+    const tool = typeof event.payload.tool_name === "string" ? event.payload.tool_name : "unknown";
+    const user = event.actor.user_id ?? event.actor.device_id ?? "unknown";
+    const users = result[tool] ?? {};
+    users[user] = (users[user] ?? 0) + 1;
+    result[tool] = users;
+  }
+  return result;
+}
+
+function eventModelUserAttribution(events: readonly GatewayEventEnvelope[]): Record<string, Record<string, number>> {
+  const result: Record<string, Record<string, number>> = {};
+  for (const event of events) {
+    const model = typeof event.payload.model_name === "string" ? event.payload.model_name : "unknown";
+    const user = event.actor.user_id ?? event.actor.device_id ?? "unknown";
+    const users = result[model] ?? {};
+    users[user] = (users[user] ?? 0) + 1;
+    result[model] = users;
+  }
+  return result;
 }
 
 function eventEvidence(
@@ -178,7 +206,11 @@ export const SURVIVING_METRIC_DEFINITIONS: readonly SurvivingMetricDefinition[] 
   {
     metric: "taskState/activeTask",
     requiredFields: ["tool_invocations.outcome", "tool_invocations.duration_ms", "tool_invocations.request_bytes", "tool_invocations.response_bytes"],
-    derive: (source) => eventEvidence(toolEvents(source), ["outcome", "duration_ms", "request_bytes", "response_bytes"], (events) => asMetricValue({ activeTaskCount: events.filter((event) => event.payload.outcome === "running").length, invocationCount: events.length })),
+    derive: (source) => {
+      const events = toolEvents(source);
+      const valid = events.length > 0 && source.activeTaskCount !== undefined && Number.isSafeInteger(source.activeTaskCount) && source.activeTaskCount >= 0 && events.every((event) => hasFields(event.payload, ["outcome", "duration_ms", "request_bytes", "response_bytes"]));
+      return Object.freeze({ observedCount: events.length, requiredMinimum: 1, value: valid ? asMetricValue({ activeTaskCount: source.activeTaskCount, invocationCount: events.length }) : null, valid });
+    },
   },
   {
     metric: "bridgeUpdateBadges",
@@ -228,7 +260,7 @@ export const SURVIVING_METRIC_DEFINITIONS: readonly SurvivingMetricDefinition[] 
   {
     metric: "toolUsage/commandUsage",
     requiredFields: ["tool_invocations.tool_name", "tool_invocations.duration_ms", "tool_invocations.outcome"],
-    derive: (source) => eventEvidence(toolEvents(source), ["tool_name", "duration_ms", "outcome"], (events) => asMetricValue({ byTool: countBy(events, "tool_name") })),
+    derive: (source) => eventEvidence(toolEvents(source), ["tool_name", "duration_ms", "outcome"], (events) => asMetricValue({ byTool: countBy(events, "tool_name"), byToolUser: source.toolUserAttribution ?? eventToolUserAttribution(events) })),
   },
   {
     metric: "promotion/reconciliation/annotationCandidates",
@@ -245,7 +277,7 @@ export const SURVIVING_METRIC_DEFINITIONS: readonly SurvivingMetricDefinition[] 
   {
     metric: "tokenSpend/latency/costAttribution",
     requiredFields: ["llm_calls.input_tokens", "llm_calls.output_tokens", "llm_calls.cache_read_tokens", "llm_calls.cache_creation_tokens", "llm_calls.latency_ms", "llm_calls.cost_microusd"],
-    derive: (source) => eventEvidence(eventsOf(source, "llm.call"), ["input_tokens", "output_tokens", "cache_read_tokens", "cache_creation_tokens", "latency_ms", "cost_microusd"], (events) => asMetricValue({ inputTokens: events.reduce((sum, event) => sum + Number(event.payload.input_tokens), 0), outputTokens: events.reduce((sum, event) => sum + Number(event.payload.output_tokens), 0), cacheReadTokens: events.reduce((sum, event) => sum + Number(event.payload.cache_read_tokens), 0), cacheCreationTokens: events.reduce((sum, event) => sum + Number(event.payload.cache_creation_tokens), 0), latencyMs: events.reduce((sum, event) => sum + Number(event.payload.latency_ms), 0), costMicrousd: events.reduce((sum, event) => sum + Number(event.payload.cost_microusd), 0) })),
+    derive: (source) => eventEvidence(eventsOf(source, "llm.call"), ["input_tokens", "output_tokens", "cache_read_tokens", "cache_creation_tokens", "latency_ms", "cost_microusd"], (events) => asMetricValue({ inputTokens: events.reduce((sum, event) => sum + Number(event.payload.input_tokens), 0), outputTokens: events.reduce((sum, event) => sum + Number(event.payload.output_tokens), 0), cacheReadTokens: events.reduce((sum, event) => sum + Number(event.payload.cache_read_tokens), 0), cacheCreationTokens: events.reduce((sum, event) => sum + Number(event.payload.cache_creation_tokens), 0), latencyMs: events.reduce((sum, event) => sum + Number(event.payload.latency_ms), 0), costMicrousd: events.reduce((sum, event) => sum + Number(event.payload.cost_microusd), 0), byModelUser: source.modelUserAttribution ?? eventModelUserAttribution(events) })),
   },
 ]);
 

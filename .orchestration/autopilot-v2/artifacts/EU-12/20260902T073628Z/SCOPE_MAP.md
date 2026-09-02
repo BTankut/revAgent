@@ -17,7 +17,8 @@ LLM orchestration loop.
 ## Approved implementation paths
 
 - `packages/gateway/migrations/003_eu12_event_result_retention_parity.sql` and
-  append-only `004_eu12_reviewer_durability.sql`:
+  append-only `004_eu12_reviewer_durability.sql` and
+  `005_eu12_leased_typed_retention.sql`:
   tenant-scoped durable records for unified events, typed audit/metering rows,
   result references, retention runs, archives, and release channels.
 - `packages/gateway/src/events.ts`, `eventPersistence.ts`, and focused tests:
@@ -26,7 +27,8 @@ LLM orchestration loop.
 - `packages/gateway/src/postgresTenantStore.ts` and focused tests: tenant/RLS
   persistence integration required by the EU-12 writer.
 - `packages/gateway/src/resultReferenceStore.ts`, `retentionArchive.ts`,
-  `releaseChannelStore.ts`, `metricParity.ts`, `postgresEu12DataStore.ts`, and
+  `releaseChannelStore.ts`, `metricParity.ts`, `postgresEu12DataStore.ts`,
+  `postgresEu12EventPersistence.ts`, and
   focused tests: result scope,
   paging/expiry, resumable archival, release-channel contract, and mechanical
   surviving/dying metric classification.
