@@ -19,6 +19,16 @@ Before an actual deployment, replace `GATEWAY_IMAGE` with an immutable GHCR dige
 
 `DATABASE_URL` must use the Compose service name `postgres` and the non-owner `revagent_runtime` login. The one-shot migration command uses `DATABASE_MIGRATION_URL` plus `REVAGENT_APP_DATABASE_PASSWORD` to create/rotate that login; neither value is passed to the Gateway service. `POSTGRES_USER` is the migration owner only. All populated values remain in the host-only env file; the YAML and realm export contain no credential values.
 
+Run the one-shot migration without remapping either URL:
+
+```bash
+DATABASE_MIGRATION_URL='postgresql://migration-owner@postgres:5432/revagent' \
+REVAGENT_APP_DATABASE_PASSWORD="$(cat /run/host-only/revagent-runtime-db)" \
+npm run migrate:up --workspace @revagent/gateway
+```
+
+The CLI requires `DATABASE_MIGRATION_URL` and never falls back to `DATABASE_URL`. The runtime password is read from the host-only file into the one-shot process environment and is neither an argument nor a tracked value.
+
 ## Phase-1 agent-loop boundary
 
 RES-23 keeps the Phase-1 agentic loop in the user's existing authorized ChatGPT/Codex Desktop client. The

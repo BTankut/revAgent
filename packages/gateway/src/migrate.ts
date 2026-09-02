@@ -11,6 +11,29 @@ export interface MigrationOptions {
   readonly appPassword: string;
 }
 
+export interface MigrationCliConfiguration {
+  readonly migrationDatabaseUrl: string;
+  readonly appPassword: string;
+}
+
+export function loadMigrationCliConfiguration(
+  env: NodeJS.ProcessEnv,
+): MigrationCliConfiguration {
+  const migrationDatabaseUrl = env.DATABASE_MIGRATION_URL?.trim();
+  const runtimeDatabaseUrl = env.DATABASE_URL?.trim();
+  const appPassword = env.REVAGENT_APP_DATABASE_PASSWORD;
+  if (migrationDatabaseUrl === undefined || migrationDatabaseUrl === "") {
+    throw new Error("DATABASE_MIGRATION_URL is required; DATABASE_URL is runtime-only");
+  }
+  if (runtimeDatabaseUrl !== undefined && runtimeDatabaseUrl !== "" && runtimeDatabaseUrl === migrationDatabaseUrl) {
+    throw new Error("DATABASE_MIGRATION_URL must not reuse DATABASE_URL runtime credentials");
+  }
+  if (appPassword === undefined || appPassword === "") {
+    throw new Error("REVAGENT_APP_DATABASE_PASSWORD is required");
+  }
+  return Object.freeze({ migrationDatabaseUrl, appPassword });
+}
+
 export async function migrateUp(
   databaseUrl: string,
   options: MigrationOptions,
@@ -70,14 +93,7 @@ export async function migrateUp(
 }
 
 if (process.argv[1] !== undefined && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
-  const databaseUrl = process.env.DATABASE_URL;
-  const appPassword = process.env.REVAGENT_APP_DATABASE_PASSWORD;
-  if (databaseUrl === undefined || databaseUrl.trim() === "") {
-    throw new Error("DATABASE_URL is required");
-  }
-  if (appPassword === undefined || appPassword === "") {
-    throw new Error("REVAGENT_APP_DATABASE_PASSWORD is required");
-  }
-  const applied = await migrateUp(databaseUrl, { appPassword });
+  const { migrationDatabaseUrl, appPassword } = loadMigrationCliConfiguration(process.env);
+  const applied = await migrateUp(migrationDatabaseUrl, { appPassword });
   process.stdout.write(`${JSON.stringify({ migrated: applied })}\n`);
 }

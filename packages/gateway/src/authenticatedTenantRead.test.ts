@@ -1,5 +1,5 @@
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { createLocalJWKSet, createRemoteJWKSet, decodeJwt, exportJWK, generateKeyPair, jwtVerify, SignJWT } from "jose";
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -106,7 +106,7 @@ suite("EU-10 authenticated tenant read", () => {
     });
   }
 
-  async function keycloakLogin(): Promise<{ accessToken: string; userId: string; adminToken: string }> {
+  async function keycloakLogin(tenantId: string): Promise<{ accessToken: string; userId: string; adminToken: string }> {
     const issuer = KEYCLOAK_ISSUER!;
     const realmRoot = issuer.slice(0, issuer.lastIndexOf("/realms/"));
     const adminTokenResponse = await fetch(`${realmRoot}/realms/master/protocol/openid-connect/token`, {
@@ -126,7 +126,7 @@ suite("EU-10 authenticated tenant read", () => {
       headers: { authorization: `Bearer ${adminToken}`, "content-type": "application/json" },
       body: JSON.stringify({
         username, enabled: true, email: `${username}@example.test`, emailVerified: true,
-        firstName: "EU10", lastName: "Test", attributes: { tenant_id: [TENANT_A] },
+        firstName: "EU10", lastName: "Test", attributes: { tenant_id: [tenantId] },
       }),
     });
     expect(created.status).toBe(201);
@@ -343,8 +343,13 @@ suite("EU-10 authenticated tenant read", () => {
     expect(crossTenant.rows[0]?.count).toBe(0);
   });
 
-  keycloakIt("discovers real Keycloak, completes PKCE login, uses its token through north MCP, and denies wrong issuer/audience", async () => {
-    const { accessToken, userId, adminToken } = await keycloakLogin();
+  keycloakIt("maps real Keycloak Tenant A/B identities, isolates their north-MCP reads, and denies foreign/wrong authority", async () => {
+    const logins = await Promise.all([
+      keycloakLogin(TENANT_A),
+      keycloakLogin(TENANT_B),
+      keycloakLogin(TENANT_FOREIGN),
+    ]);
+    const [tenantA, tenantB, foreign] = logins;
     const issuer = KEYCLOAK_ISSUER!;
     const discovery = await fetch(`${issuer}/.well-known/openid-configuration`).then(async (response) =>
       await response.json() as { jwks_uri: string });
@@ -354,26 +359,26 @@ suite("EU-10 authenticated tenant read", () => {
       reportRefusal: (reason) => refusalReasons.push(reason),
     });
     try {
-      const claims = decodeJwt(accessToken);
-      expect(claims).toMatchObject({ iss: issuer, tenant_id: TENANT_A, aud: AUDIENCE, sub: expect.any(String) });
-      const realmRoles = (claims.realm_access as { roles?: unknown[] } | undefined)?.roles;
-      expect(Array.isArray(realmRoles)).toBe(true);
-      expect(realmRoles).toContain("user");
-      expect(String(claims.scope).split(" ")).toContain("mcp:read");
-      await expect(jwtVerify(accessToken, createRemoteJWKSet(new URL(discovery.jwks_uri)), {
-        issuer, audience: AUDIENCE, algorithms: ["RS256"],
-      })).resolves.toMatchObject({ payload: { tenant_id: TENANT_A } });
-      await expect(store.upsertOidcPrincipal({
-        tenantId: TENANT_A, issuer, subject: String(claims.sub), email: null,
-        displayName: null, role: "user", sessionId: randomUUID(), clientType: "mcp",
-      })).resolves.toMatchObject({ userId: expect.any(String) });
-      const authenticated = await realIdentity.authenticateNorthRequest({ authorization: `Bearer ${accessToken}` });
-      if (!authenticated.ok) throw new Error(`real Keycloak identity refused at ${refusalReasons.join(",")}`);
-      expect(authenticated.value.actor).toMatchObject({ tenantId: TENANT_A, role: "user" });
+      for (const [login, expectedTenant] of [[tenantA, TENANT_A], [tenantB, TENANT_B]] as const) {
+        const claims = decodeJwt(login.accessToken);
+        expect(claims).toMatchObject({ iss: issuer, tenant_id: expectedTenant, aud: AUDIENCE, sub: expect.any(String) });
+        const realmRoles = (claims.realm_access as { roles?: unknown[] } | undefined)?.roles;
+        expect(Array.isArray(realmRoles)).toBe(true);
+        expect(realmRoles).toContain("user");
+        expect(String(claims.scope).split(" ")).toContain("mcp:read");
+        await expect(jwtVerify(login.accessToken, createRemoteJWKSet(new URL(discovery.jwks_uri)), {
+          issuer, audience: AUDIENCE, algorithms: ["RS256"],
+        })).resolves.toMatchObject({ payload: { tenant_id: expectedTenant } });
+        const authenticated = await realIdentity.authenticateNorthRequest({ authorization: `Bearer ${login.accessToken}` });
+        if (!authenticated.ok) throw new Error(`real Keycloak identity refused at ${refusalReasons.join(",")}`);
+        expect(authenticated.value.actor).toMatchObject({ tenantId: expectedTenant, role: "user" });
+      }
+      await expect(realIdentity.authenticateNorthRequest({ authorization: `Bearer ${foreign.accessToken}` }))
+        .resolves.toMatchObject({ ok: false });
       for (const denied of [
         createOidcIdentityPort({ issuer: `${issuer}/wrong`, audience: AUDIENCE, jwksUri: discovery.jwks_uri, repository: store }),
         createOidcIdentityPort({ issuer, audience: "wrong-audience", jwksUri: discovery.jwks_uri, repository: store }),
-      ]) await expect(denied.authenticateNorthRequest({ authorization: `Bearer ${accessToken}` })).resolves.toMatchObject({ ok: false });
+      ]) await expect(denied.authenticateNorthRequest({ authorization: `Bearer ${tenantA.accessToken}` })).resolves.toMatchObject({ ok: false });
 
       const options = createAuthenticatedTenantReadNorthMcp({
         identity: realIdentity, store,
@@ -382,21 +387,36 @@ suite("EU-10 authenticated tenant read", () => {
         requestStateKey: "eu10-keycloak-request-state-key-32-bytes",
       });
       const endpoint = await startNorthMcpEndpoint({ ...options, host: "127.0.0.1", port: 0 });
-      const client = new Client({ name: "eu10-keycloak-client", version: "1.0.0" });
-      const transport = new StreamableHTTPClientTransport(endpoint.endpoint, {
-        requestInit: { headers: { authorization: `Bearer ${accessToken}` } },
-      });
       try {
-        await client.connect(transport);
-        await expect(client.callTool({ name: "core.bridge.list", arguments: {} })).resolves.toMatchObject({
-          structuredContent: { result: { bounded: true, count: 1 } },
+        for (const [login, machineName] of [[tenantA, "A-WS"], [tenantB, "B-WS"]] as const) {
+          const client = new Client({ name: `eu10-keycloak-${machineName}`, version: "1.0.0" });
+          const transport = new StreamableHTTPClientTransport(endpoint.endpoint, {
+            requestInit: { headers: { authorization: `Bearer ${login.accessToken}` } },
+          });
+          try {
+            await client.connect(transport);
+            await expect(client.callTool({ name: "core.bridge.list", arguments: {} })).resolves.toMatchObject({
+              structuredContent: { result: { bounded: true, count: 1, devices: [{ machineName }] } },
+            });
+          } finally { await transport.close(); }
+        }
+        const response = await fetch(endpoint.endpoint, {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${foreign.accessToken}`,
+            accept: "application/json, text/event-stream",
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} }),
         });
-      } finally { await transport.close(); await endpoint.close(); }
+        expect(response.status).toBe(401);
+      } finally { await endpoint.close(); }
     } finally {
       const realmRoot = issuer.slice(0, issuer.lastIndexOf("/realms/"));
-      await fetch(`${realmRoot}/admin/realms/revagent/users/${userId}`, {
-        method: "DELETE", headers: { authorization: `Bearer ${adminToken}` },
-      });
+      await Promise.all(logins.map(async ({ userId, adminToken }) =>
+        await fetch(`${realmRoot}/admin/realms/revagent/users/${userId}`, {
+          method: "DELETE", headers: { authorization: `Bearer ${adminToken}` },
+        })));
     }
-  }, 30_000);
+  }, 45_000);
 });
