@@ -91,6 +91,6 @@ actions belong to the controller after independent review.
 - Archive preparation and finalization require a non-future trusted `asOf` and
   fail closed before the class leaf's due boundary. A standard-class drop cannot
   remove a same-month lifecycle leaf.
-- `retention-class-postgres-final2.raw.log`: disposable PostgreSQL 16, 8/8;
+- `retention-class-postgres-final3.raw.log`: disposable PostgreSQL 16, 8/8;
   `retention-class-focused-final.raw.log`: 10/10; final typecheck and lint
   logs pass.

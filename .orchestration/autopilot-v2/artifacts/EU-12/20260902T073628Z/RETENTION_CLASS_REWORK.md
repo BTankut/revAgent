@@ -14,9 +14,11 @@
 
 Final local evidence:
 
-- `retention-class-postgres-final2.raw.log`: 8 PostgreSQL 16 tests passed,
+- `retention-class-postgres-final3.raw.log`: 8 PostgreSQL 16 tests passed,
   including mixed-class due, crash/resume/replay, Tenant-B isolation, blank and
   008 upgrade coverage.
 - `retention-class-focused-final.raw.log`: 10 tests passed;
-  `retention-class-typecheck-final2.raw.log` and
-  `retention-class-lint-final2.raw.log`: passed.
+  `retention-class-typecheck-final3.raw.log` and
+  `retention-class-lint-final3.raw.log`: passed.
+- `retention-class-windows-handle-cycle1.raw.log`: 17/17 protected-object
+  conformance tests passed after a bounded Windows handle-release retry.

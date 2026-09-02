@@ -17,6 +17,19 @@ import { EncryptedProtectedObjectStore } from "./protectedObjectStore.js";
 const fingerprint = `sha256:${"a".repeat(64)}`;
 const roots: string[] = [];
 async function root(): Promise<string> { const value = await mkdtemp(path.join(tmpdir(), "revagent-wp12-")); roots.push(value); return value; }
+/** Windows may release a just-closed owner marker asynchronously. */
+async function renameAfterWindowsHandleRelease(source: string, destination: string): Promise<void> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await rename(source, destination);
+      return;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (process.platform !== "win32" || !["EACCES", "EPERM"].includes(code ?? "") || attempt >= 4) throw error;
+      await new Promise<void>((resolve) => { setTimeout(resolve, 25 * (attempt + 1)); });
+    }
+  }
+}
 afterEach(async () => { await Promise.all(roots.splice(0).map(async (value) => rm(value, { recursive: true, force: true }))); });
 
 describe("conformance ephemeral adapters", () => {
@@ -275,7 +288,7 @@ describe("conformance ephemeral adapters", () => {
       tenantId: "tenant_a", storageKey: key, bytes,
       contentType: "application/vnd.revagent.c39.protected-object",
     })).resolves.toMatchObject({ ok: true });
-    await rename(
+    await renameAfterWindowsHandleRelease(
       path.join(location, "protected-objects"),
       path.join(location, "protected-objects-original"),
     );
