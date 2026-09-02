@@ -1,0 +1,52 @@
+{
+  "schema": "revagent.autopilot.eu10-ci-repair/v1",
+  "sourceHead": "3f58cdf400e851d7a3f768d0f55ec39c8cf545f5",
+  "gatewayCi": {
+    "runId": 33563258199,
+    "jobId": 100040476391,
+    "signature": "local Keycloak Compose service did not reach discovery within 60 seconds; failure diagnostics used a non-Compose container name",
+    "rootCause": "Linux bind sources for the UID-1000 Keycloak image were created under the hosted-runner UID and the timeout path queried the wrong container name",
+    "repair": [
+      "chown ephemeral credential file and data directory to UID 1000",
+      "retain restrictive 0400/0700 modes",
+      "read failure diagnostics through docker compose logs keycloak"
+    ]
+  },
+  "engineeringGates": {
+    "runId": 33563258124,
+    "jobId": 100040478813,
+    "signature": "WorkerCompositionWithoutDispatchSurfaceStaysFailClosed normal-stop timeout",
+    "classification": "unrelated flaky timeout; the same job passed the test in its earlier bridge-contract phase",
+    "exactFocusedReproduction": {
+      "test": "RevAgent.Bridge.Tests.Gateway.Connection.RbpConnectionCoordinatorTests.WorkerCompositionWithoutDispatchSurfaceStaysFailClosed",
+      "passed": 1,
+      "failed": 0,
+      "durationMs": 229
+    }
+  },
+  "focusedGatewayAcceptance": {
+    "artifact": "focused-ci-repair.json",
+    "artifactSha256": "13fba9c810e1f0498c5237788f1993300b968f5d3616ed765ce5bc76eff2f11d",
+    "passed": 20,
+    "failed": 0,
+    "pending": 0,
+    "typecheck": "passed",
+    "lint": "passed",
+    "composeConfig": "passed",
+    "realLocalKeycloakDiscovery": "passed"
+  },
+  "gitGuardianOperatorClassification": [
+    {
+      "incidentId": 35029830,
+      "classification": "FALSE POSITIVE",
+      "reason": "environment reference, not a credential"
+    },
+    {
+      "incidentId": 36787721,
+      "classification": "TEST CREDENTIAL/FALSE POSITIVE",
+      "reason": "synthetic loopback-only ephemeral GitHub Actions Postgres value"
+    }
+  ],
+  "gitGuardianDashboardMutationAvailable": false,
+  "historyRewriteAuthorized": false
+}

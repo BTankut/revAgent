@@ -72,8 +72,10 @@ jobs:
           credential_file="$RUNNER_TEMP/eu10-keycloak-bootstrap"
           keycloak_data="$RUNNER_TEMP/eu10-keycloak-data"
           printf '%s' "$admin_password" > "$credential_file"
-          chmod 600 "$credential_file"
           mkdir -p "$keycloak_data"
+          sudo chown 1000:1000 "$credential_file" "$keycloak_data"
+          chmod 0400 "$credential_file"
+          chmod 0700 "$keycloak_data"
           export KEYCLOAK_BOOTSTRAP_CREDENTIAL_FILE="$credential_file"
           export KEYCLOAK_DATA_HOST_PATH="$keycloak_data"
           export KEYCLOAK_ADMIN_USERNAME=eu10admin
@@ -91,7 +93,12 @@ jobs:
             fi
             sleep 1
           done
-          docker logs revagent-eu10-keycloak
+          docker compose \
+            --project-name revagent-eu10-ci \
+            --env-file deploy/phase1/.env.example \
+            --file deploy/phase1/docker-compose.yml \
+            --file deploy/phase1/keycloak/docker-compose.test.yml \
+            logs keycloak
           exit 1
 
       - name: Scan tracked history for secrets
