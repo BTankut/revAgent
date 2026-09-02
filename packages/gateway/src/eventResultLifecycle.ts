@@ -5,6 +5,8 @@ import type { Eu12EventWriteReceipt } from "./eventPersistence.js";
 import type { ResultReference, ResultReferenceScope } from "./resultReferenceStore.js";
 
 export interface Eu12InvocationEventWriter {
+  readonly bounded: true;
+  readonly maxPendingEvents: number;
   write(events: readonly GatewayEventEnvelope[]): Promise<readonly Eu12EventWriteReceipt[]>;
 }
 
@@ -61,6 +63,7 @@ export class Eu12InvocationRecorder {
   readonly #results: Eu12InvocationResultWriter;
 
   public constructor(input: { readonly events: Eu12InvocationEventWriter; readonly results: Eu12InvocationResultWriter }) {
+    if (input.events.maxPendingEvents < 1) throw new Error("invocation lifecycle requires a bounded event writer");
     this.#events = input.events;
     this.#results = input.results;
   }

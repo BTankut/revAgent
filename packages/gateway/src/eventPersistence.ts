@@ -474,6 +474,7 @@ export interface BoundedEu12EventWriterOptions {
 /** Bounded, serial durable writer used by the event sink without a lossy queue. */
 export class BoundedEu12EventWriter implements GatewayEventSink {
   public readonly kind: GatewayPortAdapterKind;
+  public readonly bounded = true as const;
   readonly #persistence: Eu12EventPersistence;
   readonly #maxPendingEvents: number;
   readonly #queue: QueuedWrite[] = [];
@@ -492,6 +493,10 @@ export class BoundedEu12EventWriter implements GatewayEventSink {
 
   public get pendingEvents(): number {
     return this.#pendingEvents;
+  }
+
+  public get maxPendingEvents(): number {
+    return this.#maxPendingEvents;
   }
 
   public async write(events: readonly GatewayEventEnvelope[]): Promise<readonly Eu12EventWriteReceipt[]> {

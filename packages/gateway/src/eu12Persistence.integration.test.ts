@@ -10,6 +10,7 @@ import { PostgresTenantStore } from "./postgresTenantStore.js";
 import { InMemoryResultObjectStore, resultReferenceDigest } from "./resultReferenceStore.js";
 import { Eu12InvocationRecorder } from "./eventResultLifecycle.js";
 import { deriveMetricParity } from "./metricParity.js";
+import { Eu12EventBackpressureError } from "./eventPersistence.js";
 
 const { Pool } = pg;
 const DATABASE_URL = process.env.EU10_DATABASE_URL;
@@ -137,7 +138,7 @@ suite("EU-12 Postgres event persistence", () => {
 
   it("survives migration replay and restart for result refs, archive runs, and tenant-scoped release channels", async () => {
     await expect(migrateUp(DATABASE_URL!, { appPassword })).resolves.toEqual([]);
-    const migration = await admin.query("SELECT version FROM schema_migrations WHERE version='005_eu12_leased_typed_retention.sql'");
+    const migration = await admin.query("SELECT version FROM schema_migrations WHERE version='006_eu12_physical_retention_partitions.sql'");
     expect(migration.rowCount).toBe(1);
 
     let nowMs = Date.now();
@@ -151,6 +152,17 @@ suite("EU-12 Postgres event persistence", () => {
       signatureVerifier: { verify: ({ signature }) => signature === "fixture-signature" },
       pinnedSigningKeyIds: ["release-key-1"],
     });
+    const boundedDurableWriter = first.createBoundedEventWriter(1);
+    const boundedPayload = {
+      dispatch_attempt_id: "bounded-attempt", invocation_id: "bounded-invocation", idempotency_key: "eu12/bounded-a",
+      tool_name: "core.inspect", tool_version: "1.0.0", policy_class: "auto", executor: "bridge",
+      params_digest: `sha256:${"e".repeat(64)}`, outcome: "completed", started_at_ms: nowMs, completed_at_ms: nowMs + 1,
+      duration_ms: 1, request_bytes: 1, response_bytes: 1,
+    } as const;
+    await expect(boundedDurableWriter.write([
+      envelope({ eventId: randomUUID(), tenantId: tenantA, sessionId: sessionA, userId: userA, type: "tool.invocation", payload: boundedPayload }),
+      envelope({ eventId: randomUUID(), tenantId: tenantA, sessionId: sessionA, userId: userA, type: "tool.invocation", payload: { ...boundedPayload, idempotency_key: "eu12/bounded-b" } }),
+    ])).rejects.toBeInstanceOf(Eu12EventBackpressureError);
     const ref = await first.putResult({
       scope: { tenantId: tenantA, sessionId: sessionA },
       payload: { items: [1, 2, 3] },
@@ -162,7 +174,7 @@ suite("EU-12 Postgres event persistence", () => {
     });
     const composedEventId = randomUUID();
     const composedInvocationId = randomUUID();
-    const composed = new Eu12InvocationRecorder({ events: first, results: first });
+    const composed = new Eu12InvocationRecorder({ events: first.createBoundedEventWriter(8), results: first });
     const composedReceipt = await composed.record({
       eventId: composedEventId,
       tenantId: tenantA,
@@ -187,6 +199,34 @@ suite("EU-12 Postgres event persistence", () => {
       resultExpiresAtMs: nowMs + 5_000,
     });
     expect(composedReceipt.eventWrite).toMatchObject({ route: "tool_invocations", disposition: "inserted" });
+    const defaultTtlInvocation = {
+      eventId: randomUUID(),
+      tenantId: tenantA,
+      sessionId: sessionA,
+      actorUserId: userA,
+      source: { component: "north-mcp", version: "1", instance: "durable-default-ttl" },
+      sequence: 89,
+      idempotencyKey: "eu12/durable-default-ttl",
+      invocationId: randomUUID(),
+      dispatchAttemptId: randomUUID(),
+      toolName: "core.inspect",
+      toolVersion: "1.0.0",
+      policyClass: "auto" as const,
+      executor: "bridge" as const,
+      outcome: "completed" as const,
+      startedAtMs: nowMs,
+      completedAtMs: nowMs + 1,
+      requestBytes: 3,
+      responseBytes: 4,
+      params: { responseMode: "compact" },
+      result: { durableDefaultTtl: true },
+    };
+    const defaultTtlReceipt = await composed.record(defaultTtlInvocation);
+    const activeInvocationId = randomUUID();
+    await first.beginActiveInvocation({ tenantId: tenantA, invocationId: activeInvocationId, sessionId: sessionA, actorUserId: userA, toolName: "core.inspect", startedAtMs: nowMs });
+    const activeAttribution = await first.readPersistedParityAttribution(tenantA);
+    expect(activeAttribution.activeTaskCount).toBe(1);
+    await first.completeActiveInvocation({ tenantId: tenantA, invocationId: activeInvocationId, outcome: "completed", completedAtMs: nowMs + 1 });
     const persistedAttribution = await first.readPersistedParityAttribution(tenantA);
     expect(persistedAttribution.activeTaskCount).toBe(0);
     expect(persistedAttribution.toolUserAttribution["core.inspect"]?.[userA]).toBeGreaterThan(0);
@@ -219,6 +259,12 @@ suite("EU-12 Postgres event persistence", () => {
     await expect(resumed.read({ tenantId: tenantA, eventId: composedEventId })).resolves.toMatchObject({ event_id: composedEventId });
     await expect(resumed.getResultPage({ scope: { tenantId: tenantA, sessionId: sessionA }, refId: composedReceipt.resultRef.refId, pageIndex: 0 }))
       .resolves.toMatchObject({ kind: "page" });
+    nowMs += 1_000;
+    const resumedLifecycle = new Eu12InvocationRecorder({ events: resumed.createBoundedEventWriter(8), results: resumed });
+    const defaultTtlReplay = await resumedLifecycle.record({ ...defaultTtlInvocation, eventId: randomUUID(), sequence: 90 });
+    expect(defaultTtlReplay.eventWrite).toMatchObject({ disposition: "duplicate" });
+    expect(defaultTtlReplay.resultRef.refId).toBe(defaultTtlReceipt.resultRef.refId);
+    expect(defaultTtlReplay.resultRef.expiresAtMs).toBe(defaultTtlReceipt.resultRef.expiresAtMs);
     await expect(resumed.getResultPage({ scope: { tenantId: tenantB, sessionId: sessionA }, refId: ref.refId, pageIndex: 0 }))
       .resolves.toEqual({ kind: "not_found" });
     nowMs += 1_001;
@@ -283,6 +329,16 @@ suite("EU-12 Postgres event persistence", () => {
       .resolves.toMatchObject({ state: "dropped", eventCount: 1 });
     await expect(afterRestart.archiveSurface({ tenantId: tenantB, month: "2026-08", surface: "llm_calls", owner: "tenant-b-lease" }))
       .resolves.toMatchObject({ state: "dropped", eventCount: 1 });
+    const physicalPartitions = await admin.query<{ archive_kind: string; state: string; partition_table: string; table_exists: string | null }>(
+      `SELECT archive_kind,state,partition_table,to_regclass(partition_table)::text AS table_exists
+       FROM retention_partition_ownership WHERE tenant_id=$1 AND archive_month='2026-08-01' ORDER BY archive_kind`,
+      [tenantB],
+    );
+    expect(physicalPartitions.rows).toEqual([
+      { archive_kind: "events", state: "dropped", partition_table: expect.any(String), table_exists: null },
+      { archive_kind: "llm_calls", state: "dropped", partition_table: expect.any(String), table_exists: null },
+      { archive_kind: "tool_invocations", state: "dropped", partition_table: expect.any(String), table_exists: null },
+    ]);
 
     const artifact = Buffer.from("durable bridge archive", "utf8");
     const artifactKey = "releases/bridge/2.0.0/bridge-2.0.0.zip";
@@ -371,9 +427,30 @@ suite("EU-12 Postgres event persistence", () => {
       signature: resultReferenceDigest(Buffer.from(canonicalDurableReleaseManifest({ release: newerUnsigned, releaseSequence: 6, releaseRollbackFloorSequence: 6, channelRollbackFloorSequence: 6, channelRevision: 2, tenantIds: [tenantA] }), "utf8")),
     };
     await expect(durable.publishRelease({ release: newer, releaseSequence: 6, rollbackFloorSequence: 6, tenantIds: [tenantA] })).resolves.toBeUndefined();
+    await expect(admin.query<{ rollout_revision: number }>(
+      "SELECT rollout_revision FROM release_channel_targets WHERE channel='stable' AND tenant_id=$1", [tenantA],
+    )).resolves.toMatchObject({ rows: [{ rollout_revision: 2 }] });
+    const concurrentArtifact = Buffer.from("signed authority artifact concurrent", "utf8");
+    const concurrentKey = "releases/bridge/3.0.2/bridge-3.0.2.zip";
+    await objects.put({ key: concurrentKey, bytes: concurrentArtifact });
+    const concurrentUnsigned = {
+      id: randomUUID(), version: "3.0.2", channel: "stable" as const, artifactStorageKey: concurrentKey,
+      artifactSha256: resultReferenceDigest(concurrentArtifact), signature: "", signingKeyId: "release-key-1",
+      minSupportedVersion: "1.0.0", releasedAtMs: Date.parse("2026-09-02T00:00:02.000Z"), releasedBy: "vendor-admin",
+    };
+    const concurrent = {
+      ...concurrentUnsigned,
+      signature: resultReferenceDigest(Buffer.from(canonicalDurableReleaseManifest({ release: concurrentUnsigned, releaseSequence: 7, releaseRollbackFloorSequence: 7, channelRollbackFloorSequence: 7, channelRevision: 3, tenantIds: [tenantA] }), "utf8")),
+    };
+    const concurrentResults = await Promise.allSettled([
+      durable.publishRelease({ release: concurrent, releaseSequence: 7, rollbackFloorSequence: 7, tenantIds: [tenantA] }),
+      durable.publishRelease({ release: concurrent, releaseSequence: 7, rollbackFloorSequence: 7, tenantIds: [tenantA] }),
+    ]);
+    expect(concurrentResults.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(concurrentResults.filter((result) => result.status === "rejected")).toHaveLength(1);
     const rollback = {
       ...unsigned,
-      signature: resultReferenceDigest(Buffer.from(canonicalDurableReleaseManifest({ release: unsigned, releaseSequence: 5, releaseRollbackFloorSequence: 5, channelRollbackFloorSequence: 6, channelRevision: 3, tenantIds: [tenantA] }), "utf8")),
+      signature: resultReferenceDigest(Buffer.from(canonicalDurableReleaseManifest({ release: unsigned, releaseSequence: 5, releaseRollbackFloorSequence: 5, channelRollbackFloorSequence: 7, channelRevision: 4, tenantIds: [tenantA] }), "utf8")),
     };
     await expect(durable.publishRelease({ release: rollback, releaseSequence: 5, rollbackFloorSequence: 5, tenantIds: [tenantA] }))
       .rejects.toThrow(/rollback is forbidden/u);
@@ -410,7 +487,10 @@ suite("EU-12 Postgres event persistence", () => {
         "SELECT ref_label FROM result_refs WHERE tenant_id=$1 AND session_id=$2 ORDER BY ref_label", [legacyTenant, legacySession],
       );
       expect(labels.rows.map((row) => row.ref_label)).toEqual(["R17", "R18"]);
-      await expect(migrateUp(legacyUrl.href, { appPassword })).resolves.toContain("005_eu12_leased_typed_retention.sql");
+      await expect(migrateUp(legacyUrl.href, { appPassword })).resolves.toEqual(expect.arrayContaining([
+        "005_eu12_leased_typed_retention.sql",
+        "006_eu12_physical_retention_partitions.sql",
+      ]));
       await expect(migrateUp(legacyUrl.href, { appPassword })).resolves.toEqual([]);
     } finally {
       await legacy?.end();
@@ -438,7 +518,7 @@ suite("EU-12 Postgres event persistence", () => {
       await client.query("BEGIN");
       await client.query("SET LOCAL ROLE revagent_app");
       await client.query("SELECT set_config('app.tenant_id',$1,true)", [tenantA]);
-      for (const relation of ["events", "llm_calls", "result_refs", "retention_runs", "release_channel_targets"] as const) {
+      for (const relation of ["events", "llm_calls", "result_refs", "retention_runs", "release_channel_targets", "retention_partition_ownership", "retention_archive_rows", "active_invocations"] as const) {
         await expect(client.query(`SELECT tenant_id FROM ${relation} WHERE tenant_id=$1`, [tenantB]))
           .resolves.toMatchObject({ rowCount: 0 });
       }

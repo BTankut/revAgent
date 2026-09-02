@@ -5,7 +5,7 @@ import { canonicalizeJson, type JsonValue } from "@revagent/protocol";
 import pg, { type PoolClient } from "pg";
 
 import type { GatewayJsonValue } from "./dispatch.js";
-import type { Eu12EventWriteReceipt } from "./eventPersistence.js";
+import { BoundedEu12EventWriter, type Eu12EventWriteReceipt } from "./eventPersistence.js";
 import { validateEu12EventEnvelope } from "./eventPersistence.js";
 import type { GatewayEventEnvelope } from "./events.js";
 import { PostgresEu12EventPersistence } from "./postgresEu12EventPersistence.js";
@@ -125,6 +125,7 @@ export interface PersistedParityAttribution {
  * conformance fixtures; restart-sensitive metadata is read from Postgres.
  */
 export class PostgresEu12DataStore {
+  public readonly kind = "postgres" as const;
   readonly #runtimePool: pg.Pool;
   readonly #publisherPool: pg.Pool;
   readonly #events: PostgresEu12EventPersistence;
@@ -161,6 +162,10 @@ export class PostgresEu12DataStore {
 
   public async list(scope: { readonly tenantId: string }): Promise<readonly GatewayEventEnvelope[]> {
     return await this.#events.list(scope);
+  }
+
+  public createBoundedEventWriter(maxPendingEvents = 1_024): BoundedEu12EventWriter {
+    return new BoundedEu12EventWriter({ persistence: this, maxPendingEvents });
   }
 
   /** Structural counterpart of ResultReferenceStore.put for real lifecycle composition. */
@@ -205,6 +210,54 @@ export class PostgresEu12DataStore {
     }
   }
 
+  async #precreatePhysicalRetentionPartition(tenantId: string, surface: RetentionSurface, archiveMonth: string): Promise<{ readonly partitionKey: string; readonly partitionTable: string }> {
+    const result = await this.#publisherPool.query<{ partition_key: string; partition_table: string }>(
+      "SELECT partition_key,partition_table FROM revagent_precreate_retention_partition($1,$2,$3::date)",
+      [tenantId, surface, archiveMonth],
+    );
+    const row = result.rows[0];
+    if (row === undefined) throw new Error("retention partition precreation returned no ownership row");
+    return Object.freeze({ partitionKey: row.partition_key, partitionTable: row.partition_table });
+  }
+
+  async #stagePhysicalRetentionRows(input: {
+    readonly tenantId: string;
+    readonly surface: RetentionSurface;
+    readonly archiveMonth: string;
+    readonly partitionKey: string;
+    readonly ids: readonly string[];
+    readonly values: readonly GatewayJsonValue[];
+  }): Promise<void> {
+    await this.#tenantTransaction(input.tenantId, async (client) => {
+      for (let index = 0; index < input.ids.length; index += 1) {
+        const id = input.ids[index];
+        const value = input.values[index];
+        if (id === undefined || value === undefined) throw new Error("typed archive staging inventory is incomplete");
+        await client.query(
+          `INSERT INTO retention_archive_rows(partition_key,tenant_id,archive_kind,archive_month,row_id,payload)
+           VALUES($1,$2,$3,$4::date,$5,$6::jsonb)
+           ON CONFLICT (partition_key,row_id) DO NOTHING`,
+          [input.partitionKey, input.tenantId, input.surface, input.archiveMonth, id, JSON.stringify(value)],
+        );
+      }
+    });
+  }
+
+  async #markPhysicalRetentionPartitionArchived(tenantId: string, surface: RetentionSurface, archiveMonth: string): Promise<void> {
+    const result = await this.#publisherPool.query(
+      `UPDATE retention_partition_ownership SET state='archived',archived_at=clock_timestamp()
+       WHERE tenant_id=$1 AND archive_kind=$2 AND archive_month=$3::date AND state='prepared'`,
+      [tenantId, surface, archiveMonth],
+    );
+    if (result.rowCount !== 1) throw new Error("retention partition ownership was not prepared for verified drop");
+  }
+
+  async #dropPhysicalRetentionPartition(tenantId: string, surface: RetentionSurface, archiveMonth: string): Promise<void> {
+    await this.#publisherPool.query(
+      "SELECT revagent_drop_retention_partition($1,$2,$3::date)", [tenantId, surface, archiveMonth],
+    );
+  }
+
   public async putResult(input: {
     readonly scope: ResultReferenceScope;
     readonly payload: GatewayJsonValue;
@@ -218,8 +271,7 @@ export class PostgresEu12DataStore {
     assertUuid(input.scope.sessionId, "session id");
     assertUuid(input.invocationId, "invocation id");
     const nowMs = this.#now();
-    const expiresAtMs = input.expiresAtMs ?? nowMs + RESULT_REFERENCE_DEFAULT_TTL_MS;
-    if (!Number.isSafeInteger(expiresAtMs) || expiresAtMs <= nowMs) throw new Error("result reference expiry must be after creation");
+    if (input.expiresAtMs !== undefined && (!Number.isSafeInteger(input.expiresAtMs) || input.expiresAtMs <= nowMs)) throw new Error("result reference expiry must be after creation");
     const pageSizeBytes = validateResultReferencePageSize(input.pageSizeBytes ?? RESULT_REFERENCE_DEFAULT_PAGE_BYTES);
     const bytes = Buffer.from(canonicalizeJson(input.payload as JsonValue), "utf8");
     if (bytes.byteLength > RESULT_REFERENCE_MAX_BYTES) throw new Error("result reference payload exceeds the five MiB limit");
@@ -237,11 +289,12 @@ export class PostgresEu12DataStore {
       return row.rows[0] === undefined ? null : parseReferenceRow(row.rows[0]);
     });
     if (existing !== null) {
-      if (existing.digest !== digest || existing.expiresAtMs !== expiresAtMs || existing.pageSizeBytes !== pageSizeBytes) {
+      if (existing.digest !== digest || existing.pageSizeBytes !== pageSizeBytes || (input.expiresAtMs !== undefined && existing.expiresAtMs !== input.expiresAtMs)) {
         throw new ResultReferenceIdempotencyError("result reference idempotency replay changed immutable payload or lifecycle");
       }
       return existing;
     }
+    const expiresAtMs = input.expiresAtMs ?? nowMs + RESULT_REFERENCE_DEFAULT_TTL_MS;
     const refId = this.#newRefId();
     assertUuid(refId, "result reference id");
     const refLabel = input.refLabel ?? await this.#tenantTransaction(input.scope.tenantId, async (client) => {
@@ -420,7 +473,21 @@ export class PostgresEu12DataStore {
       });
     });
     if (prepared.alreadyDropped) return prepared.run;
+    const physical = await this.#precreatePhysicalRetentionPartition(input.tenantId, input.surface, archiveMonth);
+    const staged = await this.#readArchiveRowsForStaging(input.tenantId, archiveMonth, input.surface);
+    await this.#stagePhysicalRetentionRows({
+      tenantId: input.tenantId,
+      surface: input.surface,
+      archiveMonth,
+      partitionKey: physical.partitionKey,
+      ids: staged.ids,
+      values: staged.values,
+    });
     await this.#objects.put({ key: prepared.run.archiveKey, bytes: zstdCompressSync(prepared.raw) });
+    const persistedArchive = await this.#objects.get({ key: prepared.run.archiveKey });
+    if (persistedArchive === null || archiveDigest(zstdDecompressSync(persistedArchive)) !== prepared.run.archiveDigest.slice("sha256:".length)) {
+      throw new Error("retention object write could not be verified before partition drop");
+    }
     await input.afterObjectWrite?.(prepared.run);
     await this.#tenantTransaction(input.tenantId, async (client) => {
       const uploaded = await client.query(
@@ -441,7 +508,13 @@ export class PostgresEu12DataStore {
       );
       if (dropped.rowCount !== 1) throw new RetentionLeaseError("retention lease was lost before partition drop completion");
     });
+    await this.#markPhysicalRetentionPartitionArchived(input.tenantId, input.surface, archiveMonth);
+    await this.#dropPhysicalRetentionPartition(input.tenantId, input.surface, archiveMonth);
     return immutableArchiveRun({ ...prepared.run, state: "dropped" });
+  }
+
+  async #readArchiveRowsForStaging(tenantId: string, archiveMonth: string, surface: RetentionSurface): Promise<Readonly<{ readonly ids: readonly string[]; readonly values: readonly GatewayJsonValue[] }>> {
+    return await this.#tenantTransaction(tenantId, async (client) => await this.#readArchiveRows(client, tenantId, archiveMonth, surface));
   }
 
   async #readArchiveRows(client: PoolClient, tenantId: string, archiveMonth: string, surface: RetentionSurface): Promise<Readonly<{ readonly ids: readonly string[]; readonly values: readonly GatewayJsonValue[] }>> {
@@ -521,7 +594,7 @@ export class PostgresEu12DataStore {
       await client.query("DELETE FROM release_channel_targets WHERE channel=$1", [release.channel]);
       for (const tenantId of input.tenantIds) {
         assertUuid(tenantId, "release target tenant id");
-        await client.query("INSERT INTO release_channel_targets(channel,tenant_id,rollout_revision) VALUES($1,$2,1)", [release.channel, tenantId]);
+        await client.query("INSERT INTO release_channel_targets(channel,tenant_id,rollout_revision) VALUES($1,$2,$3)", [release.channel, tenantId, channelRevision]);
       }
       await client.query("COMMIT");
     } catch (error) {
@@ -565,11 +638,45 @@ export class PostgresEu12DataStore {
     return Object.freeze(ndjson.split("\n").filter((line) => line.length > 0).map((line) => JSON.parse(line) as GatewayJsonValue));
   }
 
+  /** Durable lifecycle projection for a start that has not yet produced a terminal event. */
+  public async beginActiveInvocation(input: {
+    readonly tenantId: string;
+    readonly invocationId: string;
+    readonly sessionId: string;
+    readonly actorUserId: string;
+    readonly toolName: string;
+    readonly startedAtMs: number;
+  }): Promise<void> {
+    assertUuid(input.invocationId, "invocation id");
+    assertUuid(input.sessionId, "session id");
+    assertUuid(input.actorUserId, "actor user id");
+    await this.#tenantTransaction(input.tenantId, async (client) => {
+      await client.query(
+        `INSERT INTO active_invocations(invocation_id,tenant_id,session_id,actor_user_id,tool_name,started_at)
+         VALUES($1,$2,$3,$4,$5,to_timestamp($6/1000.0))
+         ON CONFLICT (invocation_id) DO NOTHING`,
+        [input.invocationId, input.tenantId, input.sessionId, input.actorUserId, input.toolName, input.startedAtMs],
+      );
+    });
+  }
+
+  public async completeActiveInvocation(input: { readonly tenantId: string; readonly invocationId: string; readonly outcome: string; readonly completedAtMs: number }): Promise<void> {
+    assertUuid(input.invocationId, "invocation id");
+    await this.#tenantTransaction(input.tenantId, async (client) => {
+      const result = await client.query(
+        `UPDATE active_invocations SET terminal_at=to_timestamp($3/1000.0),terminal_outcome=$4
+         WHERE tenant_id=$1 AND invocation_id=$2 AND terminal_at IS NULL`,
+        [input.tenantId, input.invocationId, input.completedAtMs, input.outcome],
+      );
+      if (result.rowCount !== 1) throw new Error("active invocation terminal transition is unavailable");
+    });
+  }
+
   /** Actual attribution from persisted typed rows, not inferred placeholder values. */
   public async readPersistedParityAttribution(tenantId: string): Promise<PersistedParityAttribution> {
     return await this.#tenantTransaction(tenantId, async (client) => {
       const active = await client.query<{ count: number }>(
-        "SELECT count(*)::int AS count FROM tool_invocations WHERE tenant_id=$1 AND finished_at IS NULL", [tenantId],
+        "SELECT count(*)::int AS count FROM active_invocations WHERE tenant_id=$1 AND terminal_at IS NULL", [tenantId],
       );
       const tools = await client.query<{ tool_name: string; user_id: string; count: number }>(
         `SELECT tool_name,actor_user_id::text AS user_id,count(*)::int AS count
