@@ -19,9 +19,11 @@ LLM orchestration loop.
 - `packages/gateway/migrations/003_eu12_event_result_retention_parity.sql` and
   append-only `004_eu12_reviewer_durability.sql` and
   `005_eu12_leased_typed_retention.sql` and
-  `006_eu12_physical_retention_partitions.sql`:
+  `006_eu12_physical_retention_partitions.sql` and
+  `007_eu12_hot_retention_authority.sql`:
   tenant-scoped durable records for unified events, typed audit/metering rows,
-  result references, retention runs, archives, and release channels.
+  result references, retention runs, actual hot time partitions with leased
+  verified detach/drop, archives, and release channels.
 - `packages/gateway/src/events.ts`, `eventPersistence.ts`, and focused tests:
   `revagent.event.v2` validation, bounded writer/back-pressure, idempotent
   routing, and explicit instrumentation records only.

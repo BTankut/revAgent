@@ -5,6 +5,7 @@ import { canonicalizeJson, type JsonValue } from "@revagent/protocol";
 import pg, { type PoolClient } from "pg";
 
 import type { GatewayJsonValue } from "./dispatch.js";
+import { Eu12InvocationRecorder, type Eu12InvocationLifecycleProjection } from "./eventResultLifecycle.js";
 import { BoundedEu12EventWriter, type Eu12EventWriteReceipt } from "./eventPersistence.js";
 import { validateEu12EventEnvelope } from "./eventPersistence.js";
 import type { GatewayEventEnvelope } from "./events.js";
@@ -57,6 +58,14 @@ function monthStart(month: string): string {
 
 function immutableArchiveRun(run: RetentionArchiveRun): RetentionArchiveRun {
   return Object.freeze({ ...run });
+}
+
+function canonicalTenantTargets(tenantIds: readonly string[]): readonly string[] {
+  const targets = [...tenantIds];
+  for (const tenantId of targets) assertUuid(tenantId, "release target tenant id");
+  const sorted = [...targets].sort();
+  if (new Set(sorted).size !== sorted.length) throw new Error("release target tenant ids must be unique");
+  return Object.freeze(sorted);
 }
 
 export function canonicalDurableReleaseManifest(input: {
@@ -120,6 +129,16 @@ export interface PersistedParityAttribution {
   readonly modelUserAttribution: Readonly<Record<string, Readonly<Record<string, number>>>>;
 }
 
+export interface DurableReleaseAuthority {
+  readonly releaseSequence: number;
+  readonly releaseRollbackFloorSequence: number;
+  readonly channelRevision: number;
+  readonly channelRollbackFloorSequence: number;
+  readonly tenantIds: readonly string[];
+}
+
+export type RetentionArchiveBoundary = "prepared" | "object_written" | "object_verified" | "uploaded";
+
 /**
  * Authoritative EU-12 persistence adapter. The memory stores remain bounded
  * conformance fixtures; restart-sensitive metadata is read from Postgres.
@@ -168,6 +187,21 @@ export class PostgresEu12DataStore {
     return new BoundedEu12EventWriter({ persistence: this, maxPendingEvents });
   }
 
+  /**
+   * The production composition always projects an in-flight invocation before
+   * its bounded writer is allowed to persist the terminal audit/result pair.
+   */
+  public createInvocationRecorder(maxPendingEvents = 1_024): Eu12InvocationRecorder {
+    const lifecycle: Eu12InvocationLifecycleProjection = {
+      begin: async (input) => {
+        await this.recoverStaleActiveInvocations({ tenantId: input.tenantId, nowMs: this.#now(), staleAfterMs: 15 * 60_000 });
+        await this.beginActiveInvocation(input);
+      },
+      finish: async (input) => await this.completeActiveInvocation(input),
+    };
+    return new Eu12InvocationRecorder({ events: this.createBoundedEventWriter(maxPendingEvents), results: this, lifecycle });
+  }
+
   /** Structural counterpart of ResultReferenceStore.put for real lifecycle composition. */
   public async put(input: {
     readonly scope: ResultReferenceScope;
@@ -208,54 +242,6 @@ export class PostgresEu12DataStore {
     } finally {
       client.release();
     }
-  }
-
-  async #precreatePhysicalRetentionPartition(tenantId: string, surface: RetentionSurface, archiveMonth: string): Promise<{ readonly partitionKey: string; readonly partitionTable: string }> {
-    const result = await this.#publisherPool.query<{ partition_key: string; partition_table: string }>(
-      "SELECT partition_key,partition_table FROM revagent_precreate_retention_partition($1,$2,$3::date)",
-      [tenantId, surface, archiveMonth],
-    );
-    const row = result.rows[0];
-    if (row === undefined) throw new Error("retention partition precreation returned no ownership row");
-    return Object.freeze({ partitionKey: row.partition_key, partitionTable: row.partition_table });
-  }
-
-  async #stagePhysicalRetentionRows(input: {
-    readonly tenantId: string;
-    readonly surface: RetentionSurface;
-    readonly archiveMonth: string;
-    readonly partitionKey: string;
-    readonly ids: readonly string[];
-    readonly values: readonly GatewayJsonValue[];
-  }): Promise<void> {
-    await this.#tenantTransaction(input.tenantId, async (client) => {
-      for (let index = 0; index < input.ids.length; index += 1) {
-        const id = input.ids[index];
-        const value = input.values[index];
-        if (id === undefined || value === undefined) throw new Error("typed archive staging inventory is incomplete");
-        await client.query(
-          `INSERT INTO retention_archive_rows(partition_key,tenant_id,archive_kind,archive_month,row_id,payload)
-           VALUES($1,$2,$3,$4::date,$5,$6::jsonb)
-           ON CONFLICT (partition_key,row_id) DO NOTHING`,
-          [input.partitionKey, input.tenantId, input.surface, input.archiveMonth, id, JSON.stringify(value)],
-        );
-      }
-    });
-  }
-
-  async #markPhysicalRetentionPartitionArchived(tenantId: string, surface: RetentionSurface, archiveMonth: string): Promise<void> {
-    const result = await this.#publisherPool.query(
-      `UPDATE retention_partition_ownership SET state='archived',archived_at=clock_timestamp()
-       WHERE tenant_id=$1 AND archive_kind=$2 AND archive_month=$3::date AND state='prepared'`,
-      [tenantId, surface, archiveMonth],
-    );
-    if (result.rowCount !== 1) throw new Error("retention partition ownership was not prepared for verified drop");
-  }
-
-  async #dropPhysicalRetentionPartition(tenantId: string, surface: RetentionSurface, archiveMonth: string): Promise<void> {
-    await this.#publisherPool.query(
-      "SELECT revagent_drop_retention_partition($1,$2,$3::date)", [tenantId, surface, archiveMonth],
-    );
   }
 
   public async putResult(input: {
@@ -415,9 +401,15 @@ export class PostgresEu12DataStore {
     return Object.freeze(candidates);
   }
 
-  public async archiveEvents(input: { readonly tenantId: string; readonly month: string; readonly owner: string; readonly afterObjectWrite?: (run: RetentionArchiveRun) => Promise<void> | void }): Promise<RetentionArchiveRun> {
-    // Preserve FK integrity: typed child surfaces are write-before-drop
-    // archived first, then their envelope rows can be removed safely.
+  public async archiveEvents(input: {
+    readonly tenantId: string;
+    readonly month: string;
+    readonly owner: string;
+    readonly afterObjectWrite?: (run: RetentionArchiveRun) => Promise<void> | void;
+    readonly onBoundary?: (input: Readonly<{ readonly stage: RetentionArchiveBoundary; readonly run: RetentionArchiveRun }>) => Promise<void> | void;
+  }): Promise<RetentionArchiveRun> {
+    // Typed child surfaces are detached first. Envelope and typed projections
+    // retain their source rows, but only live hot partitions are product-visible.
     await this.archiveSurface({ tenantId: input.tenantId, month: input.month, owner: input.owner, surface: "tool_invocations" });
     await this.archiveSurface({ tenantId: input.tenantId, month: input.month, owner: input.owner, surface: "llm_calls" });
     return await this.archiveSurface({ ...input, surface: "events" });
@@ -430,6 +422,7 @@ export class PostgresEu12DataStore {
     readonly surface: RetentionSurface;
     readonly owner: string;
     readonly afterObjectWrite?: (run: RetentionArchiveRun) => Promise<void> | void;
+    readonly onBoundary?: (input: Readonly<{ readonly stage: RetentionArchiveBoundary; readonly run: RetentionArchiveRun }>) => Promise<void> | void;
   }): Promise<RetentionArchiveRun> {
     const archiveMonth = monthStart(input.month);
     const prepared = await this.#tenantTransaction(input.tenantId, async (client) => {
@@ -445,7 +438,7 @@ export class PostgresEu12DataStore {
       if (prior?.state === "dropped") {
         return Object.freeze({
           run: immutableArchiveRun({ tenantId: input.tenantId, month: input.month, state: "dropped", archiveKey: prior.archive_key, archiveDigest: `sha256:${prior.archive_digest}`, eventCount: prior.event_count, attempts: prior.attempts }),
-          raw: Buffer.alloc(0), ids: Object.freeze([]) as readonly string[], epoch: prior.lease_epoch, alreadyDropped: true,
+           raw: Buffer.alloc(0), epoch: prior.lease_epoch, alreadyDropped: true, empty: false,
         });
       }
       const nowMs = this.#now();
@@ -467,28 +460,29 @@ export class PostgresEu12DataStore {
            lease_expires_at=EXCLUDED.lease_expires_at,lease_epoch=EXCLUDED.lease_epoch,updated_at=clock_timestamp()`,
         [input.tenantId, archiveMonth, input.surface, key, digest, rows.ids.length, attempts, input.owner, nowMs + 300_000, epoch],
       );
+      const empty = rows.ids.length === 0;
+      if (!empty) {
+        const hot = await client.query<{ partition_key: string; partition_table: string }>(
+          "SELECT partition_key,partition_table FROM revagent_prepare_hot_retention_partition($1,$2,$3::date,$4,$5)",
+          [input.tenantId, input.surface, archiveMonth, input.owner, epoch],
+        );
+        if (hot.rows[0] === undefined) throw new Error("hot retention partition preparation returned no authority");
+      }
       return Object.freeze({
         run: immutableArchiveRun({ tenantId: input.tenantId, month: input.month, state: "prepared", archiveKey: key, archiveDigest: `sha256:${digest}`, eventCount: rows.ids.length, attempts }),
-        raw, ids: rows.ids, epoch, alreadyDropped: false,
+        raw, epoch, alreadyDropped: false, empty,
       });
     });
     if (prepared.alreadyDropped) return prepared.run;
-    const physical = await this.#precreatePhysicalRetentionPartition(input.tenantId, input.surface, archiveMonth);
-    const staged = await this.#readArchiveRowsForStaging(input.tenantId, archiveMonth, input.surface);
-    await this.#stagePhysicalRetentionRows({
-      tenantId: input.tenantId,
-      surface: input.surface,
-      archiveMonth,
-      partitionKey: physical.partitionKey,
-      ids: staged.ids,
-      values: staged.values,
-    });
+    await input.onBoundary?.({ stage: "prepared", run: prepared.run });
     await this.#objects.put({ key: prepared.run.archiveKey, bytes: zstdCompressSync(prepared.raw) });
+    await input.onBoundary?.({ stage: "object_written", run: prepared.run });
     const persistedArchive = await this.#objects.get({ key: prepared.run.archiveKey });
     if (persistedArchive === null || archiveDigest(zstdDecompressSync(persistedArchive)) !== prepared.run.archiveDigest.slice("sha256:".length)) {
       throw new Error("retention object write could not be verified before partition drop");
     }
     await input.afterObjectWrite?.(prepared.run);
+    await input.onBoundary?.({ stage: "object_verified", run: prepared.run });
     await this.#tenantTransaction(input.tenantId, async (client) => {
       const uploaded = await client.query(
         `UPDATE retention_runs SET state='uploaded',lease_expires_at=to_timestamp($6/1000.0),updated_at=clock_timestamp()
@@ -497,24 +491,23 @@ export class PostgresEu12DataStore {
         [input.tenantId, archiveMonth, input.surface, input.owner, prepared.epoch, this.#now() + 300_000],
       );
       if (uploaded.rowCount !== 1) throw new RetentionLeaseError("retention lease was lost before durable archive commit");
-      await this.#dropArchiveRows(client, input.tenantId, archiveMonth, input.surface, prepared.ids);
-      const remaining = await this.#countArchiveRows(client, input.tenantId, archiveMonth, input.surface);
-      if (remaining !== 0) throw new Error("retention archive drop did not clear its typed partition basis");
-      const dropped = await client.query(
-        `UPDATE retention_runs SET state='dropped',dropped_at=clock_timestamp(),lease_owner=NULL,lease_expires_at=NULL,updated_at=clock_timestamp()
-         WHERE tenant_id=$1 AND archive_month=$2::date AND archive_kind=$3 AND state='uploaded'
-           AND lease_owner=$4 AND lease_epoch=$5`,
-        [input.tenantId, archiveMonth, input.surface, input.owner, prepared.epoch],
-      );
-      if (dropped.rowCount !== 1) throw new RetentionLeaseError("retention lease was lost before partition drop completion");
+      await input.onBoundary?.({ stage: "uploaded", run: prepared.run });
+      if (prepared.empty) {
+        const dropped = await client.query(
+          `UPDATE retention_runs SET state='dropped',dropped_at=clock_timestamp(),lease_owner=NULL,lease_expires_at=NULL,updated_at=clock_timestamp()
+           WHERE tenant_id=$1 AND archive_month=$2::date AND archive_kind=$3 AND state='uploaded'
+             AND lease_owner=$4 AND lease_epoch=$5`,
+          [input.tenantId, archiveMonth, input.surface, input.owner, prepared.epoch],
+        );
+        if (dropped.rowCount !== 1) throw new RetentionLeaseError("empty retention archive could not close its lease");
+      } else {
+        await client.query(
+          "SELECT revagent_finalize_hot_retention_partition($1,$2,$3::date,$4,$5)",
+          [input.tenantId, input.surface, archiveMonth, input.owner, prepared.epoch],
+        );
+      }
     });
-    await this.#markPhysicalRetentionPartitionArchived(input.tenantId, input.surface, archiveMonth);
-    await this.#dropPhysicalRetentionPartition(input.tenantId, input.surface, archiveMonth);
     return immutableArchiveRun({ ...prepared.run, state: "dropped" });
-  }
-
-  async #readArchiveRowsForStaging(tenantId: string, archiveMonth: string, surface: RetentionSurface): Promise<Readonly<{ readonly ids: readonly string[]; readonly values: readonly GatewayJsonValue[] }>> {
-    return await this.#tenantTransaction(tenantId, async (client) => await this.#readArchiveRows(client, tenantId, archiveMonth, surface));
   }
 
   async #readArchiveRows(client: PoolClient, tenantId: string, archiveMonth: string, surface: RetentionSurface): Promise<Readonly<{ readonly ids: readonly string[]; readonly values: readonly GatewayJsonValue[] }>> {
@@ -523,8 +516,10 @@ export class PostgresEu12DataStore {
         id: string; event_type: GatewayEventEnvelope["event_type"]; occurred_at: Date; recorded_at: Date;
         source: unknown; actor: unknown; session_id: string | null; turn_id: string | null; sequence: number | string; payload: unknown;
       }>(
-        `SELECT id::text,event_type,occurred_at,recorded_at,source,actor,session_id::text,turn_id::text,sequence,payload
-         FROM events WHERE tenant_id=$1 AND retention_partition_month=$2::date ORDER BY occurred_at,id`, [tenantId, archiveMonth],
+        `SELECT event.id::text,event.event_type,event.occurred_at,event.recorded_at,event.source,event.actor,event.session_id::text,event.turn_id::text,event.sequence,event.payload
+         FROM retention_hot_rows AS hot
+         JOIN events AS event ON event.tenant_id=hot.tenant_id AND event.id=hot.row_id
+         WHERE hot.tenant_id=$1 AND hot.archive_month=$2::date AND hot.archive_kind='events' ORDER BY event.occurred_at,event.id`, [tenantId, archiveMonth],
       );
       const values = result.rows.map((row) => validateEu12EventEnvelope({
         schema: "revagent.event.v2", event_id: row.id, event_type: row.event_type,
@@ -537,37 +532,26 @@ export class PostgresEu12DataStore {
     const table = surface === "tool_invocations" ? "tool_invocations" : "llm_calls";
     const timeColumn = surface === "tool_invocations" ? "started_at" : "created_at";
     const result = await client.query<{ id: string; record: GatewayJsonValue }>(
-      `SELECT id::text,row_to_json(source)::jsonb AS record FROM ${table} AS source
-       WHERE tenant_id=$1 AND retention_partition_month=$2::date ORDER BY ${timeColumn},id`, [tenantId, archiveMonth],
+      `SELECT source.id::text,row_to_json(source)::jsonb AS record FROM retention_hot_rows AS hot
+       JOIN ${table} AS source ON source.tenant_id=hot.tenant_id AND source.id=hot.row_id
+       WHERE hot.tenant_id=$1 AND hot.archive_month=$2::date AND hot.archive_kind=$3 ORDER BY source.${timeColumn},source.id`, [tenantId, archiveMonth, surface],
     );
     return Object.freeze({ ids: Object.freeze(result.rows.map((row) => row.id)), values: Object.freeze(result.rows.map((row) => row.record)) });
   }
 
-  async #dropArchiveRows(client: PoolClient, tenantId: string, archiveMonth: string, surface: RetentionSurface, ids: readonly string[]): Promise<void> {
-    if (ids.length === 0) return;
-    const table = surface === "events" ? "events" : surface;
-    await client.query(
-      `DELETE FROM ${table} WHERE tenant_id=$1 AND retention_partition_month=$2::date AND id = ANY($3::uuid[])`,
-      [tenantId, archiveMonth, ids],
-    );
-  }
-
-  async #countArchiveRows(client: PoolClient, tenantId: string, archiveMonth: string, surface: RetentionSurface): Promise<number> {
-    const table = surface === "events" ? "events" : surface;
-    const result = await client.query<{ count: number }>(
-      `SELECT count(*)::int AS count FROM ${table} WHERE tenant_id=$1 AND retention_partition_month=$2::date`,
-      [tenantId, archiveMonth],
-    );
-    return result.rows[0]?.count ?? 0;
-  }
-
-  public async publishRelease(input: { readonly release: BridgeReleaseContract; readonly releaseSequence: number; readonly rollbackFloorSequence?: number; readonly tenantIds: readonly string[] }): Promise<void> {
+  public async publishRelease(input: {
+    readonly release: BridgeReleaseContract;
+    readonly releaseSequence: number;
+    readonly rollbackFloorSequence?: number;
+    readonly tenantIds: readonly string[];
+  }): Promise<DurableReleaseAuthority> {
     const release = input.release;
     assertUuid(release.id, "release id");
     if (!Number.isSafeInteger(input.releaseSequence) || input.releaseSequence < 1 || !Number.isSafeInteger(input.rollbackFloorSequence ?? 0) || (input.rollbackFloorSequence ?? 0) < 0 || (input.rollbackFloorSequence ?? 0) > input.releaseSequence) throw new Error("release sequence authority is invalid");
     if (!this.#pinnedSigningKeyIds.has(release.signingKeyId)) throw new Error("bridge release signing key is not pinned");
     const artifact = await this.#objects.get({ key: release.artifactStorageKey });
     if (artifact === null || resultReferenceDigest(artifact) !== release.artifactSha256) throw new Error("bridge release artifact digest does not match stored artifact");
+    const tenantIds = canonicalTenantTargets(input.tenantIds);
     const client = await this.#publisherPool.connect();
     try {
       await client.query("BEGIN");
@@ -575,28 +559,64 @@ export class PostgresEu12DataStore {
         "SELECT channel_revision,rollback_floor_sequence FROM release_channels WHERE channel=$1 FOR UPDATE", [release.channel],
       );
       const channelRevision = (prior.rows[0]?.channel_revision ?? 0) + 1;
-      const channelRollbackFloorSequence = Math.max(Number(prior.rows[0]?.rollback_floor_sequence ?? 0), input.rollbackFloorSequence ?? 0);
-      const manifest = canonicalDurableReleaseManifest({ release, releaseSequence: input.releaseSequence, releaseRollbackFloorSequence: input.rollbackFloorSequence ?? 0, channelRollbackFloorSequence, channelRevision, tenantIds: input.tenantIds });
+      // The channel trigger persists candidate sequence as both anti-rollback
+      // floors when it advances.  Sign precisely that state, never a caller
+      // default that the trigger will subsequently replace.
+      const authority: DurableReleaseAuthority = Object.freeze({
+        releaseSequence: input.releaseSequence,
+        releaseRollbackFloorSequence: Math.max(input.rollbackFloorSequence ?? 0, input.releaseSequence),
+        channelRevision,
+        channelRollbackFloorSequence: Math.max(Number(prior.rows[0]?.rollback_floor_sequence ?? 0), input.releaseSequence),
+        tenantIds,
+      });
+      const knownTargets = await client.query<{ id: string }>("SELECT id::text FROM tenants WHERE id = ANY($1::uuid[])", [tenantIds]);
+      if (knownTargets.rowCount !== tenantIds.length) throw new Error("release target tenant is unavailable");
+      const manifest = canonicalDurableReleaseManifest({
+        release,
+        releaseSequence: authority.releaseSequence,
+        releaseRollbackFloorSequence: authority.releaseRollbackFloorSequence,
+        channelRollbackFloorSequence: authority.channelRollbackFloorSequence,
+        channelRevision: authority.channelRevision,
+        tenantIds: authority.tenantIds,
+      });
       if (!this.#signatureVerifier.verify({ signingKeyId: release.signingKeyId, canonicalManifest: manifest, signature: release.signature })) throw new Error("bridge release manifest signature is invalid");
-      await client.query(
+      const releaseWrite = await client.query<{ release_sequence: string | number; rollback_floor_sequence: string | number }>(
         `INSERT INTO bridge_releases(id,version,channel,artifact_storage_key,artifact_sha256,signature,signing_key_id,min_supported_version,released_at,released_by,release_sequence,manifest_digest,rollback_floor_sequence)
          VALUES($1,$2,$3,$4,$5,$6,$7,$8,to_timestamp($9/1000.0),$10,$11,$5,$12)
-         ON CONFLICT (id) DO NOTHING`,
-        [release.id, release.version, release.channel, release.artifactStorageKey, release.artifactSha256.slice("sha256:".length), release.signature, release.signingKeyId, release.minSupportedVersion, release.releasedAtMs, release.releasedBy, input.releaseSequence, input.rollbackFloorSequence ?? 0],
+          ON CONFLICT (id) DO NOTHING
+          RETURNING release_sequence,rollback_floor_sequence`,
+        [release.id, release.version, release.channel, release.artifactStorageKey, release.artifactSha256.slice("sha256:".length), release.signature, release.signingKeyId, release.minSupportedVersion, release.releasedAtMs, release.releasedBy, authority.releaseSequence, authority.releaseRollbackFloorSequence],
       );
-      await client.query(
+      const persistedRelease = releaseWrite.rows[0] ?? (await client.query<{ release_sequence: string | number; rollback_floor_sequence: string | number }>(
+        "SELECT release_sequence,rollback_floor_sequence FROM bridge_releases WHERE id=$1", [release.id],
+      )).rows[0];
+      if (persistedRelease === undefined || Number(persistedRelease.release_sequence) !== authority.releaseSequence || Number(persistedRelease.rollback_floor_sequence) !== authority.releaseRollbackFloorSequence) {
+        throw new Error("release authority differs from the signed durable state");
+      }
+      const channelWrite = await client.query<{ channel_revision: number; rollback_floor_sequence: string | number }>(
         `INSERT INTO release_channels(channel,current_release_id,staged_rollout,channel_revision,rollback_floor_sequence)
-         VALUES($1,$2,$3::jsonb,$4,$5)
-         ON CONFLICT (channel) DO UPDATE SET current_release_id=EXCLUDED.current_release_id,staged_rollout=EXCLUDED.staged_rollout,
-           channel_revision=EXCLUDED.channel_revision,rollback_floor_sequence=EXCLUDED.rollback_floor_sequence`,
-        [release.channel, release.id, JSON.stringify({ tenantIds: input.tenantIds, revision: channelRevision }), channelRevision, input.rollbackFloorSequence ?? 0],
+          VALUES($1,$2,$3::jsonb,$4,$5)
+          ON CONFLICT (channel) DO UPDATE SET current_release_id=EXCLUDED.current_release_id,staged_rollout=EXCLUDED.staged_rollout,
+            channel_revision=EXCLUDED.channel_revision,rollback_floor_sequence=EXCLUDED.rollback_floor_sequence
+          RETURNING channel_revision,rollback_floor_sequence`,
+        [release.channel, release.id, JSON.stringify({ tenantIds: authority.tenantIds, revision: authority.channelRevision }), authority.channelRevision, authority.channelRollbackFloorSequence],
       );
+      const persistedChannel = channelWrite.rows[0];
+      if (persistedChannel === undefined || persistedChannel.channel_revision !== authority.channelRevision || Number(persistedChannel.rollback_floor_sequence) !== authority.channelRollbackFloorSequence) {
+        throw new Error("channel authority differs from the signed durable state");
+      }
       await client.query("DELETE FROM release_channel_targets WHERE channel=$1", [release.channel]);
-      for (const tenantId of input.tenantIds) {
-        assertUuid(tenantId, "release target tenant id");
-        await client.query("INSERT INTO release_channel_targets(channel,tenant_id,rollout_revision) VALUES($1,$2,$3)", [release.channel, tenantId, channelRevision]);
+      for (const tenantId of authority.tenantIds) {
+        await client.query("INSERT INTO release_channel_targets(channel,tenant_id,rollout_revision) VALUES($1,$2,$3)", [release.channel, tenantId, authority.channelRevision]);
+      }
+      const persistedTargets = await client.query<{ tenant_id: string; rollout_revision: number }>(
+        "SELECT tenant_id::text,rollout_revision FROM release_channel_targets WHERE channel=$1 ORDER BY tenant_id", [release.channel],
+      );
+      if (persistedTargets.rows.length !== authority.tenantIds.length || persistedTargets.rows.some((row, index) => row.tenant_id !== authority.tenantIds[index] || row.rollout_revision !== authority.channelRevision)) {
+        throw new Error("tenant rollout authority differs from the signed durable state");
       }
       await client.query("COMMIT");
+      return authority;
     } catch (error) {
       await client.query("ROLLBACK"); throw error;
     } finally { client.release(); }
@@ -651,12 +671,19 @@ export class PostgresEu12DataStore {
     assertUuid(input.sessionId, "session id");
     assertUuid(input.actorUserId, "actor user id");
     await this.#tenantTransaction(input.tenantId, async (client) => {
-      await client.query(
+      const result = await client.query(
         `INSERT INTO active_invocations(invocation_id,tenant_id,session_id,actor_user_id,tool_name,started_at)
          VALUES($1,$2,$3,$4,$5,to_timestamp($6/1000.0))
-         ON CONFLICT (invocation_id) DO NOTHING`,
+          ON CONFLICT (invocation_id) DO UPDATE SET invocation_id=active_invocations.invocation_id
+          WHERE active_invocations.tenant_id=EXCLUDED.tenant_id
+            AND active_invocations.session_id=EXCLUDED.session_id
+            AND active_invocations.actor_user_id=EXCLUDED.actor_user_id
+            AND active_invocations.tool_name=EXCLUDED.tool_name
+            AND active_invocations.started_at=EXCLUDED.started_at
+          RETURNING invocation_id`,
         [input.invocationId, input.tenantId, input.sessionId, input.actorUserId, input.toolName, input.startedAtMs],
       );
+      if (result.rowCount !== 1) throw new Error("active invocation replay changed immutable identity");
     });
   }
 
@@ -668,7 +695,27 @@ export class PostgresEu12DataStore {
          WHERE tenant_id=$1 AND invocation_id=$2 AND terminal_at IS NULL`,
         [input.tenantId, input.invocationId, input.completedAtMs, input.outcome],
       );
-      if (result.rowCount !== 1) throw new Error("active invocation terminal transition is unavailable");
+      if (result.rowCount === 1) return;
+      const prior = await client.query<{ terminal_outcome: string | null }>(
+        "SELECT terminal_outcome FROM active_invocations WHERE tenant_id=$1 AND invocation_id=$2", [input.tenantId, input.invocationId],
+      );
+      if (prior.rows[0]?.terminal_outcome !== input.outcome) throw new Error("active invocation terminal transition is unavailable");
+    });
+  }
+
+  /** Converts orphaned starts from a process crash into an explicit timeout. */
+  public async recoverStaleActiveInvocations(input: { readonly tenantId: string; readonly nowMs?: number; readonly staleAfterMs: number }): Promise<number> {
+    const nowMs = input.nowMs ?? this.#now();
+    if (!Number.isSafeInteger(nowMs) || !Number.isSafeInteger(input.staleAfterMs) || input.staleAfterMs < 1) {
+      throw new Error("active invocation stale recovery bounds are invalid");
+    }
+    return await this.#tenantTransaction(input.tenantId, async (client) => {
+      const result = await client.query(
+        `UPDATE active_invocations SET terminal_at=to_timestamp($2/1000.0),terminal_outcome='timeout'
+         WHERE tenant_id=$1 AND terminal_at IS NULL AND started_at <= to_timestamp($3/1000.0)`,
+        [input.tenantId, nowMs, nowMs - input.staleAfterMs],
+      );
+      return result.rowCount ?? 0;
     });
   }
 
@@ -680,11 +727,15 @@ export class PostgresEu12DataStore {
       );
       const tools = await client.query<{ tool_name: string; user_id: string; count: number }>(
         `SELECT tool_name,actor_user_id::text AS user_id,count(*)::int AS count
-         FROM tool_invocations WHERE tenant_id=$1 GROUP BY tool_name,actor_user_id ORDER BY tool_name,user_id`, [tenantId],
+         FROM tool_invocations AS tool
+         JOIN retention_hot_rows AS hot ON hot.tenant_id=tool.tenant_id AND hot.archive_kind='tool_invocations' AND hot.row_id=tool.id
+         WHERE tool.tenant_id=$1 GROUP BY tool_name,actor_user_id ORDER BY tool_name,user_id`, [tenantId],
       );
       const models = await client.query<{ model: string; user_id: string; count: number }>(
         `SELECT llm.model,session.user_id::text AS user_id,count(*)::int AS count
-         FROM llm_calls llm JOIN sessions session ON session.tenant_id=llm.tenant_id AND session.id=llm.session_id
+         FROM llm_calls llm
+         JOIN retention_hot_rows AS hot ON hot.tenant_id=llm.tenant_id AND hot.archive_kind='llm_calls' AND hot.row_id=llm.id
+         JOIN sessions session ON session.tenant_id=llm.tenant_id AND session.id=llm.session_id
          WHERE llm.tenant_id=$1 GROUP BY llm.model,session.user_id ORDER BY llm.model,user_id`, [tenantId],
       );
       const collect = <T extends { readonly count: number }>(rows: readonly T[], group: (row: T) => string, user: (row: T) => string): Record<string, Record<string, number>> => {

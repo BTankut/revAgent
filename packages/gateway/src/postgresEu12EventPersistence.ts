@@ -75,8 +75,10 @@ export class PostgresEu12EventPersistence implements Eu12EventPersistence {
         id: string; event_type: GatewayEventEnvelope["event_type"]; occurred_at: Date; recorded_at: Date;
         source: unknown; actor: unknown; session_id: string | null; turn_id: string | null; sequence: number | string; payload: unknown;
       }>(
-        `SELECT id::text,event_type,occurred_at,recorded_at,source,actor,session_id::text,turn_id::text,sequence,payload
-         FROM events WHERE tenant_id=$1 AND id=$2`,
+        `SELECT event.id::text,event.event_type,event.occurred_at,event.recorded_at,event.source,event.actor,event.session_id::text,event.turn_id::text,event.sequence,event.payload
+         FROM events AS event
+         JOIN retention_hot_rows AS hot ON hot.tenant_id=event.tenant_id AND hot.archive_kind='events' AND hot.row_id=event.id
+         WHERE event.tenant_id=$1 AND event.id=$2`,
         [scope.tenantId, scope.eventId],
       );
       const row = result.rows[0];
@@ -97,8 +99,10 @@ export class PostgresEu12EventPersistence implements Eu12EventPersistence {
         id: string; event_type: GatewayEventEnvelope["event_type"]; occurred_at: Date; recorded_at: Date;
         source: unknown; actor: unknown; session_id: string | null; turn_id: string | null; sequence: number | string; payload: unknown;
       }>(
-        `SELECT id::text,event_type,occurred_at,recorded_at,source,actor,session_id::text,turn_id::text,sequence,payload
-         FROM events WHERE tenant_id=$1 ORDER BY occurred_at,id`,
+        `SELECT event.id::text,event.event_type,event.occurred_at,event.recorded_at,event.source,event.actor,event.session_id::text,event.turn_id::text,event.sequence,event.payload
+         FROM events AS event
+         JOIN retention_hot_rows AS hot ON hot.tenant_id=event.tenant_id AND hot.archive_kind='events' AND hot.row_id=event.id
+         WHERE event.tenant_id=$1 ORDER BY event.occurred_at,event.id`,
         [scope.tenantId],
       );
       return Object.freeze(result.rows.map((row) => validateEu12EventEnvelope({
@@ -188,13 +192,13 @@ export class PostgresEu12EventPersistence implements Eu12EventPersistence {
     await client.query(
       `INSERT INTO llm_calls(
          id,event_id,tenant_id,session_id,turn_id,provider,model,role,engine_mode,input_tokens,output_tokens,cache_read_tokens,
-         cache_creation_input_tokens,duration_ms,latency_ms,stop_reason,outcome,cost,cost_microusd)
-       VALUES($1,$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
+          cache_creation_input_tokens,duration_ms,latency_ms,stop_reason,outcome,cost,cost_microusd,created_at)
+        VALUES($1,$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,to_timestamp($19))
        ON CONFLICT (event_id) DO NOTHING`,
       [event.event_id,event.tenant_id,event.session_id,event.turn_id ?? null,payload.upstream_name,payload.model_name,
         payload.role,payload.engine_mode,payload.input_tokens,payload.output_tokens,payload.cache_read_tokens,
         payload.cache_creation_tokens,payload.duration_ms,payload.latency_ms,payload.stop_reason,payload.outcome,
-        Number(payload.cost_microusd) / 1_000_000,payload.cost_microusd],
+        Number(payload.cost_microusd) / 1_000_000,payload.cost_microusd,Date.parse(event.occurred_at) / 1_000],
     );
   }
 }

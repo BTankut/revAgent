@@ -8,7 +8,6 @@ import { migrateUp } from "./migrate.js";
 import { PostgresEu12DataStore, RetentionLeaseError, canonicalDurableReleaseManifest } from "./postgresEu12DataStore.js";
 import { PostgresTenantStore } from "./postgresTenantStore.js";
 import { InMemoryResultObjectStore, resultReferenceDigest } from "./resultReferenceStore.js";
-import { Eu12InvocationRecorder } from "./eventResultLifecycle.js";
 import { deriveMetricParity } from "./metricParity.js";
 import { Eu12EventBackpressureError } from "./eventPersistence.js";
 
@@ -138,7 +137,7 @@ suite("EU-12 Postgres event persistence", () => {
 
   it("survives migration replay and restart for result refs, archive runs, and tenant-scoped release channels", async () => {
     await expect(migrateUp(DATABASE_URL!, { appPassword })).resolves.toEqual([]);
-    const migration = await admin.query("SELECT version FROM schema_migrations WHERE version='006_eu12_physical_retention_partitions.sql'");
+    const migration = await admin.query("SELECT version FROM schema_migrations WHERE version='007_eu12_hot_retention_authority.sql'");
     expect(migration.rowCount).toBe(1);
 
     let nowMs = Date.now();
@@ -174,7 +173,7 @@ suite("EU-12 Postgres event persistence", () => {
     });
     const composedEventId = randomUUID();
     const composedInvocationId = randomUUID();
-    const composed = new Eu12InvocationRecorder({ events: first.createBoundedEventWriter(8), results: first });
+    const composed = first.createInvocationRecorder(8);
     const composedReceipt = await composed.record({
       eventId: composedEventId,
       tenantId: tenantA,
@@ -260,7 +259,7 @@ suite("EU-12 Postgres event persistence", () => {
     await expect(resumed.getResultPage({ scope: { tenantId: tenantA, sessionId: sessionA }, refId: composedReceipt.resultRef.refId, pageIndex: 0 }))
       .resolves.toMatchObject({ kind: "page" });
     nowMs += 1_000;
-    const resumedLifecycle = new Eu12InvocationRecorder({ events: resumed.createBoundedEventWriter(8), results: resumed });
+    const resumedLifecycle = resumed.createInvocationRecorder(8);
     const defaultTtlReplay = await resumedLifecycle.record({ ...defaultTtlInvocation, eventId: randomUUID(), sequence: 90 });
     expect(defaultTtlReplay.eventWrite).toMatchObject({ disposition: "duplicate" });
     expect(defaultTtlReplay.resultRef.refId).toBe(defaultTtlReceipt.resultRef.refId);
@@ -295,7 +294,6 @@ suite("EU-12 Postgres event persistence", () => {
     });
     await expect(store.emit(archiveLlmA)).resolves.toEqual({ ok: true, value: undefined });
     await expect(store.emit(archiveLlmB)).resolves.toEqual({ ok: true, value: undefined });
-    await admin.query("UPDATE llm_calls SET created_at='2026-08-15T00:00:00.000Z' WHERE event_id = ANY($1::uuid[])", [[archiveLlmA.event_id, archiveLlmB.event_id]]);
     await expect(resumed.archiveEvents({ tenantId: tenantA, month: "2026-08", owner: "eu12-restart", afterObjectWrite: () => { throw new Error("synthetic restart boundary"); } }))
       .rejects.toThrow(/synthetic restart boundary/u);
     await resumed.close();
@@ -331,7 +329,7 @@ suite("EU-12 Postgres event persistence", () => {
       .resolves.toMatchObject({ state: "dropped", eventCount: 1 });
     const physicalPartitions = await admin.query<{ archive_kind: string; state: string; partition_table: string; table_exists: string | null }>(
       `SELECT archive_kind,state,partition_table,to_regclass(partition_table)::text AS table_exists
-       FROM retention_partition_ownership WHERE tenant_id=$1 AND archive_month='2026-08-01' ORDER BY archive_kind`,
+        FROM retention_hot_partition_ownership WHERE tenant_id=$1 AND archive_month='2026-08-01' ORDER BY archive_kind`,
       [tenantB],
     );
     expect(physicalPartitions.rows).toEqual([
@@ -385,6 +383,172 @@ suite("EU-12 Postgres event persistence", () => {
     await releaseRestart.close();
   }, 60_000);
 
+  it("uses actual hot partitions across every crash boundary and resumes without source DELETE", async () => {
+    const objects = new InMemoryResultObjectStore();
+    const nowMs = Date.now();
+    const durable = new PostgresEu12DataStore({
+      databaseUrl: runtimeDatabaseUrl,
+      publisherDatabaseUrl: DATABASE_URL!,
+      objects,
+      now: () => nowMs,
+      newRefId: () => randomUUID(),
+      signatureVerifier: { verify: ({ signature }) => signature === "fixture-signature" },
+      pinnedSigningKeyIds: ["release-key-1"],
+    });
+    const crashTenant = randomUUID();
+    const crashUser = randomUUID();
+    const crashSession = randomUUID();
+    await admin.query("INSERT INTO tenants(id,slug,name) VALUES($1,$2,'EU12 crash tenant')", [crashTenant, `eu12-crash-${crashTenant}`]);
+    await admin.query("INSERT INTO users(id,tenant_id,oidc_issuer,oidc_subject,role) VALUES($1,$2,'https://issuer.test','crash-user','user')", [crashUser, crashTenant]);
+    await admin.query("INSERT INTO sessions(id,tenant_id,user_id,client_type) VALUES($1,$2,$3,'mcp')", [crashSession, crashTenant, crashUser]);
+    const stages = ["prepared", "object_written", "object_verified", "uploaded"] as const;
+    try {
+      for (const [index, stage] of stages.entries()) {
+        const month = `2026-0${index + 1}`;
+        const occurredAt = `${month}-15T00:00:00.000Z`;
+        const occurredAtMs = Date.parse(occurredAt);
+        const toolEvent = envelope({
+          eventId: randomUUID(), tenantId: crashTenant, sessionId: crashSession, userId: crashUser, type: "tool.invocation", occurredAt,
+          payload: {
+            dispatch_attempt_id: `crash-attempt-${stage}`, invocation_id: randomUUID(), idempotency_key: `eu12/crash-tool-${stage}`,
+            tool_name: "core.inspect", tool_version: "1.0.0", policy_class: "auto", executor: "bridge",
+            params_digest: `sha256:${"f".repeat(64)}`, outcome: "completed", started_at_ms: occurredAtMs, completed_at_ms: occurredAtMs + 1,
+            duration_ms: 1, request_bytes: 1, response_bytes: 1,
+          },
+        });
+        const llmEvent = envelope({
+          eventId: randomUUID(), tenantId: crashTenant, sessionId: crashSession, userId: crashUser, type: "llm.call", occurredAt,
+          payload: {
+            idempotency_key: `eu12/crash-llm-${stage}`, upstream_name: "external-client", model_name: "crash-model",
+            engine_mode: "external_client", role: "external_client", input_tokens: 2, output_tokens: 3,
+            cache_read_tokens: 0, cache_creation_tokens: 0, duration_ms: 4, latency_ms: 4,
+            cost_microusd: 5, stop_reason: "unknown", outcome: "completed",
+          },
+        });
+        await expect(store.emit(toolEvent)).resolves.toEqual({ ok: true, value: undefined });
+        await expect(store.emit(llmEvent)).resolves.toEqual({ ok: true, value: undefined });
+        await expect(admin.query<{ archive_kind: string; count: number }>(
+          `SELECT archive_kind,count(*)::int AS count FROM retention_hot_rows
+           WHERE tenant_id=$1 AND archive_month=$2::date GROUP BY archive_kind ORDER BY archive_kind`, [crashTenant, `${month}-01`],
+        )).resolves.toMatchObject({ rows: [
+          { archive_kind: "events", count: 2 }, { archive_kind: "llm_calls", count: 1 }, { archive_kind: "tool_invocations", count: 1 },
+        ] });
+        await expect(durable.archiveSurface({
+          tenantId: crashTenant, month, surface: "tool_invocations", owner: `crash-owner-${stage}`,
+          onBoundary: ({ stage: reached }) => { if (reached === stage) throw new Error(`synthetic crash boundary ${stage}`); },
+        })).rejects.toThrow(`synthetic crash boundary ${stage}`);
+        await expect(admin.query<{ state: string; table_exists: string | null }>(
+          `SELECT state,to_regclass('public.' || partition_table)::text AS table_exists
+           FROM retention_hot_partition_ownership WHERE tenant_id=$1 AND archive_kind='tool_invocations' AND archive_month=$2::date`,
+          [crashTenant, `${month}-01`],
+        )).resolves.toMatchObject({ rows: [{ state: "prepared", table_exists: expect.any(String) }] });
+        await expect(durable.archiveSurface({ tenantId: crashTenant, month, surface: "tool_invocations", owner: `crash-owner-${stage}` }))
+          .resolves.toMatchObject({ state: "dropped", eventCount: 1, attempts: 2 });
+        await expect(admin.query("SELECT count(*)::int AS count FROM tool_invocations WHERE tenant_id=$1 AND retention_partition_month=$2::date", [crashTenant, `${month}-01`]))
+          .resolves.toMatchObject({ rows: [{ count: 1 }] });
+        await expect(admin.query("SELECT count(*)::int AS count FROM retention_hot_rows WHERE tenant_id=$1 AND archive_kind='tool_invocations' AND archive_month=$2::date", [crashTenant, `${month}-01`]))
+          .resolves.toMatchObject({ rows: [{ count: 0 }] });
+        await expect(durable.archiveEvents({ tenantId: crashTenant, month, owner: `events-owner-${stage}` }))
+          .resolves.toMatchObject({ state: "dropped", eventCount: 2 });
+        await expect(durable.read({ tenantId: crashTenant, eventId: toolEvent.event_id })).resolves.toBeNull();
+        await expect(admin.query("SELECT count(*)::int AS count FROM events WHERE tenant_id=$1 AND retention_partition_month=$2::date", [crashTenant, `${month}-01`]))
+          .resolves.toMatchObject({ rows: [{ count: 2 }] });
+        await expect(admin.query<{ archive_kind: string; state: string; table_exists: string | null }>(
+          `SELECT archive_kind,state,to_regclass('public.' || partition_table)::text AS table_exists
+           FROM retention_hot_partition_ownership WHERE tenant_id=$1 AND archive_month=$2::date ORDER BY archive_kind`, [crashTenant, `${month}-01`],
+        )).resolves.toMatchObject({ rows: [
+          { archive_kind: "events", state: "dropped", table_exists: null },
+          { archive_kind: "llm_calls", state: "dropped", table_exists: null },
+          { archive_kind: "tool_invocations", state: "dropped", table_exists: null },
+        ] });
+      }
+    } finally {
+      await durable.close();
+    }
+  }, 60_000);
+
+  it("projects real composed invocation activity through terminal finally and stale-restart recovery", async () => {
+    const objects = new InMemoryResultObjectStore();
+    const nowMs = Date.now();
+    const durable = new PostgresEu12DataStore({
+      databaseUrl: runtimeDatabaseUrl,
+      publisherDatabaseUrl: DATABASE_URL!,
+      objects,
+      now: () => nowMs,
+      newRefId: () => randomUUID(),
+      signatureVerifier: { verify: ({ signature }) => signature === "fixture-signature" },
+      pinnedSigningKeyIds: ["release-key-1"],
+    });
+    const productTenant = randomUUID();
+    const productUser = randomUUID();
+    const productSession = randomUUID();
+    await admin.query("INSERT INTO tenants(id,slug,name) VALUES($1,$2,'EU12 product lifecycle tenant')", [productTenant, `eu12-product-${productTenant}`]);
+    await admin.query("INSERT INTO users(id,tenant_id,oidc_issuer,oidc_subject,role) VALUES($1,$2,'https://issuer.test','product-user','user')", [productUser, productTenant]);
+    await admin.query("INSERT INTO sessions(id,tenant_id,user_id,client_type) VALUES($1,$2,$3,'mcp')", [productSession, productTenant, productUser]);
+    const recorder = durable.createInvocationRecorder(1);
+    const invocationId = randomUUID();
+    const productInput = {
+      eventId: randomUUID(), tenantId: productTenant, sessionId: productSession, actorUserId: productUser,
+      source: { component: "eu12-product-lifecycle", version: "1", instance: "integration" }, sequence: 1,
+      idempotencyKey: "eu12/product-lifecycle", invocationId, dispatchAttemptId: randomUUID(),
+      toolName: "core.inspect", toolVersion: "1.0.0", policyClass: "auto" as const, executor: "bridge" as const,
+      outcome: "completed" as const, startedAtMs: nowMs, completedAtMs: nowMs + 1, requestBytes: 1, responseBytes: 1,
+      params: { responseMode: "compact" }, result: { productLifecycle: true }, resultExpiresAtMs: nowMs + 10_000,
+    };
+    const lock = await admin.connect();
+    try {
+      await lock.query("BEGIN");
+      await lock.query("LOCK TABLE events IN ACCESS EXCLUSIVE MODE");
+      const pending = recorder.record(productInput);
+      let active = 0;
+      for (let attempt = 0; attempt < 50; attempt += 1) {
+        active = (await durable.readPersistedParityAttribution(productTenant)).activeTaskCount;
+        if (active === 1) break;
+        await new Promise<void>((resolve) => { setTimeout(resolve, 20); });
+      }
+      expect(active).toBe(1);
+      await lock.query("COMMIT");
+      await pending;
+      await expect(durable.readPersistedParityAttribution(productTenant)).resolves.toMatchObject({ activeTaskCount: 0 });
+      await expect(recorder.record({
+        ...productInput,
+        eventId: randomUUID(), invocationId: randomUUID(), idempotencyKey: "eu12/product-lifecycle-failure",
+        resultExpiresAtMs: nowMs - 1,
+      })).rejects.toThrow(/expiry must be after creation/u);
+      await expect(admin.query<{ terminal_outcome: string }>(
+        "SELECT terminal_outcome FROM active_invocations WHERE tenant_id=$1 AND terminal_outcome='failed'", [productTenant],
+      )).resolves.toMatchObject({ rowCount: 1, rows: [{ terminal_outcome: "failed" }] });
+      const staleInvocationId = randomUUID();
+      await durable.beginActiveInvocation({
+        tenantId: productTenant, invocationId: staleInvocationId, sessionId: productSession, actorUserId: productUser,
+        toolName: "core.inspect", startedAtMs: nowMs - 60_000,
+      });
+      await durable.close();
+      const resumed = new PostgresEu12DataStore({
+        databaseUrl: runtimeDatabaseUrl,
+        publisherDatabaseUrl: DATABASE_URL!,
+        objects,
+        now: () => nowMs,
+        newRefId: () => randomUUID(),
+        signatureVerifier: { verify: ({ signature }) => signature === "fixture-signature" },
+        pinnedSigningKeyIds: ["release-key-1"],
+      });
+      try {
+        await expect(resumed.recoverStaleActiveInvocations({ tenantId: productTenant, nowMs, staleAfterMs: 1_000 })).resolves.toBe(1);
+        await expect(resumed.readPersistedParityAttribution(productTenant)).resolves.toMatchObject({ activeTaskCount: 0 });
+        await expect(admin.query<{ terminal_outcome: string }>(
+          "SELECT terminal_outcome FROM active_invocations WHERE tenant_id=$1 AND invocation_id=$2", [productTenant, staleInvocationId],
+        )).resolves.toMatchObject({ rows: [{ terminal_outcome: "timeout" }] });
+      } finally {
+        await resumed.close();
+      }
+    } finally {
+      try { await lock.query("ROLLBACK"); } catch { /* committed or rolled back */ }
+      lock.release();
+      await durable.close().catch(() => undefined);
+    }
+  }, 60_000);
+
   it("binds signed release sequence and rollback authority into the canonical durable manifest", async () => {
     const objects = new InMemoryResultObjectStore();
     const verifier = {
@@ -410,7 +574,29 @@ suite("EU-12 Postgres event persistence", () => {
       ...unsigned,
       signature: resultReferenceDigest(Buffer.from(canonicalDurableReleaseManifest({ release: unsigned, releaseSequence: 5, releaseRollbackFloorSequence: 5, channelRollbackFloorSequence: 5, channelRevision: 1, tenantIds: [tenantA] }), "utf8")),
     };
-    await expect(durable.publishRelease({ release, releaseSequence: 5, rollbackFloorSequence: 5, tenantIds: [tenantA] })).resolves.toBeUndefined();
+    await expect(durable.publishRelease({ release, releaseSequence: 5, rollbackFloorSequence: 5, tenantIds: [tenantA] })).resolves.toEqual({
+      releaseSequence: 5,
+      releaseRollbackFloorSequence: 5,
+      channelRevision: 1,
+      channelRollbackFloorSequence: 5,
+      tenantIds: [tenantA],
+    });
+    await expect(admin.query<{ release_sequence: string; rollback_floor_sequence: string }>(
+      "SELECT release_sequence,rollback_floor_sequence FROM bridge_releases WHERE id=$1", [release.id],
+    )).resolves.toMatchObject({ rows: [{ release_sequence: "5", rollback_floor_sequence: "5" }] });
+    await expect(admin.query<{ channel_revision: number; rollback_floor_sequence: string }>(
+      "SELECT channel_revision,rollback_floor_sequence FROM release_channels WHERE channel='stable'",
+    )).resolves.toMatchObject({ rows: [{ channel_revision: 1, rollback_floor_sequence: "5" }] });
+    const defaultFloorTamperUnsigned = { ...unsigned, id: randomUUID(), version: "3.0.0-default-floor-tamper" };
+    const defaultFloorTamper = {
+      ...defaultFloorTamperUnsigned,
+      signature: resultReferenceDigest(Buffer.from(canonicalDurableReleaseManifest({
+        release: defaultFloorTamperUnsigned, releaseSequence: 6, releaseRollbackFloorSequence: 0,
+        channelRollbackFloorSequence: 6, channelRevision: 2, tenantIds: [tenantA],
+      }), "utf8")),
+    };
+    await expect(durable.publishRelease({ release: defaultFloorTamper, releaseSequence: 6, tenantIds: [tenantA] }))
+      .rejects.toThrow(/signature is invalid/u);
     await expect(durable.publishRelease({ release, releaseSequence: 6, rollbackFloorSequence: 5, tenantIds: [tenantA] }))
       .rejects.toThrow(/signature is invalid/u);
 
@@ -426,10 +612,22 @@ suite("EU-12 Postgres event persistence", () => {
       ...newerUnsigned,
       signature: resultReferenceDigest(Buffer.from(canonicalDurableReleaseManifest({ release: newerUnsigned, releaseSequence: 6, releaseRollbackFloorSequence: 6, channelRollbackFloorSequence: 6, channelRevision: 2, tenantIds: [tenantA] }), "utf8")),
     };
-    await expect(durable.publishRelease({ release: newer, releaseSequence: 6, rollbackFloorSequence: 6, tenantIds: [tenantA] })).resolves.toBeUndefined();
+    await expect(durable.publishRelease({ release: newer, releaseSequence: 6, rollbackFloorSequence: 6, tenantIds: [tenantA] })).resolves.toEqual({
+      releaseSequence: 6,
+      releaseRollbackFloorSequence: 6,
+      channelRevision: 2,
+      channelRollbackFloorSequence: 6,
+      tenantIds: [tenantA],
+    });
     await expect(admin.query<{ rollout_revision: number }>(
       "SELECT rollout_revision FROM release_channel_targets WHERE channel='stable' AND tenant_id=$1", [tenantA],
     )).resolves.toMatchObject({ rows: [{ rollout_revision: 2 }] });
+    await expect(admin.query<{ release_sequence: string; release_floor: string; channel_revision: number; channel_floor: string }>(
+      `SELECT release.release_sequence,release.rollback_floor_sequence AS release_floor,
+              channel.channel_revision,channel.rollback_floor_sequence AS channel_floor
+       FROM bridge_releases AS release JOIN release_channels AS channel ON channel.current_release_id=release.id
+       WHERE release.id=$1`, [newer.id],
+    )).resolves.toMatchObject({ rows: [{ release_sequence: "6", release_floor: "6", channel_revision: 2, channel_floor: "6" }] });
     const concurrentArtifact = Buffer.from("signed authority artifact concurrent", "utf8");
     const concurrentKey = "releases/bridge/3.0.2/bridge-3.0.2.zip";
     await objects.put({ key: concurrentKey, bytes: concurrentArtifact });
@@ -453,7 +651,7 @@ suite("EU-12 Postgres event persistence", () => {
       signature: resultReferenceDigest(Buffer.from(canonicalDurableReleaseManifest({ release: unsigned, releaseSequence: 5, releaseRollbackFloorSequence: 5, channelRollbackFloorSequence: 7, channelRevision: 4, tenantIds: [tenantA] }), "utf8")),
     };
     await expect(durable.publishRelease({ release: rollback, releaseSequence: 5, rollbackFloorSequence: 5, tenantIds: [tenantA] }))
-      .rejects.toThrow(/rollback is forbidden/u);
+      .rejects.toThrow(/rollback (is forbidden|floor)|below rollback floor/u);
     await durable.close();
   }, 60_000);
 
@@ -490,6 +688,7 @@ suite("EU-12 Postgres event persistence", () => {
       await expect(migrateUp(legacyUrl.href, { appPassword })).resolves.toEqual(expect.arrayContaining([
         "005_eu12_leased_typed_retention.sql",
         "006_eu12_physical_retention_partitions.sql",
+        "007_eu12_hot_retention_authority.sql",
       ]));
       await expect(migrateUp(legacyUrl.href, { appPassword })).resolves.toEqual([]);
     } finally {
@@ -500,7 +699,17 @@ suite("EU-12 Postgres event persistence", () => {
     }
   }, 60_000);
 
-  it("enforces two-tenant RLS negatives for events, result refs, and retention runs", async () => {
+  it("enforces nonempty two-tenant RLS and definer privilege negatives for every EU-12 surface", async () => {
+    const tenantBLiveLlm = envelope({
+      eventId: randomUUID(), tenantId: tenantB, sessionId: sessionB, userId: userB, type: "llm.call", occurredAt: "2026-09-05T00:00:00.000Z",
+      payload: {
+        idempotency_key: "eu12/tenant-b-live-llm", upstream_name: "external-client", model_name: "tenant-b-model",
+        engine_mode: "external_client", role: "external_client", input_tokens: 8, output_tokens: 9,
+        cache_read_tokens: 1, cache_creation_tokens: 0, duration_ms: 10, latency_ms: 10,
+        cost_microusd: 11, stop_reason: "unknown", outcome: "completed",
+      },
+    });
+    await expect(store.emit(tenantBLiveLlm)).resolves.toEqual({ ok: true, value: undefined });
     await admin.query(
       `INSERT INTO result_refs(id,tenant_id,session_id,ref_label,storage_key,content_digest,byte_size,page_size_bytes,page_count,summary,expires_at)
        VALUES ($1,$2,$3,'R999','tenants/a/results/ref.json.zst',$4,1,1,1,'{}',clock_timestamp()),
@@ -508,20 +717,53 @@ suite("EU-12 Postgres event persistence", () => {
       [randomUUID(), tenantA, sessionA, "b".repeat(64), randomUUID(), tenantB, sessionB],
     );
     await admin.query(
-      `INSERT INTO retention_runs(tenant_id,archive_month,state,archive_key,archive_digest,event_count)
-       VALUES ($1,'2026-07-01','prepared','archive/a/events/2026-07.ndjson.zst',$3,0),
-              ($2,'2026-07-01','prepared','archive/b/events/2026-07.ndjson.zst',$3,0)`,
+      `INSERT INTO retention_runs(tenant_id,archive_month,archive_kind,state,archive_key,archive_digest,row_digest,event_count,attempts,lease_owner,lease_expires_at,lease_epoch)
+       VALUES ($1,'2026-07-01','events','prepared','archive/a/events/2026-07.ndjson.zst',$3,$3,1,1,'tenant-a-lease',clock_timestamp()+interval '5 minutes',1),
+              ($2,'2026-07-01','events','prepared','archive/b/events/2026-07.ndjson.zst',$3,$3,1,1,'tenant-b-lease',clock_timestamp()+interval '5 minutes',1)`,
       [tenantA, tenantB, "c".repeat(64)],
     );
+    const tenantBActive = randomUUID();
+    await admin.query(
+      `INSERT INTO active_invocations(invocation_id,tenant_id,session_id,actor_user_id,tool_name,started_at)
+       VALUES($1,$2,$3,$4,'core.inspect',clock_timestamp())`, [tenantBActive, tenantB, sessionB, userB],
+    );
+    await admin.query(
+      `INSERT INTO release_channel_targets(channel,tenant_id,rollout_revision)
+       SELECT 'stable',$1,channel_revision FROM release_channels WHERE channel='stable'
+       ON CONFLICT (channel,tenant_id) DO UPDATE SET rollout_revision=EXCLUDED.rollout_revision`, [tenantB],
+    );
+    await expect(runtime.query(
+      "SELECT revagent_prepare_hot_retention_partition($1,'llm_calls','2026-09-01','tenant-b-lease',1)", [tenantB],
+    )).rejects.toThrow(/permission denied/u);
     const client = await runtime.connect();
     try {
       await client.query("BEGIN");
       await client.query("SET LOCAL ROLE revagent_app");
       await client.query("SELECT set_config('app.tenant_id',$1,true)", [tenantA]);
-      for (const relation of ["events", "llm_calls", "result_refs", "retention_runs", "release_channel_targets", "retention_partition_ownership", "retention_archive_rows", "active_invocations"] as const) {
+      for (const relation of ["events", "llm_calls", "result_refs", "retention_runs", "release_channel_targets", "retention_partition_ownership", "retention_archive_rows", "retention_hot_partition_ownership", "retention_hot_rows", "active_invocations"] as const) {
         await expect(client.query(`SELECT tenant_id FROM ${relation} WHERE tenant_id=$1`, [tenantB]))
           .resolves.toMatchObject({ rowCount: 0 });
       }
+      await client.query("SAVEPOINT cross_tenant_definer");
+      await expect(client.query(
+        "SELECT revagent_prepare_hot_retention_partition($1,'llm_calls','2026-09-01','tenant-b-lease',1)", [tenantB],
+      )).rejects.toThrow(/tenant scope/u);
+      await client.query("ROLLBACK TO SAVEPOINT cross_tenant_definer");
+      await expect(client.query(
+        "UPDATE active_invocations SET terminal_at=clock_timestamp(),terminal_outcome='failed' WHERE tenant_id=$1", [tenantB],
+      )).resolves.toMatchObject({ rowCount: 0 });
+      await client.query("ROLLBACK");
+      await client.query("BEGIN");
+      await client.query("SET LOCAL ROLE revagent_app");
+      await client.query("SELECT set_config('app.tenant_id',$1,true)", [tenantB]);
+      const tenantBLlmCount = await client.query<{ count: number }>("SELECT count(*)::int AS count FROM llm_calls WHERE tenant_id=$1", [tenantB]);
+      const tenantBHotCount = await client.query<{ count: number }>("SELECT count(*)::int AS count FROM retention_hot_rows WHERE tenant_id=$1", [tenantB]);
+      const tenantBRunCount = await client.query<{ count: number }>("SELECT count(*)::int AS count FROM retention_runs WHERE tenant_id=$1", [tenantB]);
+      for (const result of [tenantBLlmCount, tenantBHotCount, tenantBRunCount]) expect(result.rows[0]?.count ?? 0).toBeGreaterThan(0);
+      await expect(client.query("SELECT count(*)::int AS count FROM active_invocations WHERE tenant_id=$1", [tenantB]))
+        .resolves.toMatchObject({ rows: [{ count: 1 }] });
+      await expect(client.query("SELECT count(*)::int AS count FROM release_channel_targets WHERE tenant_id=$1", [tenantB]))
+        .resolves.toMatchObject({ rows: [{ count: 1 }] });
       await client.query("ROLLBACK");
     } finally {
       client.release();

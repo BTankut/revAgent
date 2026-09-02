@@ -53,3 +53,17 @@ or live-Revit work was started.
 
 PR #405 remains draft and unmerged. Ready/review/merge and protected-check
 actions belong to the controller after independent review.
+
+## Fourth-review closure
+
+- `007_eu12_hot_retention_authority.sql` makes physically detachable hot
+  partitions authoritative for product reads and archive membership. Source
+  relation rows remain operational projections; no archive path deletes them.
+- `fourth-review-postgres-final.raw.log`: local disposable PostgreSQL 16,
+  7/7 tests. It covers every crash boundary before final detach/drop, restart
+  resume, legacy migration replay, nonempty typed hot rows, hardened definer
+  privilege/GUC negatives, real lifecycle active-to-terminal and stale restart,
+  signed release authority, and nonempty Tenant-B RLS negatives.
+- `fourth-review-focused-final.raw.log`: 10/10 focused vectors passed;
+  `fourth-review-typecheck-final2.raw.log` and
+  `fourth-review-lint-final2.raw.log`: passed.
