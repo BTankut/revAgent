@@ -19,7 +19,7 @@ describe("gateway config allowlist", () => {
     // This is the acceptance criterion made mechanical. If someone adds a
     // provider key to the allowlist, this fails rather than a reviewer having
     // to notice it in a diff.
-    expect(GATEWAY_CONFIG_ENV_ALLOWLIST).toHaveLength(9);
+    expect(GATEWAY_CONFIG_ENV_ALLOWLIST).toHaveLength(12);
     for (const name of GATEWAY_CONFIG_ENV_ALLOWLIST) {
       expect(name).not.toMatch(PROVIDER_PATTERN);
     }
@@ -51,21 +51,26 @@ describe("gateway config allowlist", () => {
     expect(JSON.stringify(result)).not.toContain("must-not-be-read");
   });
 
-  it("ignores the OIDC variables the deployment still injects", () => {
-    // Compose keeps supplying these for a later work package. Phase 1 must not
-    // read them: that is what makes "no real OIDC is implemented here" true in
-    // code rather than in prose.
+  it("retains only provider-neutral OIDC resource-server metadata and never a client secret", () => {
     const result = loadGatewayConfig({
       ...VALID,
-      OIDC_ISSUER_URL: "issuer-value",
-      OIDC_CLIENT_ID: "client-value",
+      OIDC_ISSUER_URL: "https://identity.example.test/realms/revagent",
+      OIDC_CLIENT_ID: "revagent-north-mcp",
+      OIDC_JWKS_URI: "https://identity.example.test/realms/revagent/protocol/openid-connect/certs",
       OIDC_CLIENT_SECRET: "secret-value",
     });
     expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("unreachable");
+    expect(result.value.oidc).toEqual({
+      configured: true,
+      issuerUrl: "https://identity.example.test/realms/revagent",
+      clientId: "revagent-north-mcp",
+      jwksUri: "https://identity.example.test/realms/revagent/protocol/openid-connect/certs",
+    });
     const serialized = JSON.stringify(result);
-    expect(serialized).not.toContain("issuer-value");
-    expect(serialized).not.toContain("client-value");
     expect(serialized).not.toContain("secret-value");
+    expect(startupLogFields(result.value)).toMatchObject({ oidcConfigured: true });
+    expect(JSON.stringify(startupLogFields(result.value))).not.toContain("identity.example.test");
   });
 
   it("keeps the startup log to an enumerated, secret-free field set", () => {

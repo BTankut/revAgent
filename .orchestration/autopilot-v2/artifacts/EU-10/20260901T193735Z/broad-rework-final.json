@@ -1,0 +1,24 @@
+{
+  "schema": "revagent.autopilot.eu10-broad-gate/v1",
+  "command": "npm test",
+  "workingDirectory": "C:\\Users\\BT\\Projects\\revAgent-worktrees\\eu10-authenticated-tenant-read",
+  "nodeVersion": "v24.19.0",
+  "npmVersion": "10.9.7",
+  "startedAtUtc": "2026-09-01T21:12:37.8582219Z",
+  "completedAtUtc": "2026-09-01T21:45:38.9979269Z",
+  "durationMs": 1981140,
+  "exitCode": 1,
+  "success": false,
+  "testTotals": {
+    "passed": 2238,
+    "failed": 4,
+    "skipped": 9
+  },
+  "testFileTotals": {
+    "passed": 162,
+    "failed": 3,
+    "skipped": 0
+  },
+  "rawLog": "broad-rework-final.raw.log",
+  "rawLogSha256": "acdff7cae3d2f7d34470d9cb04c1aaf32f445369462651d3572a9fda43478501"
+}

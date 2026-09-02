@@ -1,0 +1,606 @@
+
+> revagent-migration-workspace@0.0.0 test
+> npm run check:generated && npm run test --workspaces --if-present
+
+
+> revagent-migration-workspace@0.0.0 check:generated
+> npm run check:generated --workspace @revagent/protocol
+
+
+> @revagent/protocol@0.0.0 check:generated
+> npm run generate && git diff --exit-code src/generated
+
+
+> @revagent/protocol@0.0.0 generate
+> node scripts/generate-types.mjs
+
+
+> @revagent/addin-loopback-fixture@0.0.0 test
+> npm run build && vitest run
+
+
+> @revagent/addin-loopback-fixture@0.0.0 build
+> npm run build:self
+
+
+> @revagent/addin-loopback-fixture@0.0.0 build:self
+> node ../../node_modules/typescript/lib/tsc.js -p tsconfig.json
+
+
+ RUN  v3.2.7 C:/Users/BT/Projects/revAgent-worktrees/eu10-authenticated-tenant-read/packages/addin-loopback-fixture
+
+ ✓ tests/framing.test.ts (6 tests) 230ms
+ ✓ tests/cli.test.ts (3 tests) 811ms
+   ✓ fixture CLI JSONL control and cleanup > drives every bounded control mode and emits paged deterministic evidence  318ms
+ ✓ tests/batch.test.ts (12 tests) 827ms
+ ✓ tests/fixture.test.ts (37 tests) 3931ms
+   ✓ add-in loopback fixture listener > emits an exact-max listener response and substitutes max-plus-one  2000ms
+
+ Test Files  4 passed (4)
+      Tests  58 passed (58)
+   Start at  00:12:41
+   Duration  4.52s (transform 294ms, setup 0ms, collect 1.03s, tests 5.80s, environment 1ms, prepare 511ms)
+
+
+> @revagent/bridge-simulator@0.0.0 test
+> npm run build && vitest run
+
+
+> @revagent/bridge-simulator@0.0.0 build
+> npm run build --workspace @revagent/protocol && npm run build --workspace @revagent/addin-loopback-fixture && npm run build:self
+
+
+> @revagent/protocol@0.0.0 build
+> npm run build:self
+
+
+> @revagent/protocol@0.0.0 build:self
+> node scripts/generate-types.mjs && node scripts/clean.mjs && node ../../node_modules/typescript/lib/tsc.js -p tsconfig.json
+
+
+> @revagent/addin-loopback-fixture@0.0.0 build
+> npm run build:self
+
+
+> @revagent/addin-loopback-fixture@0.0.0 build:self
+> node ../../node_modules/typescript/lib/tsc.js -p tsconfig.json
+
+
+> @revagent/bridge-simulator@0.0.0 build:self
+> node ../../node_modules/typescript/lib/tsc.js -p tsconfig.json
+
+
+ RUN  v3.2.7 C:/Users/BT/Projects/revAgent-worktrees/eu10-authenticated-tenant-read/packages/bridge-simulator
+
+ ✓ tests/control-concurrency.test.ts (1 test) 122ms
+ ✓ tests/transport-artifact.test.ts (12 tests) 415ms
+ ✓ tests/negotiated-limits.test.ts (1 test) 482ms
+   ✓ negotiated Bridge limits > applies lowered params, result, artifact, and partial limits before durable delivery  481ms
+ ✓ tests/three-process.test.ts (1 test) 1183ms
+   ✓ three-process Bridge crash evidence > uses fixture JSONL control/evidence around a separate Bridge process  1182ms
+ ✓ tests/control-actions.test.ts (5 tests) 769ms
+   ✓ Bridge daemon journal controls > closes a selected binding when cold-start peer recovery fails and permits a clean retry  408ms
+ ✓ tests/transport-loopback-strict.test.ts (37 tests) 800ms
+ ✓ tests/journal.test.ts (19 tests) 903ms
+ ✓ tests/failure-taxonomy.test.ts (6 tests) 1066ms
+   ✓ Bridge add-in failure taxonomy > maps JSON-RPC -32601 without losing the domain class  403ms
+ ✓ tests/bridge.test.ts (13 tests) 2152ms
+   ✓ BridgeSimulator with the real add-in loopback fixture > discovers multiple persistent sessions in one bounded scan without registry/temp-file coordination  377ms
+ ✓ tests/daemon.test.ts (5 tests) 3266ms
+   ✓ long-lived Bridge JSONL daemon > removes its temporary state root after SIGTERM, including forced Windows termination  559ms
+   ✓ long-lived Bridge JSONL daemon > exposes granular controls, durable restart evidence, and leak-free shutdown  1211ms
+   ✓ long-lived Bridge JSONL daemon > removes its private temporary state root after stdin EOF  345ms
+   ✓ long-lived Bridge JSONL daemon > sends a valid WSS prefix ordinarily before the singular invalid target fault  816ms
+   ✓ long-lived Bridge JSONL daemon > accepts a bounded absolute persistent state root from the environment  333ms
+ ✓ tests/audit-regressions.test.ts (33 tests) 6962ms
+   ✓ W1 bridge/journal/artifact audit regressions > durably terminalizes window=1 rejections so neither invoke nor batch executes later  623ms
+   ✓ W1 bridge/journal/artifact audit regressions > keeps abandoned atomic-step evidence while cancellation survives commit and rollback replay  448ms
+   ✓ W1 bridge/journal/artifact audit regressions > keeps an atomic timeout provisional and durably replays its correlated late carrier  808ms
+ ✓ tests/peer.test.ts (85 tests) 16790ms
+   ✓ BridgeGatewayPeer executable lifecycle > consumes a queued crash only on the real inbound batch dispatch path  378ms
+   ✓ BridgeGatewayPeer executable lifecycle > holds a second session's completed data until its reconnect resume_ack  510ms
+   ✓ BridgeGatewayPeer executable lifecycle > closes the actual replacement binding when an old-binding task gets a second retryable send failure  725ms
+   ✓ BridgeGatewayPeer executable lifecycle > bounds per-invocation delivery progress evidence with explicit drop accounting  2713ms
+   ✓ BridgeGatewayPeer executable lifecycle > does not leak an unregistered rsid into a heartbeat that was awaiting add-in status  1081ms
+   ✓ BridgeGatewayPeer executable lifecycle > continues a two-part artifact plan across restart and deletes the spool only after terminal ack  311ms
+   ✓ BridgeGatewayPeer executable lifecycle > recovers a first-delivery chunked result committed before peer plan staging  523ms
+
+ Test Files  12 passed (12)
+      Tests  218 passed (218)
+   Start at  00:12:53
+   Duration  17.91s (transform 1.17s, setup 0ms, collect 8.23s, tests 34.91s, environment 2ms, prepare 1.40s)
+
+
+> @revagent/gateway@0.0.0 test
+> npm run build && npm run build --workspace @revagent/addin-loopback-fixture && npm run build --workspace @revagent/bridge-simulator && npm run package:handlers && vitest run
+
+
+> @revagent/gateway@0.0.0 build
+> tsc -p tsconfig.build.json
+
+
+> @revagent/addin-loopback-fixture@0.0.0 build
+> npm run build:self
+
+
+> @revagent/addin-loopback-fixture@0.0.0 build:self
+> node ../../node_modules/typescript/lib/tsc.js -p tsconfig.json
+
+
+> @revagent/bridge-simulator@0.0.0 build
+> npm run build --workspace @revagent/protocol && npm run build --workspace @revagent/addin-loopback-fixture && npm run build:self
+
+
+> @revagent/protocol@0.0.0 build
+> npm run build:self
+
+
+> @revagent/protocol@0.0.0 build:self
+> node scripts/generate-types.mjs && node scripts/clean.mjs && node ../../node_modules/typescript/lib/tsc.js -p tsconfig.json
+
+
+> @revagent/addin-loopback-fixture@0.0.0 build
+> npm run build:self
+
+
+> @revagent/addin-loopback-fixture@0.0.0 build:self
+> node ../../node_modules/typescript/lib/tsc.js -p tsconfig.json
+
+
+> @revagent/bridge-simulator@0.0.0 build:self
+> node ../../node_modules/typescript/lib/tsc.js -p tsconfig.json
+
+
+> @revagent/gateway@0.0.0 package:handlers
+> node scripts/package-handlers.mjs
+
+docs: 33965 bytes, 0 chokepoint import(s) rebound
+runtime: 911397 bytes, 4 chokepoint import(s) rebound
+manifest: sha256:cff96bfe132ac4945104272360e4f3de548325181d8b0009734f997ab800d1ac
+
+ RUN  v3.2.7 C:/Users/BT/Projects/revAgent-worktrees/eu10-authenticated-tenant-read/packages/gateway
+
+ ✓ src/preProductionCredentialValidator.test.ts (9 tests) 163ms
+ ✓ src/gw13LiveTarget.test.ts (2 tests) 614ms
+   ✓ GW-13 caller-supplied live target > refuses execute without a target before credential or network use  383ms
+ ✓ src/executableRegistry.test.ts (3 tests) 402ms
+ ✓ src/preProductionEnrollmentEndpoint.test.ts (9 tests) 292ms
+ ✓ src/conformanceEphemeralAdapters.test.ts (17 tests) 1060ms
+   ✓ conformance ephemeral adapters > renews a short SQLite lease over three lease periods without contender overlap  349ms
+ ✓ src/sessionHistoryStore.test.ts (10 tests) 810ms
+   ✓ SessionHistoryStore v3 > commits private intent before bytes and proves positive absence before descriptor removal  648ms
+ ✓ src/northResourceConformance.test.ts (1 test) 380ms
+   ✓ GW-9 north MCP artifact resources > serves an uploaded CSV only through its authenticated MCP resource template  378ms
+ ✓ src/bridgeSessionRevocation.test.ts (31 tests) 794ms
+ ✓ src/resourceAuthorityGc.test.ts (9 tests) 309ms
+ ✓ src/server.test.ts (26 tests) 343ms
+ ✓ src/preProductionServing.test.ts (19 tests) 348ms
+ ✓ src/recoveryAuthority.test.ts (31 tests) 888ms
+ ✓ src/dispatch.test.ts (63 tests) 277ms
+ ✓ src/preProductionSecretHandoff.test.ts (57 tests) 146ms
+ ✓ src/batchDispatch.test.ts (2 tests) 625ms
+   ✓ GW-16 registry-authorized atomic batch > sends five authorized steps in one atomic frame and replays without duplicate add-in execution  620ms
+ ✓ src/preProductionComposition.test.ts (8 tests) 379ms
+ ✓ src/bridgeSessionRoute.test.ts (54 tests) 1155ms
+ ✓ src/productionIdentityStore.test.ts (38 tests) 89ms
+ ✓ src/preProductionAuditExport.test.ts (29 tests) 44ms
+ ✓ src/registrySeed.test.ts (8 tests) 56ms
+ ✓ src/preProductionCredentialFile.test.ts (7 tests | 1 skipped) 63ms
+ ✓ src/preProductionCredentialGenerator.test.ts (47 tests) 48ms
+ ✓ src/preProductionAuditFile.test.ts (10 tests | 1 skipped) 62ms
+ ✓ src/preProductionAuditWriter.test.ts (31 tests) 67ms
+ ✓ src/northModeAConformance.test.ts (1 test) 960ms
+   ✓ GW-10 north Mode-A conformance > keeps entitled discovery session-sticky and dispatches runtime/docs bindings  959ms
+ ✓ src/protectedObjectStore.test.ts (8 tests) 49ms
+ ✓ src/resourceAuthority.test.ts (19 tests) 86ms
+stdout | src/northMcpEndpoint.test.ts > M2 north MCP first slice > exposes a registry index and dispatches one tool through the Bridge simulator
+Client.listTools() called but server does not advertise tools capability - returning empty list
+
+ ✓ src/preProductionRuntimeAdapters.test.ts (9 tests) 22ms
+ ✓ src/entitledRegistry.test.ts (19 tests) 22ms
+ ✓ src/bridgeSessionUnregister.test.ts (87 tests) 1881ms
+ ✓ src/promotionGovernance.test.ts (6 tests) 28ms
+ ✓ src/productionConformanceHostCli.test.ts (30 tests) 1325ms
+   ✓ WP-12 conformance host shutdown > uses Node 24 and real better-sqlite3 state for repeated IPC STOP without native cleanup abort  1164ms
+ ✓ src/instructionPackage.test.ts (5 tests) 22ms
+ ✓ src/recoveryResourceAuthority.test.ts (7 tests) 37ms
+ ✓ src/modeB.test.ts (6 tests) 19ms
+ ✓ src/confirmationAuthority.test.ts (15 tests) 31ms
+ ✓ src/productionConformanceTools.test.ts (5 tests) 36ms
+ ✓ src/productionConformanceHost.test.ts (7 tests) 78ms
+ ✓ src/toolBindings.test.ts (12 tests) 16ms
+ ✓ src/productionConformanceVerification.test.ts (11 tests) 264ms
+ ✓ src/northMcpEndpoint.test.ts (12 tests) 2075ms
+   ✓ M2 north MCP first slice > exposes a registry index and dispatches one tool through the Bridge simulator  1068ms
+ ✓ src/gatewayServingOwnership.test.ts (5 tests) 14ms
+ ✓ src/sessionRetention.test.ts (6 tests) 20ms
+ ✓ src/omittedPayloadRecovery.test.ts (7 tests) 14ms
+ ✓ src/config.test.ts (14 tests) 11ms
+ ✓ src/preProductionServingShutdown.test.ts (4 tests) 10ms
+ ✓ src/registry.test.ts (11 tests) 14ms
+ ✓ src/northFirstSlice.test.ts (5 tests) 10ms
+ ✓ src/modeADiscovery.test.ts (6 tests) 19ms
+ ✓ src/gatewayMaintenance.test.ts (5 tests) 8ms
+ ✓ src/preProductionIdentity.test.ts (10 tests) 21ms
+ ✓ src/handlerManifest.test.ts (6 tests) 8ms
+ ✓ src/protectedObjectKeyProvider.test.ts (4 tests | 2 skipped) 4ms
+ ✓ src/preProductionTlsMaterial.test.ts (8 tests | 3 skipped) 6ms
+ ✓ src/executorPort.test.ts (4 tests) 6ms
+ ✓ src/composeSecretWiring.test.ts (2 tests) 5ms
+ ✓ src/confirmation.test.ts (7 tests) 13ms
+ ✓ src/authenticatedTenantRead.test.ts (4 tests) 2577ms
+   ✓ EU-10 authenticated tenant read > migrates a blank database, maps bearer identity/role, and denies invalid, expired, and foreign-tenant tokens  314ms
+   ✓ EU-10 authenticated tenant read > executes one external north-MCP bounded read and persists one tenant-bound idempotent audit row  738ms
+   ✓ EU-10 authenticated tenant read > discovers real Keycloak, completes PKCE login, uses its token through north MCP, and denies wrong issuer/audience  759ms
+ ✓ src/documentContextDigest.test.ts (2 tests) 4ms
+ ✓ src/index.test.ts (4 tests) 3ms
+ ✓ src/rbpIngress.test.ts (55 tests) 40710ms
+   ✓ GW-12 production RBP ingress > emits one value-free correlated observer record for a revoked HTTP opening  313ms
+   ✓ GW-12 production RBP ingress > enforces the raw queued-byte 'exact bound'  578ms
+   ✓ GW-12 production RBP ingress > pauses at the 75 percent byte watermark and resumes only below 50 percent  720ms
+   ✓ GW-12 production RBP ingress > bounds concurrent application egress frames and releases accounting after settle  376ms
+   ✓ GW-12 production RBP ingress > bounds concurrent application egress bytes at exact F and rejects plus one  407ms
+   ✓ GW-12 production RBP ingress > leaves zero HTTP/SSE entries and admissions after 1000 fake-clock TTL cycles  19543ms
+   ✓ GW-12 production RBP ingress > enforces exact tenant and global HTTP/SSE caps, fair admission, and one detach per drain  15430ms
+   ✓ GW-12 production RBP ingress > routes every bridge-bound runtime method and keeps discovery internal  527ms
+
+ Test Files  61 passed (61)
+      Tests  942 passed | 7 skipped (949)
+   Start at  00:13:24
+   Duration  43.15s (transform 6.28s, setup 0ms, collect 36.84s, tests 59.84s, environment 11ms, prepare 7.63s)
+
+
+> @revagent/gateway-stub@0.0.0 test
+> npm run build && vitest run
+
+
+> @revagent/gateway-stub@0.0.0 build
+> npm run build --workspace @revagent/protocol && npm run build:self
+
+
+> @revagent/protocol@0.0.0 build
+> npm run build:self
+
+
+> @revagent/protocol@0.0.0 build:self
+> node scripts/generate-types.mjs && node scripts/clean.mjs && node ../../node_modules/typescript/lib/tsc.js -p tsconfig.json
+
+
+> @revagent/gateway-stub@0.0.0 build:self
+> node ../../node_modules/typescript/lib/tsc.js -p tsconfig.json
+
+
+ RUN  v3.2.7 C:/Users/BT/Projects/revAgent-worktrees/eu10-authenticated-tenant-read/packages/gateway-stub
+
+ ✓ tests/faults.test.ts (7 tests) 105ms
+ ✓ tests/stateStore.test.ts (3 tests) 25ms
+ ✓ tests/versionAdapter.test.ts (4 tests) 17ms
+ ✓ tests/enrollment.test.ts (6 tests) 177ms
+ ✓ tests/core.test.ts (30 tests) 1030ms
+ ✓ tests/bindings.test.ts (37 tests) 2355ms
+   ✓ opening and proxy fault controls > rejects non-exact and invalid test-control fault commands with 400  335ms
+ ✓ tests/cli.test.ts (12 tests) 15585ms
+   ✓ Gateway stub CLI > drains active transports, pending control and core state before STOP completes, then exits naturally  417ms
+   ✓ Gateway stub CLI > drains active transports, pending control and core state before disconnect completes, then exits naturally  357ms
+   ✓ Gateway stub CLI > keeps STOP and signal injection inert outside NODE_ENV=test  303ms
+   ✓ Gateway stub CLI > reports failed cleanup without a closed ACK and exits nonzero after parent IPC release  693ms
+   ✓ Gateway stub CLI > applies startup protocol/capability overrides and drives liveness from process control time  404ms
+   ✓ Gateway stub CLI > survives 40 readiness-adjacent SIGTERM shutdowns without retaining listeners  11313ms
+   ✓ Gateway stub CLI > shares one cleanup across sequential signals with active WSS and SSE transports  317ms
+   ✓ Gateway stub CLI > keeps the idempotent shutdown handler installed across same-signal bursts  658ms
+
+ Test Files  7 passed (7)
+      Tests  99 passed (99)
+   Start at  00:14:12
+   Duration  16.38s (transform 622ms, setup 0ms, collect 2.95s, tests 19.30s, environment 1ms, prepare 665ms)
+
+
+> @revagent/protocol@0.0.0 test
+> npm run generate && vitest run && npm run build && npm run conformance
+
+
+> @revagent/protocol@0.0.0 generate
+> node scripts/generate-types.mjs
+
+
+ RUN  v3.2.7 C:/Users/BT/Projects/revAgent-worktrees/eu10-authenticated-tenant-read/packages/protocol
+
+ ✓ src/connectionState.test.ts (14 tests) 5ms
+ ✓ src/journalState.test.ts (15 tests) 10ms
+ ✓ src/mutationHold.test.ts (10 tests) 18ms
+ ✓ src/streamAssembler.test.ts (24 tests) 42ms
+ ✓ src/sequenceState.test.ts (9 tests) 77ms
+ ✓ tests/addinLoopbackSchemas.test.ts (81 tests) 280ms
+ ✓ src/safetyInterleavings.test.ts (1 test) 242ms
+ ✓ src/index.test.ts (150 tests) 473ms
+
+ Test Files  8 passed (8)
+      Tests  304 passed (304)
+   Start at  00:14:29
+   Duration  1.22s (transform 515ms, setup 0ms, collect 3.32s, tests 1.15s, environment 1ms, prepare 821ms)
+
+
+> @revagent/protocol@0.0.0 build
+> npm run build:self
+
+
+> @revagent/protocol@0.0.0 build:self
+> node scripts/generate-types.mjs && node scripts/clean.mjs && node ../../node_modules/typescript/lib/tsc.js -p tsconfig.json
+
+
+> @revagent/protocol@0.0.0 conformance
+> node scripts/run-conformance.mjs
+
+{"success":true,"envelopePositive":37,"envelopeNegative":66,"frameLimits":4,"rawFrameSyntax":4,"paramsDigest":5,"batchDigest":2,"reconnectBackoff":11}
+
+> @revagent/rbp-conformance@0.0.0 test
+> npm run build --workspace @revagent/protocol && node scripts/run-tests.mjs
+
+
+> @revagent/protocol@0.0.0 build
+> npm run build:self
+
+
+> @revagent/protocol@0.0.0 build:self
+> node scripts/generate-types.mjs && node scripts/clean.mjs && node ../../node_modules/typescript/lib/tsc.js -p tsconfig.json
+
+[rbp-conformance] prepared attested production plan in 113986ms (sha256 e20bd97885f1181395d2751aff4558da554c2a3247094d00cff6ebe2263c519d)
+[rbp-conformance] starting --shard=1/5
+
+ RUN  v3.2.7 C:/Users/BT/Projects/revAgent-worktrees/eu10-authenticated-tenant-read/packages/rbp-conformance
+
+[globalSetup] reused attested production plan (validated in 5240ms)
+··stdout | tests/productionCaseRunnerC32.test.ts > O1-C32 registered-session production conformance > passes every exact chunk assertion on the wss current-stack binding
+[rbp-conformance] restart_case_stack timing binding=wss step=o1-c32.resource-baseline-start totalElapsedMs=863 phases=restart_case_stack.prepare_instance:36ms,restart_case_stack.addin_loopback_fixture.readiness:217ms,restart_case_stack.fixture.ParentTcpCaptureProxy.start:1ms,restart_case_stack.gateway_stub.readiness:288ms,restart_case_stack.gateway.ParentTcpCaptureProxy.start:1ms,restart_case_stack.bridge_simulator.readiness:320ms,restart_case_stack.finalize:0ms
+
+·stdout | tests/productionCaseRunnerC32.test.ts > O1-C32 registered-session production conformance > passes every exact chunk assertion on the streamable_http_sse current-stack binding
+[rbp-conformance] restart_case_stack timing binding=streamable_http_sse step=o1-c32.resource-baseline-start totalElapsedMs=807 phases=restart_case_stack.prepare_instance:1ms,restart_case_stack.addin_loopback_fixture.readiness:215ms,restart_case_stack.fixture.ParentTcpCaptureProxy.start:1ms,restart_case_stack.gateway_stub.readiness:276ms,restart_case_stack.gateway.ParentTcpCaptureProxy.start:1ms,restart_case_stack.bridge_simulator.readiness:314ms,restart_case_stack.finalize:0ms
+
+················································································
+
+ Test Files  15 passed (15)
+      Tests  83 passed (83)
+   Start at  00:16:30
+   Duration  237.23s (transform 777ms, setup 0ms, collect 3.98s, tests 227.36s, environment 0ms, prepare 52ms)
+
+[rbp-conformance] PASS --shard=1/5
+[rbp-conformance] starting --shard=2/5
+
+ RUN  v3.2.7 C:/Users/BT/Projects/revAgent-worktrees/eu10-authenticated-tenant-read/packages/rbp-conformance
+
+[globalSetup] reused attested production plan (validated in 5396ms)
+························x······x······································································
+
+ Test Files  2 failed | 13 passed (15)
+      Tests  2 failed | 100 passed (102)
+   Start at  00:20:28
+   Duration  664.73s (transform 744ms, setup 0ms, collect 4.17s, tests 654.51s, environment 0ms, prepare 53ms)
+
+[rbp-conformance] starting --shard=3/5
+
+ RUN  v3.2.7 C:/Users/BT/Projects/revAgent-worktrees/eu10-authenticated-tenant-read/packages/rbp-conformance
+
+[globalSetup] reused attested production plan (validated in 5420ms)
+·xx···································--·············································································································
+
+ Test Files  1 failed | 14 passed (15)
+      Tests  2 failed | 145 passed | 2 skipped (149)
+   Start at  00:31:33
+   Duration  495.31s (transform 703ms, setup 0ms, collect 3.58s, tests 485.66s, environment 0ms, prepare 52ms)
+
+[rbp-conformance] starting --shard=4/5
+
+ RUN  v3.2.7 C:/Users/BT/Projects/revAgent-worktrees/eu10-authenticated-tenant-read/packages/rbp-conformance
+
+[globalSetup] reused attested production plan (validated in 5360ms)
+·····················································································································································································································
+
+ Test Files  15 passed (15)
+      Tests  213 passed (213)
+   Start at  00:39:49
+   Duration  129.17s (transform 785ms, setup 0ms, collect 3.52s, tests 119.65s, environment 0ms, prepare 52ms)
+
+[rbp-conformance] PASS --shard=4/5
+[rbp-conformance] starting --shard=5/5
+
+ RUN  v3.2.7 C:/Users/BT/Projects/revAgent-worktrees/eu10-authenticated-tenant-read/packages/rbp-conformance
+
+[globalSetup] reused attested production plan (validated in 5385ms)
+············································································
+
+ Test Files  13 passed (13)
+      Tests  76 passed (76)
+   Start at  00:41:59
+   Duration  219.62s (transform 722ms, setup 0ms, collect 2.80s, tests 210.79s, environment 0ms, prepare 52ms)
+
+[rbp-conformance] PASS --shard=5/5
+[rbp-conformance] cardinality 73 files / 623 tests / 5 shards
+
+--- STDERR ---
+stderr | src/northMcpEndpoint.test.ts > M2 north MCP first slice > rejects a transport/identity session mismatch before route resolution or dispatch
+{ event: 'gateway.north_mcp.error', code: 'sdk_error' }
+
+(node:31836) [FSTDEP023] FastifyDeprecation: disableRequestLogging option is deprecated. Use the logController option with disableRequestLogging or isLogDisabled override instead. The disableRequestLogging top-level option will be removed in `fastify@6`.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:31836) [FSTDEP023] FastifyDeprecation: disableRequestLogging option is deprecated. Use the logController option with disableRequestLogging or isLogDisabled override instead. The disableRequestLogging top-level option will be removed in `fastify@6`.
+(node:31836) [FSTDEP023] FastifyDeprecation: disableRequestLogging option is deprecated. Use the logController option with disableRequestLogging or isLogDisabled override instead. The disableRequestLogging top-level option will be removed in `fastify@6`.
+(node:31836) [FSTDEP023] FastifyDeprecation: disableRequestLogging option is deprecated. Use the logController option with disableRequestLogging or isLogDisabled override instead. The disableRequestLogging top-level option will be removed in `fastify@6`.
+(node:31836) [FSTDEP023] FastifyDeprecation: disableRequestLogging option is deprecated. Use the logController option with disableRequestLogging or isLogDisabled override instead. The disableRequestLogging top-level option will be removed in `fastify@6`.
+(node:31836) [FSTDEP023] FastifyDeprecation: disableRequestLogging option is deprecated. Use the logController option with disableRequestLogging or isLogDisabled override instead. The disableRequestLogging top-level option will be removed in `fastify@6`.
+(node:15036) [FSTDEP023] FastifyDeprecation: disableRequestLogging option is deprecated. Use the logController option with disableRequestLogging or isLogDisabled override instead. The disableRequestLogging top-level option will be removed in `fastify@6`.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:31836) [FSTDEP023] FastifyDeprecation: disableRequestLogging option is deprecated. Use the logController option with disableRequestLogging or isLogDisabled override instead. The disableRequestLogging top-level option will be removed in `fastify@6`.
+(node:31836) [FSTDEP023] FastifyDeprecation: disableRequestLogging option is deprecated. Use the logController option with disableRequestLogging or isLogDisabled override instead. The disableRequestLogging top-level option will be removed in `fastify@6`.
+(node:31836) [FSTDEP023] FastifyDeprecation: disableRequestLogging option is deprecated. Use the logController option with disableRequestLogging or isLogDisabled override instead. The disableRequestLogging top-level option will be removed in `fastify@6`.
+(node:17948) [FSTDEP023] FastifyDeprecation: disableRequestLogging option is deprecated. Use the logController option with disableRequestLogging or isLogDisabled override instead. The disableRequestLogging top-level option will be removed in `fastify@6`.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:44100) [FSTDEP023] FastifyDeprecation: disableRequestLogging option is deprecated. Use the logController option with disableRequestLogging or isLogDisabled override instead. The disableRequestLogging top-level option will be removed in `fastify@6`.
+(Use `node --trace-warnings ...` to show where the warning was created)
+{"contractVersion":"revagent.m4-rbp-refusal-observer/v1","event":"gateway.rbp_opening_refused","correlationId":"01a05ed1-ddb3-7a4a-b7b6-252e3eada679","binding":"http_sse","faultClass":"auth","httpStatus":403,"closeCode":4403,"decision":"refused"}
+(node:44100) [FSTDEP023] FastifyDeprecation: disableRequestLogging option is deprecated. Use the logController option with disableRequestLogging or isLogDisabled override instead. The disableRequestLogging top-level option will be removed in `fastify@6`.
+(node:17948) [FSTDEP023] FastifyDeprecation: disableRequestLogging option is deprecated. Use the logController option with disableRequestLogging or isLogDisabled override instead. The disableRequestLogging top-level option will be removed in `fastify@6`.
+{"contractVersion":"revagent.m4-rbp-refusal-observer/v1","event":"gateway.rbp_opening_refused","correlationId":"01a05ed1-de14-7c5e-b167-7a1871ef1640","binding":"wss","faultClass":"auth","httpStatus":403,"closeCode":4403,"decision":"refused"}
+(node:17948) [FSTDEP023] FastifyDeprecation: disableRequestLogging option is deprecated. Use the logController option with disableRequestLogging or isLogDisabled override instead. The disableRequestLogging top-level option will be removed in `fastify@6`.
+(node:17948) [FSTDEP023] FastifyDeprecation: disableRequestLogging option is deprecated. Use the logController option with disableRequestLogging or isLogDisabled override instead. The disableRequestLogging top-level option will be removed in `fastify@6`.
+(node:17948) [FSTDEP023] FastifyDeprecation: disableRequestLogging option is deprecated. Use the logController option with disableRequestLogging or isLogDisabled override instead. The disableRequestLogging top-level option will be removed in `fastify@6`.
+{"contractVersion":"revagent.m4-rbp-refusal-observer/v1","event":"gateway.rbp_opening_refused","correlationId":"018f0f7a-3f5e-7c00-8000-000000000022","binding":"http_sse","faultClass":"auth","httpStatus":403,"closeCode":4403,"decision":"refused"}
+(node:17948) [FSTDEP023] FastifyDeprecation: disableRequestLogging option is deprecated. Use the logController option with disableRequestLogging or isLogDisabled override instead. The disableRequestLogging top-level option will be removed in `fastify@6`.
+(node:17948) [FSTDEP023] FastifyDeprecation: disableRequestLogging option is deprecated. Use the logController option with disableRequestLogging or isLogDisabled override instead. The disableRequestLogging top-level option will be removed in `fastify@6`.
+stderr | src/northMcpEndpoint.test.ts > M2 north MCP first slice > exposes a registry index and dispatches one tool through the Bridge simulator
+{ event: 'gateway.north_mcp.error', code: 'sdk_error' }
+
+stderr | src/northMcpEndpoint.test.ts > M2 north MCP first slice > exposes a registry index and dispatches one tool through the Bridge simulator
+{ event: 'gateway.north_mcp.error', code: 'sdk_error' }
+
+(node:17948) [FSTDEP023] FastifyDeprecation: disableRequestLogging option is deprecated. Use the logController option with disableRequestLogging or isLogDisabled override instead. The disableRequestLogging top-level option will be removed in `fastify@6`.
+(node:17948) [FSTDEP023] FastifyDeprecation: disableRequestLogging option is deprecated. Use the logController option with disableRequestLogging or isLogDisabled override instead. The disableRequestLogging top-level option will be removed in `fastify@6`.
+(node:17948) [FSTDEP023] FastifyDeprecation: disableRequestLogging option is deprecated. Use the logController option with disableRequestLogging or isLogDisabled override instead. The disableRequestLogging top-level option will be removed in `fastify@6`.
+(node:17948) [FSTDEP023] FastifyDeprecation: disableRequestLogging option is deprecated. Use the logController option with disableRequestLogging or isLogDisabled override instead. The disableRequestLogging top-level option will be removed in `fastify@6`.
+(node:17948) [FSTDEP023] FastifyDeprecation: disableRequestLogging option is deprecated. Use the logController option with disableRequestLogging or isLogDisabled override instead. The disableRequestLogging top-level option will be removed in `fastify@6`.
+(node:17948) [FSTDEP023] FastifyDeprecation: disableRequestLogging option is deprecated. Use the logController option with disableRequestLogging or isLogDisabled override instead. The disableRequestLogging top-level option will be removed in `fastify@6`.
+(node:17948) [FSTDEP023] FastifyDeprecation: disableRequestLogging option is deprecated. Use the logController option with disableRequestLogging or isLogDisabled override instead. The disableRequestLogging top-level option will be removed in `fastify@6`.
+(node:17948) [FSTDEP023] FastifyDeprecation: disableRequestLogging option is deprecated. Use the logController option with disableRequestLogging or isLogDisabled override instead. The disableRequestLogging top-level option will be removed in `fastify@6`.
+(node:17948) [FSTDEP023] FastifyDeprecation: disableRequestLogging option is deprecated. Use the logController option with disableRequestLogging or isLogDisabled override instead. The disableRequestLogging top-level option will be removed in `fastify@6`.
+(node:17948) [FSTDEP023] FastifyDeprecation: disableRequestLogging option is deprecated. Use the logController option with disableRequestLogging or isLogDisabled override instead. The disableRequestLogging top-level option will be removed in `fastify@6`.
+(node:17948) [FSTDEP023] FastifyDeprecation: disableRequestLogging option is deprecated. Use the logController option with disableRequestLogging or isLogDisabled override instead. The disableRequestLogging top-level option will be removed in `fastify@6`.
+(node:17948) [FSTDEP023] FastifyDeprecation: disableRequestLogging option is deprecated. Use the logController option with disableRequestLogging or isLogDisabled override instead. The disableRequestLogging top-level option will be removed in `fastify@6`.
+(node:17948) [FSTDEP023] FastifyDeprecation: disableRequestLogging option is deprecated. Use the logController option with disableRequestLogging or isLogDisabled override instead. The disableRequestLogging top-level option will be removed in `fastify@6`.
+(node:17948) [FSTDEP023] FastifyDeprecation: disableRequestLogging option is deprecated. Use the logController option with disableRequestLogging or isLogDisabled override instead. The disableRequestLogging top-level option will be removed in `fastify@6`.
+(node:17948) [FSTDEP023] FastifyDeprecation: disableRequestLogging option is deprecated. Use the logController option with disableRequestLogging or isLogDisabled override instead. The disableRequestLogging top-level option will be removed in `fastify@6`.
+(node:17948) [FSTDEP023] FastifyDeprecation: disableRequestLogging option is deprecated. Use the logController option with disableRequestLogging or isLogDisabled override instead. The disableRequestLogging top-level option will be removed in `fastify@6`.
+(node:17948) [FSTDEP023] FastifyDeprecation: disableRequestLogging option is deprecated. Use the logController option with disableRequestLogging or isLogDisabled override instead. The disableRequestLogging top-level option will be removed in `fastify@6`.
+(node:17948) [FSTDEP023] FastifyDeprecation: disableRequestLogging option is deprecated. Use the logController option with disableRequestLogging or isLogDisabled override instead. The disableRequestLogging top-level option will be removed in `fastify@6`.
+(node:17948) [FSTDEP023] FastifyDeprecation: disableRequestLogging option is deprecated. Use the logController option with disableRequestLogging or isLogDisabled override instead. The disableRequestLogging top-level option will be removed in `fastify@6`.
+(node:17948) [FSTDEP023] FastifyDeprecation: disableRequestLogging option is deprecated. Use the logController option with disableRequestLogging or isLogDisabled override instead. The disableRequestLogging top-level option will be removed in `fastify@6`.
+(node:17948) [FSTDEP023] FastifyDeprecation: disableRequestLogging option is deprecated. Use the logController option with disableRequestLogging or isLogDisabled override instead. The disableRequestLogging top-level option will be removed in `fastify@6`.
+(node:17948) [FSTDEP023] FastifyDeprecation: disableRequestLogging option is deprecated. Use the logController option with disableRequestLogging or isLogDisabled override instead. The disableRequestLogging top-level option will be removed in `fastify@6`.
+(node:17948) [FSTDEP023] FastifyDeprecation: disableRequestLogging option is deprecated. Use the logController option with disableRequestLogging or isLogDisabled override instead. The disableRequestLogging top-level option will be removed in `fastify@6`.
+(node:17948) [FSTDEP023] FastifyDeprecation: disableRequestLogging option is deprecated. Use the logController option with disableRequestLogging or isLogDisabled override instead. The disableRequestLogging top-level option will be removed in `fastify@6`.
+(node:17948) [FSTDEP023] FastifyDeprecation: disableRequestLogging option is deprecated. Use the logController option with disableRequestLogging or isLogDisabled override instead. The disableRequestLogging top-level option will be removed in `fastify@6`.
+(node:17948) [FSTDEP023] FastifyDeprecation: disableRequestLogging option is deprecated. Use the logController option with disableRequestLogging or isLogDisabled override instead. The disableRequestLogging top-level option will be removed in `fastify@6`.
+(node:17948) [FSTDEP023] FastifyDeprecation: disableRequestLogging option is deprecated. Use the logController option with disableRequestLogging or isLogDisabled override instead. The disableRequestLogging top-level option will be removed in `fastify@6`.
+(node:17948) [FSTDEP023] FastifyDeprecation: disableRequestLogging option is deprecated. Use the logController option with disableRequestLogging or isLogDisabled override instead. The disableRequestLogging top-level option will be removed in `fastify@6`.
+(node:17948) [FSTDEP023] FastifyDeprecation: disableRequestLogging option is deprecated. Use the logController option with disableRequestLogging or isLogDisabled override instead. The disableRequestLogging top-level option will be removed in `fastify@6`.
+(node:17948) [FSTDEP023] FastifyDeprecation: disableRequestLogging option is deprecated. Use the logController option with disableRequestLogging or isLogDisabled override instead. The disableRequestLogging top-level option will be removed in `fastify@6`.
+(node:17948) [FSTDEP023] FastifyDeprecation: disableRequestLogging option is deprecated. Use the logController option with disableRequestLogging or isLogDisabled override instead. The disableRequestLogging top-level option will be removed in `fastify@6`.
+(node:17948) [FSTDEP023] FastifyDeprecation: disableRequestLogging option is deprecated. Use the logController option with disableRequestLogging or isLogDisabled override instead. The disableRequestLogging top-level option will be removed in `fastify@6`.
+{"contractVersion":"revagent.m4-rbp-refusal-observer/v1","event":"gateway.rbp_opening_refused","correlationId":"01a05ed1-efea-7bcc-9272-eeca58922b2a","binding":"http_sse","faultClass":"auth","httpStatus":403,"closeCode":4403,"decision":"refused"}
+(node:17948) [FSTDEP023] FastifyDeprecation: disableRequestLogging option is deprecated. Use the logController option with disableRequestLogging or isLogDisabled override instead. The disableRequestLogging top-level option will be removed in `fastify@6`.
+(node:17948) [FSTDEP023] FastifyDeprecation: disableRequestLogging option is deprecated. Use the logController option with disableRequestLogging or isLogDisabled override instead. The disableRequestLogging top-level option will be removed in `fastify@6`.
+(node:17948) [FSTDEP023] FastifyDeprecation: disableRequestLogging option is deprecated. Use the logController option with disableRequestLogging or isLogDisabled override instead. The disableRequestLogging top-level option will be removed in `fastify@6`.
+(node:17948) [FSTDEP023] FastifyDeprecation: disableRequestLogging option is deprecated. Use the logController option with disableRequestLogging or isLogDisabled override instead. The disableRequestLogging top-level option will be removed in `fastify@6`.
+(node:17948) [FSTDEP023] FastifyDeprecation: disableRequestLogging option is deprecated. Use the logController option with disableRequestLogging or isLogDisabled override instead. The disableRequestLogging top-level option will be removed in `fastify@6`.
+(node:17948) [FSTDEP023] FastifyDeprecation: disableRequestLogging option is deprecated. Use the logController option with disableRequestLogging or isLogDisabled override instead. The disableRequestLogging top-level option will be removed in `fastify@6`.
+(node:17948) [FSTDEP023] FastifyDeprecation: disableRequestLogging option is deprecated. Use the logController option with disableRequestLogging or isLogDisabled override instead. The disableRequestLogging top-level option will be removed in `fastify@6`.
+(node:17948) [FSTDEP023] FastifyDeprecation: disableRequestLogging option is deprecated. Use the logController option with disableRequestLogging or isLogDisabled override instead. The disableRequestLogging top-level option will be removed in `fastify@6`.
+(node:17948) [FSTDEP023] FastifyDeprecation: disableRequestLogging option is deprecated. Use the logController option with disableRequestLogging or isLogDisabled override instead. The disableRequestLogging top-level option will be removed in `fastify@6`.
+(node:17948) [FSTDEP023] FastifyDeprecation: disableRequestLogging option is deprecated. Use the logController option with disableRequestLogging or isLogDisabled override instead. The disableRequestLogging top-level option will be removed in `fastify@6`.
+(node:17948) [FSTDEP023] FastifyDeprecation: disableRequestLogging option is deprecated. Use the logController option with disableRequestLogging or isLogDisabled override instead. The disableRequestLogging top-level option will be removed in `fastify@6`.
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  tests/cliAggregate.test.ts > aggregate CLI retained-evidence flow > validates and summarizes aggregate bytes without writing any output
+AssertionError: production controller Node does not match the plan-bound runtime Node identity
+: expected 1 to be +0 // Object.is equality
+
+- Expected
++ Received
+
+- 0
++ 1
+
+ ❯ tests/cliAggregate.test.ts:113:62
+    111|       );
+    112|       expect(aggregateResult.error).toBeUndefined();
+    113|       expect(aggregateResult.status, aggregateResult.stderr).toBe(0);
+       |                                                              ^
+    114|       expect(String(aggregateResult.stdout)).toContain(
+    115|         "VALID (NON-AUTHORITATIVE)",
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+ FAIL  tests/productionBootstrapLauncher.test.ts > canonical production bootstrap and external launcher > rejects effective Git filters before any filter command can execute
+AssertionError: expected 'file:///C:/Users/BT/AppData/Local/Tem…' to match /rejects effective Git filters/u
+
+- Expected: 
+/rejects effective Git filters/u
+
++ Received: 
+"file:///C:/Users/BT/AppData/Local/Temp/rbp-filter-pretrust-nAP0dg/repo/packages/rbp-conformance/scripts/production-source-anchor.mjs:520
+    throw new Error(
+          ^
+
+Error: production Node must be the exact Program Files candidate: C:\\Program Files\\nodejs\\node.exe
+    at nodeIdentity (file:///C:/Users/BT/AppData/Local/Temp/rbp-filter-pretrust-nAP0dg/repo/packages/rbp-conformance/scripts/production-source-anchor.mjs:520:11)
+    at captureProductionSourceAnchor (file:///C:/Users/BT/AppData/Local/Temp/rbp-filter-pretrust-nAP0dg/repo/packages/rbp-conformance/scripts/production-source-anchor.mjs:1000:16)
+    at file:///C:/Users/BT/AppData/Local/Temp/rbp-filter-pretrust-nAP0dg/repo/packages/rbp-conformance/scripts/production-source-anchor.mjs:1085:18
+    at ModuleJob.run (node:internal/modules/esm/module_job:439:25)
+    at async node:internal/modules/esm/loader:643:26
+    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:101:5)
+
+Node.js v24.19.0
+"
+
+ ❯ tests/productionBootstrapLauncher.test.ts:1591:37
+    1589|       );
+    1590|       expect(result.status).not.toBe(0);
+    1591|       expect(String(result.stderr)).toMatch(/rejects effective Git fil…
+       |                                     ^
+    1592|       expect(existsSync(marker)).toBe(false);
+    1593|       expect(String(result.stdout)).not.toContain("PASS");
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯
+
+[rbp-conformance] FAIL --shard=2/5
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  tests/productionValidationProvenance.test.ts > PASS-capable validator production identity > clears hostile parent NODE_OPTIONS before every validator loads JavaScript
+AssertionError: expected 'production controller Node does not m…' to contain 'missing-report.json'
+
+- Expected
++ Received
+
+- missing-report.json
++ production controller Node does not match the plan-bound runtime Node identity
++
+
+ ❯ tests/productionValidationProvenance.test.ts:232:37
+    230|         /production controller environment cannot set NODE_OPTIONS/u,
+    231|       );
+    232|       expect(String(result.stderr)).toContain(path.basename(command.ex…
+       |                                     ^
+    233|       expect(String(result.stderr)).toMatch(
+    234|         /ENOENT|no such file/u,
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+ FAIL  tests/productionValidationProvenance.test.ts > PASS-capable validator production identity > does not consult hostile npm script-shell, user config, or node.cmd
+AssertionError: expected 'production controller Node does not m…' to match /ENOENT|no such file/u
+
+- Expected: 
+/ENOENT|no such file/u
+
++ Received: 
+"production controller Node does not match the plan-bound runtime Node identity
+"
+
+ ❯ tests/productionValidationProvenance.test.ts:292:35
+    290|     expect(result.error).toBeUndefined();
+    291|     expect(result.status).not.toBe(0);
+    292|     expect(String(result.stderr)).toMatch(/ENOENT|no such file/u);
+       |                                   ^
+    293|     expect(String(result.stderr)).toContain(path.basename(missingRepor…
+    294|     expect(String(result.stdout)).not.toContain("PASS");
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯
+
+[rbp-conformance] FAIL --shard=3/5
+[rbp-conformance] FAIL --shard=2/5: exit 1; --shard=3/5: exit 1
+npm error Lifecycle script `test` failed with error:
+npm error code 1
+npm error path C:\Users\BT\Projects\revAgent-worktrees\eu10-authenticated-tenant-read\packages\rbp-conformance
+npm error workspace @revagent/rbp-conformance@0.0.0
+npm error location C:\Users\BT\Projects\revAgent-worktrees\eu10-authenticated-tenant-read\packages\rbp-conformance
+npm error command failed
+npm error command C:\WINDOWS\system32\cmd.exe /d /s /c npm run build --workspace @revagent/protocol && node scripts/run-tests.mjs

@@ -15,8 +15,8 @@ services:
       - OBJECT_STORE_DRIVER=fs
       - OBJECT_STORE_ROOT=/var/lib/revagent/objects
       - OIDC_CLIENT_ID
-      - OIDC_CLIENT_SECRET
       - OIDC_ISSUER_URL
+      - OIDC_JWKS_URI
       - PORT=8080
     volumes:
       - type: bind
@@ -25,6 +25,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      keycloak:
+        condition: service_started
     expose:
       - "8080"
     healthcheck:
@@ -68,6 +70,32 @@ services:
     networks:
       - data
 
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.4.7
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "/opt/revagent/start-keycloak.sh"]
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN_USERNAME:?set KEYCLOAK_ADMIN_USERNAME}
+      KC_HEALTH_ENABLED: "true"
+      KC_HOSTNAME: https://${GATEWAY_DOMAIN}/identity
+      KC_HTTP_RELATIVE_PATH: /identity
+      KC_PROXY_HEADERS: xforwarded
+      JAVA_OPTS_KC_HEAP: -XX:MaxRAMPercentage=50 -XX:InitialRAMPercentage=25
+    volumes:
+      - type: bind
+        source: ${KEYCLOAK_DATA_HOST_PATH:-/opt/revagent/data/keycloak}
+        target: /opt/keycloak/data
+      - ./keycloak/realm-revagent.json:/opt/keycloak/data/import/realm-revagent.json:ro
+      - ./keycloak/start-keycloak.sh:/opt/revagent/start-keycloak.sh:ro
+    secrets:
+      - keycloak_bootstrap_credential
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - edge
+      - data
+
   caddy:
     image: caddy:2-alpine
     restart: unless-stopped
@@ -97,3 +125,7 @@ networks:
   edge:
   data:
     internal: true
+
+secrets:
+  keycloak_bootstrap_credential:
+    file: ${KEYCLOAK_BOOTSTRAP_CREDENTIAL_FILE:?set KEYCLOAK_BOOTSTRAP_CREDENTIAL_FILE}

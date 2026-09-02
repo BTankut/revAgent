@@ -443,6 +443,19 @@ export {
 } from "./server.js";
 export { startProductionGatewayHost } from "./productionConformanceHost.js";
 export { runProductionConformanceHostCli } from "./productionConformanceHostCli.js";
+export { migrateUp } from "./migrate.js";
+export {
+  PostgresTenantStore,
+  type OidcPrincipalInput,
+  type TenantDeviceSummary,
+} from "./postgresTenantStore.js";
+export {
+  createOidcIdentityPort,
+  createOidcNorthMcpAuthenticator,
+  type OidcIdentityOptions,
+  type OidcIdentityRepository,
+} from "./oidcIdentity.js";
+export { createAuthenticatedTenantReadNorthMcp } from "./authenticatedTenantRead.js";
 export {
   ConformanceCredentialAuthority,
   DigestFileConformanceObjectStore,

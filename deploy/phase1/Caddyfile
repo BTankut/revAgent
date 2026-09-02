@@ -7,7 +7,12 @@
 
 http://{$GATEWAY_DOMAIN} {
 	encode zstd gzip
-	reverse_proxy gateway:8080
+	handle /identity/* {
+		reverse_proxy keycloak:8080
+	}
+	handle {
+		reverse_proxy gateway:8080
+	}
 
 	log {
 		output stdout

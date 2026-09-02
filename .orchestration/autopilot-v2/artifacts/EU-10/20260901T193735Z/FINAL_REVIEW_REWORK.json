@@ -1,0 +1,39 @@
+{
+  "schema": "revagent.autopilot.eu10-final-review-rework/v1",
+  "reviewedHead": "51e4e68c051479a85b29534896f8a88d1c60f5e7",
+  "reviewedTree": "59947a055fd9bed999f316b203b2e82501ea441b",
+  "findings": {
+    "highTenantIdentity": {
+      "status": "repaired",
+      "changes": [
+        "removed the Keycloak hardcoded Tenant-A claim mapper",
+        "declared tenant_id as a managed admin-only user-profile attribute",
+        "retained one user-attribute tenant claim mapper",
+        "proved real Keycloak Tenant-A and Tenant-B token identities",
+        "proved each token reads only its own tenant device through north MCP",
+        "proved an unknown-tenant Keycloak token receives HTTP 401"
+      ]
+    },
+    "mediumMigrationCli": {
+      "status": "repaired",
+      "changes": [
+        "CLI requires DATABASE_MIGRATION_URL",
+        "CLI never falls back to DATABASE_URL",
+        "CLI rejects one URL reused for migration and runtime",
+        "README and environment example use the same migration-only contract"
+      ]
+    }
+  },
+  "focusedEvidence": {
+    "artifact": "focused-review-hm-final.json",
+    "artifactSha256": "a5ec008a6e2b8c8091c1cd0b5e51bf2cc20c32ad52875d35ead0ce8b6b3eab9c",
+    "passed": 23,
+    "failed": 0,
+    "pending": 0,
+    "typecheck": "passed",
+    "lint": "passed",
+    "composeConfig": "passed",
+    "realKeycloakDiscovery": "passed"
+  },
+  "prohibitedScopeTouched": false
+}

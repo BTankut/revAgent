@@ -1,0 +1,111 @@
+{
+  "realm": "revagent",
+  "enabled": true,
+  "registrationAllowed": false,
+  "roles": {
+    "realm": [
+      { "name": "user" },
+      { "name": "tenant_admin" },
+      { "name": "vendor_admin" }
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "revagent-north-mcp",
+      "name": "revAgent north MCP",
+      "enabled": true,
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "protocol": "openid-connect",
+      "redirectUris": ["http://127.0.0.1:58081/callback"],
+      "webOrigins": [],
+      "attributes": {
+        "pkce.code.challenge.method": "S256"
+      },
+      "protocolMappers": [
+        {
+          "name": "sub",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-sub-mapper",
+          "consentRequired": false,
+          "config": {
+            "access.token.claim": "true"
+          }
+        },
+        {
+          "name": "realm-roles",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-realm-role-mapper",
+          "consentRequired": false,
+          "config": {
+            "claim.name": "realm_access.roles",
+            "multivalued": "true",
+            "jsonType.label": "String",
+            "access.token.claim": "true"
+          }
+        }
+      ],
+      "defaultClientScopes": ["tenant", "mcp:read", "revagent-audience"]
+    }
+  ],
+  "clientScopes": [
+    {
+      "name": "tenant",
+      "protocol": "openid-connect",
+      "attributes": { "include.in.token.scope": "true" },
+      "protocolMappers": [
+        {
+          "name": "tenant-id",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "consentRequired": false,
+          "config": {
+            "user.attribute": "tenant_id",
+            "claim.name": "tenant_id",
+            "jsonType.label": "String",
+            "access.token.claim": "true",
+            "id.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "name": "mcp:read",
+      "protocol": "openid-connect",
+      "attributes": { "include.in.token.scope": "true" }
+    },
+    {
+      "name": "revagent-audience",
+      "protocol": "openid-connect",
+      "attributes": { "include.in.token.scope": "false" },
+      "protocolMappers": [
+        {
+          "name": "revagent-north-mcp-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "revagent-north-mcp",
+            "access.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ],
+  "components": {
+    "org.keycloak.userprofile.UserProfileProvider": [
+      {
+        "name": "declarative-user-profile",
+        "providerId": "declarative-user-profile",
+        "subComponents": {},
+        "config": {
+          "kc.user.profile.config": [
+            "{\"attributes\":[{\"name\":\"username\",\"displayName\":\"${username}\",\"multivalued\":false,\"permissions\":{\"view\":[\"admin\",\"user\"],\"edit\":[\"admin\",\"user\"]}},{\"name\":\"email\",\"displayName\":\"${email}\",\"multivalued\":false,\"permissions\":{\"view\":[\"admin\",\"user\"],\"edit\":[\"admin\",\"user\"]}},{\"name\":\"firstName\",\"displayName\":\"${firstName}\",\"multivalued\":false,\"permissions\":{\"view\":[\"admin\",\"user\"],\"edit\":[\"admin\",\"user\"]}},{\"name\":\"lastName\",\"displayName\":\"${lastName}\",\"multivalued\":false,\"permissions\":{\"view\":[\"admin\",\"user\"],\"edit\":[\"admin\",\"user\"]}},{\"name\":\"tenant_id\",\"displayName\":\"Tenant ID\",\"multivalued\":false,\"permissions\":{\"view\":[\"admin\"],\"edit\":[\"admin\"]},\"validations\":{\"length\":{\"min\":36,\"max\":36},\"pattern\":{\"pattern\":\"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$\",\"error-message\":\"invalid tenant id\"}}}],\"groups\":[]}"
+          ]
+        }
+      }
+    ]
+  }
+}
