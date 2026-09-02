@@ -15,27 +15,28 @@ import type { GatewayJsonObject } from "./dispatch.js";
 export const REVAGENT_EVENT_SCHEMA = "revagent.event.v2" as const;
 
 /**
- * The Phase-1 event vocabulary.
- *
- * `llm.call` and `turn.completed` are deliberately absent. The full WP4
- * vocabulary does define them, and `llm.call` carries provider, model and
- * engine-mode columns — enumerating those here would put the strings "llm",
- * "provider" and "model" into this package for the first time and break GW-2's
- * acceptance criterion that no LLM, provider or model setting appears in the
- * Gateway. Phase 1 makes no model call and so has nothing to emit; those two
- * types belong to WP4's writer, not to this shell.
+ * The persisted O7 event vocabulary. `llm.call` and `turn.completed` are
+ * instrumentation records only: RES-23/29 still leave conversation state,
+ * model calls, planning, retries, and the agentic loop with the external
+ * client. Nothing in this contract configures or invokes a provider.
  */
-export type GatewayEventType =
-  | "session.started"
-  | "session.ended"
-  | "tool.invocation"
-  | "tool.confirmation"
-  | "bridge.connected"
-  | "bridge.disconnected"
-  | "bridge.enrolled"
-  | "bridge.revoked"
-  | "auth.event"
-  | "registry.published";
+export const GATEWAY_EVENT_TYPES = [
+  "session.started",
+  "session.ended",
+  "turn.completed",
+  "llm.call",
+  "tool.invocation",
+  "tool.confirmation",
+  "bridge.connected",
+  "bridge.disconnected",
+  "bridge.enrolled",
+  "bridge.revoked",
+  "bridge.update",
+  "auth.event",
+  "registry.published",
+] as const;
+
+export type GatewayEventType = (typeof GATEWAY_EVENT_TYPES)[number];
 
 export interface GatewayEventEnvelope {
   readonly schema: typeof REVAGENT_EVENT_SCHEMA;

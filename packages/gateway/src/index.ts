@@ -335,11 +335,79 @@ export {
 } from "./preProductionTlsMaterial.js";
 export {
   REVAGENT_EVENT_SCHEMA,
+  GATEWAY_EVENT_TYPES,
   createUnavailableEventSink,
   type GatewayEventEnvelope,
   type GatewayEventSink,
   type GatewayEventType,
 } from "./events.js";
+export {
+  BoundedEu12EventWriter,
+  Eu12EventBackpressureError,
+  Eu12EventIdempotencyError,
+  Eu12EventValidationError,
+  InMemoryEu12EventPersistence,
+  createExternalLlmMeteringEvent,
+  eventEnvelopeDigest,
+  eventIdempotencyDigest,
+  routeEu12Event,
+  summarizeAuditCode,
+  summarizeAuditInput,
+  summarizeAuditParams,
+  validateEu12EventEnvelope,
+  type AuditSummaryOptions,
+  type BoundedEu12EventWriterOptions,
+  type ExternalLlmMeteringObservation,
+  type Eu12EventPersistence,
+  type Eu12EventRoute,
+  type Eu12EventWriteReceipt,
+} from "./eventPersistence.js";
+export {
+  RESULT_REFERENCE_DEFAULT_PAGE_BYTES,
+  RESULT_REFERENCE_DEFAULT_TTL_MS,
+  RESULT_REFERENCE_MAX_BYTES,
+  InMemoryResultObjectStore,
+  ResultReferenceIdempotencyError,
+  ResultReferenceStore,
+  type ResultObjectStore,
+  type ResultReference,
+  type ResultReferencePage,
+  type ResultReferenceScope,
+  type ResultReferenceStoreOptions,
+} from "./resultReferenceStore.js";
+export {
+  RetentionArchiveRunner,
+  parseArchivedEventNdjson,
+  type RetentionArchiveEventSource,
+  type RetentionArchiveRun,
+  type RetentionArchiveRunnerOptions,
+  type RetentionArchiveState,
+} from "./retentionArchive.js";
+export {
+  ReleaseChannelStore,
+  canonicalBridgeReleaseManifest,
+  type BridgeReleaseChannel,
+  type BridgeReleaseContract,
+  type ReleaseChannelAuditRecord,
+  type ReleaseChannelContract,
+  type ReleaseChannelStoreOptions,
+  type ReleaseSignatureVerifier,
+} from "./releaseChannelStore.js";
+export {
+  DYING_METRIC_CLASSIFICATIONS,
+  SURVIVING_METRIC_DEFINITIONS,
+  deriveMetricParity,
+  type MetricParityDevice,
+  type MetricParityReport,
+  type MetricParityRow,
+  type MetricParitySource,
+  type MetricParityStatus,
+} from "./metricParity.js";
+export {
+  Eu12InvocationRecorder,
+  type Eu12InvocationInput,
+  type Eu12InvocationReceipt,
+} from "./eventResultLifecycle.js";
 export {
   GATEWAY_STORE_CONTRACT_VERSION,
   createUnavailableObjectStore,
