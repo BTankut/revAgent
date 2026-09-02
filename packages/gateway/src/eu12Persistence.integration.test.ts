@@ -137,8 +137,16 @@ suite("EU-12 Postgres event persistence", () => {
 
   it("survives migration replay and restart for result refs, archive runs, and tenant-scoped release channels", async () => {
     await expect(migrateUp(DATABASE_URL!, { appPassword })).resolves.toEqual([]);
-    const migration = await admin.query("SELECT version FROM schema_migrations WHERE version='007_eu12_hot_retention_authority.sql'");
+    const migration = await admin.query("SELECT version FROM schema_migrations WHERE version='008_eu12_canonical_time_partitions.sql'");
     expect(migration.rowCount).toBe(1);
+    await expect(admin.query<{ relname: string; relkind: string }>(
+      "SELECT relname,relkind FROM pg_class WHERE relname = ANY($1::text[]) ORDER BY relname",
+      [["events", "llm_calls", "tool_invocations"]],
+    )).resolves.toMatchObject({ rows: [
+      { relname: "events", relkind: "p" }, { relname: "llm_calls", relkind: "p" }, { relname: "tool_invocations", relkind: "p" },
+    ] });
+    await expect(admin.query<{ retired_hot_plane: string | null }>("SELECT to_regclass('public.retention_hot_rows')::text AS retired_hot_plane"))
+      .resolves.toMatchObject({ rows: [{ retired_hot_plane: null }] });
 
     let nowMs = Date.now();
     const objects = new InMemoryResultObjectStore();
@@ -329,7 +337,7 @@ suite("EU-12 Postgres event persistence", () => {
       .resolves.toMatchObject({ state: "dropped", eventCount: 1 });
     const physicalPartitions = await admin.query<{ archive_kind: string; state: string; partition_table: string; table_exists: string | null }>(
       `SELECT archive_kind,state,partition_table,to_regclass(partition_table)::text AS table_exists
-        FROM retention_hot_partition_ownership WHERE tenant_id=$1 AND archive_month='2026-08-01' ORDER BY archive_kind`,
+        FROM retention_partition_ownership WHERE tenant_id=$1 AND archive_month='2026-08-01' ORDER BY archive_kind`,
       [tenantB],
     );
     expect(physicalPartitions.rows).toEqual([
@@ -383,7 +391,7 @@ suite("EU-12 Postgres event persistence", () => {
     await releaseRestart.close();
   }, 60_000);
 
-  it("uses actual hot partitions across every crash boundary and resumes without source DELETE", async () => {
+  it("uses actual canonical partitions across every crash boundary and drops the canonical rows", async () => {
     const objects = new InMemoryResultObjectStore();
     const nowMs = Date.now();
     const durable = new PostgresEu12DataStore({
@@ -428,8 +436,11 @@ suite("EU-12 Postgres event persistence", () => {
         await expect(store.emit(toolEvent)).resolves.toEqual({ ok: true, value: undefined });
         await expect(store.emit(llmEvent)).resolves.toEqual({ ok: true, value: undefined });
         await expect(admin.query<{ archive_kind: string; count: number }>(
-          `SELECT archive_kind,count(*)::int AS count FROM retention_hot_rows
-           WHERE tenant_id=$1 AND archive_month=$2::date GROUP BY archive_kind ORDER BY archive_kind`, [crashTenant, `${month}-01`],
+          `SELECT archive_kind,count(*)::int AS count FROM (
+             SELECT 'events'::text AS archive_kind FROM events WHERE tenant_id=$1 AND retention_partition_month=$2::date
+             UNION ALL SELECT 'tool_invocations'::text FROM tool_invocations WHERE tenant_id=$1 AND retention_partition_month=$2::date
+             UNION ALL SELECT 'llm_calls'::text FROM llm_calls WHERE tenant_id=$1 AND retention_partition_month=$2::date
+           ) AS canonical_rows GROUP BY archive_kind ORDER BY archive_kind`, [crashTenant, `${month}-01`],
         )).resolves.toMatchObject({ rows: [
           { archive_kind: "events", count: 2 }, { archive_kind: "llm_calls", count: 1 }, { archive_kind: "tool_invocations", count: 1 },
         ] });
@@ -437,25 +448,24 @@ suite("EU-12 Postgres event persistence", () => {
           tenantId: crashTenant, month, surface: "tool_invocations", owner: `crash-owner-${stage}`,
           onBoundary: ({ stage: reached }) => { if (reached === stage) throw new Error(`synthetic crash boundary ${stage}`); },
         })).rejects.toThrow(`synthetic crash boundary ${stage}`);
-        await expect(admin.query<{ state: string; table_exists: string | null }>(
-          `SELECT state,to_regclass('public.' || partition_table)::text AS table_exists
-           FROM retention_hot_partition_ownership WHERE tenant_id=$1 AND archive_kind='tool_invocations' AND archive_month=$2::date`,
+        await expect(admin.query<{ state: string; table_exists: string | null; attached: boolean }>(
+          `SELECT state,to_regclass('public.' || partition_table)::text AS table_exists,
+                  EXISTS(SELECT 1 FROM pg_inherits WHERE inhrelid=to_regclass('public.' || partition_table) AND inhparent='tool_invocations'::regclass) AS attached
+           FROM retention_partition_ownership WHERE tenant_id=$1 AND archive_kind='tool_invocations' AND archive_month=$2::date`,
           [crashTenant, `${month}-01`],
-        )).resolves.toMatchObject({ rows: [{ state: "prepared", table_exists: expect.any(String) }] });
+        )).resolves.toMatchObject({ rows: [{ state: "prepared", table_exists: expect.any(String), attached: true }] });
         await expect(durable.archiveSurface({ tenantId: crashTenant, month, surface: "tool_invocations", owner: `crash-owner-${stage}` }))
           .resolves.toMatchObject({ state: "dropped", eventCount: 1, attempts: 2 });
         await expect(admin.query("SELECT count(*)::int AS count FROM tool_invocations WHERE tenant_id=$1 AND retention_partition_month=$2::date", [crashTenant, `${month}-01`]))
-          .resolves.toMatchObject({ rows: [{ count: 1 }] });
-        await expect(admin.query("SELECT count(*)::int AS count FROM retention_hot_rows WHERE tenant_id=$1 AND archive_kind='tool_invocations' AND archive_month=$2::date", [crashTenant, `${month}-01`]))
           .resolves.toMatchObject({ rows: [{ count: 0 }] });
         await expect(durable.archiveEvents({ tenantId: crashTenant, month, owner: `events-owner-${stage}` }))
           .resolves.toMatchObject({ state: "dropped", eventCount: 2 });
         await expect(durable.read({ tenantId: crashTenant, eventId: toolEvent.event_id })).resolves.toBeNull();
         await expect(admin.query("SELECT count(*)::int AS count FROM events WHERE tenant_id=$1 AND retention_partition_month=$2::date", [crashTenant, `${month}-01`]))
-          .resolves.toMatchObject({ rows: [{ count: 2 }] });
+          .resolves.toMatchObject({ rows: [{ count: 0 }] });
         await expect(admin.query<{ archive_kind: string; state: string; table_exists: string | null }>(
           `SELECT archive_kind,state,to_regclass('public.' || partition_table)::text AS table_exists
-           FROM retention_hot_partition_ownership WHERE tenant_id=$1 AND archive_month=$2::date ORDER BY archive_kind`, [crashTenant, `${month}-01`],
+           FROM retention_partition_ownership WHERE tenant_id=$1 AND archive_month=$2::date ORDER BY archive_kind`, [crashTenant, `${month}-01`],
         )).resolves.toMatchObject({ rows: [
           { archive_kind: "events", state: "dropped", table_exists: null },
           { archive_kind: "llm_calls", state: "dropped", table_exists: null },
@@ -685,11 +695,65 @@ suite("EU-12 Postgres event persistence", () => {
         "SELECT ref_label FROM result_refs WHERE tenant_id=$1 AND session_id=$2 ORDER BY ref_label", [legacyTenant, legacySession],
       );
       expect(labels.rows.map((row) => row.ref_label)).toEqual(["R17", "R18"]);
+      await expect(migrateUp(legacyUrl.href, { appPassword, throughVersion: "006_eu12_physical_retention_partitions.sql" }))
+        .resolves.toEqual(expect.arrayContaining(["005_eu12_leased_typed_retention.sql", "006_eu12_physical_retention_partitions.sql"]));
+      const legacyToolEvent = randomUUID();
+      const legacyToolEventTwo = randomUUID();
+      const legacyLlmEvent = randomUUID();
+      const legacyLlmEventTwo = randomUUID();
+      await legacy.query(
+        `INSERT INTO events(id,tenant_id,event_type,occurred_at,recorded_at,source,actor,sequence,payload,envelope_digest,idempotency_digest,idempotency_key)
+         VALUES($1,$5,'tool.invocation','2026-06-10T00:00:00.000Z','2026-06-10T00:00:00.000Z','{}','{}',1,'{}',$6,$7,'legacy-tool-event-a'),
+               ($2,$5,'tool.invocation','2026-06-10T00:00:02.000Z','2026-06-10T00:00:02.000Z','{}','{}',2,'{}',$6,$7,'legacy-tool-event-b'),
+               ($3,$5,'llm.call','2026-06-11T00:00:00.000Z','2026-06-11T00:00:00.000Z','{}','{}',3,'{}',$6,$7,'legacy-llm-event-a'),
+               ($4,$5,'llm.call','2026-06-11T00:00:02.000Z','2026-06-11T00:00:02.000Z','{}','{}',4,'{}',$6,$7,'legacy-llm-event-b')`,
+        [legacyToolEvent, legacyToolEventTwo, legacyLlmEvent, legacyLlmEventTwo, legacyTenant, "a".repeat(64), "b".repeat(64)],
+      );
+      await legacy.query(
+        `INSERT INTO tool_invocations(id,tenant_id,session_id,actor_user_id,tool_name,tool_version,policy_class,executor,params_digest,outcome,idempotency_key,started_at,finished_at,duration_ms,params_summary,code_summary,request_bytes,response_bytes,event_id)
+         VALUES($1,$3,$4,$5,'core.inspect','1.0.0','auto','bridge',$6,'completed','legacy-tool-invocation-a','2026-06-10T00:00:00.000Z','2026-06-10T00:00:01.000Z',1,'{}','{}',1,1,$1),
+               ($2,$3,$4,$5,'core.inspect','1.0.0','auto','bridge',$6,'completed','legacy-tool-invocation-b','2026-06-10T00:00:02.000Z','2026-06-10T00:00:03.000Z',1,'{}','{}',1,1,$2)`,
+        [legacyToolEvent, legacyToolEventTwo, legacyTenant, legacySession, legacyUser, "c".repeat(64)],
+      );
+      await legacy.query(
+        `INSERT INTO llm_calls(event_id,tenant_id,session_id,input_tokens,output_tokens,cache_read_tokens,duration_ms,cost,created_at,id,provider,model,role,engine_mode,cache_creation_input_tokens,latency_ms,stop_reason,outcome,cost_microusd)
+         VALUES($1,$3,$4,2,3,0,4,0.000005,'2026-06-11T00:00:00.000Z',$1,'external-client','legacy-model','external_client','external_client',0,4,'unknown','completed',5),
+               ($2,$3,$4,5,7,1,8,0.000009,'2026-06-11T00:00:02.000Z',$2,'external-client','legacy-model','external_client','external_client',0,8,'unknown','completed',9)`,
+        [legacyLlmEvent, legacyLlmEventTwo, legacyTenant, legacySession],
+      );
       await expect(migrateUp(legacyUrl.href, { appPassword })).resolves.toEqual(expect.arrayContaining([
-        "005_eu12_leased_typed_retention.sql",
-        "006_eu12_physical_retention_partitions.sql",
         "007_eu12_hot_retention_authority.sql",
+        "008_eu12_canonical_time_partitions.sql",
       ]));
+      await expect(legacy.query<{ count: number; partition_key: string }>(
+        "SELECT count(*)::int AS count,min(retention_partition_key) AS partition_key FROM events WHERE tenant_id=$1", [legacyTenant],
+      )).resolves.toMatchObject({ rows: [{ count: 4, partition_key: `${legacyTenant}:events:202606` }] });
+      await expect(legacy.query<{ idempotency_key: string; envelope_digest: string; retention_partition_key: string }>(
+        "SELECT idempotency_key,envelope_digest::text,retention_partition_key FROM events WHERE tenant_id=$1 ORDER BY idempotency_key", [legacyTenant],
+      )).resolves.toMatchObject({ rows: [
+        { idempotency_key: "legacy-llm-event-a", envelope_digest: "a".repeat(64), retention_partition_key: `${legacyTenant}:events:202606` },
+        { idempotency_key: "legacy-llm-event-b", envelope_digest: "a".repeat(64), retention_partition_key: `${legacyTenant}:events:202606` },
+        { idempotency_key: "legacy-tool-event-a", envelope_digest: "a".repeat(64), retention_partition_key: `${legacyTenant}:events:202606` },
+        { idempotency_key: "legacy-tool-event-b", envelope_digest: "a".repeat(64), retention_partition_key: `${legacyTenant}:events:202606` },
+      ] });
+      await expect(legacy.query<{ count: number; partition_key: string }>(
+        "SELECT count(*)::int AS count,min(retention_partition_key) AS partition_key FROM tool_invocations WHERE tenant_id=$1", [legacyTenant],
+      )).resolves.toMatchObject({ rows: [{ count: 2, partition_key: `${legacyTenant}:tool_invocations:202606` }] });
+      await expect(legacy.query<{ idempotency_key: string; tool_name: string; event_id: string }>(
+        "SELECT idempotency_key,tool_name,event_id::text FROM tool_invocations WHERE tenant_id=$1 ORDER BY idempotency_key", [legacyTenant],
+      )).resolves.toMatchObject({ rows: [
+        { idempotency_key: "legacy-tool-invocation-a", tool_name: "core.inspect", event_id: legacyToolEvent },
+        { idempotency_key: "legacy-tool-invocation-b", tool_name: "core.inspect", event_id: legacyToolEventTwo },
+      ] });
+      await expect(legacy.query<{ count: number; partition_key: string }>(
+        "SELECT count(*)::int AS count,min(retention_partition_key) AS partition_key FROM llm_calls WHERE tenant_id=$1", [legacyTenant],
+      )).resolves.toMatchObject({ rows: [{ count: 2, partition_key: `${legacyTenant}:llm_calls:202606` }] });
+      await expect(legacy.query<{ event_id: string; model: string; input_tokens: number; output_tokens: number }>(
+        "SELECT event_id::text,model,input_tokens,output_tokens FROM llm_calls WHERE tenant_id=$1 ORDER BY input_tokens", [legacyTenant],
+      )).resolves.toMatchObject({ rows: [
+        { event_id: legacyLlmEvent, model: "legacy-model", input_tokens: 2, output_tokens: 3 },
+        { event_id: legacyLlmEventTwo, model: "legacy-model", input_tokens: 5, output_tokens: 7 },
+      ] });
       await expect(migrateUp(legacyUrl.href, { appPassword })).resolves.toEqual([]);
     } finally {
       await legacy?.end();
@@ -733,20 +797,20 @@ suite("EU-12 Postgres event persistence", () => {
        ON CONFLICT (channel,tenant_id) DO UPDATE SET rollout_revision=EXCLUDED.rollout_revision`, [tenantB],
     );
     await expect(runtime.query(
-      "SELECT revagent_prepare_hot_retention_partition($1,'llm_calls','2026-09-01','tenant-b-lease',1)", [tenantB],
+      "SELECT revagent_prepare_canonical_retention_partition($1,'llm_calls','2026-09-01','tenant-b-lease',1)", [tenantB],
     )).rejects.toThrow(/permission denied/u);
     const client = await runtime.connect();
     try {
       await client.query("BEGIN");
       await client.query("SET LOCAL ROLE revagent_app");
       await client.query("SELECT set_config('app.tenant_id',$1,true)", [tenantA]);
-      for (const relation of ["events", "llm_calls", "result_refs", "retention_runs", "release_channel_targets", "retention_partition_ownership", "retention_archive_rows", "retention_hot_partition_ownership", "retention_hot_rows", "active_invocations"] as const) {
+      for (const relation of ["events", "llm_calls", "tool_invocations", "result_refs", "retention_runs", "release_channel_targets", "retention_partition_ownership", "eu12_event_identity_registry", "eu12_tool_invocation_identity_registry", "eu12_llm_call_identity_registry", "active_invocations"] as const) {
         await expect(client.query(`SELECT tenant_id FROM ${relation} WHERE tenant_id=$1`, [tenantB]))
           .resolves.toMatchObject({ rowCount: 0 });
       }
       await client.query("SAVEPOINT cross_tenant_definer");
       await expect(client.query(
-        "SELECT revagent_prepare_hot_retention_partition($1,'llm_calls','2026-09-01','tenant-b-lease',1)", [tenantB],
+        "SELECT revagent_prepare_canonical_retention_partition($1,'llm_calls','2026-09-01','tenant-b-lease',1)", [tenantB],
       )).rejects.toThrow(/tenant scope/u);
       await client.query("ROLLBACK TO SAVEPOINT cross_tenant_definer");
       await expect(client.query(
@@ -757,9 +821,12 @@ suite("EU-12 Postgres event persistence", () => {
       await client.query("SET LOCAL ROLE revagent_app");
       await client.query("SELECT set_config('app.tenant_id',$1,true)", [tenantB]);
       const tenantBLlmCount = await client.query<{ count: number }>("SELECT count(*)::int AS count FROM llm_calls WHERE tenant_id=$1", [tenantB]);
-      const tenantBHotCount = await client.query<{ count: number }>("SELECT count(*)::int AS count FROM retention_hot_rows WHERE tenant_id=$1", [tenantB]);
+      const tenantBHotCount = await client.query<{ count: number }>("SELECT count(*)::int AS count FROM retention_partition_ownership WHERE tenant_id=$1", [tenantB]);
       const tenantBRunCount = await client.query<{ count: number }>("SELECT count(*)::int AS count FROM retention_runs WHERE tenant_id=$1", [tenantB]);
-      for (const result of [tenantBLlmCount, tenantBHotCount, tenantBRunCount]) expect(result.rows[0]?.count ?? 0).toBeGreaterThan(0);
+      const tenantBEventIdentityCount = await client.query<{ count: number }>("SELECT count(*)::int AS count FROM eu12_event_identity_registry WHERE tenant_id=$1", [tenantB]);
+      const tenantBToolIdentityCount = await client.query<{ count: number }>("SELECT count(*)::int AS count FROM eu12_tool_invocation_identity_registry WHERE tenant_id=$1", [tenantB]);
+      const tenantBLlmIdentityCount = await client.query<{ count: number }>("SELECT count(*)::int AS count FROM eu12_llm_call_identity_registry WHERE tenant_id=$1", [tenantB]);
+      for (const result of [tenantBLlmCount, tenantBHotCount, tenantBRunCount, tenantBEventIdentityCount, tenantBToolIdentityCount, tenantBLlmIdentityCount]) expect(result.rows[0]?.count ?? 0).toBeGreaterThan(0);
       await expect(client.query("SELECT count(*)::int AS count FROM active_invocations WHERE tenant_id=$1", [tenantB]))
         .resolves.toMatchObject({ rows: [{ count: 1 }] });
       await expect(client.query("SELECT count(*)::int AS count FROM release_channel_targets WHERE tenant_id=$1", [tenantB]))

@@ -67,3 +67,17 @@ actions belong to the controller after independent review.
 - `fourth-review-focused-final.raw.log`: 10/10 focused vectors passed;
   `fourth-review-typecheck-final2.raw.log` and
   `fourth-review-lint-final2.raw.log`: passed.
+
+## Canonical-partition closure
+
+- `008_eu12_canonical_time_partitions.sql` removes the 007 JSONB mirror and
+  converts the canonical `events`, `tool_invocations`, and `llm_calls`
+  relations into tenant/month physical partition parents. Identity registries
+  hold only global replay/uniqueness keys; payload authority exists once.
+- The retention finalizer detaches and drops the actual canonical child only
+  after object verification and the durable lease transition. After a drop,
+  canonical rows for that tenant/month are absent and archive reread remains
+  object-backed.
+- `canonical-review-postgres-final2.raw.log`: disposable PostgreSQL 16, 7/7;
+  `canonical-review-focused-final2.raw.log`: 10/10; final Gateway typecheck
+  and lint logs also pass.

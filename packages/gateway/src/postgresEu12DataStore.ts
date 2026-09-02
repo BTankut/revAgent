@@ -408,8 +408,8 @@ export class PostgresEu12DataStore {
     readonly afterObjectWrite?: (run: RetentionArchiveRun) => Promise<void> | void;
     readonly onBoundary?: (input: Readonly<{ readonly stage: RetentionArchiveBoundary; readonly run: RetentionArchiveRun }>) => Promise<void> | void;
   }): Promise<RetentionArchiveRun> {
-    // Typed child surfaces are detached first. Envelope and typed projections
-    // retain their source rows, but only live hot partitions are product-visible.
+    // Typed child partitions are detached first so the canonical envelope leaf
+    // can be dropped without a surviving typed foreign-key reference.
     await this.archiveSurface({ tenantId: input.tenantId, month: input.month, owner: input.owner, surface: "tool_invocations" });
     await this.archiveSurface({ tenantId: input.tenantId, month: input.month, owner: input.owner, surface: "llm_calls" });
     return await this.archiveSurface({ ...input, surface: "events" });
@@ -438,19 +438,30 @@ export class PostgresEu12DataStore {
       if (prior?.state === "dropped") {
         return Object.freeze({
           run: immutableArchiveRun({ tenantId: input.tenantId, month: input.month, state: "dropped", archiveKey: prior.archive_key, archiveDigest: `sha256:${prior.archive_digest}`, eventCount: prior.event_count, attempts: prior.attempts }),
-           raw: Buffer.alloc(0), epoch: prior.lease_epoch, alreadyDropped: true, empty: false,
+           raw: Buffer.alloc(0), epoch: prior.lease_epoch, alreadyDropped: true,
         });
       }
       const nowMs = this.#now();
       if (prior !== undefined && prior.lease_owner !== null && prior.lease_owner !== input.owner && (prior.lease_expires_at?.getTime() ?? 0) > nowMs) {
         throw new RetentionLeaseError("retention partition lease is held by another owner");
       }
-      const rows = await this.#readArchiveRows(client, input.tenantId, archiveMonth, input.surface);
-      const raw = Buffer.from(rows.values.map((value) => canonicalizeJson(value as JsonValue)).join(rows.values.length === 0 ? "" : "\n") + (rows.values.length === 0 ? "" : "\n"), "utf8");
-      const digest = archiveDigest(raw);
       const key = prior?.archive_key ?? archiveKey(input.tenantId, input.surface, input.month);
       const attempts = (prior?.attempts ?? 0) + 1;
       const epoch = (prior?.lease_epoch ?? 0) + 1;
+      const ownership = await client.query<{ state: "active" | "prepared" | "dropped" }>(
+        `SELECT state FROM retention_partition_ownership
+         WHERE tenant_id=$1 AND archive_kind=$2 AND archive_month=$3::date`,
+        [input.tenantId, input.surface, archiveMonth],
+      );
+      if (ownership.rows[0] === undefined) {
+        await client.query(
+          "SELECT revagent_ensure_canonical_retention_partition($1,$2,$3::date)",
+          [input.tenantId, input.surface, archiveMonth],
+        );
+      } else if (ownership.rows[0].state === "dropped") {
+        throw new Error("retention run and canonical partition ownership disagree");
+      }
+      const placeholderDigest = archiveDigest(Buffer.alloc(0));
       await client.query(
         `INSERT INTO retention_runs(tenant_id,archive_month,archive_kind,state,archive_key,archive_digest,row_digest,event_count,attempts,lease_owner,lease_expires_at,lease_epoch)
          VALUES($1,$2::date,$3,'prepared',$4,$5,$5,$6,$7,$8,to_timestamp($9/1000.0),$10)
@@ -458,19 +469,25 @@ export class PostgresEu12DataStore {
            state='prepared',archive_key=EXCLUDED.archive_key,archive_digest=EXCLUDED.archive_digest,row_digest=EXCLUDED.row_digest,
            event_count=EXCLUDED.event_count,attempts=EXCLUDED.attempts,lease_owner=EXCLUDED.lease_owner,
            lease_expires_at=EXCLUDED.lease_expires_at,lease_epoch=EXCLUDED.lease_epoch,updated_at=clock_timestamp()`,
-        [input.tenantId, archiveMonth, input.surface, key, digest, rows.ids.length, attempts, input.owner, nowMs + 300_000, epoch],
+        [input.tenantId, archiveMonth, input.surface, key, placeholderDigest, 0, attempts, input.owner, nowMs + 300_000, epoch],
       );
-      const empty = rows.ids.length === 0;
-      if (!empty) {
-        const hot = await client.query<{ partition_key: string; partition_table: string }>(
-          "SELECT partition_key,partition_table FROM revagent_prepare_hot_retention_partition($1,$2,$3::date,$4,$5)",
-          [input.tenantId, input.surface, archiveMonth, input.owner, epoch],
-        );
-        if (hot.rows[0] === undefined) throw new Error("hot retention partition preparation returned no authority");
-      }
+      const canonical = await client.query<{ partition_key: string; partition_table: string }>(
+        "SELECT partition_key,partition_table FROM revagent_prepare_canonical_retention_partition($1,$2,$3::date,$4,$5)",
+        [input.tenantId, input.surface, archiveMonth, input.owner, epoch],
+      );
+      if (canonical.rows[0] === undefined) throw new Error("canonical retention partition preparation returned no authority");
+      const rows = await this.#readArchiveRows(client, input.tenantId, archiveMonth, input.surface);
+      const raw = Buffer.from(rows.values.map((value) => canonicalizeJson(value as JsonValue)).join(rows.values.length === 0 ? "" : "\n") + (rows.values.length === 0 ? "" : "\n"), "utf8");
+      const digest = archiveDigest(raw);
+      const measured = await client.query(
+        `UPDATE retention_runs SET archive_digest=$6,row_digest=$6,event_count=$7,updated_at=clock_timestamp()
+         WHERE tenant_id=$1 AND archive_month=$2::date AND archive_kind=$3 AND state='prepared' AND lease_owner=$4 AND lease_epoch=$5`,
+        [input.tenantId, archiveMonth, input.surface, input.owner, epoch, digest, rows.ids.length],
+      );
+      if (measured.rowCount !== 1) throw new RetentionLeaseError("retention lease was lost before canonical partition enumeration");
       return Object.freeze({
         run: immutableArchiveRun({ tenantId: input.tenantId, month: input.month, state: "prepared", archiveKey: key, archiveDigest: `sha256:${digest}`, eventCount: rows.ids.length, attempts }),
-        raw, epoch, alreadyDropped: false, empty,
+        raw, epoch, alreadyDropped: false,
       });
     });
     if (prepared.alreadyDropped) return prepared.run;
@@ -492,20 +509,10 @@ export class PostgresEu12DataStore {
       );
       if (uploaded.rowCount !== 1) throw new RetentionLeaseError("retention lease was lost before durable archive commit");
       await input.onBoundary?.({ stage: "uploaded", run: prepared.run });
-      if (prepared.empty) {
-        const dropped = await client.query(
-          `UPDATE retention_runs SET state='dropped',dropped_at=clock_timestamp(),lease_owner=NULL,lease_expires_at=NULL,updated_at=clock_timestamp()
-           WHERE tenant_id=$1 AND archive_month=$2::date AND archive_kind=$3 AND state='uploaded'
-             AND lease_owner=$4 AND lease_epoch=$5`,
-          [input.tenantId, archiveMonth, input.surface, input.owner, prepared.epoch],
-        );
-        if (dropped.rowCount !== 1) throw new RetentionLeaseError("empty retention archive could not close its lease");
-      } else {
-        await client.query(
-          "SELECT revagent_finalize_hot_retention_partition($1,$2,$3::date,$4,$5)",
-          [input.tenantId, input.surface, archiveMonth, input.owner, prepared.epoch],
-        );
-      }
+      await client.query(
+        "SELECT revagent_finalize_canonical_retention_partition($1,$2,$3::date,$4,$5)",
+        [input.tenantId, input.surface, archiveMonth, input.owner, prepared.epoch],
+      );
     });
     return immutableArchiveRun({ ...prepared.run, state: "dropped" });
   }
@@ -517,9 +524,8 @@ export class PostgresEu12DataStore {
         source: unknown; actor: unknown; session_id: string | null; turn_id: string | null; sequence: number | string; payload: unknown;
       }>(
         `SELECT event.id::text,event.event_type,event.occurred_at,event.recorded_at,event.source,event.actor,event.session_id::text,event.turn_id::text,event.sequence,event.payload
-         FROM retention_hot_rows AS hot
-         JOIN events AS event ON event.tenant_id=hot.tenant_id AND event.id=hot.row_id
-         WHERE hot.tenant_id=$1 AND hot.archive_month=$2::date AND hot.archive_kind='events' ORDER BY event.occurred_at,event.id`, [tenantId, archiveMonth],
+         FROM events AS event
+         WHERE event.tenant_id=$1 AND event.retention_partition_month=$2::date ORDER BY event.occurred_at,event.id`, [tenantId, archiveMonth],
       );
       const values = result.rows.map((row) => validateEu12EventEnvelope({
         schema: "revagent.event.v2", event_id: row.id, event_type: row.event_type,
@@ -532,9 +538,8 @@ export class PostgresEu12DataStore {
     const table = surface === "tool_invocations" ? "tool_invocations" : "llm_calls";
     const timeColumn = surface === "tool_invocations" ? "started_at" : "created_at";
     const result = await client.query<{ id: string; record: GatewayJsonValue }>(
-      `SELECT source.id::text,row_to_json(source)::jsonb AS record FROM retention_hot_rows AS hot
-       JOIN ${table} AS source ON source.tenant_id=hot.tenant_id AND source.id=hot.row_id
-       WHERE hot.tenant_id=$1 AND hot.archive_month=$2::date AND hot.archive_kind=$3 ORDER BY source.${timeColumn},source.id`, [tenantId, archiveMonth, surface],
+      `SELECT source.id::text,row_to_json(source)::jsonb AS record FROM ${table} AS source
+       WHERE source.tenant_id=$1 AND source.retention_partition_month=$2::date ORDER BY source.${timeColumn},source.id`, [tenantId, archiveMonth],
     );
     return Object.freeze({ ids: Object.freeze(result.rows.map((row) => row.id)), values: Object.freeze(result.rows.map((row) => row.record)) });
   }
@@ -728,13 +733,11 @@ export class PostgresEu12DataStore {
       const tools = await client.query<{ tool_name: string; user_id: string; count: number }>(
         `SELECT tool_name,actor_user_id::text AS user_id,count(*)::int AS count
          FROM tool_invocations AS tool
-         JOIN retention_hot_rows AS hot ON hot.tenant_id=tool.tenant_id AND hot.archive_kind='tool_invocations' AND hot.row_id=tool.id
          WHERE tool.tenant_id=$1 GROUP BY tool_name,actor_user_id ORDER BY tool_name,user_id`, [tenantId],
       );
       const models = await client.query<{ model: string; user_id: string; count: number }>(
         `SELECT llm.model,session.user_id::text AS user_id,count(*)::int AS count
          FROM llm_calls llm
-         JOIN retention_hot_rows AS hot ON hot.tenant_id=llm.tenant_id AND hot.archive_kind='llm_calls' AND hot.row_id=llm.id
          JOIN sessions session ON session.tenant_id=llm.tenant_id AND session.id=llm.session_id
          WHERE llm.tenant_id=$1 GROUP BY llm.model,session.user_id ORDER BY llm.model,user_id`, [tenantId],
       );
