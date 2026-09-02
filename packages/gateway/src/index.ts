@@ -429,6 +429,7 @@ export {
   GatewayCompositionError,
   GatewayConformancePortError,
   GatewayFixturePortError,
+  GatewayM5CompositionError,
   GatewayPreProductionPortError,
   assertProductionPorts,
   buildFastifyOptions,
@@ -456,6 +457,32 @@ export {
   type OidcIdentityRepository,
 } from "./oidcIdentity.js";
 export { createAuthenticatedTenantReadNorthMcp } from "./authenticatedTenantRead.js";
+export {
+  M5_ACTIVE_REVOKE_BOUND_MS,
+  M5_ENROLLMENT_ENTITLEMENT_CONTRACT_VERSION,
+  M5EnrollmentEntitlementControlPlane,
+  type M5BridgeCloseControl,
+  type M5BridgeConnection,
+  type M5BridgeExecutor,
+  type M5Capability,
+  type M5DispatchResult,
+  type M5EnrollmentEntitlementFailure,
+  type M5EnrollmentEntitlementFailureReason,
+  type M5EnrollmentEntitlementOptions,
+  type M5EnrollmentEntitlementResult,
+  type M5EnrollmentExchange,
+  type M5IssuedEnrollmentCode,
+  type M5MintEnrollmentInput,
+  type M5RevocationResult,
+  type M5RotatedCredential,
+  type M5SeatAssignment,
+} from "./m5EnrollmentEntitlement.js";
+export {
+  M5_BRIDGE_ENROLLMENT_MAX_BODY_BYTES,
+  M5_BRIDGE_ENROLLMENT_PATH,
+  mountM5BridgeEnrollmentEndpoint,
+  type M5BridgeEnrollmentEndpointOptions,
+} from "./m5EnrollmentEntitlementEndpoint.js";
 export {
   ConformanceCredentialAuthority,
   DigestFileConformanceObjectStore,
