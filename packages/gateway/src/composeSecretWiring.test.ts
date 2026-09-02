@@ -27,6 +27,9 @@ describe("EU-10 ephemeral Compose/CI credential wiring", () => {
     expect(workflow).toContain("KEYCLOAK_BOOTSTRAP_CREDENTIAL_FILE");
     expect(workflow).toContain("docker compose");
     expect(workflow).toContain('sudo chown 1000:1000 "$credential_file" "$keycloak_data"');
+    expect(workflow.indexOf('chmod 0400 "$credential_file"')).toBeLessThan(
+      workflow.indexOf('sudo chown 1000:1000 "$credential_file" "$keycloak_data"'),
+    );
     expect(workflow).toContain("logs keycloak");
     expect(workflow).not.toContain("docker logs revagent-eu10-keycloak");
     expect(workflow).not.toMatch(/admin_password\s*=\s*["'][A-Za-z0-9_-]{16,}["']/u);

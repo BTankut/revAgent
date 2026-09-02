@@ -12,6 +12,18 @@
       "read failure diagnostics through docker compose logs keycloak"
     ]
   },
+  "gatewayCiRepairCycle2": {
+    "runId": 33582944592,
+    "jobId": 100100931304,
+    "signature": "chmod of the temporary credential failed after ownership had already moved from the runner to UID 1000",
+    "repair": "apply restrictive file and directory modes before the final UID-1000 chown",
+    "focusedContract": {
+      "passed": 2,
+      "failed": 0,
+      "typecheck": "passed",
+      "lint": "passed"
+    }
+  },
   "engineeringGates": {
     "runId": 33563258124,
     "jobId": 100040478813,

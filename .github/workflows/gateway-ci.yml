@@ -73,9 +73,9 @@ jobs:
           keycloak_data="$RUNNER_TEMP/eu10-keycloak-data"
           printf '%s' "$admin_password" > "$credential_file"
           mkdir -p "$keycloak_data"
-          sudo chown 1000:1000 "$credential_file" "$keycloak_data"
           chmod 0400 "$credential_file"
           chmod 0700 "$keycloak_data"
+          sudo chown 1000:1000 "$credential_file" "$keycloak_data"
           export KEYCLOAK_BOOTSTRAP_CREDENTIAL_FILE="$credential_file"
           export KEYCLOAK_DATA_HOST_PATH="$keycloak_data"
           export KEYCLOAK_ADMIN_USERNAME=eu10admin
