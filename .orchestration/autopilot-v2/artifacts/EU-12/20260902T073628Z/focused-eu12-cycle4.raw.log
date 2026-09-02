@@ -1,0 +1,9 @@
+
+ RUN  v3.2.7 C:/Users/BT/Projects/revAgent-worktrees/eu12-event-result-retention-parity
+
+ ✓ packages/gateway/src/eu12DataPlane.test.ts (8 tests) 26ms
+
+ Test Files  1 passed (1)
+      Tests  8 passed (8)
+   Start at  10:57:10
+  Duration  723ms (transform 130ms, setup 0ms, collect 421ms, tests 26ms, environment 0ms, prepare 107ms)

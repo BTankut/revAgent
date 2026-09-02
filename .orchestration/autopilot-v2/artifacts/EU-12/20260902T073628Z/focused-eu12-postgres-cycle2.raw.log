@@ -1,0 +1,9 @@
+
+ RUN  v3.2.7 C:/Users/BT/Projects/revAgent-worktrees/eu12-event-result-retention-parity
+
+ ✓ packages/gateway/src/eu12Persistence.integration.test.ts (2 tests) 319ms
+
+ Test Files  1 passed (1)
+      Tests  2 passed (2)
+   Start at  10:57:21
+  Duration  1.01s (transform 115ms, setup 0ms, collect 402ms, tests 319ms, environment 0ms, prepare 97ms)

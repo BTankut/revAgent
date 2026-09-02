@@ -310,6 +310,7 @@ suite("EU-10 authenticated tenant read", () => {
       source: { component: "test", version: "1", instance: "eu10" },
       actor: { type: "user", user_id: first.actor_user_id }, session_id: first.session_id, seq: 2,
       payload: {
+        dispatch_attempt_id: "eu10/idempotent-attempt", invocation_id: "eu10/idempotent-invocation",
         idempotency_key: "eu10/idempotent", tool_name: "core.bridge.list", tool_version: "1.0.0",
         policy_class: "auto", executor: "internal_mcp",
         params_digest: `sha256:${"a".repeat(64)}`, outcome: "completed",
