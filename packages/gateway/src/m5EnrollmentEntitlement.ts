@@ -140,8 +140,11 @@ export interface M5RevocationResult {
   readonly contractVersion: typeof M5_ENROLLMENT_ENTITLEMENT_CONTRACT_VERSION;
   readonly deviceId: string;
   readonly changed: boolean;
+  readonly closeAttemptCount: number;
   readonly closedConnectionCount: number;
+  readonly closeFailureCount: number;
   readonly maximumCloseLatencyMs: number;
+  readonly totalCloseElapsedMs: number;
   readonly withinBound: boolean;
 }
 
@@ -1446,32 +1449,73 @@ export class M5EnrollmentEntitlementControlPlane {
       if (!mutation.ok) return mutation;
       const key = activeDeviceKey(actor.actor.tenantId, input.deviceId);
       this.#revokedDevices.add(key);
-      let closedConnectionCount = 0;
-      let maximumCloseLatencyMs = 0;
-      for (const [connectionId, active] of this.#connections) {
-        if (
-          active.binding.tenantId !== actor.actor.tenantId ||
-          active.binding.deviceId !== input.deviceId
-        ) {
-          continue;
-        }
-        const started = performance.now();
+      const targets = [...this.#connections.entries()].filter(
+        ([, active]) =>
+          active.binding.tenantId === actor.actor.tenantId &&
+          active.binding.deviceId === input.deviceId,
+      );
+      // Abort and detach every invocation before invoking any caller-owned
+      // close callback. One throwing callback can therefore never leave a
+      // later dispatch alive or registered.
+      for (const [connectionId, active] of targets) {
         active.abortController.abort("device_revoked");
-        active.closeControl.close(4_003, "device_revoked");
-        maximumCloseLatencyMs = Math.max(
-          maximumCloseLatencyMs,
-          performance.now() - started,
-        );
-        closedConnectionCount += 1;
         this.#connections.delete(connectionId);
       }
+      const closeStarted = performance.now();
+      let closeAttemptCount = 0;
+      let closedConnectionCount = 0;
+      let closeFailureCount = 0;
+      let maximumCloseLatencyMs = 0;
+      for (const [, active] of targets) {
+        const started = performance.now();
+        closeAttemptCount += 1;
+        try {
+          active.closeControl.close(4_003, "device_revoked");
+          closedConnectionCount += 1;
+        } catch {
+          closeFailureCount += 1;
+        } finally {
+          maximumCloseLatencyMs = Math.max(
+            maximumCloseLatencyMs,
+            performance.now() - started,
+          );
+        }
+      }
+      const totalCloseElapsedMs = performance.now() - closeStarted;
+      const withinBound = totalCloseElapsedMs <= M5_ACTIVE_REVOKE_BOUND_MS;
+      await this.#tenantTransaction(actor.actor.tenantId, async (client) => {
+        await this.#event(client, {
+          tenantId: actor.actor.tenantId,
+          eventType: "device.revoke_connections",
+          actorUserId: actor.actor.userId,
+          targetDeviceId: input.deviceId,
+          outcome: closeFailureCount === 0 && withinBound ? "completed" : "failed",
+          reason:
+            !withinBound
+              ? "active_revoke_bound_exceeded"
+              : closeFailureCount === 0
+                ? undefined
+                : "connection_close_failed",
+          details: {
+            closeAttemptCount,
+            closedConnectionCount,
+            closeFailureCount,
+            maximumCloseLatencyMs,
+            totalCloseElapsedMs,
+            withinBound,
+          },
+        });
+      });
       return success({
         contractVersion: M5_ENROLLMENT_ENTITLEMENT_CONTRACT_VERSION,
         deviceId: input.deviceId,
         changed: mutation.value.changed,
+        closeAttemptCount,
         closedConnectionCount,
+        closeFailureCount,
         maximumCloseLatencyMs,
-        withinBound: maximumCloseLatencyMs <= M5_ACTIVE_REVOKE_BOUND_MS,
+        totalCloseElapsedMs,
+        withinBound,
       });
     } catch {
       return failure("unavailable");

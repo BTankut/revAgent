@@ -10,7 +10,8 @@ Hedef | M5-V2 enrolled and entitled Bridge dispatch | Plan satiri | M5; P4-T4; P
 - Unit owner: EU-11 security executor
 - Planned product ownership: `packages/gateway/migrations/002_eu11_*` and
   `packages/gateway/src/m5EnrollmentEntitlement*`, with only the minimum
-  package export or composition touch proven necessary by focused tests.
+  package export or `GatewayServerOptions` composition touch proven necessary
+  by focused tests.
 
 ## Acceptance map
 
@@ -49,7 +50,7 @@ Hedef | M5-V2 enrolled and entitled Bridge dispatch | Plan satiri | M5; P4-T4; P
   device/seat/principal negatives, and simulated active revoke inside the
   existing five-second bound.
 - Gateway typecheck and focused ESLint: passed.
-- Broad Gateway gate: `63 files passed`; `946 passed / 8 skipped / 0 failed`.
+- Broad Gateway gate: `63 files passed`; `947 passed / 8 skipped / 0 failed`.
   The skips are pre-existing platform/optional-live cases and no EU-11 test was
   skipped.
 - Repository `scripts/test-all.ps1`: passed on the single unchanged rerun with
@@ -62,5 +63,29 @@ Hedef | M5-V2 enrolled and entitled Bridge dispatch | Plan satiri | M5; P4-T4; P
 - Local acceptance: passed. Actual live device revoke and reboot remain the
   card's true operator gate and were not performed.
 
+### Independent-review rework
+
+- The exact Postgres control-plane class is mounted by the production Gateway
+  server composition; a structural fake is rejected before listen. The focused
+  test reaches `/bridge/v1/enroll` through a real started product server.
+- Runtime audit authority is append-only (`SELECT, INSERT`); `UPDATE`, `DELETE`
+  and `TRUNCATE` are explicitly revoked and mechanically denied.
+- Seat rows bind `(tenant, license, module)` through one composite foreign key;
+  a mismatched/unlicensed module insert fails with PostgreSQL `23503`.
+- Enrollment ingress drains declared oversized bodies, retains the parser's
+  8KiB hard cap for undeclared/chunked bodies, returns fixed no-store refusals,
+  and refuses server-drain races before code consumption.
+- Active revoke first aborts and detaches every matching in-flight dispatch,
+  then isolates every close callback. A test with one throwing close proves a
+  later close is still attempted inside the bound and the failure is audited.
+- Focused independent-review rework gate: `3 passed / 0 failed`; Gateway
+  typecheck and focused ESLint passed.
+- The two PostgreSQL integration files run serially inside the Gateway package
+  gate so their cluster-wide role DDL cannot race. The first combined run
+  exposed `tuple concurrently updated`; the isolated rerun passed with the
+  existing suite at `944 passed / 8 skipped` and EU-11 at `3 passed`.
+- Exact rework candidate `scripts/test-all.ps1`: passed on its first run with
+  `All local non-Revit tests passed`; both Bridge aggregates passed `1296/1296`.
+
 Forecast: `1.50 active engineering days` (`12.00h`). Actual active effort:
-`0.75h`. Variance: `-11.25h` (`-93.8%`). Park List: empty.
+`1.25h`. Variance: `-10.75h` (`-89.6%`). Park List: empty.

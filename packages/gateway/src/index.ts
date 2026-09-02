@@ -429,6 +429,7 @@ export {
   GatewayCompositionError,
   GatewayConformancePortError,
   GatewayFixturePortError,
+  GatewayM5CompositionError,
   GatewayPreProductionPortError,
   assertProductionPorts,
   buildFastifyOptions,
@@ -477,8 +478,10 @@ export {
   type M5SeatAssignment,
 } from "./m5EnrollmentEntitlement.js";
 export {
+  M5_BRIDGE_ENROLLMENT_MAX_BODY_BYTES,
   M5_BRIDGE_ENROLLMENT_PATH,
   mountM5BridgeEnrollmentEndpoint,
+  type M5BridgeEnrollmentEndpointOptions,
 } from "./m5EnrollmentEntitlementEndpoint.js";
 export {
   ConformanceCredentialAuthority,

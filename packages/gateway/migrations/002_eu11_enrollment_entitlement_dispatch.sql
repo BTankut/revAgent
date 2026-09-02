@@ -62,6 +62,7 @@ CREATE TABLE module_licenses (
   created_at timestamptz NOT NULL,
   updated_at timestamptz NOT NULL,
   UNIQUE (tenant_id, id),
+  UNIQUE (tenant_id, id, module_name),
   UNIQUE (tenant_id, module_name)
 );
 
@@ -79,7 +80,8 @@ CREATE TABLE seat_assignments (
   assigned_at timestamptz NOT NULL,
   revoked_at timestamptz,
   UNIQUE (tenant_id, id),
-  FOREIGN KEY (tenant_id, license_id) REFERENCES module_licenses(tenant_id, id),
+  FOREIGN KEY (tenant_id, license_id, module_name)
+    REFERENCES module_licenses(tenant_id, id, module_name),
   FOREIGN KEY (tenant_id, user_id) REFERENCES users(tenant_id, id),
   FOREIGN KEY (tenant_id, device_id) REFERENCES devices(tenant_id, id),
   CHECK ((status = 'revoked') = (revoked_at IS NOT NULL))
@@ -165,7 +167,9 @@ CREATE TABLE credential_scopes (
 
 GRANT SELECT, INSERT, UPDATE ON
   enrollment_codes, device_credentials, module_licenses, seat_assignments,
-  bridge_connections, bridge_dispatches, security_events TO revagent_app;
+  bridge_connections, bridge_dispatches TO revagent_app;
+GRANT SELECT, INSERT ON security_events TO revagent_app;
+REVOKE UPDATE, DELETE, TRUNCATE ON security_events FROM revagent_app;
 GRANT SELECT, INSERT, UPDATE, DELETE ON credential_scopes
   TO revagent_credential_locator;
 

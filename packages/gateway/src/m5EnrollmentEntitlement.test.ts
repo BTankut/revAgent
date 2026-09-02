@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import { createServer } from "node:net";
 
-import Fastify, { type FastifyInstance } from "fastify";
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
@@ -17,9 +17,17 @@ import {
   type M5BridgeExecutor,
 } from "./m5EnrollmentEntitlement.js";
 import {
+  M5_BRIDGE_ENROLLMENT_MAX_BODY_BYTES,
   M5_BRIDGE_ENROLLMENT_PATH,
-  mountM5BridgeEnrollmentEndpoint,
 } from "./m5EnrollmentEntitlementEndpoint.js";
+import { loadGatewayConfig, type GatewayConfig } from "./config.js";
+import {
+  GatewayM5CompositionError,
+  createFailClosedPorts,
+  createGatewayApp,
+  startGatewayServer,
+  type GatewayServerHandle,
+} from "./server.js";
 
 const { Pool } = pg;
 
@@ -37,10 +45,14 @@ const B_USER = "20000000-0000-4000-8000-000000000211";
 const A_DEVICE_1 = "10000000-0000-4000-8000-000000000311";
 const A_DEVICE_2 = "10000000-0000-4000-8000-000000000312";
 const A_DEVICE_3 = "10000000-0000-4000-8000-000000000313";
+const A_DEVICE_4 = "10000000-0000-4000-8000-000000000314";
+const A_DEVICE_5 = "10000000-0000-4000-8000-000000000315";
 const B_DEVICE = "20000000-0000-4000-8000-000000000321";
 const FINGERPRINT_A1 = `sha256:${"11".repeat(32)}` as GatewayMachineFingerprint;
 const FINGERPRINT_A2 = `sha256:${"12".repeat(32)}` as GatewayMachineFingerprint;
 const FINGERPRINT_A3 = `sha256:${"13".repeat(32)}` as GatewayMachineFingerprint;
+const FINGERPRINT_A4 = `sha256:${"14".repeat(32)}` as GatewayMachineFingerprint;
+const FINGERPRINT_A5 = `sha256:${"15".repeat(32)}` as GatewayMachineFingerprint;
 const FINGERPRINT_B = `sha256:${"21".repeat(32)}` as GatewayMachineFingerprint;
 const ROTATION_GRACE_MS = 2_000;
 
@@ -71,10 +83,27 @@ function auth(
   });
 }
 
+async function reserveLoopbackPort(): Promise<number> {
+  const server = createServer();
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  const port = address !== null && typeof address === "object" ? address.port : 0;
+  await new Promise<void>((resolve, reject) =>
+    server.close((error) => (error === undefined ? resolve() : reject(error))),
+  );
+  if (port <= 0) throw new Error("failed to reserve an EU-11 Gateway test port");
+  return port;
+}
+
 suite("EU-11 enrolled and entitled Bridge dispatch", () => {
   let cluster: pg.Pool;
   let admin: pg.Pool;
-  let app: FastifyInstance;
+  let gateway: GatewayServerHandle;
+  let gatewayConfig: GatewayConfig;
+  let enrollmentUrl: string;
   let controlPlane: M5EnrollmentEntitlementControlPlane;
   let databaseName: string;
   let databaseUrl: string;
@@ -125,14 +154,26 @@ suite("EU-11 enrolled and entitled Bridge dispatch", () => {
         { name: "arch.inspect", module: "arch", summary: "Inspect architectural model" },
       ],
     });
-    app = Fastify({ logger: false });
-    mountM5BridgeEnrollmentEndpoint(app, controlPlane);
-    await app.ready();
+    const port = await reserveLoopbackPort();
+    const loaded = loadGatewayConfig({
+      NODE_ENV: "production",
+      LOG_LEVEL: "fatal",
+      GATEWAY_BIND_HOST: "0.0.0.0",
+      PORT: String(port),
+      GATEWAY_PUBLIC_URL: "https://gateway.example.test",
+    });
+    if (!loaded.ok) throw new Error("EU-11 production Gateway config was refused");
+    gatewayConfig = loaded.value;
+    gateway = await startGatewayServer({
+      config: gatewayConfig,
+      ports: createFailClosedPorts(),
+      m5EnrollmentEntitlement: controlPlane,
+    });
+    enrollmentUrl = `http://127.0.0.1:${String(gateway.port)}${M5_BRIDGE_ENROLLMENT_PATH}`;
   }, 30_000);
 
   afterAll(async () => {
-    await app?.close();
-    await controlPlane?.close();
+    await gateway?.close();
     await admin?.end();
     if (cluster !== undefined && databaseName !== undefined) {
       await cluster.query(`DROP DATABASE IF EXISTS "${databaseName}"`);
@@ -152,24 +193,40 @@ suite("EU-11 enrolled and entitled Bridge dispatch", () => {
       machineFingerprint: fingerprint,
     });
     if (!minted.ok) throw new Error(`mint failed: ${minted.reason}`);
-    const response = await app.inject({
+    const response = await fetch(enrollmentUrl, {
       method: "POST",
-      url: M5_BRIDGE_ENROLLMENT_PATH,
       headers: { "content-type": "application/json" },
-      payload: {
+      body: JSON.stringify({
         enrollment_token: minted.value.enrollmentCode,
         machine_fingerprint: fingerprint,
-      },
+      }),
     });
-    expect(response.statusCode).toBe(200);
-    expect(response.headers["cache-control"]).toBe("no-store");
-    const body = response.json<{ device_id: string; device_token: string }>();
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    const body = (await response.json()) as {
+      device_id: string;
+      device_token: string;
+    };
     expect(body.device_id).toBe(deviceId);
     return {
       enrollmentCode: minted.value.enrollmentCode,
       deviceToken: body.device_token,
     };
   }
+
+  it("mounts the exact control plane on the production Gateway route and refuses a structural fake", async () => {
+    const health = await fetch(`http://127.0.0.1:${String(gateway.port)}/healthz`);
+    expect(health.status).toBe(200);
+    expect(await health.json()).toEqual({ status: "ok" });
+    expect(() =>
+      createGatewayApp({
+        config: gatewayConfig,
+        ports: createFailClosedPorts(),
+        m5EnrollmentEntitlement: Object.freeze({}) as unknown as
+          M5EnrollmentEntitlementControlPlane,
+      }),
+    ).toThrowError(GatewayM5CompositionError);
+  });
 
   it("runs mint, exact Bridge exchange, handshake, atomic seat, filtered dispatch, rotation grace, and active revoke", async () => {
     await expect(
@@ -184,34 +241,73 @@ suite("EU-11 enrolled and entitled Bridge dispatch", () => {
       seatLimit: 1,
     });
     expect(mechLicense.ok).toBe(true);
+    const oversizedIssue = await controlPlane.mintEnrollmentCode(adminA, {
+      principalUserId: A_USER_2,
+      deviceId: A_DEVICE_4,
+      machineFingerprint: FINGERPRINT_A4,
+    });
+    if (!oversizedIssue.ok) {
+      throw new Error(`oversized-body enrollment mint failed: ${oversizedIssue.reason}`);
+    }
+    const oversized = await fetch(enrollmentUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        enrollment_token: oversizedIssue.value.enrollmentCode,
+        machine_fingerprint: FINGERPRINT_A4,
+        padding: "x".repeat(M5_BRIDGE_ENROLLMENT_MAX_BODY_BYTES),
+      }),
+    });
+    expect(oversized.status).toBe(413);
+    expect(oversized.headers.get("cache-control")).toBe("no-store");
+    expect(await oversized.json()).toEqual({
+      ok: false,
+      state: "refused",
+      error: "invalid_enrollment_request",
+    });
+    const stillIssued = await admin.query(
+      "SELECT status FROM enrollment_codes WHERE id=$1",
+      [oversizedIssue.value.enrollmentId],
+    );
+    expect(stillIssued.rows[0]?.status).toBe("issued");
+    const oversizedExchange = await fetch(enrollmentUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        enrollment_token: oversizedIssue.value.enrollmentCode,
+        machine_fingerprint: FINGERPRINT_A4,
+      }),
+    });
+    expect(oversizedExchange.status).toBe(200);
+    const oversizedCredential = (await oversizedExchange.json()) as {
+      device_token: string;
+    };
     const a1 = await enroll(adminA, A_USER_1, A_DEVICE_1, FINGERPRINT_A1);
 
-    const reused = await app.inject({
+    const reused = await fetch(enrollmentUrl, {
       method: "POST",
-      url: M5_BRIDGE_ENROLLMENT_PATH,
       headers: { "content-type": "application/json" },
-      payload: {
+      body: JSON.stringify({
         enrollment_token: a1.enrollmentCode,
         machine_fingerprint: FINGERPRINT_A1,
-      },
+      }),
     });
-    expect(reused.statusCode).toBe(409);
-    expect(reused.json()).toEqual({
+    expect(reused.status).toBe(409);
+    expect(await reused.json()).toEqual({
       ok: false,
       state: "refused",
       error: "enrollment_token_reused",
     });
 
-    const malformed = await app.inject({
+    const malformed = await fetch(enrollmentUrl, {
       method: "POST",
-      url: M5_BRIDGE_ENROLLMENT_PATH,
       headers: { "content-type": "application/json" },
-      payload:
+      body:
         `{"enrollment_token":"${a1.enrollmentCode}",` +
         `"enrollment_\\u0074oken":"${a1.enrollmentCode}",` +
         `"machine_fingerprint":"${FINGERPRINT_A1}"}`,
     });
-    expect(malformed.statusCode).toBe(400);
+    expect(malformed.status).toBe(400);
 
     const bridgeCalls: string[] = [];
     const closeEvents: string[] = [];
@@ -409,12 +505,75 @@ suite("EU-11 enrolled and entitled Bridge dispatch", () => {
       competing.filter((result) => !result.ok).map((result) => result.reason),
     ).toEqual(["seat_cap_exceeded"]);
 
+    let markDispatchEntered: (() => void) | undefined;
+    const dispatchEntered = new Promise<void>((resolve) => {
+      markDispatchEntered = resolve;
+    });
+    const inFlightExecutor: M5BridgeExecutor = Object.freeze({
+      async invoke(input: Parameters<M5BridgeExecutor["invoke"]>[0]) {
+        markDispatchEntered?.();
+        await new Promise<void>((_resolve, reject) => {
+          const abort = (): void => reject(new Error("device revoked"));
+          if (input.signal.aborted) abort();
+          else input.signal.addEventListener("abort", abort, { once: true });
+        });
+        return Object.freeze({ unreachable: true });
+      },
+    });
+    const isolatedCloseAttempts: string[] = [];
+    const failingClose: M5BridgeCloseControl = Object.freeze({
+      close() {
+        isolatedCloseAttempts.push("failing");
+        throw new Error("simulated close failure");
+      },
+    });
+    const trailingClose: M5BridgeCloseControl = Object.freeze({
+      close() {
+        isolatedCloseAttempts.push("trailing");
+      },
+    });
+    await expect(
+      controlPlane.openBridgeConnection({
+        deviceToken: rotated.value.deviceToken,
+        claimedTenantId: TENANT_A,
+        claimedDeviceId: A_DEVICE_1,
+        principalUserId: A_USER_1,
+        machineFingerprint: FINGERPRINT_A1,
+        connectionId: "eu11-a-inflight-failing-close",
+        executor: inFlightExecutor,
+        closeControl: failingClose,
+      }),
+    ).resolves.toMatchObject({ ok: true });
+    await expect(
+      controlPlane.openBridgeConnection({
+        deviceToken: rotated.value.deviceToken,
+        claimedTenantId: TENANT_A,
+        claimedDeviceId: A_DEVICE_1,
+        principalUserId: A_USER_1,
+        machineFingerprint: FINGERPRINT_A1,
+        connectionId: "eu11-a-trailing-close",
+        executor,
+        closeControl: trailingClose,
+      }),
+    ).resolves.toMatchObject({ ok: true });
+    const inFlightDispatch = controlPlane.dispatch({
+      tenantId: TENANT_A,
+      connectionId: "eu11-a-inflight-failing-close",
+      principalUserId: A_USER_1,
+      deviceId: A_DEVICE_1,
+      invocationId: "eu11-inflight-revoke",
+      toolName: "mech.inspect",
+      params: { elementId: 84 },
+    });
+    await dispatchEntered;
     const revoked = await controlPlane.revokeDevice(adminA, { deviceId: A_DEVICE_1 });
     expect(revoked).toMatchObject({
       ok: true,
       value: {
         changed: true,
-        closedConnectionCount: 3,
+        closeAttemptCount: 5,
+        closedConnectionCount: 4,
+        closeFailureCount: 1,
         withinBound: true,
       },
     });
@@ -422,8 +581,16 @@ suite("EU-11 enrolled and entitled Bridge dispatch", () => {
       expect(revoked.value.maximumCloseLatencyMs).toBeLessThanOrEqual(
         M5_ACTIVE_REVOKE_BOUND_MS,
       );
+      expect(revoked.value.totalCloseElapsedMs).toBeLessThanOrEqual(
+        M5_ACTIVE_REVOKE_BOUND_MS,
+      );
     }
+    await expect(inFlightDispatch).resolves.toEqual({
+      ok: false,
+      reason: "device_revoked",
+    });
     expect(closeEvents).toHaveLength(3);
+    expect(isolatedCloseAttempts).toEqual(["failing", "trailing"]);
     const afterRevoke = await controlPlane.openBridgeConnection({
       deviceToken: rotated.value.deviceToken,
       claimedTenantId: TENANT_A,
@@ -455,6 +622,11 @@ suite("EU-11 enrolled and entitled Bridge dispatch", () => {
         }),
         expect.objectContaining({ event_type: "device_credential.rotate", outcome: "completed" }),
         expect.objectContaining({ event_type: "device.revoke", outcome: "completed" }),
+        expect.objectContaining({
+          event_type: "device.revoke_connections",
+          outcome: "failed",
+          reason: "connection_close_failed",
+        }),
       ]),
     );
     const persistence = await admin.query(
@@ -471,14 +643,63 @@ suite("EU-11 enrolled and entitled Bridge dispatch", () => {
         a1.enrollmentCode,
         a1.deviceToken,
         rotated.value.deviceToken,
+        oversizedCredential.device_token,
         b.deviceToken,
         a2.deviceToken,
         a3.deviceToken,
       ].some((secret) => persistedText.includes(secret)),
     ).toBe(false);
+
+    const drainIssue = await controlPlane.mintEnrollmentCode(adminA, {
+      principalUserId: A_USER_3,
+      deviceId: A_DEVICE_5,
+      machineFingerprint: FINGERPRINT_A5,
+    });
+    if (!drainIssue.ok) throw new Error(`drain enrollment mint failed: ${drainIssue.reason}`);
+    gateway.beginShutdown();
+    const draining = await fetch(enrollmentUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        enrollment_token: drainIssue.value.enrollmentCode,
+        machine_fingerprint: FINGERPRINT_A5,
+      }),
+    });
+    expect(draining.status).toBe(503);
+    expect(draining.headers.get("cache-control")).toBe("no-store");
+    expect(await draining.json()).toEqual({
+      ok: false,
+      state: "unavailable",
+      error: "enrollment_exchange_unavailable",
+    });
+    const drainCode = await admin.query(
+      "SELECT status FROM enrollment_codes WHERE id=$1",
+      [drainIssue.value.enrollmentId],
+    );
+    expect(drainCode.rows[0]?.status).toBe("issued");
+    const health = await fetch(`http://127.0.0.1:${String(gateway.port)}/healthz`);
+    expect(health.status).toBe(503);
   }, 60_000);
 
-  it("enforces tenant RLS and isolates the digest locator role", async () => {
+  it("enforces tenant RLS, immutable audit, composite license binding, and locator isolation", async () => {
+    const auditPrivileges = await admin.query<{
+      can_insert: boolean;
+      can_update: boolean;
+      can_delete: boolean;
+      can_truncate: boolean;
+    }>(
+      `SELECT
+         has_table_privilege('revagent_app','security_events','INSERT') AS can_insert,
+         has_table_privilege('revagent_app','security_events','UPDATE') AS can_update,
+         has_table_privilege('revagent_app','security_events','DELETE') AS can_delete,
+         has_table_privilege('revagent_app','security_events','TRUNCATE') AS can_truncate`,
+    );
+    expect(auditPrivileges.rows[0]).toEqual({
+      can_insert: true,
+      can_update: false,
+      can_delete: false,
+      can_truncate: false,
+    });
     const client = await admin.connect();
     try {
       await client.query("BEGIN");
@@ -497,6 +718,35 @@ suite("EU-11 enrolled and entitled Bridge dispatch", () => {
           [TENANT_B],
         ),
       ).rejects.toMatchObject({ code: "42501" });
+      await client.query("ROLLBACK");
+
+      for (const statement of [
+        "UPDATE security_events SET reason='tampered' WHERE tenant_id=$1",
+        "DELETE FROM security_events WHERE tenant_id=$1",
+      ]) {
+        await client.query("BEGIN");
+        await client.query("SET LOCAL ROLE revagent_app");
+        await client.query("SELECT set_config('app.tenant_id',$1,true)", [TENANT_A]);
+        await expect(client.query(statement, [TENANT_A])).rejects.toMatchObject({
+          code: "42501",
+        });
+        await client.query("ROLLBACK");
+      }
+
+      await client.query("BEGIN");
+      await client.query("SET LOCAL ROLE revagent_app");
+      await client.query("SELECT set_config('app.tenant_id',$1,true)", [TENANT_A]);
+      const mech = await client.query<{ id: string }>(
+        "SELECT id FROM module_licenses WHERE module_name='mech'",
+      );
+      await expect(
+        client.query(
+          `INSERT INTO seat_assignments(
+             id,tenant_id,license_id,module_name,user_id,device_id,assigned_at)
+           VALUES ('90000000-0000-4000-8000-000000000002',$1,$2,'elec',$3,$4,clock_timestamp())`,
+          [TENANT_A, mech.rows[0]?.id, A_USER_1, A_DEVICE_1],
+        ),
+      ).rejects.toMatchObject({ code: "23503" });
       await client.query("ROLLBACK");
 
       await client.query("BEGIN");

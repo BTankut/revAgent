@@ -36,6 +36,8 @@ import {
   type GatewayProtocolStore,
   type ObjectStorePort,
 } from "./store.js";
+import { M5EnrollmentEntitlementControlPlane } from "./m5EnrollmentEntitlement.js";
+import { mountM5BridgeEnrollmentEndpoint } from "./m5EnrollmentEntitlementEndpoint.js";
 
 /**
  * The Phase-1 Gateway HTTP process (GW-2 / GW-12).
@@ -109,6 +111,16 @@ export class GatewayConformancePortError extends Error {
   constructor(readonly port: GatewayPortName) {
     super(`refusing to start in production: the ${port} port is conformance-only`);
     this.name = "GatewayConformancePortError";
+  }
+}
+
+export class GatewayM5CompositionError extends Error {
+  readonly code = "invalid_m5_enrollment_composition" as const;
+  constructor() {
+    super(
+      "refusing Gateway composition: M5 enrollment requires the exact Postgres control-plane implementation",
+    );
+    this.name = "GatewayM5CompositionError";
   }
 }
 
@@ -358,6 +370,11 @@ export interface GatewayServerOptions {
   readonly config: GatewayConfig;
   readonly northMcp?: NorthMcpEndpointOptions;
   readonly ports: GatewayServerPorts;
+  /**
+   * Exact EU-11 product route. The server owns and closes this Postgres
+   * control plane; structurally similar fakes are refused before listen.
+   */
+  readonly m5EnrollmentEntitlement?: M5EnrollmentEntitlementControlPlane;
   /** Explicit TLS material; absent preserves the production proxy/HTTP default. */
   readonly tls?: GatewayServerTlsMaterial;
   /**
@@ -374,6 +391,13 @@ function buildGatewayApp(
   closeIngressOnAppClose: (() => Promise<void>) | null,
 ): FastifyInstance {
   const { config, ports } = options;
+  if (
+    options.m5EnrollmentEntitlement !== undefined &&
+    !(options.m5EnrollmentEntitlement instanceof
+      M5EnrollmentEntitlementControlPlane)
+  ) {
+    throw new GatewayM5CompositionError();
+  }
   // `createGatewayApp` is public for injection tests. Keep the same executable
   // production gate here so a caller cannot bypass `startGatewayServer` and
   // call `app.listen()` directly with a non-production identity adapter.
@@ -414,6 +438,14 @@ function buildGatewayApp(
         });
 
   let shuttingDown = false;
+
+  if (options.m5EnrollmentEntitlement !== undefined) {
+    const controlPlane = options.m5EnrollmentEntitlement;
+    mountM5BridgeEnrollmentEndpoint(app, controlPlane, {
+      isAccepting: () => !shuttingDown,
+    });
+    app.addHook("onClose", async () => controlPlane.close());
+  }
 
   // The body is exactly two states and nothing else. This endpoint is served on
   // the public hostname through the edge proxy with no path matcher, so any

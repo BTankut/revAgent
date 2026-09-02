@@ -7,7 +7,7 @@ import type {
 
 export const M5_BRIDGE_ENROLLMENT_PATH = "/bridge/v1/enroll" as const;
 
-const MAX_BODY_BYTES = 8 * 1_024;
+export const M5_BRIDGE_ENROLLMENT_MAX_BODY_BYTES = 8 * 1_024;
 const FINGERPRINT_PATTERN = /^sha256:[a-f0-9]{64}$/u;
 const INVALID_BODY = Symbol("invalid_body");
 
@@ -120,16 +120,43 @@ function refusal(reason: M5EnrollmentEntitlementFailureReason): {
   }
 }
 
+export interface M5BridgeEnrollmentEndpointOptions {
+  /** Shared server drain state; false refuses without consuming the code. */
+  readonly isAccepting?: () => boolean;
+}
+
+function fixedRefusal(
+  reply: { code(status: number): { send(body: unknown): unknown } },
+  status: 400 | 413 | 503,
+): unknown {
+  return reply.code(status).send({
+    ok: false,
+    state: status === 503 ? "unavailable" : "refused",
+    error:
+      status === 503
+        ? "enrollment_exchange_unavailable"
+        : "invalid_enrollment_request",
+  });
+}
+
+function declaredBodyTooLarge(value: string | undefined): boolean {
+  if (value === undefined || !/^(?:0|[1-9][0-9]*)$/u.test(value)) return false;
+  const length = Number(value);
+  return !Number.isSafeInteger(length) || length > M5_BRIDGE_ENROLLMENT_MAX_BODY_BYTES;
+}
+
 /** Mounts the exact request/response shape consumed by BridgeEnrollmentExchangeClient. */
 export function mountM5BridgeEnrollmentEndpoint(
   app: FastifyInstance,
   controlPlane: Pick<M5EnrollmentEntitlementControlPlane, "exchangeEnrollmentCode">,
+  options: M5BridgeEnrollmentEndpointOptions = {},
 ): void {
+  const isAccepting = options.isAccepting ?? (() => true);
   app.register((scope, _options, done) => {
     scope.removeContentTypeParser("application/json");
     scope.addContentTypeParser(
       "application/json",
-      { parseAs: "string", bodyLimit: MAX_BODY_BYTES },
+      { parseAs: "string", bodyLimit: M5_BRIDGE_ENROLLMENT_MAX_BODY_BYTES },
       (_request, body, parserDone) => {
         const raw = typeof body === "string" ? body : body.toString("utf8");
         parserDone(null, parseBody(raw));
@@ -138,25 +165,37 @@ export function mountM5BridgeEnrollmentEndpoint(
     scope.post(
       M5_BRIDGE_ENROLLMENT_PATH,
       {
-        bodyLimit: MAX_BODY_BYTES,
-        onRequest: async (_request, reply) => {
+        bodyLimit: M5_BRIDGE_ENROLLMENT_MAX_BODY_BYTES,
+        onRequest: async (request, reply) => {
           reply.header("cache-control", "no-store");
+          if (!isAccepting()) {
+            request.raw.resume();
+            return fixedRefusal(reply, 503);
+          }
+          const contentLength = request.headers["content-length"];
+          if (
+            declaredBodyTooLarge(
+              Array.isArray(contentLength) ? contentLength[0] : contentLength,
+            )
+          ) {
+            request.raw.resume();
+            return fixedRefusal(reply, 413);
+          }
         },
-        errorHandler: async (_error, _request, reply) =>
-          reply.code(400).send({
-            ok: false,
-            state: "refused",
-            error: "invalid_enrollment_request",
-          }),
+        errorHandler: async (error, _request, reply) =>
+          fixedRefusal(
+            reply,
+            (error as { readonly code?: string }).code ===
+              "FST_ERR_CTP_BODY_TOO_LARGE"
+              ? 413
+              : 400,
+          ),
       },
       async (request, reply) => {
+        if (!isAccepting()) return fixedRefusal(reply, 503);
         const input = exchangeInput(request.body);
         if (input === null) {
-          return reply.code(400).send({
-            ok: false,
-            state: "refused",
-            error: "invalid_enrollment_request",
-          });
+          return fixedRefusal(reply, 400);
         }
         const exchanged = await controlPlane.exchangeEnrollmentCode(input);
         if (!exchanged.ok) {
