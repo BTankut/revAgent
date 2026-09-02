@@ -12,6 +12,10 @@ import {
 import type { GatewayEventEnvelope } from "./events.js";
 
 const { Pool } = pg;
+export type Eu12RetentionClass = "standard_12m" | "lifecycle_24m";
+const LIFECYCLE_EVENT_TYPES = new Set<GatewayEventEnvelope["event_type"]>([
+  "auth.event", "bridge.connected", "bridge.disconnected", "bridge.enrolled", "bridge.revoked", "bridge.update",
+]);
 
 function retentionMonth(value: string | number): string {
   const date = new Date(value);
@@ -19,8 +23,19 @@ function retentionMonth(value: string | number): string {
   return `${date.toISOString().slice(0, 7)}-01`;
 }
 
-function retentionPartitionKey(tenantId: string, kind: "events" | "tool_invocations" | "llm_calls", value: string | number): string {
-  return `${tenantId}:${kind}:${retentionMonth(value).slice(0, 7).replace("-", "")}`;
+function eventRetentionClass(eventType: GatewayEventEnvelope["event_type"]): Eu12RetentionClass {
+  return LIFECYCLE_EVENT_TYPES.has(eventType) ? "lifecycle_24m" : "standard_12m";
+}
+
+function retentionUntilMs(value: string | number, retentionClass: Eu12RetentionClass): number {
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) throw new Error("event retention timestamp is invalid");
+  date.setUTCMonth(date.getUTCMonth() + (retentionClass === "lifecycle_24m" ? 24 : 12));
+  return date.getTime();
+}
+
+function retentionPartitionKey(tenantId: string, kind: "events" | "tool_invocations" | "llm_calls", retentionClass: Eu12RetentionClass, value: string | number): string {
+  return `${tenantId}:${kind}:${retentionClass}:${retentionMonth(value).slice(0, 7).replace("-", "")}`;
 }
 
 /**
@@ -144,7 +159,8 @@ export class PostgresEu12EventPersistence implements Eu12EventPersistence {
         return false;
       }
     }
-    await this.#ensureCanonicalPartition(client, event.tenant_id, "events", event.occurred_at);
+    const retentionClass = eventRetentionClass(event.event_type);
+    await this.#ensureCanonicalPartition(client, event.tenant_id, "events", retentionClass, event.occurred_at, retentionUntilMs(event.occurred_at, retentionClass));
     await client.query(
       `INSERT INTO events(
          id,tenant_id,event_type,occurred_at,recorded_at,source,actor,session_id,
@@ -153,7 +169,7 @@ export class PostgresEu12EventPersistence implements Eu12EventPersistence {
       [event.event_id, event.tenant_id, event.event_type, event.occurred_at, event.recorded_at,
         JSON.stringify(event.source), JSON.stringify(event.actor), event.session_id ?? null,
         event.turn_id ?? null, event.seq, JSON.stringify(event.payload), envelopeDigest, idempotencyDigest, idempotencyKey,
-        retentionPartitionKey(event.tenant_id, "events", event.occurred_at)],
+        retentionPartitionKey(event.tenant_id, "events", retentionClass, event.occurred_at)],
     );
     return true;
   }
@@ -168,7 +184,7 @@ export class PostgresEu12EventPersistence implements Eu12EventPersistence {
     };
     if (event.session_id === undefined || event.actor.user_id === undefined || !Object.values(required).every((value) => typeof value === "string" || typeof value === "number")) throw new Error("tool invocation evidence is incomplete");
     if (typeof required.paramsDigest !== "string" || !/^sha256:[0-9a-f]{64}$/u.test(required.paramsDigest)) throw new Error("tool invocation params digest is invalid");
-    await this.#ensureCanonicalPartition(client, event.tenant_id, "tool_invocations", Number(required.startedAtMs));
+    await this.#ensureCanonicalPartition(client, event.tenant_id, "tool_invocations", "standard_12m", Number(required.startedAtMs), retentionUntilMs(Number(required.startedAtMs), "standard_12m"));
     const optionalNumber = (value: unknown): number | null => typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
     const written = await client.query<{ id: string }>(
       `INSERT INTO tool_invocations(
@@ -181,7 +197,7 @@ export class PostgresEu12EventPersistence implements Eu12EventPersistence {
         required.idempotencyKey,required.startedAtMs,required.completedAtMs,required.durationMs,
         JSON.stringify(payload.params_summary ?? {}),JSON.stringify(payload.code ?? {}),
         optionalNumber(payload.request_bytes),optionalNumber(payload.response_bytes),event.event_id,
-        retentionPartitionKey(event.tenant_id, "tool_invocations", Number(required.startedAtMs))],
+        retentionPartitionKey(event.tenant_id, "tool_invocations", "standard_12m", Number(required.startedAtMs))],
     );
     if (written.rowCount !== 1) throw new Error("idempotent tool invocation replay changed immutable fields");
   }
@@ -191,7 +207,7 @@ export class PostgresEu12EventPersistence implements Eu12EventPersistence {
     const numeric = ["input_tokens","output_tokens","cache_read_tokens","cache_creation_tokens","duration_ms","latency_ms","cost_microusd"] as const;
     const text = ["upstream_name","model_name","role","engine_mode","outcome","stop_reason"] as const;
     if (event.session_id === undefined || numeric.some((field) => typeof payload[field] !== "number" || !Number.isFinite(payload[field] as number) || (payload[field] as number) < 0) || text.some((field) => typeof payload[field] !== "string")) throw new Error("llm call dimensions are incomplete");
-    await this.#ensureCanonicalPartition(client, event.tenant_id, "llm_calls", event.occurred_at);
+    await this.#ensureCanonicalPartition(client, event.tenant_id, "llm_calls", "standard_12m", event.occurred_at, retentionUntilMs(event.occurred_at, "standard_12m"));
     await client.query(
       `INSERT INTO llm_calls(
          id,event_id,tenant_id,session_id,turn_id,provider,model,role,engine_mode,input_tokens,output_tokens,cache_read_tokens,
@@ -202,14 +218,14 @@ export class PostgresEu12EventPersistence implements Eu12EventPersistence {
         payload.role,payload.engine_mode,payload.input_tokens,payload.output_tokens,payload.cache_read_tokens,
         payload.cache_creation_tokens,payload.duration_ms,payload.latency_ms,payload.stop_reason,payload.outcome,
         Number(payload.cost_microusd) / 1_000_000,payload.cost_microusd,Date.parse(event.occurred_at) / 1_000,
-        retentionPartitionKey(event.tenant_id, "llm_calls", event.occurred_at)],
+        retentionPartitionKey(event.tenant_id, "llm_calls", "standard_12m", event.occurred_at)],
     );
   }
 
-  async #ensureCanonicalPartition(client: PoolClient, tenantId: string, kind: "events" | "tool_invocations" | "llm_calls", at: string | number): Promise<void> {
+  async #ensureCanonicalPartition(client: PoolClient, tenantId: string, kind: "events" | "tool_invocations" | "llm_calls", retentionClass: Eu12RetentionClass, at: string | number, retentionUntil: number): Promise<void> {
     await client.query(
-      "SELECT revagent_ensure_canonical_retention_partition($1,$2,$3::date)",
-      [tenantId, kind, retentionMonth(at)],
+      "SELECT revagent_ensure_canonical_retention_partition($1,$2,$3,$4::date,to_timestamp($5/1000.0))",
+      [tenantId, kind, retentionClass, retentionMonth(at), retentionUntil],
     );
   }
 }

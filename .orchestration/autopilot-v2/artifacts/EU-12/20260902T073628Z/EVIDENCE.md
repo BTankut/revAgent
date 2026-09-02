@@ -81,3 +81,16 @@ actions belong to the controller after independent review.
 - `canonical-review-postgres-final2.raw.log`: disposable PostgreSQL 16, 7/7;
   `canonical-review-focused-final2.raw.log`: 10/10; final Gateway typecheck
   and lint logs also pass.
+
+## Retention-class due closure
+
+- `009_eu12_retention_class_due_partitions.sql` splits canonical event leaves
+  by `standard_12m` versus `lifecycle_24m`, records each leaf's maximum
+  authoritative `retention_until`, and class-keys ownership, lease, archive,
+  and object paths.
+- Archive preparation and finalization require a non-future trusted `asOf` and
+  fail closed before the class leaf's due boundary. A standard-class drop cannot
+  remove a same-month lifecycle leaf.
+- `retention-class-postgres-final2.raw.log`: disposable PostgreSQL 16, 8/8;
+  `retention-class-focused-final.raw.log`: 10/10; final typecheck and lint
+  logs pass.

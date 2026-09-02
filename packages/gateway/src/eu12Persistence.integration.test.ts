@@ -5,7 +5,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import type { GatewayEventEnvelope } from "./events.js";
 import { migrateUp } from "./migrate.js";
-import { PostgresEu12DataStore, RetentionLeaseError, canonicalDurableReleaseManifest } from "./postgresEu12DataStore.js";
+import { PostgresEu12DataStore, RetentionLeaseError, RetentionNotDueError, canonicalDurableReleaseManifest } from "./postgresEu12DataStore.js";
 import { PostgresTenantStore } from "./postgresTenantStore.js";
 import { InMemoryResultObjectStore, resultReferenceDigest } from "./resultReferenceStore.js";
 import { deriveMetricParity } from "./metricParity.js";
@@ -137,7 +137,7 @@ suite("EU-12 Postgres event persistence", () => {
 
   it("survives migration replay and restart for result refs, archive runs, and tenant-scoped release channels", async () => {
     await expect(migrateUp(DATABASE_URL!, { appPassword })).resolves.toEqual([]);
-    const migration = await admin.query("SELECT version FROM schema_migrations WHERE version='008_eu12_canonical_time_partitions.sql'");
+    const migration = await admin.query("SELECT version FROM schema_migrations WHERE version='009_eu12_retention_class_due_partitions.sql'");
     expect(migration.rowCount).toBe(1);
     await expect(admin.query<{ relname: string; relkind: string }>(
       "SELECT relname,relkind FROM pg_class WHERE relname = ANY($1::text[]) ORDER BY relname",
@@ -279,30 +279,30 @@ suite("EU-12 Postgres event persistence", () => {
     await expect(resumed.getResultPage({ scope: { tenantId: tenantA, sessionId: sessionA }, refId: ref.refId, pageIndex: 0 }))
       .resolves.toEqual({ kind: "not_found" });
 
-    const archiveStartedAtMs = Date.parse("2026-08-15T00:00:00.000Z");
+    const archiveStartedAtMs = Date.parse("2025-08-15T00:00:00.000Z");
     const archivePayload = {
       dispatch_attempt_id: "archive-attempt", invocation_id: "archive-invocation", idempotency_key: "eu12/archive-a",
       tool_name: "core.inspect", tool_version: "1.0.0", policy_class: "auto", executor: "bridge",
       params_digest: `sha256:${"c".repeat(64)}`, outcome: "completed", started_at_ms: archiveStartedAtMs, completed_at_ms: archiveStartedAtMs + 1,
       duration_ms: 1, request_bytes: 1, response_bytes: 1,
     } as const;
-    const archiveA = envelope({ eventId: randomUUID(), tenantId: tenantA, sessionId: sessionA, userId: userA, type: "tool.invocation", payload: archivePayload, occurredAt: "2026-08-15T00:00:00.000Z" });
-    const archiveB = envelope({ eventId: randomUUID(), tenantId: tenantB, sessionId: sessionB, userId: userB, type: "tool.invocation", payload: { ...archivePayload, idempotency_key: "eu12/archive-b" }, occurredAt: "2026-08-15T00:00:00.000Z" });
+    const archiveA = envelope({ eventId: randomUUID(), tenantId: tenantA, sessionId: sessionA, userId: userA, type: "tool.invocation", payload: archivePayload, occurredAt: "2025-08-15T00:00:00.000Z" });
+    const archiveB = envelope({ eventId: randomUUID(), tenantId: tenantB, sessionId: sessionB, userId: userB, type: "tool.invocation", payload: { ...archivePayload, idempotency_key: "eu12/archive-b" }, occurredAt: "2025-08-15T00:00:00.000Z" });
     await expect(store.emit(archiveA)).resolves.toEqual({ ok: true, value: undefined });
     await expect(store.emit(archiveB)).resolves.toEqual({ ok: true, value: undefined });
     const archiveLlmA = envelope({
       eventId: randomUUID(), tenantId: tenantA, sessionId: sessionA, userId: userA, type: "llm.call",
       payload: { idempotency_key: "eu12/archive-llm-a", upstream_name: "external-client", model_name: "observed-model", engine_mode: "external_client", role: "external_client", input_tokens: 3, output_tokens: 4, cache_read_tokens: 1, cache_creation_tokens: 0, duration_ms: 5, latency_ms: 5, cost_microusd: 6, stop_reason: "unknown", outcome: "completed" },
-      occurredAt: "2026-08-16T00:00:00.000Z",
+      occurredAt: "2025-08-16T00:00:00.000Z",
     });
     const archiveLlmB = envelope({
       eventId: randomUUID(), tenantId: tenantB, sessionId: sessionB, userId: userB, type: "llm.call",
       payload: { idempotency_key: "eu12/archive-llm-b", upstream_name: "external-client", model_name: "observed-model", engine_mode: "external_client", role: "external_client", input_tokens: 3, output_tokens: 4, cache_read_tokens: 1, cache_creation_tokens: 0, duration_ms: 5, latency_ms: 5, cost_microusd: 6, stop_reason: "unknown", outcome: "completed" },
-      occurredAt: "2026-08-16T00:00:00.000Z",
+      occurredAt: "2025-08-16T00:00:00.000Z",
     });
     await expect(store.emit(archiveLlmA)).resolves.toEqual({ ok: true, value: undefined });
     await expect(store.emit(archiveLlmB)).resolves.toEqual({ ok: true, value: undefined });
-    await expect(resumed.archiveEvents({ tenantId: tenantA, month: "2026-08", owner: "eu12-restart", afterObjectWrite: () => { throw new Error("synthetic restart boundary"); } }))
+    await expect(resumed.archiveEvents({ tenantId: tenantA, month: "2025-08", owner: "eu12-restart", asOfMs: nowMs, afterObjectWrite: () => { throw new Error("synthetic restart boundary"); } }))
       .rejects.toThrow(/synthetic restart boundary/u);
     await resumed.close();
 
@@ -315,29 +315,29 @@ suite("EU-12 Postgres event persistence", () => {
       signatureVerifier: { verify: ({ signature }) => signature === "fixture-signature" },
       pinnedSigningKeyIds: ["release-key-1"],
     });
-    const archived = await afterRestart.archiveEvents({ tenantId: tenantA, month: "2026-08", owner: "eu12-restart" });
+    const archived = await afterRestart.archiveEvents({ tenantId: tenantA, month: "2025-08", owner: "eu12-restart", asOfMs: nowMs });
     expect(archived).toMatchObject({ state: "dropped", eventCount: 2, attempts: 2 });
-    expect(await afterRestart.readArchivedEvents({ tenantId: tenantA, month: "2026-08" })).toEqual([archiveA, archiveLlmA]);
-    const tenantBEvents = await admin.query("SELECT count(*)::int AS count FROM events WHERE tenant_id=$1 AND retention_partition_month='2026-08-01'", [tenantB]);
+    expect(await afterRestart.readArchivedEvents({ tenantId: tenantA, month: "2025-08" })).toEqual([archiveA, archiveLlmA]);
+    const tenantBEvents = await admin.query("SELECT count(*)::int AS count FROM events WHERE tenant_id=$1 AND retention_partition_month='2025-08-01'", [tenantB]);
     expect(tenantBEvents.rows[0]?.count).toBe(2);
-    await expect(afterRestart.archiveEvents({ tenantId: tenantA, month: "2026-08", owner: "eu12-restart" })).resolves.toMatchObject({ state: "dropped", attempts: 2 });
-    await expect(afterRestart.archiveSurface({ tenantId: tenantA, month: "2026-08", surface: "tool_invocations", owner: "eu12-restart" })).resolves.toMatchObject({ state: "dropped", eventCount: 1 });
-    await expect(afterRestart.readTypedArchive({ tenantId: tenantA, month: "2026-08", surface: "tool_invocations" })).resolves.toHaveLength(1);
-    await expect(afterRestart.archiveSurface({ tenantId: tenantA, month: "2026-08", surface: "llm_calls", owner: "eu12-restart" })).resolves.toMatchObject({ state: "dropped", eventCount: 1 });
-    await expect(afterRestart.readTypedArchive({ tenantId: tenantA, month: "2026-08", surface: "llm_calls" })).resolves.toHaveLength(1);
-    await expect(afterRestart.archiveEvents({ tenantId: tenantB, month: "2026-08", owner: "tenant-b-lease", afterObjectWrite: () => { throw new Error("tenant B lease retained"); } }))
+    await expect(afterRestart.archiveEvents({ tenantId: tenantA, month: "2025-08", owner: "eu12-restart", asOfMs: nowMs })).resolves.toMatchObject({ state: "dropped", attempts: 2 });
+    await expect(afterRestart.archiveSurface({ tenantId: tenantA, month: "2025-08", surface: "tool_invocations", owner: "eu12-restart", asOfMs: nowMs })).resolves.toMatchObject({ state: "dropped", eventCount: 1 });
+    await expect(afterRestart.readTypedArchive({ tenantId: tenantA, month: "2025-08", surface: "tool_invocations" })).resolves.toHaveLength(1);
+    await expect(afterRestart.archiveSurface({ tenantId: tenantA, month: "2025-08", surface: "llm_calls", owner: "eu12-restart", asOfMs: nowMs })).resolves.toMatchObject({ state: "dropped", eventCount: 1 });
+    await expect(afterRestart.readTypedArchive({ tenantId: tenantA, month: "2025-08", surface: "llm_calls" })).resolves.toHaveLength(1);
+    await expect(afterRestart.archiveEvents({ tenantId: tenantB, month: "2025-08", owner: "tenant-b-lease", asOfMs: nowMs, afterObjectWrite: () => { throw new Error("tenant B lease retained"); } }))
       .rejects.toThrow(/tenant B lease retained/u);
-    await expect(afterRestart.archiveEvents({ tenantId: tenantB, month: "2026-08", owner: "competing-owner" }))
+    await expect(afterRestart.archiveEvents({ tenantId: tenantB, month: "2025-08", owner: "competing-owner", asOfMs: nowMs }))
       .rejects.toBeInstanceOf(RetentionLeaseError);
-    await expect(afterRestart.archiveEvents({ tenantId: tenantB, month: "2026-08", owner: "tenant-b-lease" }))
+    await expect(afterRestart.archiveEvents({ tenantId: tenantB, month: "2025-08", owner: "tenant-b-lease", asOfMs: nowMs }))
       .resolves.toMatchObject({ state: "dropped", eventCount: 2 });
-    await expect(afterRestart.archiveSurface({ tenantId: tenantB, month: "2026-08", surface: "tool_invocations", owner: "tenant-b-lease" }))
+    await expect(afterRestart.archiveSurface({ tenantId: tenantB, month: "2025-08", surface: "tool_invocations", owner: "tenant-b-lease", asOfMs: nowMs }))
       .resolves.toMatchObject({ state: "dropped", eventCount: 1 });
-    await expect(afterRestart.archiveSurface({ tenantId: tenantB, month: "2026-08", surface: "llm_calls", owner: "tenant-b-lease" }))
+    await expect(afterRestart.archiveSurface({ tenantId: tenantB, month: "2025-08", surface: "llm_calls", owner: "tenant-b-lease", asOfMs: nowMs }))
       .resolves.toMatchObject({ state: "dropped", eventCount: 1 });
     const physicalPartitions = await admin.query<{ archive_kind: string; state: string; partition_table: string; table_exists: string | null }>(
       `SELECT archive_kind,state,partition_table,to_regclass(partition_table)::text AS table_exists
-        FROM retention_partition_ownership WHERE tenant_id=$1 AND archive_month='2026-08-01' ORDER BY archive_kind`,
+        FROM retention_partition_ownership WHERE tenant_id=$1 AND archive_month='2025-08-01' ORDER BY archive_kind,retention_class`,
       [tenantB],
     );
     expect(physicalPartitions.rows).toEqual([
@@ -393,7 +393,7 @@ suite("EU-12 Postgres event persistence", () => {
 
   it("uses actual canonical partitions across every crash boundary and drops the canonical rows", async () => {
     const objects = new InMemoryResultObjectStore();
-    const nowMs = Date.now();
+    const nowMs = Date.parse("2028-09-01T00:00:00.000Z");
     const durable = new PostgresEu12DataStore({
       databaseUrl: runtimeDatabaseUrl,
       publisherDatabaseUrl: DATABASE_URL!,
@@ -445,7 +445,7 @@ suite("EU-12 Postgres event persistence", () => {
           { archive_kind: "events", count: 2 }, { archive_kind: "llm_calls", count: 1 }, { archive_kind: "tool_invocations", count: 1 },
         ] });
         await expect(durable.archiveSurface({
-          tenantId: crashTenant, month, surface: "tool_invocations", owner: `crash-owner-${stage}`,
+          tenantId: crashTenant, month, surface: "tool_invocations", owner: `crash-owner-${stage}`, asOfMs: nowMs,
           onBoundary: ({ stage: reached }) => { if (reached === stage) throw new Error(`synthetic crash boundary ${stage}`); },
         })).rejects.toThrow(`synthetic crash boundary ${stage}`);
         await expect(admin.query<{ state: string; table_exists: string | null; attached: boolean }>(
@@ -454,11 +454,11 @@ suite("EU-12 Postgres event persistence", () => {
            FROM retention_partition_ownership WHERE tenant_id=$1 AND archive_kind='tool_invocations' AND archive_month=$2::date`,
           [crashTenant, `${month}-01`],
         )).resolves.toMatchObject({ rows: [{ state: "prepared", table_exists: expect.any(String), attached: true }] });
-        await expect(durable.archiveSurface({ tenantId: crashTenant, month, surface: "tool_invocations", owner: `crash-owner-${stage}` }))
+        await expect(durable.archiveSurface({ tenantId: crashTenant, month, surface: "tool_invocations", owner: `crash-owner-${stage}`, asOfMs: nowMs }))
           .resolves.toMatchObject({ state: "dropped", eventCount: 1, attempts: 2 });
         await expect(admin.query("SELECT count(*)::int AS count FROM tool_invocations WHERE tenant_id=$1 AND retention_partition_month=$2::date", [crashTenant, `${month}-01`]))
           .resolves.toMatchObject({ rows: [{ count: 0 }] });
-        await expect(durable.archiveEvents({ tenantId: crashTenant, month, owner: `events-owner-${stage}` }))
+        await expect(durable.archiveEvents({ tenantId: crashTenant, month, owner: `events-owner-${stage}`, asOfMs: nowMs }))
           .resolves.toMatchObject({ state: "dropped", eventCount: 2 });
         await expect(durable.read({ tenantId: crashTenant, eventId: toolEvent.event_id })).resolves.toBeNull();
         await expect(admin.query("SELECT count(*)::int AS count FROM events WHERE tenant_id=$1 AND retention_partition_month=$2::date", [crashTenant, `${month}-01`]))
@@ -475,6 +475,102 @@ suite("EU-12 Postgres event persistence", () => {
     } finally {
       await durable.close();
     }
+  }, 60_000);
+
+  it("separates same-month standard and lifecycle leaves and fails closed on retention due boundaries", async () => {
+    const objects = new InMemoryResultObjectStore();
+    const trustedNowMs = Date.parse("2028-08-20T00:00:00.000Z");
+    const durable = new PostgresEu12DataStore({
+      databaseUrl: runtimeDatabaseUrl,
+      publisherDatabaseUrl: DATABASE_URL!,
+      objects,
+      now: () => trustedNowMs,
+      newRefId: () => randomUUID(),
+      signatureVerifier: { verify: ({ signature }) => signature === "fixture-signature" },
+      pinnedSigningKeyIds: ["release-key-1"],
+    });
+    const classTenantA = randomUUID();
+    const classUserA = randomUUID();
+    const classSessionA = randomUUID();
+    const classTenantB = randomUUID();
+    const classUserB = randomUUID();
+    const classSessionB = randomUUID();
+    await admin.query("INSERT INTO tenants(id,slug,name) VALUES($1,$2,'EU12 class tenant A'),($3,$4,'EU12 class tenant B')", [classTenantA, `eu12-class-a-${classTenantA}`, classTenantB, `eu12-class-b-${classTenantB}`]);
+    await admin.query("INSERT INTO users(id,tenant_id,oidc_issuer,oidc_subject,role) VALUES($1,$2,'https://issuer.test','class-a','user'),($3,$4,'https://issuer.test','class-b','user')", [classUserA, classTenantA, classUserB, classTenantB]);
+    await admin.query("INSERT INTO sessions(id,tenant_id,user_id,client_type) VALUES($1,$2,$3,'mcp'),($4,$5,$6,'mcp')", [classSessionA, classTenantA, classUserA, classSessionB, classTenantB, classUserB]);
+    const standardOccurredAt = "2025-06-15T00:00:00.000Z";
+    const standardStartedAtMs = Date.parse(standardOccurredAt);
+    const standardA = envelope({
+      eventId: randomUUID(), tenantId: classTenantA, sessionId: classSessionA, userId: classUserA, type: "tool.invocation", occurredAt: standardOccurredAt,
+      payload: {
+        dispatch_attempt_id: "class-standard-a", invocation_id: randomUUID(), idempotency_key: "eu12/class-standard-a",
+        tool_name: "core.inspect", tool_version: "1.0.0", policy_class: "auto", executor: "bridge",
+        params_digest: `sha256:${"1".repeat(64)}`, outcome: "completed", started_at_ms: standardStartedAtMs, completed_at_ms: standardStartedAtMs + 1,
+        duration_ms: 1, request_bytes: 1, response_bytes: 1,
+      },
+    });
+    const lifecycleA = envelope({
+      eventId: randomUUID(), tenantId: classTenantA, sessionId: classSessionA, userId: classUserA, type: "bridge.connected", occurredAt: standardOccurredAt,
+      payload: { device_id: "class-device-a", bridge_version: "1.0.0", addin_version: "1.0.0", revit_version: "2025", protocol_version: "1" },
+    });
+    const standardB = envelope({
+      eventId: randomUUID(), tenantId: classTenantB, sessionId: classSessionB, userId: classUserB, type: "tool.invocation", occurredAt: standardOccurredAt,
+      payload: { ...standardA.payload, dispatch_attempt_id: "class-standard-b", invocation_id: randomUUID(), idempotency_key: "eu12/class-standard-b" },
+    });
+    await expect(store.emit(standardA)).resolves.toEqual({ ok: true, value: undefined });
+    await expect(store.emit(lifecycleA)).resolves.toEqual({ ok: true, value: undefined });
+    await expect(store.emit(standardB)).resolves.toEqual({ ok: true, value: undefined });
+    await expect(admin.query<{ retention_class: string; count: number }>(
+      "SELECT retention_class,count(*)::int AS count FROM events WHERE tenant_id=$1 AND retention_partition_month='2025-06-01' GROUP BY retention_class ORDER BY retention_class", [classTenantA],
+    )).resolves.toMatchObject({ rows: [{ retention_class: "lifecycle_24m", count: 1 }, { retention_class: "standard_12m", count: 1 }] });
+    await expect(admin.query<{ retention_class: string; partition_key: string; state: string }>(
+      "SELECT retention_class,partition_key,state FROM retention_partition_ownership WHERE tenant_id=$1 AND archive_kind='events' AND archive_month='2025-06-01' ORDER BY retention_class", [classTenantA],
+    )).resolves.toMatchObject({ rows: [
+      { retention_class: "lifecycle_24m", partition_key: `${classTenantA}:events:lifecycle_24m:202506`, state: "active" },
+      { retention_class: "standard_12m", partition_key: `${classTenantA}:events:standard_12m:202506`, state: "active" },
+    ] });
+    const classLeafDue = await admin.query<{ retention_class: string; retention_until: Date }>(
+      "SELECT retention_class,retention_until FROM retention_partition_ownership WHERE tenant_id=$1 AND archive_kind='events' AND archive_month='2025-06-01' ORDER BY retention_class", [classTenantA],
+    );
+    expect(classLeafDue.rows.map((row) => [row.retention_class, row.retention_until.toISOString()])).toEqual([
+      ["lifecycle_24m", "2027-06-15T00:00:00.000Z"], ["standard_12m", "2026-06-15T00:00:00.000Z"],
+    ]);
+    await expect(durable.archiveEvents({ tenantId: classTenantA, month: "2025-06", owner: "class-owner", retentionClass: "standard_12m", asOfMs: Date.parse("2026-06-01T00:00:00.000Z") }))
+      .rejects.toBeInstanceOf(RetentionNotDueError);
+    const standardDueMs = Date.parse("2026-06-16T00:00:00.000Z");
+    await expect(durable.archiveEvents({
+      tenantId: classTenantA, month: "2025-06", owner: "class-owner", retentionClass: "standard_12m", asOfMs: standardDueMs,
+      afterObjectWrite: () => { throw new Error("class-standard crash"); },
+    })).rejects.toThrow(/class-standard crash/u);
+    await expect(durable.archiveEvents({ tenantId: classTenantA, month: "2025-06", owner: "class-owner", retentionClass: "standard_12m", asOfMs: standardDueMs }))
+      .resolves.toMatchObject({ state: "dropped", retentionClass: "standard_12m", eventCount: 1, attempts: 2 });
+    await expect(durable.readArchivedEvents({ tenantId: classTenantA, month: "2025-06", retentionClass: "standard_12m" })).resolves.toEqual([standardA]);
+    await expect(durable.read({ tenantId: classTenantA, eventId: standardA.event_id })).resolves.toBeNull();
+    await expect(durable.read({ tenantId: classTenantA, eventId: lifecycleA.event_id })).resolves.toMatchObject({ event_id: lifecycleA.event_id });
+    await expect(admin.query<{ retention_class: string; state: string }>(
+      "SELECT retention_class,state FROM retention_partition_ownership WHERE tenant_id=$1 AND archive_kind='events' AND archive_month='2025-06-01' ORDER BY retention_class", [classTenantA],
+    )).resolves.toMatchObject({ rows: [
+      { retention_class: "lifecycle_24m", state: "active" }, { retention_class: "standard_12m", state: "dropped" },
+    ] });
+    await expect(durable.read({ tenantId: classTenantB, eventId: standardB.event_id })).resolves.toMatchObject({ event_id: standardB.event_id });
+    await expect(store.emit(standardA)).resolves.toEqual({ ok: true, value: undefined });
+    await expect(durable.read({ tenantId: classTenantA, eventId: standardA.event_id })).resolves.toBeNull();
+    await expect(durable.archiveEvents({ tenantId: classTenantA, month: "2025-06", owner: "class-owner", retentionClass: "lifecycle_24m", asOfMs: Date.parse("2027-06-01T00:00:00.000Z") }))
+      .rejects.toBeInstanceOf(RetentionNotDueError);
+    const lifecycleDueMs = Date.parse("2027-06-16T00:00:00.000Z");
+    await expect(durable.archiveEvents({ tenantId: classTenantA, month: "2025-06", owner: "class-owner", retentionClass: "lifecycle_24m", asOfMs: lifecycleDueMs }))
+      .resolves.toMatchObject({ state: "dropped", retentionClass: "lifecycle_24m", eventCount: 1 });
+    await expect(durable.readArchivedEvents({ tenantId: classTenantA, month: "2025-06", retentionClass: "lifecycle_24m" })).resolves.toEqual([lifecycleA]);
+    await expect(durable.read({ tenantId: classTenantA, eventId: lifecycleA.event_id })).resolves.toBeNull();
+    const currentA = envelope({ eventId: randomUUID(), tenantId: classTenantA, sessionId: classSessionA, userId: classUserA, type: "session.started", occurredAt: "2028-08-10T00:00:00.000Z", payload: { client_type: "mcp", entitled_modules: ["core"] } });
+    const futureA = envelope({ eventId: randomUUID(), tenantId: classTenantA, sessionId: classSessionA, userId: classUserA, type: "session.started", occurredAt: "2028-09-01T00:00:00.000Z", payload: { client_type: "mcp", entitled_modules: ["core"] } });
+    await expect(store.emit(currentA)).resolves.toEqual({ ok: true, value: undefined });
+    await expect(store.emit(futureA)).resolves.toEqual({ ok: true, value: undefined });
+    await expect(durable.archiveEvents({ tenantId: classTenantA, month: "2028-08", owner: "class-owner", retentionClass: "standard_12m", asOfMs: trustedNowMs }))
+      .rejects.toBeInstanceOf(RetentionNotDueError);
+    await expect(durable.archiveEvents({ tenantId: classTenantA, month: "2028-09", owner: "class-owner", retentionClass: "standard_12m", asOfMs: trustedNowMs }))
+      .rejects.toBeInstanceOf(RetentionNotDueError);
+    await durable.close();
   }, 60_000);
 
   it("projects real composed invocation activity through terminal finally and stale-restart recovery", async () => {
@@ -721,24 +817,30 @@ suite("EU-12 Postgres event persistence", () => {
                ($2,$3,$4,5,7,1,8,0.000009,'2026-06-11T00:00:02.000Z',$2,'external-client','legacy-model','external_client','external_client',0,8,'unknown','completed',9)`,
         [legacyLlmEvent, legacyLlmEventTwo, legacyTenant, legacySession],
       );
-      await expect(migrateUp(legacyUrl.href, { appPassword })).resolves.toEqual(expect.arrayContaining([
+      await expect(migrateUp(legacyUrl.href, { appPassword, throughVersion: "008_eu12_canonical_time_partitions.sql" })).resolves.toEqual(expect.arrayContaining([
         "007_eu12_hot_retention_authority.sql",
         "008_eu12_canonical_time_partitions.sql",
       ]));
       await expect(legacy.query<{ count: number; partition_key: string }>(
         "SELECT count(*)::int AS count,min(retention_partition_key) AS partition_key FROM events WHERE tenant_id=$1", [legacyTenant],
       )).resolves.toMatchObject({ rows: [{ count: 4, partition_key: `${legacyTenant}:events:202606` }] });
+      await expect(migrateUp(legacyUrl.href, { appPassword })).resolves.toEqual(expect.arrayContaining([
+        "009_eu12_retention_class_due_partitions.sql",
+      ]));
+      await expect(legacy.query<{ count: number; partition_key: string }>(
+        "SELECT count(*)::int AS count,min(retention_partition_key) AS partition_key FROM events WHERE tenant_id=$1", [legacyTenant],
+      )).resolves.toMatchObject({ rows: [{ count: 4, partition_key: `${legacyTenant}:events:standard_12m:202606` }] });
       await expect(legacy.query<{ idempotency_key: string; envelope_digest: string; retention_partition_key: string }>(
         "SELECT idempotency_key,envelope_digest::text,retention_partition_key FROM events WHERE tenant_id=$1 ORDER BY idempotency_key", [legacyTenant],
       )).resolves.toMatchObject({ rows: [
-        { idempotency_key: "legacy-llm-event-a", envelope_digest: "a".repeat(64), retention_partition_key: `${legacyTenant}:events:202606` },
-        { idempotency_key: "legacy-llm-event-b", envelope_digest: "a".repeat(64), retention_partition_key: `${legacyTenant}:events:202606` },
-        { idempotency_key: "legacy-tool-event-a", envelope_digest: "a".repeat(64), retention_partition_key: `${legacyTenant}:events:202606` },
-        { idempotency_key: "legacy-tool-event-b", envelope_digest: "a".repeat(64), retention_partition_key: `${legacyTenant}:events:202606` },
+        { idempotency_key: "legacy-llm-event-a", envelope_digest: "a".repeat(64), retention_partition_key: `${legacyTenant}:events:standard_12m:202606` },
+        { idempotency_key: "legacy-llm-event-b", envelope_digest: "a".repeat(64), retention_partition_key: `${legacyTenant}:events:standard_12m:202606` },
+        { idempotency_key: "legacy-tool-event-a", envelope_digest: "a".repeat(64), retention_partition_key: `${legacyTenant}:events:standard_12m:202606` },
+        { idempotency_key: "legacy-tool-event-b", envelope_digest: "a".repeat(64), retention_partition_key: `${legacyTenant}:events:standard_12m:202606` },
       ] });
       await expect(legacy.query<{ count: number; partition_key: string }>(
         "SELECT count(*)::int AS count,min(retention_partition_key) AS partition_key FROM tool_invocations WHERE tenant_id=$1", [legacyTenant],
-      )).resolves.toMatchObject({ rows: [{ count: 2, partition_key: `${legacyTenant}:tool_invocations:202606` }] });
+      )).resolves.toMatchObject({ rows: [{ count: 2, partition_key: `${legacyTenant}:tool_invocations:standard_12m:202606` }] });
       await expect(legacy.query<{ idempotency_key: string; tool_name: string; event_id: string }>(
         "SELECT idempotency_key,tool_name,event_id::text FROM tool_invocations WHERE tenant_id=$1 ORDER BY idempotency_key", [legacyTenant],
       )).resolves.toMatchObject({ rows: [
@@ -747,7 +849,7 @@ suite("EU-12 Postgres event persistence", () => {
       ] });
       await expect(legacy.query<{ count: number; partition_key: string }>(
         "SELECT count(*)::int AS count,min(retention_partition_key) AS partition_key FROM llm_calls WHERE tenant_id=$1", [legacyTenant],
-      )).resolves.toMatchObject({ rows: [{ count: 2, partition_key: `${legacyTenant}:llm_calls:202606` }] });
+      )).resolves.toMatchObject({ rows: [{ count: 2, partition_key: `${legacyTenant}:llm_calls:standard_12m:202606` }] });
       await expect(legacy.query<{ event_id: string; model: string; input_tokens: number; output_tokens: number }>(
         "SELECT event_id::text,model,input_tokens,output_tokens FROM llm_calls WHERE tenant_id=$1 ORDER BY input_tokens", [legacyTenant],
       )).resolves.toMatchObject({ rows: [
@@ -797,7 +899,7 @@ suite("EU-12 Postgres event persistence", () => {
        ON CONFLICT (channel,tenant_id) DO UPDATE SET rollout_revision=EXCLUDED.rollout_revision`, [tenantB],
     );
     await expect(runtime.query(
-      "SELECT revagent_prepare_canonical_retention_partition($1,'llm_calls','2026-09-01','tenant-b-lease',1)", [tenantB],
+      "SELECT revagent_prepare_canonical_retention_partition($1,'llm_calls','standard_12m','2026-09-01',$2,'tenant-b-lease',1)", [tenantB, Date.parse("2030-01-01T00:00:00.000Z")],
     )).rejects.toThrow(/permission denied/u);
     const client = await runtime.connect();
     try {
@@ -810,7 +912,7 @@ suite("EU-12 Postgres event persistence", () => {
       }
       await client.query("SAVEPOINT cross_tenant_definer");
       await expect(client.query(
-        "SELECT revagent_prepare_canonical_retention_partition($1,'llm_calls','2026-09-01','tenant-b-lease',1)", [tenantB],
+        "SELECT revagent_prepare_canonical_retention_partition($1,'llm_calls','standard_12m','2026-09-01',$2,'tenant-b-lease',1)", [tenantB, Date.parse("2030-01-01T00:00:00.000Z")],
       )).rejects.toThrow(/tenant scope/u);
       await client.query("ROLLBACK TO SAVEPOINT cross_tenant_definer");
       await expect(client.query(

@@ -8,10 +8,13 @@ import { validateEu12EventEnvelope } from "./eventPersistence.js";
 import type { ResultObjectStore } from "./resultReferenceStore.js";
 
 export type RetentionArchiveState = "prepared" | "uploaded" | "dropped";
+export type RetentionArchiveClass = "standard_12m" | "lifecycle_24m" | "legacy_mixed_008";
 
 export interface RetentionArchiveRun {
   readonly tenantId: string;
   readonly month: string;
+  /** Durable stores expose the class-specific leaf; memory fixtures omit it. */
+  readonly retentionClass?: RetentionArchiveClass;
   readonly state: RetentionArchiveState;
   readonly archiveKey: string;
   readonly archiveDigest: `sha256:${string}`;

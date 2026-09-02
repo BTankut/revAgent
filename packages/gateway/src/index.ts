@@ -383,7 +383,9 @@ export {
 export {
   PostgresEu12DataStore,
   RetentionLeaseError,
+  RetentionNotDueError,
   canonicalDurableReleaseManifest,
+  type CanonicalRetentionClass,
   type PostgresEu12DataStoreOptions,
   type PersistedParityAttribution,
   type RetentionSurface,
@@ -395,6 +397,7 @@ export {
   type RetentionArchiveEventSource,
   type RetentionArchiveRun,
   type RetentionArchiveRunnerOptions,
+  type RetentionArchiveClass,
   type RetentionArchiveState,
 } from "./retentionArchive.js";
 export {

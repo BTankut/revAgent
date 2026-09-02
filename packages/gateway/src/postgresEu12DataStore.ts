@@ -35,6 +35,7 @@ function assertUuid(value: string, label: string): void {
 }
 
 export type RetentionSurface = "events" | "tool_invocations" | "llm_calls";
+export type CanonicalRetentionClass = "standard_12m" | "lifecycle_24m";
 
 export class RetentionLeaseError extends Error {
   public constructor(message: string) {
@@ -43,8 +44,15 @@ export class RetentionLeaseError extends Error {
   }
 }
 
-function archiveKey(tenantId: string, surface: RetentionSurface, month: string): string {
-  return `archive/${tenantId}/${surface}/${month}.ndjson.zst`;
+export class RetentionNotDueError extends Error {
+  public constructor(message: string) {
+    super(message);
+    this.name = "RetentionNotDueError";
+  }
+}
+
+function archiveKey(tenantId: string, surface: RetentionSurface, retentionClass: CanonicalRetentionClass, month: string): string {
+  return `archive/${tenantId}/${surface}/${retentionClass}/${month}.ndjson.zst`;
 }
 
 function archiveDigest(bytes: Uint8Array): string {
@@ -54,6 +62,12 @@ function archiveDigest(bytes: Uint8Array): string {
 function monthStart(month: string): string {
   if (!/^\d{4}-(0[1-9]|1[0-2])$/u.test(month)) throw new Error("archive month must be YYYY-MM");
   return `${month}-01`;
+}
+
+function requireCanonicalRetentionClass(surface: RetentionSurface, retentionClass: CanonicalRetentionClass | undefined): CanonicalRetentionClass {
+  const resolved = retentionClass ?? "standard_12m";
+  if (surface !== "events" && resolved !== "standard_12m") throw new Error("typed retention surfaces are standard_12m only");
+  return resolved;
 }
 
 function immutableArchiveRun(run: RetentionArchiveRun): RetentionArchiveRun {
@@ -405,14 +419,19 @@ export class PostgresEu12DataStore {
     readonly tenantId: string;
     readonly month: string;
     readonly owner: string;
+    readonly asOfMs: number;
+    readonly retentionClass?: CanonicalRetentionClass;
     readonly afterObjectWrite?: (run: RetentionArchiveRun) => Promise<void> | void;
     readonly onBoundary?: (input: Readonly<{ readonly stage: RetentionArchiveBoundary; readonly run: RetentionArchiveRun }>) => Promise<void> | void;
   }): Promise<RetentionArchiveRun> {
     // Typed child partitions are detached first so the canonical envelope leaf
     // can be dropped without a surviving typed foreign-key reference.
-    await this.archiveSurface({ tenantId: input.tenantId, month: input.month, owner: input.owner, surface: "tool_invocations" });
-    await this.archiveSurface({ tenantId: input.tenantId, month: input.month, owner: input.owner, surface: "llm_calls" });
-    return await this.archiveSurface({ ...input, surface: "events" });
+    const retentionClass = requireCanonicalRetentionClass("events", input.retentionClass);
+    if (retentionClass === "standard_12m") {
+      await this.#archiveSurfaceIfPresent({ tenantId: input.tenantId, month: input.month, owner: input.owner, asOfMs: input.asOfMs, surface: "tool_invocations" });
+      await this.#archiveSurfaceIfPresent({ tenantId: input.tenantId, month: input.month, owner: input.owner, asOfMs: input.asOfMs, surface: "llm_calls" });
+    }
+    return await this.archiveSurface({ ...input, retentionClass, surface: "events" });
   }
 
   /** Archive each governed typed table using a durable tenant/month/surface lease. */
@@ -421,72 +440,78 @@ export class PostgresEu12DataStore {
     readonly month: string;
     readonly surface: RetentionSurface;
     readonly owner: string;
+    readonly asOfMs: number;
+    readonly retentionClass?: CanonicalRetentionClass;
     readonly afterObjectWrite?: (run: RetentionArchiveRun) => Promise<void> | void;
     readonly onBoundary?: (input: Readonly<{ readonly stage: RetentionArchiveBoundary; readonly run: RetentionArchiveRun }>) => Promise<void> | void;
   }): Promise<RetentionArchiveRun> {
     const archiveMonth = monthStart(input.month);
+    const retentionClass = requireCanonicalRetentionClass(input.surface, input.retentionClass);
+    const trustedNowMs = this.#now();
+    if (!Number.isSafeInteger(input.asOfMs) || input.asOfMs < 0 || input.asOfMs > trustedNowMs) {
+      throw new RetentionNotDueError("retention requires an explicit trusted non-future asOf");
+    }
     const prepared = await this.#tenantTransaction(input.tenantId, async (client) => {
       const priorResult = await client.query<{
         state: RetentionArchiveRun["state"]; archive_key: string; archive_digest: string; event_count: number;
         attempts: number; lease_owner: string | null; lease_expires_at: Date | null; lease_epoch: number;
       }>(
         `SELECT state,archive_key,archive_digest::text,event_count,attempts,lease_owner,lease_expires_at,lease_epoch
-         FROM retention_runs WHERE tenant_id=$1 AND archive_month=$2::date AND archive_kind=$3 FOR UPDATE`,
-        [input.tenantId, archiveMonth, input.surface],
+         FROM retention_runs WHERE tenant_id=$1 AND archive_month=$2::date AND archive_kind=$3 AND retention_class=$4 FOR UPDATE`,
+        [input.tenantId, archiveMonth, input.surface, retentionClass],
       );
       const prior = priorResult.rows[0];
       if (prior?.state === "dropped") {
         return Object.freeze({
-          run: immutableArchiveRun({ tenantId: input.tenantId, month: input.month, state: "dropped", archiveKey: prior.archive_key, archiveDigest: `sha256:${prior.archive_digest}`, eventCount: prior.event_count, attempts: prior.attempts }),
+          run: immutableArchiveRun({ tenantId: input.tenantId, month: input.month, retentionClass, state: "dropped", archiveKey: prior.archive_key, archiveDigest: `sha256:${prior.archive_digest}`, eventCount: prior.event_count, attempts: prior.attempts }),
            raw: Buffer.alloc(0), epoch: prior.lease_epoch, alreadyDropped: true,
         });
       }
-      const nowMs = this.#now();
+      const nowMs = trustedNowMs;
       if (prior !== undefined && prior.lease_owner !== null && prior.lease_owner !== input.owner && (prior.lease_expires_at?.getTime() ?? 0) > nowMs) {
         throw new RetentionLeaseError("retention partition lease is held by another owner");
       }
-      const key = prior?.archive_key ?? archiveKey(input.tenantId, input.surface, input.month);
+      const key = prior?.archive_key ?? archiveKey(input.tenantId, input.surface, retentionClass, input.month);
       const attempts = (prior?.attempts ?? 0) + 1;
       const epoch = (prior?.lease_epoch ?? 0) + 1;
-      const ownership = await client.query<{ state: "active" | "prepared" | "dropped" }>(
-        `SELECT state FROM retention_partition_ownership
-         WHERE tenant_id=$1 AND archive_kind=$2 AND archive_month=$3::date`,
-        [input.tenantId, input.surface, archiveMonth],
+      const ownership = await client.query<{ state: "active" | "prepared" | "dropped"; retention_until: Date }>(
+        `SELECT state,retention_until FROM retention_partition_ownership
+         WHERE tenant_id=$1 AND archive_kind=$2 AND retention_class=$3 AND archive_month=$4::date`,
+        [input.tenantId, input.surface, retentionClass, archiveMonth],
       );
       if (ownership.rows[0] === undefined) {
-        await client.query(
-          "SELECT revagent_ensure_canonical_retention_partition($1,$2,$3::date)",
-          [input.tenantId, input.surface, archiveMonth],
-        );
+        throw new RetentionNotDueError("canonical retention partition is unavailable");
       } else if (ownership.rows[0].state === "dropped") {
         throw new Error("retention run and canonical partition ownership disagree");
+      } else if (ownership.rows[0].retention_until.getTime() > input.asOfMs) {
+        throw new RetentionNotDueError("canonical retention partition is not due at trusted asOf");
       }
       const placeholderDigest = archiveDigest(Buffer.alloc(0));
       await client.query(
-        `INSERT INTO retention_runs(tenant_id,archive_month,archive_kind,state,archive_key,archive_digest,row_digest,event_count,attempts,lease_owner,lease_expires_at,lease_epoch)
-         VALUES($1,$2::date,$3,'prepared',$4,$5,$5,$6,$7,$8,to_timestamp($9/1000.0),$10)
-         ON CONFLICT (tenant_id,archive_month,archive_kind) DO UPDATE SET
-           state='prepared',archive_key=EXCLUDED.archive_key,archive_digest=EXCLUDED.archive_digest,row_digest=EXCLUDED.row_digest,
-           event_count=EXCLUDED.event_count,attempts=EXCLUDED.attempts,lease_owner=EXCLUDED.lease_owner,
-           lease_expires_at=EXCLUDED.lease_expires_at,lease_epoch=EXCLUDED.lease_epoch,updated_at=clock_timestamp()`,
-        [input.tenantId, archiveMonth, input.surface, key, placeholderDigest, 0, attempts, input.owner, nowMs + 300_000, epoch],
+        `INSERT INTO retention_runs(tenant_id,archive_month,archive_kind,retention_class,state,archive_key,archive_digest,row_digest,event_count,attempts,lease_owner,lease_expires_at,lease_epoch,as_of)
+         VALUES($1,$2::date,$3,$4,'prepared',$5,$6,$6,$7,$8,$9,to_timestamp($10/1000.0),$11,to_timestamp($12/1000.0))
+         ON CONFLICT (tenant_id,archive_month,archive_kind,retention_class) DO UPDATE SET
+            state='prepared',archive_key=EXCLUDED.archive_key,archive_digest=EXCLUDED.archive_digest,row_digest=EXCLUDED.row_digest,
+            event_count=EXCLUDED.event_count,attempts=EXCLUDED.attempts,lease_owner=EXCLUDED.lease_owner,
+            lease_expires_at=EXCLUDED.lease_expires_at,lease_epoch=EXCLUDED.lease_epoch,as_of=EXCLUDED.as_of,updated_at=clock_timestamp()`,
+        [input.tenantId, archiveMonth, input.surface, retentionClass, key, placeholderDigest, 0, attempts, input.owner, nowMs + 300_000, epoch, input.asOfMs],
       );
       const canonical = await client.query<{ partition_key: string; partition_table: string }>(
-        "SELECT partition_key,partition_table FROM revagent_prepare_canonical_retention_partition($1,$2,$3::date,$4,$5)",
-        [input.tenantId, input.surface, archiveMonth, input.owner, epoch],
+        "SELECT partition_key,partition_table FROM revagent_prepare_canonical_retention_partition($1,$2,$3,$4::date,$5,$6,$7)",
+        [input.tenantId, input.surface, retentionClass, archiveMonth, input.asOfMs, input.owner, epoch],
       );
       if (canonical.rows[0] === undefined) throw new Error("canonical retention partition preparation returned no authority");
-      const rows = await this.#readArchiveRows(client, input.tenantId, archiveMonth, input.surface);
+      const rows = await this.#readArchiveRows(client, input.tenantId, archiveMonth, input.surface, retentionClass);
       const raw = Buffer.from(rows.values.map((value) => canonicalizeJson(value as JsonValue)).join(rows.values.length === 0 ? "" : "\n") + (rows.values.length === 0 ? "" : "\n"), "utf8");
       const digest = archiveDigest(raw);
       const measured = await client.query(
-        `UPDATE retention_runs SET archive_digest=$6,row_digest=$6,event_count=$7,updated_at=clock_timestamp()
-         WHERE tenant_id=$1 AND archive_month=$2::date AND archive_kind=$3 AND state='prepared' AND lease_owner=$4 AND lease_epoch=$5`,
-        [input.tenantId, archiveMonth, input.surface, input.owner, epoch, digest, rows.ids.length],
+        `UPDATE retention_runs SET archive_digest=$7,row_digest=$7,event_count=$8,updated_at=clock_timestamp()
+         WHERE tenant_id=$1 AND archive_month=$2::date AND archive_kind=$3 AND retention_class=$4 AND state='prepared' AND lease_owner=$5 AND lease_epoch=$6 AND as_of=to_timestamp($9/1000.0)`,
+        [input.tenantId, archiveMonth, input.surface, retentionClass, input.owner, epoch, digest, rows.ids.length, input.asOfMs],
       );
       if (measured.rowCount !== 1) throw new RetentionLeaseError("retention lease was lost before canonical partition enumeration");
       return Object.freeze({
-        run: immutableArchiveRun({ tenantId: input.tenantId, month: input.month, state: "prepared", archiveKey: key, archiveDigest: `sha256:${digest}`, eventCount: rows.ids.length, attempts }),
+        run: immutableArchiveRun({ tenantId: input.tenantId, month: input.month, retentionClass, state: "prepared", archiveKey: key, archiveDigest: `sha256:${digest}`, eventCount: rows.ids.length, attempts }),
         raw, epoch, alreadyDropped: false,
       });
     });
@@ -502,22 +527,39 @@ export class PostgresEu12DataStore {
     await input.onBoundary?.({ stage: "object_verified", run: prepared.run });
     await this.#tenantTransaction(input.tenantId, async (client) => {
       const uploaded = await client.query(
-        `UPDATE retention_runs SET state='uploaded',lease_expires_at=to_timestamp($6/1000.0),updated_at=clock_timestamp()
-         WHERE tenant_id=$1 AND archive_month=$2::date AND archive_kind=$3 AND state='prepared'
-           AND lease_owner=$4 AND lease_epoch=$5 AND lease_expires_at > clock_timestamp()`,
-        [input.tenantId, archiveMonth, input.surface, input.owner, prepared.epoch, this.#now() + 300_000],
+        `UPDATE retention_runs SET state='uploaded',lease_expires_at=to_timestamp($7/1000.0),updated_at=clock_timestamp()
+         WHERE tenant_id=$1 AND archive_month=$2::date AND archive_kind=$3 AND retention_class=$4 AND state='prepared'
+           AND lease_owner=$5 AND lease_epoch=$6 AND as_of=to_timestamp($8/1000.0) AND lease_expires_at > clock_timestamp()`,
+        [input.tenantId, archiveMonth, input.surface, retentionClass, input.owner, prepared.epoch, this.#now() + 300_000, input.asOfMs],
       );
       if (uploaded.rowCount !== 1) throw new RetentionLeaseError("retention lease was lost before durable archive commit");
       await input.onBoundary?.({ stage: "uploaded", run: prepared.run });
       await client.query(
-        "SELECT revagent_finalize_canonical_retention_partition($1,$2,$3::date,$4,$5)",
-        [input.tenantId, input.surface, archiveMonth, input.owner, prepared.epoch],
+        "SELECT revagent_finalize_canonical_retention_partition($1,$2,$3,$4::date,$5,$6,$7)",
+        [input.tenantId, input.surface, retentionClass, archiveMonth, input.asOfMs, input.owner, prepared.epoch],
       );
     });
     return immutableArchiveRun({ ...prepared.run, state: "dropped" });
   }
 
-  async #readArchiveRows(client: PoolClient, tenantId: string, archiveMonth: string, surface: RetentionSurface): Promise<Readonly<{ readonly ids: readonly string[]; readonly values: readonly GatewayJsonValue[] }>> {
+  async #archiveSurfaceIfPresent(input: {
+    readonly tenantId: string;
+    readonly month: string;
+    readonly surface: Exclude<RetentionSurface, "events">;
+    readonly owner: string;
+    readonly asOfMs: number;
+  }): Promise<RetentionArchiveRun | null> {
+    const archiveMonth = monthStart(input.month);
+    const ownership = await this.#tenantTransaction(input.tenantId, async (client) => await client.query<{ state: "active" | "prepared" | "dropped" }>(
+      `SELECT state FROM retention_partition_ownership
+       WHERE tenant_id=$1 AND archive_kind=$2 AND retention_class='standard_12m' AND archive_month=$3::date`,
+      [input.tenantId, input.surface, archiveMonth],
+    ));
+    if (ownership.rows[0] === undefined || ownership.rows[0].state === "dropped") return null;
+    return await this.archiveSurface({ ...input, retentionClass: "standard_12m" });
+  }
+
+  async #readArchiveRows(client: PoolClient, tenantId: string, archiveMonth: string, surface: RetentionSurface, retentionClass: CanonicalRetentionClass): Promise<Readonly<{ readonly ids: readonly string[]; readonly values: readonly GatewayJsonValue[] }>> {
     if (surface === "events") {
       const result = await client.query<{
         id: string; event_type: GatewayEventEnvelope["event_type"]; occurred_at: Date; recorded_at: Date;
@@ -525,7 +567,7 @@ export class PostgresEu12DataStore {
       }>(
         `SELECT event.id::text,event.event_type,event.occurred_at,event.recorded_at,event.source,event.actor,event.session_id::text,event.turn_id::text,event.sequence,event.payload
          FROM events AS event
-         WHERE event.tenant_id=$1 AND event.retention_partition_month=$2::date ORDER BY event.occurred_at,event.id`, [tenantId, archiveMonth],
+         WHERE event.tenant_id=$1 AND event.retention_partition_month=$2::date AND event.retention_class=$3 ORDER BY event.occurred_at,event.id`, [tenantId, archiveMonth, retentionClass],
       );
       const values = result.rows.map((row) => validateEu12EventEnvelope({
         schema: "revagent.event.v2", event_id: row.id, event_type: row.event_type,
@@ -539,7 +581,7 @@ export class PostgresEu12DataStore {
     const timeColumn = surface === "tool_invocations" ? "started_at" : "created_at";
     const result = await client.query<{ id: string; record: GatewayJsonValue }>(
       `SELECT source.id::text,row_to_json(source)::jsonb AS record FROM ${table} AS source
-       WHERE source.tenant_id=$1 AND source.retention_partition_month=$2::date ORDER BY source.${timeColumn},source.id`, [tenantId, archiveMonth],
+       WHERE source.tenant_id=$1 AND source.retention_partition_month=$2::date AND source.retention_class=$3 ORDER BY source.${timeColumn},source.id`, [tenantId, archiveMonth, retentionClass],
     );
     return Object.freeze({ ids: Object.freeze(result.rows.map((row) => row.id)), values: Object.freeze(result.rows.map((row) => row.record)) });
   }
@@ -651,13 +693,15 @@ export class PostgresEu12DataStore {
     });
   }
 
-  public async readArchivedEvents(input: { readonly tenantId: string; readonly month: string }): Promise<readonly GatewayEventEnvelope[]> {
-    const compressed = await this.#objects.get({ key: archiveKey(input.tenantId, "events", input.month) });
+  public async readArchivedEvents(input: { readonly tenantId: string; readonly month: string; readonly retentionClass?: CanonicalRetentionClass }): Promise<readonly GatewayEventEnvelope[]> {
+    const retentionClass = requireCanonicalRetentionClass("events", input.retentionClass);
+    const compressed = await this.#objects.get({ key: archiveKey(input.tenantId, "events", retentionClass, input.month) });
     return compressed === null ? Object.freeze([]) : parseArchivedEventNdjson(compressed);
   }
 
-  public async readTypedArchive(input: { readonly tenantId: string; readonly month: string; readonly surface: RetentionSurface }): Promise<readonly GatewayJsonValue[]> {
-    const compressed = await this.#objects.get({ key: archiveKey(input.tenantId, input.surface, input.month) });
+  public async readTypedArchive(input: { readonly tenantId: string; readonly month: string; readonly surface: RetentionSurface; readonly retentionClass?: CanonicalRetentionClass }): Promise<readonly GatewayJsonValue[]> {
+    const retentionClass = requireCanonicalRetentionClass(input.surface, input.retentionClass);
+    const compressed = await this.#objects.get({ key: archiveKey(input.tenantId, input.surface, retentionClass, input.month) });
     if (compressed === null) return Object.freeze([]);
     const ndjson = zstdDecompressSync(compressed).toString("utf8");
     return Object.freeze(ndjson.split("\n").filter((line) => line.length > 0).map((line) => JSON.parse(line) as GatewayJsonValue));
