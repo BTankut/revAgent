@@ -37,6 +37,7 @@ const storeFailure = <T>(code: "conflict" | "invalid_record" | "unavailable", me
 const storeSuccess = <T>(value: T): StoreOutcome<T> => Object.freeze({ ok: true as const, value });
 const STARTUP_LOCK_LEASE_MS = 30_000;
 const STARTUP_LOCK_WAIT_MS = 5_000;
+const STARTUP_LOCK_RENEWAL_GRACE_MAX_MS = 1_000;
 
 export interface ConformanceCredential {
   readonly tenantId: string;
@@ -161,6 +162,11 @@ export class SqliteConformanceProtocolStore implements GatewayProtocolStore {
       listKeys: async (tenantId: string, namespace: string, limit: number) => this.#inventoryKeys(tenantId, namespace, limit),
     });
   }
+  /** Keep a bounded scheduler-jitter margin so a live owner is not fenced by a delayed timer tick. */
+  #startupLeaseExpiry(nowMs: number): number {
+    const renewalGraceMs = Math.min(STARTUP_LOCK_RENEWAL_GRACE_MAX_MS, Math.max(100, this.#startupRenewMs * 2));
+    return nowMs + this.#startupLeaseMs + renewalGraceMs;
+  }
   async #withLock<T>(work: () => Promise<StoreOutcome<T>>): Promise<StoreOutcome<T>> { const previous = this.#exclusive; let release!: () => void; this.#exclusive = new Promise<void>((resolve) => { release = resolve; }); await previous; try { return await work(); } finally { release(); } }
   #db(): Database.Database { if (!this.#opened || this.#database === null) throw new Error("closed"); return this.#database; }
   async open(): Promise<StoreOutcome<void>> { try { await mkdir(path.dirname(this.#file), { recursive: true }); const database = new Database(this.#file, { timeout: 5_000 }); database.pragma("journal_mode = WAL"); database.pragma("synchronous = FULL"); database.pragma("foreign_keys = ON"); database.pragma("fullfsync = ON"); database.exec("CREATE TABLE IF NOT EXISTS conformance_records (tenant_id TEXT NOT NULL, namespace TEXT NOT NULL, key TEXT NOT NULL, value_json TEXT NOT NULL, version INTEGER NOT NULL CHECK(version > 0), updated_at_ms INTEGER NOT NULL, PRIMARY KEY (tenant_id, namespace, key)); CREATE TABLE IF NOT EXISTS conformance_startup_lock (id INTEGER PRIMARY KEY CHECK(id = 1), owner_token TEXT NULL, lease_expires_at_ms INTEGER NOT NULL, version INTEGER NOT NULL); INSERT OR IGNORE INTO conformance_startup_lock(id, owner_token, lease_expires_at_ms, version) VALUES (1, NULL, 0, 0);"); this.#database = database; this.#opened = true; return storeSuccess(undefined); } catch { return storeFailure("unavailable", "conformance SQLite store unavailable"); } }
@@ -190,7 +196,7 @@ export class SqliteConformanceProtocolStore implements GatewayProtocolStore {
               (lock.owner_token === null || lock.lease_expires_at_ms <= Date.now())) {
             const result = database.prepare(
               "UPDATE conformance_startup_lock SET owner_token = ?, lease_expires_at_ms = ?, version = ? WHERE id = 1 AND version = ?",
-            ).run(token, Date.now() + this.#startupLeaseMs, lock.version + 1, lock.version);
+            ).run(token, this.#startupLeaseExpiry(Date.now()), lock.version + 1, lock.version);
             if (result.changes === 1) version = lock.version + 1;
           }
           database.exec("COMMIT");
@@ -217,7 +223,7 @@ export class SqliteConformanceProtocolStore implements GatewayProtocolStore {
         database.exec("BEGIN IMMEDIATE");
         const result = database.prepare(
           "UPDATE conformance_startup_lock SET lease_expires_at_ms = ?, version = ? WHERE id = 1 AND owner_token = ? AND version = ?",
-        ).run(Date.now() + this.#startupLeaseMs, version + 1, token, version);
+        ).run(this.#startupLeaseExpiry(Date.now()), version + 1, token, version);
         if (result.changes !== 1) lost = true;
         else version += 1;
         database.exec("COMMIT");
