@@ -233,16 +233,28 @@ export class PostgresTenantStore implements GatewayEventSink {
 
   async #writeMeteringRecord(client: PoolClient, event: GatewayEventEnvelope): Promise<void> {
     const payload = event.payload as GatewayJsonObject;
-    const fields = ["input_tokens", "output_tokens", "cache_read_tokens", "duration_ms", "cost"] as const;
+    const fields = ["input_tokens", "output_tokens", "cache_read_tokens", "cache_creation_tokens", "duration_ms", "latency_ms", "cost_microusd"] as const;
     if (event.session_id === undefined || fields.some((field) => typeof payload[field] !== "number" || !Number.isFinite(payload[field] as number) || (payload[field] as number) < 0)) {
       throw new Error("llm call instrumentation is incomplete");
     }
+    const requiredText = ["upstream_name", "model_name", "role", "engine_mode", "outcome"] as const;
+    if (requiredText.some((field) => typeof payload[field] !== "string") ||
+      (payload.stop_reason !== null && typeof payload.stop_reason !== "string")) {
+      throw new Error("llm call dimensions are incomplete");
+    }
     await client.query(
-      `INSERT INTO llm_calls(event_id,tenant_id,session_id,input_tokens,output_tokens,cache_read_tokens,duration_ms,cost)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+      `INSERT INTO llm_calls(
+         id,event_id,tenant_id,session_id,turn_id,provider,model,role,engine_mode,
+         input_tokens,output_tokens,cache_read_tokens,cache_creation_input_tokens,
+         duration_ms,latency_ms,stop_reason,outcome,cost,cost_microusd)
+       VALUES ($1,$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
        ON CONFLICT (event_id) DO NOTHING`,
-      [event.event_id, event.tenant_id, event.session_id, payload.input_tokens,
-        payload.output_tokens, payload.cache_read_tokens, payload.duration_ms, payload.cost],
+      [event.event_id, event.tenant_id, event.session_id, event.turn_id ?? null,
+        payload.upstream_name, payload.model_name, payload.role, payload.engine_mode,
+        payload.input_tokens, payload.output_tokens, payload.cache_read_tokens,
+        payload.cache_creation_tokens, payload.duration_ms, payload.latency_ms,
+        payload.stop_reason, payload.outcome,
+        Number(payload.cost_microusd) / 1_000_000, payload.cost_microusd],
     );
   }
 

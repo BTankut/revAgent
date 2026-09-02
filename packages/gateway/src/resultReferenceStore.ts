@@ -96,25 +96,25 @@ function idempotencyKey(scope: ResultReferenceScope, value: string): string {
   return `${scope.tenantId}/${scope.sessionId}/${value}`;
 }
 
-function sha256(bytes: Uint8Array): `sha256:${string}` {
+export function resultReferenceDigest(bytes: Uint8Array): `sha256:${string}` {
   return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
 }
 
-function storageKey(scope: ResultReferenceScope, refId: string, nowMs: number): string {
+export function resultReferenceStorageKey(scope: ResultReferenceScope, refId: string, nowMs: number): string {
   const date = new Date(nowMs);
   const year = String(date.getUTCFullYear()).padStart(4, "0");
   const month = String(date.getUTCMonth() + 1).padStart(2, "0");
   return `tenants/${scope.tenantId}/results/${year}/${month}/${scope.sessionId}/${refId}.json.zst`;
 }
 
-function boundedPageSize(value: number): number {
+export function validateResultReferencePageSize(value: number): number {
   if (!Number.isSafeInteger(value) || value < 1 || value > RESULT_REFERENCE_MAX_BYTES) {
     throw new Error("result reference page size is outside the bounded range");
   }
   return value;
 }
 
-function immutableRef(ref: ResultReference): ResultReference {
+export function freezeResultReference(ref: ResultReference): ResultReference {
   return Object.freeze({
     ...ref,
     summary: Object.freeze({ ...ref.summary }),
@@ -146,7 +146,7 @@ export class ResultReferenceStore {
     this.#objects = options.objects;
     this.#now = options.now ?? Date.now;
     this.#newRefId = options.newRefId ?? randomUUID;
-    this.#defaultPageSizeBytes = boundedPageSize(options.defaultPageSizeBytes ?? RESULT_REFERENCE_DEFAULT_PAGE_BYTES);
+    this.#defaultPageSizeBytes = validateResultReferencePageSize(options.defaultPageSizeBytes ?? RESULT_REFERENCE_DEFAULT_PAGE_BYTES);
     this.#defaultTtlMs = options.defaultTtlMs ?? RESULT_REFERENCE_DEFAULT_TTL_MS;
     if (!Number.isSafeInteger(this.#defaultTtlMs) || this.#defaultTtlMs < 1) {
       throw new Error("result reference ttl must be a positive integer");
@@ -171,12 +171,12 @@ export class ResultReferenceStore {
     if (!Number.isSafeInteger(expiresAtMs) || expiresAtMs <= nowMs) {
       throw new Error("result reference expiry must be after creation");
     }
-    const pageSizeBytes = boundedPageSize(input.pageSizeBytes ?? this.#defaultPageSizeBytes);
+    const pageSizeBytes = validateResultReferencePageSize(input.pageSizeBytes ?? this.#defaultPageSizeBytes);
     const bytes = Buffer.from(canonicalizeJson(input.payload as JsonValue), "utf8");
     if (bytes.byteLength > RESULT_REFERENCE_MAX_BYTES) {
       throw new Error("result reference payload exceeds the five MiB limit");
     }
-    const digest = sha256(bytes);
+    const digest = resultReferenceDigest(bytes);
     const prior = input.idempotencyKey === undefined
       ? undefined
       : this.#idempotency.get(idempotencyKey(input.scope, input.idempotencyKey));
@@ -188,10 +188,10 @@ export class ResultReferenceStore {
     }
     const refId = this.#newRefId();
     if (!validIdentifier(refId)) throw new Error("generated result reference id is invalid");
-    const key = storageKey(input.scope, refId, nowMs);
+    const key = resultReferenceStorageKey(input.scope, refId, nowMs);
     const pageCount = Math.max(1, Math.ceil(bytes.byteLength / pageSizeBytes));
     const firstPage = bytes.subarray(0, Math.min(bytes.byteLength, pageSizeBytes));
-    const ref = immutableRef({
+    const ref = freezeResultReference({
       refId,
       tenantId: input.scope.tenantId,
       sessionId: input.scope.sessionId,
@@ -227,7 +227,7 @@ export class ResultReferenceStore {
     const compressed = await this.#objects.get({ key: stored.ref.storageKey });
     if (compressed === null) return Object.freeze({ kind: "not_found" });
     const bytes = zstdDecompressSync(compressed);
-    if (sha256(bytes) !== stored.ref.digest) return Object.freeze({ kind: "not_found" });
+    if (resultReferenceDigest(bytes) !== stored.ref.digest) return Object.freeze({ kind: "not_found" });
     const start = input.pageIndex * stored.ref.pageSizeBytes;
     const page = new Uint8Array(bytes.subarray(start, Math.min(bytes.byteLength, start + stored.ref.pageSizeBytes)));
     return Object.freeze({

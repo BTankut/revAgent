@@ -12,6 +12,9 @@ export interface Eu12InvocationInput {
   readonly source: GatewayEventEnvelope["source"];
   readonly sequence: number;
   readonly idempotencyKey: string;
+  /** Stable across transport redelivery; distinct from the envelope event id. */
+  readonly invocationId?: string;
+  readonly dispatchAttemptId?: string;
   readonly toolName: string;
   readonly toolVersion: string;
   readonly policyClass: "auto" | "confirm" | "gated";
@@ -65,6 +68,8 @@ export class Eu12InvocationRecorder {
       session_id: input.sessionId,
       seq: input.sequence,
       payload: Object.freeze({
+        dispatch_attempt_id: input.dispatchAttemptId ?? input.idempotencyKey,
+        invocation_id: input.invocationId ?? input.idempotencyKey,
         idempotency_key: input.idempotencyKey,
         tool_name: input.toolName,
         tool_version: input.toolVersion,

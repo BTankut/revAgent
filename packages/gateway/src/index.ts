@@ -343,6 +343,7 @@ export {
 } from "./events.js";
 export {
   BoundedEu12EventWriter,
+  EU12_EVENT_ENVELOPE_SCHEMA,
   Eu12EventBackpressureError,
   Eu12EventIdempotencyError,
   Eu12EventValidationError,
@@ -369,12 +370,20 @@ export {
   InMemoryResultObjectStore,
   ResultReferenceIdempotencyError,
   ResultReferenceStore,
+  freezeResultReference,
+  resultReferenceDigest,
+  resultReferenceStorageKey,
+  validateResultReferencePageSize,
   type ResultObjectStore,
   type ResultReference,
   type ResultReferencePage,
   type ResultReferenceScope,
   type ResultReferenceStoreOptions,
 } from "./resultReferenceStore.js";
+export {
+  PostgresEu12DataStore,
+  type PostgresEu12DataStoreOptions,
+} from "./postgresEu12DataStore.js";
 export {
   RetentionArchiveRunner,
   parseArchivedEventNdjson,

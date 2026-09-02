@@ -5,7 +5,6 @@ import { z } from "zod";
 
 import type { GatewayJsonObject, GatewayJsonValue } from "./dispatch.js";
 import {
-  GATEWAY_EVENT_TYPES,
   REVAGENT_EVENT_SCHEMA,
   type GatewayEventEnvelope,
   type GatewayEventSink,
@@ -15,7 +14,6 @@ import type { GatewayPortAdapterKind, GatewayPortResult } from "./gatewayPorts.j
 
 const EVENT_ID_SCHEMA = z.string().uuid();
 const ISO_TIME_SCHEMA = z.string().datetime({ offset: true });
-const eventTypeSchema = z.enum(GATEWAY_EVENT_TYPES);
 
 const jsonValueSchema: z.ZodType = z.lazy(() => z.union([
   z.string(),
@@ -26,10 +24,125 @@ const jsonValueSchema: z.ZodType = z.lazy(() => z.union([
   z.record(z.string(), jsonValueSchema),
 ]));
 
-const eventEnvelopeSchema = z.object({
+const nonNegativeInteger = z.number().int().nonnegative();
+const boundedText = z.string().min(1).max(4_096);
+const nullableText = z.string().max(4_096).nullable();
+const sha256Schema = z.string().regex(/^sha256:[0-9a-f]{64}$/u);
+const jsonObjectSchema = z.object({}).catchall(jsonValueSchema);
+
+const sessionStartedPayloadSchema = z.object({
+  client_type: z.enum(["mcp", "web", "bridge"]),
+  entitled_modules: z.array(z.string().min(1).max(128)).max(32),
+}).catchall(jsonValueSchema);
+const sessionEndedPayloadSchema = z.object({
+  reason: boundedText,
+  duration_ms: nonNegativeInteger,
+  turn_count: nonNegativeInteger,
+  invocation_count: nonNegativeInteger,
+}).catchall(jsonValueSchema);
+const turnCompletedPayloadSchema = z.object({
+  engine_mode: z.literal("external_client"),
+  router: z.object({
+    discipline: nullableText,
+    data_plane: z.enum(["live", "published"]),
+    complexity: z.enum(["low", "medium", "high"]),
+  }).strict(),
+  llm_call_ids: z.array(z.string().uuid()).max(256),
+  duration_ms: nonNegativeInteger,
+}).catchall(jsonValueSchema);
+const llmCallPayloadSchema = z.object({
+  idempotency_key: boundedText,
+  upstream_name: boundedText,
+  model_name: boundedText,
+  engine_mode: z.literal("external_client"),
+  role: z.literal("external_client"),
+  input_tokens: nonNegativeInteger,
+  output_tokens: nonNegativeInteger,
+  cache_read_tokens: nonNegativeInteger,
+  cache_creation_tokens: nonNegativeInteger,
+  duration_ms: nonNegativeInteger,
+  latency_ms: nonNegativeInteger,
+  cost_microusd: nonNegativeInteger,
+  stop_reason: boundedText,
+  outcome: z.enum(["completed", "failed", "cancelled", "timeout"]),
+}).catchall(jsonValueSchema);
+const toolInvocationPayloadSchema = z.object({
+  dispatch_attempt_id: boundedText,
+  invocation_id: boundedText,
+  idempotency_key: z.string().min(1).max(256).nullable(),
+  tool_name: boundedText,
+  tool_version: nullableText,
+  policy_class: z.enum(["auto", "confirm", "gated"]).nullable(),
+  executor: z.enum(["bridge", "internal_mcp", "aps"]).nullable(),
+  params_digest: sha256Schema.nullable(),
+  outcome: z.enum(["completed", "guarded", "failed", "denied", "cancelled", "timeout"]),
+  started_at_ms: nonNegativeInteger,
+  completed_at_ms: nonNegativeInteger,
+  duration_ms: nonNegativeInteger,
+  request_bytes: nonNegativeInteger.optional(),
+  response_bytes: nonNegativeInteger.optional(),
+  params_summary: jsonObjectSchema.optional(),
+  code: jsonObjectSchema.nullable().optional(),
+  context: jsonObjectSchema.nullable().optional(),
+  search: jsonObjectSchema.nullable().optional(),
+}).catchall(jsonValueSchema).superRefine((payload, context) => {
+  if (payload.completed_at_ms < payload.started_at_ms) {
+    context.addIssue({ code: "custom", message: "completed_at_ms must not precede started_at_ms", path: ["completed_at_ms"] });
+  }
+  if (payload.duration_ms !== payload.completed_at_ms - payload.started_at_ms) {
+    context.addIssue({ code: "custom", message: "duration_ms must equal the bounded invocation interval", path: ["duration_ms"] });
+  }
+});
+const toolConfirmationPayloadSchema = z.object({
+  invocation_id: nullableText,
+  state: z.enum(["requested", "approved", "denied", "expired"]),
+  tool_name: boundedText,
+  tool_version: nullableText,
+  confirmation_id: nullableText,
+  preview_ref: nullableText,
+  recorded_at_ms: nonNegativeInteger,
+}).catchall(jsonValueSchema);
+const bridgeConnectedPayloadSchema = z.object({
+  device_id: boundedText,
+  bridge_version: nullableText,
+  addin_version: nullableText,
+  revit_version: nullableText,
+  protocol_version: nullableText,
+}).catchall(jsonValueSchema);
+const bridgeDisconnectedPayloadSchema = z.object({
+  device_id: boundedText,
+  reason: boundedText,
+  connected_ms: nonNegativeInteger,
+}).catchall(jsonValueSchema);
+const bridgeEnrollmentPayloadSchema = z.object({
+  device_id: boundedText,
+  by_user: nullableText,
+  reason: nullableText,
+}).catchall(jsonValueSchema);
+const bridgeUpdatePayloadSchema = z.object({
+  device_id: boundedText,
+  from_version: nullableText,
+  to_version: nullableText,
+  status: z.enum(["started", "applied", "failed", "deferred"]),
+  reason: nullableText,
+  error: nullableText,
+}).catchall(jsonValueSchema);
+const authEventPayloadSchema = z.object({
+  kind: z.enum(["login", "login_failed", "logout", "token_rotated", "seat_denied", "entitlement_denied", "role_changed"]),
+  subject: nullableText,
+  detail: jsonObjectSchema.nullable(),
+  ip: nullableText,
+}).catchall(jsonValueSchema);
+const registryPublishedPayloadSchema = z.object({
+  entity: z.enum(["tool", "module", "instruction_doc", "bridge_release"]),
+  entity_id: boundedText,
+  version: nullableText,
+  by_user: nullableText,
+}).catchall(jsonValueSchema);
+
+const envelopeShape = {
   schema: z.literal(REVAGENT_EVENT_SCHEMA),
   event_id: EVENT_ID_SCHEMA,
-  event_type: eventTypeSchema,
   occurred_at: ISO_TIME_SCHEMA,
   recorded_at: ISO_TIME_SCHEMA,
   tenant_id: EVENT_ID_SCHEMA,
@@ -46,8 +159,24 @@ const eventEnvelopeSchema = z.object({
   session_id: EVENT_ID_SCHEMA.optional(),
   turn_id: EVENT_ID_SCHEMA.optional(),
   seq: z.number().int().nonnegative(),
-  payload: z.record(z.string(), jsonValueSchema),
-}).strict().superRefine((event, context) => {
+};
+
+/** P-EVT-1: one discriminated envelope with one zod-validated payload per kind. */
+export const EU12_EVENT_ENVELOPE_SCHEMA = z.discriminatedUnion("event_type", [
+  z.object({ ...envelopeShape, event_type: z.literal("session.started"), payload: sessionStartedPayloadSchema }).strict(),
+  z.object({ ...envelopeShape, event_type: z.literal("session.ended"), payload: sessionEndedPayloadSchema }).strict(),
+  z.object({ ...envelopeShape, event_type: z.literal("turn.completed"), payload: turnCompletedPayloadSchema }).strict(),
+  z.object({ ...envelopeShape, event_type: z.literal("llm.call"), payload: llmCallPayloadSchema }).strict(),
+  z.object({ ...envelopeShape, event_type: z.literal("tool.invocation"), payload: toolInvocationPayloadSchema }).strict(),
+  z.object({ ...envelopeShape, event_type: z.literal("tool.confirmation"), payload: toolConfirmationPayloadSchema }).strict(),
+  z.object({ ...envelopeShape, event_type: z.literal("bridge.connected"), payload: bridgeConnectedPayloadSchema }).strict(),
+  z.object({ ...envelopeShape, event_type: z.literal("bridge.disconnected"), payload: bridgeDisconnectedPayloadSchema }).strict(),
+  z.object({ ...envelopeShape, event_type: z.literal("bridge.enrolled"), payload: bridgeEnrollmentPayloadSchema }).strict(),
+  z.object({ ...envelopeShape, event_type: z.literal("bridge.revoked"), payload: bridgeEnrollmentPayloadSchema }).strict(),
+  z.object({ ...envelopeShape, event_type: z.literal("bridge.update"), payload: bridgeUpdatePayloadSchema }).strict(),
+  z.object({ ...envelopeShape, event_type: z.literal("auth.event"), payload: authEventPayloadSchema }).strict(),
+  z.object({ ...envelopeShape, event_type: z.literal("registry.published"), payload: registryPublishedPayloadSchema }).strict(),
+]).superRefine((event, context) => {
   if (event.actor.type === "user" && event.actor.user_id === undefined) {
     context.addIssue({ code: "custom", message: "user events require actor.user_id", path: ["actor", "user_id"] });
   }
@@ -104,7 +233,7 @@ interface StoredEvent {
 }
 
 function asGatewayEventEnvelope(value: unknown): GatewayEventEnvelope {
-  const parsed = eventEnvelopeSchema.safeParse(value);
+  const parsed = EU12_EVENT_ENVELOPE_SCHEMA.safeParse(value);
   if (!parsed.success) {
     const issues = parsed.error.issues.map((issue) => `${issue.path.join(".") || "event"}: ${issue.message}`);
     throw new Eu12EventValidationError(`invalid revagent.event.v2 envelope: ${issues.join("; ")}`);
@@ -192,12 +321,17 @@ export interface ExternalLlmMeteringObservation {
   readonly inputTokens: number;
   readonly outputTokens: number;
   readonly cacheReadTokens: number;
+  readonly cacheCreationTokens?: number;
   readonly durationMs: number;
   readonly cost: number;
+  readonly stopReason?: string | null;
+  readonly outcome?: "completed" | "failed" | "cancelled" | "timeout";
 }
 
 export function createExternalLlmMeteringEvent(input: ExternalLlmMeteringObservation): GatewayEventEnvelope {
-  for (const value of [input.inputTokens, input.outputTokens, input.cacheReadTokens, input.durationMs, input.cost]) {
+  const cacheCreationTokens = input.cacheCreationTokens ?? 0;
+  const costMicrousd = Math.round(input.cost * 1_000_000);
+  for (const value of [input.inputTokens, input.outputTokens, input.cacheReadTokens, cacheCreationTokens, input.durationMs, input.cost, costMicrousd]) {
     if (!Number.isFinite(value) || value < 0) throw new Eu12EventValidationError("metering counters must be finite non-negative values");
   }
   return validateEu12EventEnvelope({
@@ -216,11 +350,16 @@ export function createExternalLlmMeteringEvent(input: ExternalLlmMeteringObserva
       upstream_name: input.upstreamName,
       model_name: input.modelName,
       engine_mode: "external_client",
+      role: "external_client",
       input_tokens: input.inputTokens,
       output_tokens: input.outputTokens,
       cache_read_tokens: input.cacheReadTokens,
+      cache_creation_tokens: cacheCreationTokens,
       duration_ms: input.durationMs,
-      cost: input.cost,
+      latency_ms: input.durationMs,
+      cost_microusd: costMicrousd,
+      stop_reason: input.stopReason ?? "unknown",
+      outcome: input.outcome ?? "completed",
     },
   });
 }

@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 
 import type { GatewayJsonObject } from "./dispatch.js";
-import type { GatewayEventEnvelope } from "./events.js";
+import { GATEWAY_EVENT_TYPES, type GatewayEventEnvelope } from "./events.js";
 import {
   BoundedEu12EventWriter,
   Eu12EventBackpressureError,
@@ -17,7 +17,7 @@ import { Eu12InvocationRecorder } from "./eventResultLifecycle.js";
 import { deriveMetricParity } from "./metricParity.js";
 import { ReleaseChannelStore } from "./releaseChannelStore.js";
 import { RetentionArchiveRunner, parseArchivedEventNdjson } from "./retentionArchive.js";
-import { InMemoryResultObjectStore, ResultReferenceIdempotencyError, ResultReferenceStore } from "./resultReferenceStore.js";
+import { InMemoryResultObjectStore, RESULT_REFERENCE_MAX_BYTES, ResultReferenceIdempotencyError, ResultReferenceStore } from "./resultReferenceStore.js";
 
 const TENANT_A = "10000000-0000-4000-8000-000000000001";
 const TENANT_B = "20000000-0000-4000-8000-000000000002";
@@ -52,6 +52,8 @@ function event(input: {
     session_id: input.sessionId ?? SESSION_A,
     seq: input.sequence ?? input.id,
     payload: input.payload ?? {
+      dispatch_attempt_id: `attempt-${input.id}`,
+      invocation_id: `invocation-${input.id}`,
       idempotency_key: `event-${input.id}`,
       tool_name: "core.inspect",
       tool_version: "1.0.0",
@@ -68,9 +70,34 @@ function event(input: {
   });
 }
 
+function typedPayload(type: GatewayEventEnvelope["event_type"], index: number): GatewayJsonObject {
+  switch (type) {
+    case "session.started": return { client_type: "mcp", entitled_modules: ["core"] };
+    case "session.ended": return { reason: "normal", duration_ms: 1, turn_count: 1, invocation_count: 1 };
+    case "turn.completed": return { engine_mode: "external_client", router: { discipline: "mech", data_plane: "live", complexity: "low" }, llm_call_ids: [eventId(index + 100)], duration_ms: 1 };
+    case "llm.call": return { idempotency_key: `llm-${index}`, upstream_name: "external-client", model_name: "observed-model", engine_mode: "external_client", role: "external_client", input_tokens: 1, output_tokens: 2, cache_read_tokens: 0, cache_creation_tokens: 0, duration_ms: 3, latency_ms: 3, cost_microusd: 4, stop_reason: "unknown", outcome: "completed" };
+    case "tool.invocation": return { dispatch_attempt_id: `attempt-${index}`, invocation_id: `invocation-${index}`, idempotency_key: `tool-${index}`, tool_name: "core.inspect", tool_version: "1.0.0", policy_class: "auto", executor: "bridge", params_digest: `sha256:${"a".repeat(64)}`, outcome: "completed", started_at_ms: 1_000, completed_at_ms: 1_001, duration_ms: 1, request_bytes: 1, response_bytes: 1 };
+    case "tool.confirmation": return { invocation_id: `invocation-${index}`, state: "approved", tool_name: "core.inspect", tool_version: "1.0.0", confirmation_id: `confirmation-${index}`, preview_ref: null, recorded_at_ms: 1 };
+    case "bridge.connected": return { device_id: `device-${index}`, bridge_version: "1.0.0", addin_version: "1.0.0", revit_version: "2022", protocol_version: "1" };
+    case "bridge.disconnected": return { device_id: `device-${index}`, reason: "normal", connected_ms: 1 };
+    case "bridge.enrolled": return { device_id: `device-${index}`, by_user: USER_A, reason: null };
+    case "bridge.revoked": return { device_id: `device-${index}`, by_user: USER_A, reason: "operator" };
+    case "bridge.update": return { device_id: `device-${index}`, from_version: "1.0.0", to_version: "1.0.1", status: "applied", reason: "completed", error: null };
+    case "auth.event": return { kind: "login", subject: USER_A, detail: {}, ip: null };
+    case "registry.published": return { entity: "bridge_release", entity_id: `release-${index}`, version: "1.0.0", by_user: USER_A };
+  }
+}
+
 describe("EU-12 M5 event/result/retention/release/parity vertical", () => {
-  it("validates the complete event envelope and rejects malformed audit vectors", () => {
+  it("validates discriminated payloads for every event kind and rejects malformed vectors", () => {
     expect(event({ id: 1 })).toMatchObject({ schema: "revagent.event.v2", event_type: "tool.invocation" });
+    for (const [index, type] of GATEWAY_EVENT_TYPES.entries()) {
+      expect(event({ id: 50 + index, type, payload: typedPayload(type, index) })).toMatchObject({ event_type: type });
+    }
+    for (let seed = 0; seed < 130; seed += 1) {
+      const type = GATEWAY_EVENT_TYPES[seed % GATEWAY_EVENT_TYPES.length]!;
+      expect(event({ id: 100 + seed, type, payload: typedPayload(type, seed) })).toMatchObject({ event_type: type });
+    }
     expect(createExternalLlmMeteringEvent({
       eventId: eventId(9), tenantId: TENANT_A, sessionId: SESSION_A, actorUserId: USER_A,
       source: { component: "external-client", version: "1", instance: "test" }, sequence: 9,
@@ -84,8 +111,21 @@ describe("EU-12 M5 event/result/retention/release/parity vertical", () => {
     expect(() => validateEu12EventEnvelope({
       ...event({ id: 3 }), actor: { type: "user" },
     })).toThrow(/actor\.user_id/u);
+    const invalidPayloads: Readonly<Record<GatewayEventEnvelope["event_type"], string>> = {
+      "session.started": "client_type", "session.ended": "reason", "turn.completed": "engine_mode",
+      "llm.call": "input_tokens", "tool.invocation": "tool_name", "tool.confirmation": "state",
+      "bridge.connected": "device_id", "bridge.disconnected": "connected_ms", "bridge.enrolled": "device_id",
+      "bridge.revoked": "reason", "bridge.update": "status", "auth.event": "kind", "registry.published": "entity",
+    };
+    for (const [index, type] of GATEWAY_EVENT_TYPES.entries()) {
+      const vector = event({ id: 200 + index, type, payload: typedPayload(type, index) });
+      const payload: Record<string, unknown> = { ...vector.payload };
+      delete payload[invalidPayloads[type]];
+      expect(() => validateEu12EventEnvelope({ ...vector, payload })).toThrow(/invalid revagent\.event\.v2/u);
+    }
+    const llm = event({ id: 4, type: "llm.call", payload: typedPayload("llm.call", 4) });
     expect(() => validateEu12EventEnvelope({
-      ...event({ id: 4 }), event_type: "llm.call", session_id: undefined,
+      ...llm, session_id: undefined,
     })).toThrow(/session_id/u);
   });
 
@@ -118,6 +158,19 @@ describe("EU-12 M5 event/result/retention/release/parity vertical", () => {
     await expect(writer.write([redelivery])).resolves.toMatchObject([{ disposition: "duplicate" }]);
     expect(await persisted.list({ tenantId: TENANT_A })).toHaveLength(2);
     expect(await persisted.read({ tenantId: TENANT_B, eventId: initial.event_id })).toBeNull();
+  });
+
+  it("persists a 1k typed event burst and rejects the bounded plus-one batch", async () => {
+    const persisted = new InMemoryEu12EventPersistence();
+    const writer = new BoundedEu12EventWriter({ persistence: persisted, maxPendingEvents: 1_000 });
+    const burst = Array.from({ length: 1_000 }, (_, index) => event({
+      id: 1_000 + index,
+      payload: typedPayload("tool.invocation", 1_000 + index),
+    }));
+    await expect(writer.write(burst)).resolves.toHaveLength(1_000);
+    expect(await persisted.list({ tenantId: TENANT_A })).toHaveLength(1_000);
+    await expect(writer.write([...burst, event({ id: 2_500, payload: typedPayload("tool.invocation", 2_500) })]))
+      .rejects.toBeInstanceOf(Eu12EventBackpressureError);
   });
 
   it("preserves the approved telemetry summary shape and the canonical raw-params digest", () => {
@@ -192,6 +245,40 @@ describe("EU-12 M5 event/result/retention/release/parity vertical", () => {
     await expect(results.getPage({ scope: input.scope, refId: ref.refId, pageIndex: 0 })).resolves.toEqual({ kind: "not_found" });
   });
 
+  it("enforces the five MiB result bound while retaining stable multi-page object retrieval", async () => {
+    const objects = new InMemoryResultObjectStore();
+    let nowMs = 1_000;
+    const results = new ResultReferenceStore({
+      objects,
+      now: () => nowMs,
+      newRefId: () => "five-mib-result",
+      defaultPageSizeBytes: 1_024 * 1_024,
+    });
+    const acceptedText = "x".repeat(RESULT_REFERENCE_MAX_BYTES - 64);
+    const accepted = await results.put({
+      scope: { tenantId: TENANT_A, sessionId: SESSION_A },
+      payload: { text: acceptedText },
+      expiresAtMs: 2_000,
+      pageSizeBytes: 1_024 * 1_024,
+    });
+    expect(accepted.pageCount).toBeGreaterThan(1);
+    expect(objects.has(accepted.storageKey)).toBe(true);
+    await expect(results.getPage({ scope: { tenantId: TENANT_A, sessionId: SESSION_A }, refId: accepted.refId, pageIndex: accepted.pageCount - 1 }))
+      .resolves.toMatchObject({ kind: "page" });
+    await expect(results.getPage({ scope: { tenantId: TENANT_B, sessionId: SESSION_A }, refId: accepted.refId, pageIndex: 0 }))
+      .resolves.toEqual({ kind: "not_found" });
+    await expect(results.getPage({ scope: { tenantId: TENANT_A, sessionId: SESSION_B }, refId: accepted.refId, pageIndex: 0 }))
+      .resolves.toEqual({ kind: "not_found" });
+    nowMs = 2_001;
+    await expect(results.getPage({ scope: { tenantId: TENANT_A, sessionId: SESSION_A }, refId: accepted.refId, pageIndex: 0 }))
+      .resolves.toEqual({ kind: "expired" });
+    await expect(results.put({
+      scope: { tenantId: TENANT_A, sessionId: SESSION_A },
+      payload: { text: "x".repeat(RESULT_REFERENCE_MAX_BYTES) },
+      expiresAtMs: 3_000,
+    })).rejects.toThrow(/five MiB/u);
+  });
+
   it("replays interrupted tenant-scoped archive runs and preserves another tenant's records", async () => {
     const events = new InMemoryEu12EventPersistence();
     const archivedEvent = event({ id: 20, occurredAt: "2026-08-31T23:59:59.000Z" });
@@ -254,6 +341,8 @@ describe("EU-12 M5 event/result/retention/release/parity vertical", () => {
     const tool = event({
       id: 30,
       payload: {
+        dispatch_attempt_id: "metric-attempt",
+        invocation_id: "metric-invocation",
         idempotency_key: "metric-tool",
         tool_name: "core.code.execute",
         tool_version: "1.0.0",
@@ -273,13 +362,13 @@ describe("EU-12 M5 event/result/retention/release/parity vertical", () => {
           search: { query: "duct", riskLevel: "low", scannedElementCount: 1, partial: false, scanStoppedReason: "completed", needsScope: false },
         },
         search: { query: "duct" },
-        code: { hash: "short", length: 1, line_count: 1, write_patterns: [], has_manual_transaction: false, preview: "x" },
+        code: { hash: "short", length: 1, lineCount: 1, writePatterns: [], hasManualTransaction: false, preview: "x" },
       },
     });
-    const connected = event({ id: 31, type: "bridge.connected", payload: { device_id: "device-a" } });
+    const connected = event({ id: 31, type: "bridge.connected", payload: { device_id: "device-a", bridge_version: "1.2.3", addin_version: "1.2.3", revit_version: "2022", protocol_version: "1" } });
     const disconnected = event({ id: 32, type: "bridge.disconnected", payload: { device_id: "device-a", reason: "normal", connected_ms: 1 } });
-    const update = event({ id: 33, type: "bridge.update", payload: { device_id: "device-a", status: "applied", reason: "completed" } });
-    const metering = event({ id: 34, type: "llm.call", payload: { input_tokens: 1, output_tokens: 2, cache_read_tokens: 0, duration_ms: 3, cost: 0.1 } });
+    const update = event({ id: 33, type: "bridge.update", payload: { device_id: "device-a", from_version: "1.2.2", to_version: "1.2.3", status: "applied", reason: "completed", error: null } });
+    const metering = event({ id: 34, type: "llm.call", payload: typedPayload("llm.call", 34) });
     const report = deriveMetricParity({
       tenantId: TENANT_A,
       events: [tool, connected, disconnected, update, metering],
@@ -289,6 +378,8 @@ describe("EU-12 M5 event/result/retention/release/parity vertical", () => {
     expect(report.survivingDerivable).toBe(true);
     expect(report.dyingClassified).toBe(true);
     expect(report.rows.filter((row) => row.status === "dying")).toHaveLength(8);
+    expect(report.rows.find((row) => row.metric === "sendCodeClassification")).toMatchObject({ observedCount: 1, value: { rawCount: 1 } });
+    expect(deriveMetricParity({ tenantId: TENANT_A, events: [], devices: [], currentReleaseByChannel: {} }).survivingDerivable).toBe(false);
   });
 
   it("records one external invocation through unified event/audit persistence and a result reference", async () => {
