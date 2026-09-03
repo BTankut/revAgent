@@ -61,7 +61,16 @@ param(
     [string]$MachineReportPath = '',
     [switch]$DryRun,
     [switch]$SkipRevitDetection,
-    [switch]$SkipServiceStart
+    [switch]$SkipServiceStart,
+    # Test/advanced injection point for the ACL primitive every icacls.exe
+    # call in this script is routed through. Production callers must never
+    # pass this -- omitting it is what makes the elevation gate below
+    # meaningful. Tests inject a mock here (an explicit parameter, not
+    # command-name shadowing, which is not reliable across every depth of
+    # nested script invocation -- see the focused test suite) so the rest
+    # of a real, non-dry-run install can run hermetically as a non-admin
+    # identity without ever calling the real icacls.exe.
+    [scriptblock]$IcaclsInvoker = $null
 )
 
 $ErrorActionPreference = 'Stop'
@@ -190,10 +199,28 @@ try {
     $deviceCredentialAlreadyExists = Test-Path -LiteralPath $layout.DeviceCredentialPath -PathType Leaf
     $installSummary.alreadyEnrolled = $deviceCredentialAlreadyExists
 
+    # --- Elevation gate (fails closed before any mutation) ---
+    # P-INST-1's ACL lockdown (icacls /inheritance:r + /grant:r, and
+    # /setowner NT AUTHORITY\SYSTEM for the credential directory) requires
+    # an elevated Administrator process for real; running it unelevated
+    # does not fail loudly at the ACL call -- icacls can silently strip the
+    # calling identity's own inherited write access via /grant:r's replace
+    # semantics, which then surfaces later as an unrelated-looking
+    # "Access is denied" on the next directory this script tries to create.
+    # Refuse up front instead. This check is skipped only when the caller
+    # supplies -IcaclsInvoker (the test injection point above) or is
+    # already in -DryRun (which performs zero mutations regardless).
+    if (-not $isDryRun -and $null -eq $IcaclsInvoker) {
+        $currentPrincipal = [System.Security.Principal.WindowsPrincipal]::new([System.Security.Principal.WindowsIdentity]::GetCurrent())
+        if (-not $currentPrincipal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)) {
+            throw 'not_elevated: this installer must run in an elevated (Administrator) process to apply the P-INST-1 ACL lockdown; refusing before any mutation.'
+        }
+    }
+
     # --- 5. Install root + state root + credential directory (ACL'd) ---
     [void](Invoke-RevAgentBridgeGuardedMutation -Target $layout.InstallRoot -MutationAction 'create_install_root' -DryRun $isDryRun -Steps $steps -Apply {
             [void](New-RevAgentBridgeGuardedDirectory -Path $layout.InstallRoot -GuardRoot $installRootGuard)
-            Set-RevAgentBridgeDistributionAcl -Path $layout.InstallRoot
+            Set-RevAgentBridgeDistributionAcl -Path $layout.InstallRoot -IcaclsInvoker $IcaclsInvoker
             return $layout.InstallRoot
         }.GetNewClosure())
     [void](Invoke-RevAgentBridgeGuardedMutation -Target $layout.CurrentWorkerDirectory -MutationAction 'create_worker_directory' -DryRun $isDryRun -Steps $steps -Apply {
@@ -202,14 +229,14 @@ try {
         })
     [void](Invoke-RevAgentBridgeGuardedMutation -Target $layout.StateRoot -MutationAction 'create_state_root' -DryRun $isDryRun -Steps $steps -Apply {
             [void](New-RevAgentBridgeGuardedDirectory -Path $layout.StateRoot -GuardRoot $stateRootGuard)
-            Set-RevAgentBridgeDistributionAcl -Path $layout.StateRoot
+            Set-RevAgentBridgeDistributionAcl -Path $layout.StateRoot -IcaclsInvoker $IcaclsInvoker
             return $layout.StateRoot
         }.GetNewClosure())
     [void](Invoke-RevAgentBridgeGuardedMutation -Target $layout.CredentialDirectory -MutationAction 'create_credential_directory' -DryRun $isDryRun -Steps $steps -Apply {
             [void](New-RevAgentBridgeGuardedDirectory -Path $layout.CredentialDirectory -GuardRoot $layout.StateRoot)
-            Set-RevAgentBridgeSystemOnlyAcl -Path $layout.CredentialDirectory
+            Set-RevAgentBridgeSystemOnlyAcl -Path $layout.CredentialDirectory -IcaclsInvoker $IcaclsInvoker
             return $layout.CredentialDirectory
-        })
+        }.GetNewClosure())
 
     # --- 6. Copy signed binaries into the disjoint install root ---
     [void](Invoke-RevAgentBridgeGuardedMutation -Target $layout.HostExecutablePath -MutationAction 'deploy_host_executable' -DryRun $isDryRun -Steps $steps -Apply {
@@ -257,7 +284,7 @@ try {
     [void](Invoke-RevAgentBridgeGuardedMutation -Target $addinLayout.AddinBinRoot -MutationAction 'deploy_addin_payload' -DryRun $isDryRun -Steps $steps -Apply {
             [void](New-RevAgentBridgeGuardedDirectory -Path $addinLayout.AddinBinRoot -GuardRoot $addinProgramFilesGuard)
             Copy-RevAgentBridgeDirectoryContents -SourceDirectory $addinSourceDirectory -DestinationDirectory $addinLayout.AddinBinRoot
-            Set-RevAgentBridgeDistributionAcl -Path $addinLayout.AddinBinRoot
+            Set-RevAgentBridgeDistributionAcl -Path $addinLayout.AddinBinRoot -IcaclsInvoker $IcaclsInvoker
             return $addinLayout.AddinBinRoot
         }.GetNewClosure())
     $manifestContract = New-RevAgentBridgeAddinManifestContract -AssemblyPath $addinLayout.AssemblyPath
@@ -266,7 +293,7 @@ try {
     [void](Invoke-RevAgentBridgeGuardedMutation -Target $addinLayout.ManifestPath -MutationAction 'write_addin_manifest' -DryRun $isDryRun -Steps $steps -Apply {
             [void](New-RevAgentBridgeGuardedDirectory -Path $addinLayout.ManifestDirectory -GuardRoot $revitAddinsGuard)
             [void](Write-RevAgentBridgeGuardedAtomicBytes -Path $addinLayout.ManifestPath -Bytes $manifestContract.bytes -GuardRoot $addinLayout.ManifestDirectory)
-            Set-RevAgentBridgeDistributionAcl -Path $addinLayout.ManifestDirectory
+            Set-RevAgentBridgeDistributionAcl -Path $addinLayout.ManifestDirectory -IcaclsInvoker $IcaclsInvoker
             return $manifestContract.sha256
         }.GetNewClosure())
 
@@ -300,7 +327,7 @@ try {
         $installSummary.enrollmentAttempted = $true
         [void](Invoke-RevAgentBridgeGuardedMutation -Target $layout.EnrollmentArtifactPath -MutationAction 'write_enrollment_artifact' -DryRun $isDryRun -Steps $steps -Apply {
                 [void](Write-RevAgentBridgeGuardedAtomicBytes -Path $layout.EnrollmentArtifactPath -Bytes $artifactBytes -GuardRoot $layout.CredentialDirectory)
-                Set-RevAgentBridgeSystemOnlyAcl -Path $layout.EnrollmentArtifactPath
+                Set-RevAgentBridgeSystemOnlyAcl -Path $layout.EnrollmentArtifactPath -IcaclsInvoker $IcaclsInvoker
                 return $layout.EnrollmentArtifactPath
             }.GetNewClosure())
         $installSummary.enrollmentArtifactWritten = $true

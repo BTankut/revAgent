@@ -158,6 +158,17 @@ function Get-BridgeTempLayoutArgs {
     }
 }
 
+# A trivial injected ACL invoker for tests that need a real (non-dry-run)
+# install to reach past the elevation gate but do not care about ACL calls
+# themselves (e.g. the link-guard tests below, which always throw before
+# Set-RevAgentBridgeDistributionAcl/SystemOnlyAcl is ever reached). Passing
+# any non-null -IcaclsInvoker is what bypasses the gate; this one is never
+# actually expected to be invoked by those tests.
+$noOpIcaclsInvoker = {
+    param([string[]]$Arguments)
+    return "unused"
+}
+
 $scratchRoots = [System.Collections.Generic.List[string]]::new()
 try {
 
@@ -383,7 +394,8 @@ try {
                 -RevitAddinsRoot $junctionInstallLayoutArgs.RevitAddinsRoot `
                 -MachineReportPath $junctionInstallReportPath `
                 -SkipRevitDetection `
-                -SkipServiceStart | Out-Null
+                -SkipServiceStart `
+                -IcaclsInvoker $noOpIcaclsInvoker | Out-Null
         }
         catch { $junctionInstallThrew = $true }
         Assert-True $junctionInstallThrew "($($junctionScenario.Label)) A pre-planted junction at InstallRoot must make a real (non-dry-run) install fail closed."
@@ -487,34 +499,88 @@ try {
     Assert-Equal $happyReport.component "bridge" "Report component must be 'bridge'."
 
     # =====================================================================
-    Write-Host "Test end-to-end install (non-dry-run): payload files actually land, durable machine report is written"
+    Write-Host "Test the elevation gate: without -IcaclsInvoker, a non-elevated real (non-dry-run) install fails closed before any mutation"
+    # =====================================================================
+    $currentPrincipal = [System.Security.Principal.WindowsPrincipal]::new([System.Security.Principal.WindowsIdentity]::GetCurrent())
+    $isRunningElevated = $currentPrincipal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)
+    if ($isRunningElevated) {
+        Write-Host "  (skipped: this test process is elevated, so the 'not elevated' branch cannot be exercised for real here -- CI's own non-admin runner is the environment that proves this branch, and does so by running every other non-dry-run test in this file, all of which explicitly inject -IcaclsInvoker to bypass this exact gate)"
+    }
+    else {
+        $notElevatedTemp = New-TestScratchDirectory -Label "not-elevated"
+        $scratchRoots.Add($notElevatedTemp)
+        $notElevatedLayoutArgs = Get-BridgeTempLayoutArgs -Root $notElevatedTemp
+        $notElevatedReportPath = Join-Path $notElevatedTemp "report.json"
+        $notElevatedThrew = $false
+        try {
+            & (Join-Path $bridgeRoot "Install-RevAgentBridge.ps1") `
+                -PackageRoot $goodFixture.PackageRoot `
+                -TrustedKeysPath $goodFixture.TrustedKeysPath `
+                -EnrollmentToken ("a" * 40) `
+                -EnrollmentTokenExpiresAtUtc ([datetime]::UtcNow.AddHours(1)) `
+                -InstallRoot $notElevatedLayoutArgs.InstallRoot `
+                -StateRoot $notElevatedLayoutArgs.StateRoot `
+                -AddinProgramFilesRoot $notElevatedLayoutArgs.AddinProgramFilesRoot `
+                -RevitAddinsRoot $notElevatedLayoutArgs.RevitAddinsRoot `
+                -MachineReportPath $notElevatedReportPath `
+                -SkipRevitDetection `
+                -SkipServiceStart | Out-Null
+        }
+        catch { $notElevatedThrew = $true }
+        Assert-True $notElevatedThrew "A non-elevated real install with no -IcaclsInvoker must fail closed."
+        $notElevatedReport = Get-Content -Raw -LiteralPath $notElevatedReportPath | ConvertFrom-Json
+        Assert-Equal $notElevatedReport.status "failed" "Report status must be 'failed' when not elevated."
+        Assert-True ($notElevatedReport.message -match "not_elevated") "Failure must be the elevation gate's own message."
+        $notElevatedStepActions = @($notElevatedReport.steps | ForEach-Object { $_.action })
+        Assert-True ($notElevatedStepActions -notcontains "create_install_root") "The elevation gate must refuse before the first mutating step (create_install_root); only the earlier read-only verify_* steps may be recorded."
+        Assert-True (-not (Test-Path -LiteralPath $notElevatedLayoutArgs.InstallRoot)) "Nothing may be created when the elevation gate refuses."
+    }
+
+    # =====================================================================
+    Write-Host "Test end-to-end install (non-dry-run): payload files actually land, durable machine report is written, real ACL is never touched"
     # =====================================================================
     # This is the regression test for the '*' literal-path copy bug and the
     # ReportsDirectory-guards-itself bug: it is the only test in this suite
-    # that lets the real mutation Apply blocks run. Only the OS-level
-    # surfaces this installer would otherwise really touch outside its own
-    # temp roots -- icacls.exe (ACL lockdown) and the Get-Service
-    # registration probe -- are mocked; every directory/file operation
-    # (creation, link guards, payload copy, config/manifest/enrollment
-    # writes, the durable report) executes for real against the temp roots.
+    # that lets the real mutation Apply blocks run. The ACL primitive is
+    # injected explicitly via -IcaclsInvoker (an actual parameter, not
+    # command-name shadowing of icacls.exe -- shadowing is not reliable
+    # across every depth of nested script invocation, which is exactly what
+    # broke this test under scripts/test-ci.ps1's extra nesting level on a
+    # non-admin CI runner: the real icacls.exe ran there, and its
+    # `/grant:r` replace semantics stripped the CI account's own inherited
+    # write access to InstallRoot, which then failed the next directory
+    # creation with an unrelated-looking "Access is denied"). Get-Service is
+    # still shadowed (a plain cmdlet call, not an external command, and not
+    # implicated in that failure) to report the service as already
+    # registered. Every directory/file operation (creation, link guards,
+    # payload copy, config/manifest/enrollment writes, the durable report)
+    # executes for real against the temp roots; only the ACL primitive is a
+    # no-op, and this test proves that by verifying InstallRoot's real ACL
+    # is byte-identical before and after the run.
     $realRunTemp = New-TestScratchDirectory -Label "real-run"
     $scratchRoots.Add($realRunTemp)
     $realRunLayoutArgs = Get-BridgeTempLayoutArgs -Root $realRunTemp
     $realRunReportPath = Join-Path $realRunTemp "external-report.json"
 
-    # $global: (not $script:) is required here: Install-RevAgentBridge.ps1 is
-    # invoked below as a nested script file via '&', which gives it its own
-    # script-scope frame, so a '$script:' write inside a function that
-    # happens to run while that nested script is on the call stack lands in
-    # the NESTED script's scope, not this test file's -- $global: is the one
-    # unambiguous, single top-level counter regardless of which script frame
-    # is executing when the mock is invoked.
+    # Pre-create InstallRoot with its real, unmodified inherited ACL so its
+    # "before" SDDL can be captured -- otherwise the installer's own
+    # (guarded) directory creation would be the first writer and there
+    # would be nothing to compare against.
+    [void](New-Item -ItemType Directory -Path $realRunLayoutArgs.InstallRoot -Force)
+    $installRootAclBefore = (Get-Acl -LiteralPath $realRunLayoutArgs.InstallRoot).Sddl
+
+    # $global: (not $script:) is required for the call counter:
+    # Install-RevAgentBridge.ps1 is invoked below as a nested script file
+    # via '&', which gives it its own script-scope frame, so a '$script:'
+    # write inside a scriptblock that happens to run while that nested
+    # script is on the call stack lands in the NESTED script's scope, not
+    # this test file's.
     $global:eu20MockIcaclsCallCount = 0
-    function icacls.exe {
+    $mockIcaclsInvoker = {
+        param([string[]]$Arguments)
         $global:eu20MockIcaclsCallCount++
-        $global:LASTEXITCODE = 0
         return "mocked"
-    }
+    }.GetNewClosure()
     function Get-Service {
         param([string]$Name, $ErrorAction)
         return [pscustomobject]@{ Name = $Name; Status = "Stopped" }
@@ -531,18 +597,26 @@ try {
             -RevitAddinsRoot $realRunLayoutArgs.RevitAddinsRoot `
             -MachineReportPath $realRunReportPath `
             -SkipRevitDetection `
-            -SkipServiceStart | Out-Null
+            -SkipServiceStart `
+            -IcaclsInvoker $mockIcaclsInvoker | Out-Null
     }
     finally {
-        Remove-Item -LiteralPath Function:\icacls.exe -ErrorAction SilentlyContinue
         Remove-Item -LiteralPath Function:\Get-Service -ErrorAction SilentlyContinue
     }
 
-    Assert-True ($global:eu20MockIcaclsCallCount -gt 0) "The real install path must reach ACL lockdown (proves it ran past directory creation, through the mocked icacls.exe)."
+    Assert-True ($global:eu20MockIcaclsCallCount -gt 0) "The real install path must reach ACL lockdown (proves it ran past directory creation, through the injected mock invoker)."
     Remove-Variable -Name eu20MockIcaclsCallCount -Scope Global -ErrorAction SilentlyContinue
     $realRunReport = Get-Content -Raw -LiteralPath $realRunReportPath | ConvertFrom-Json
     Assert-Equal $realRunReport.status "success" "A real (non-dry-run) install against valid fixtures must succeed end-to-end."
     Assert-Equal $realRunReport.dryRun $false "This run must be recorded as non-dry-run."
+
+    # Verification method for "the installer never touches the real ACL":
+    # compare InstallRoot's actual on-disk ACL (SDDL) before and after the
+    # run. A real (unmocked) icacls /inheritance:r + /grant:r would change
+    # this deterministically (it always strips inherited ACEs); with the
+    # mock invoker in place it must be byte-identical.
+    $installRootAclAfter = (Get-Acl -LiteralPath $realRunLayoutArgs.InstallRoot).Sddl
+    Assert-Equal $installRootAclAfter $installRootAclBefore "InstallRoot's real ACL must be byte-identical before and after a run using the injected mock invoker -- proves no real icacls.exe call ever reached the filesystem."
 
     $realRunLayout = Get-RevAgentBridgeLayout @realRunLayoutArgs
     Assert-True (Test-Path -LiteralPath (Join-Path $realRunLayout.CurrentWorkerDirectory "revagent-bridge.exe") -PathType Leaf) "The worker payload file must actually land in CurrentWorkerDirectory -- a literal '*' Copy-Item path would have thrown/no-op'd here."
