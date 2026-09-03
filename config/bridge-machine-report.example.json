@@ -3,7 +3,7 @@
   "app": "revAgent",
   "component": "bridge",
   "action": "install",
-  "computerName": "PETRUCCI",
+  "computerName": "LAB-WS-01",
   "userName": "labadmin",
   "dryRun": false,
   "status": "success",

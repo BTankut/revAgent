@@ -114,23 +114,16 @@ try {
             continue
         }
 
+        # No separate dry-run branch here: Invoke-RevAgentBridgeTreeWipePlan
+        # routes every per-item removal through Invoke-RevAgentBridgeGuardedMutation
+        # (passing this same $steps list), which is the only place DryRun is
+        # gated. Under -DryRun this call performs zero deletions and every
+        # planned removal comes back as 'would_remove'.
         $plan = Get-RevAgentBridgeTreeWipePlan -Root $target -Anchors $anchors
-        if ($isDryRun) {
-            [void]$steps.Add([pscustomobject][ordered]@{ target = $target; action = 'wipe_legacy_tree'; status = 'skipped_dry_run'; detail = "$($plan.Count) items planned" })
-            $itemResults = @($plan | ForEach-Object { [pscustomobject][ordered]@{ path = $_.path; kind = $_.kind; disposition = if ($_.disposition -eq 'remove') { 'would_remove' } else { $_.disposition } } })
-        }
-        else {
-            $itemResults = Invoke-RevAgentBridgeTreeWipePlan -Plan $plan -DryRun $false
-            $failed = @($itemResults | Where-Object { $_.disposition -eq 'failed' })
-            [void]$steps.Add([pscustomobject][ordered]@{
-                    target = $target
-                    action = 'wipe_legacy_tree'
-                    status = if ($failed.Count -eq 0) { 'applied' } else { 'failed' }
-                    detail = "$($itemResults.Count) items processed, $($failed.Count) failed"
-                })
-            if ($failed.Count -gt 0) {
-                throw "legacy_tree_wipe_incomplete: $($failed.Count) item(s) under $target could not be removed."
-            }
+        $itemResults = Invoke-RevAgentBridgeTreeWipePlan -Plan $plan -DryRun $isDryRun -Steps $steps
+        $failed = @($itemResults | Where-Object { $_.disposition -eq 'failed' })
+        if (-not $isDryRun -and $failed.Count -gt 0) {
+            throw "legacy_tree_wipe_incomplete: $($failed.Count) item(s) under $target could not be removed."
         }
         $uninstallSummary.legacyTrees += [pscustomobject][ordered]@{ root = $target; found = $true; items = $itemResults }
     }

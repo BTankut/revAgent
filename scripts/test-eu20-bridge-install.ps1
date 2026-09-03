@@ -319,6 +319,90 @@ try {
     Assert-True ($badTokenReport.message -match "enrollment_token_invalid_length") "Failure message must surface the exact fail-closed reason."
 
     # =====================================================================
+    Write-Host "Test installer refuses to write through a pre-planted junction at InstallRoot (fails closed before any write)"
+    # =====================================================================
+    $junctionInstallTemp = New-TestScratchDirectory -Label "junction-install"
+    $scratchRoots.Add($junctionInstallTemp)
+    $junctionInstallLayoutArgs = Get-BridgeTempLayoutArgs -Root $junctionInstallTemp
+    $installRootParent = Split-Path -Parent $junctionInstallLayoutArgs.InstallRoot
+    [void](New-Item -ItemType Directory -Path $installRootParent -Force)
+    $outsideLayoutTarget = Join-Path $junctionInstallTemp "outside-layout-root"
+    [void](New-Item -ItemType Directory -Path $outsideLayoutTarget -Force)
+    [void](New-Item -ItemType Junction -Path $junctionInstallLayoutArgs.InstallRoot -Target $outsideLayoutTarget)
+    $junctionInstallReportPath = Join-Path $junctionInstallTemp "report.json"
+    $junctionInstallThrew = $false
+    try {
+        & (Join-Path $bridgeRoot "Install-RevAgentBridge.ps1") `
+            -PackageRoot $goodFixture.PackageRoot `
+            -TrustedKeysPath $goodFixture.TrustedKeysPath `
+            -EnrollmentToken ("a" * 40) `
+            -EnrollmentTokenExpiresAtUtc ([datetime]::UtcNow.AddHours(1)) `
+            -InstallRoot $junctionInstallLayoutArgs.InstallRoot `
+            -StateRoot $junctionInstallLayoutArgs.StateRoot `
+            -AddinProgramFilesRoot $junctionInstallLayoutArgs.AddinProgramFilesRoot `
+            -RevitAddinsRoot $junctionInstallLayoutArgs.RevitAddinsRoot `
+            -MachineReportPath $junctionInstallReportPath `
+            -SkipRevitDetection `
+            -SkipServiceStart | Out-Null
+    }
+    catch { $junctionInstallThrew = $true }
+    Assert-True $junctionInstallThrew "A pre-planted junction at InstallRoot must make a real (non-dry-run) install fail closed."
+    $junctionInstallReport = Get-Content -Raw -LiteralPath $junctionInstallReportPath | ConvertFrom-Json
+    Assert-Equal $junctionInstallReport.status "failed" "Report status must be 'failed' when InstallRoot is a pre-planted junction."
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $outsideLayoutTarget "revagent-bridge-host.exe"))) "Nothing may be written through the junction into the out-of-layout target."
+    $junctionInstallStepActions = @($junctionInstallReport.steps | ForEach-Object { $_.action })
+    Assert-True ($junctionInstallStepActions -notcontains "deploy_host_executable") "No later step may run once the link guard throws on create_install_root."
+
+    # =====================================================================
+    Write-Host "Test GatewayHostName guard rejects IPv6 literals (bracketed and bare), not just IPv4"
+    # =====================================================================
+    foreach ($ipv6Case in @("::1", "[fe80::1]", "2001:db8::8a2e:370:7334", "fe80::1%eth0")) {
+        $ipv6Temp = New-TestScratchDirectory -Label "ipv6"
+        $scratchRoots.Add($ipv6Temp)
+        $ipv6LayoutArgs = Get-BridgeTempLayoutArgs -Root $ipv6Temp
+        $ipv6ReportPath = Join-Path $ipv6Temp "report.json"
+        $ipv6Threw = $false
+        try {
+            & (Join-Path $bridgeRoot "Install-RevAgentBridge.ps1") `
+                -PackageRoot $goodFixture.PackageRoot `
+                -TrustedKeysPath $goodFixture.TrustedKeysPath `
+                -EnrollmentToken ("a" * 40) `
+                -EnrollmentTokenExpiresAtUtc ([datetime]::UtcNow.AddHours(1)) `
+                -InstallRoot $ipv6LayoutArgs.InstallRoot `
+                -StateRoot $ipv6LayoutArgs.StateRoot `
+                -AddinProgramFilesRoot $ipv6LayoutArgs.AddinProgramFilesRoot `
+                -RevitAddinsRoot $ipv6LayoutArgs.RevitAddinsRoot `
+                -GatewayHostName $ipv6Case `
+                -MachineReportPath $ipv6ReportPath `
+                -SkipRevitDetection `
+                -DryRun | Out-Null
+        }
+        catch { $ipv6Threw = $true }
+        Assert-True $ipv6Threw "GatewayHostName '$ipv6Case' (an IPv6 literal) must be refused."
+        $ipv6Report = Get-Content -Raw -LiteralPath $ipv6ReportPath | ConvertFrom-Json
+        Assert-True ($ipv6Report.message -match "gateway_host_must_not_be_ip") "Failure reason for '$ipv6Case' must be gateway_host_must_not_be_ip."
+    }
+    $dnsTemp = New-TestScratchDirectory -Label "dns-ok"
+    $scratchRoots.Add($dnsTemp)
+    $dnsLayoutArgs = Get-BridgeTempLayoutArgs -Root $dnsTemp
+    $dnsReportPath = Join-Path $dnsTemp "report.json"
+    & (Join-Path $bridgeRoot "Install-RevAgentBridge.ps1") `
+        -PackageRoot $goodFixture.PackageRoot `
+        -TrustedKeysPath $goodFixture.TrustedKeysPath `
+        -EnrollmentToken ("a" * 40) `
+        -EnrollmentTokenExpiresAtUtc ([datetime]::UtcNow.AddHours(1)) `
+        -InstallRoot $dnsLayoutArgs.InstallRoot `
+        -StateRoot $dnsLayoutArgs.StateRoot `
+        -AddinProgramFilesRoot $dnsLayoutArgs.AddinProgramFilesRoot `
+        -RevitAddinsRoot $dnsLayoutArgs.RevitAddinsRoot `
+        -GatewayHostName "gateway.dpe.internal" `
+        -MachineReportPath $dnsReportPath `
+        -SkipRevitDetection `
+        -DryRun | Out-Null
+    $dnsReport = Get-Content -Raw -LiteralPath $dnsReportPath | ConvertFrom-Json
+    Assert-Equal $dnsReport.status "success" "A genuine DNS hostname must still be accepted."
+
+    # =====================================================================
     Write-Host "Test end-to-end install -DryRun happy path performs zero mutations and validates against the machine-report schema"
     # =====================================================================
     $happyTemp = New-TestScratchDirectory -Label "happy-target"
@@ -381,6 +465,52 @@ try {
     Assert-Equal $idempotentReport.install.enrollmentAttempted $false "Re-run must not attempt enrollment when already enrolled."
     $enrollmentStep = @($idempotentReport.steps | Where-Object { $_.action -eq "write_enrollment_artifact" })[0]
     Assert-Equal $enrollmentStep.status "skipped_already_enrolled" "Re-run's enrollment-artifact step must be skipped for the already-enrolled reason, not the dry-run reason."
+
+    # =====================================================================
+    Write-Host "Test tree-wipe dry-run performs zero deletions and never invokes the removal action (single choke point)"
+    # =====================================================================
+    $wipeDryRunRoot = New-TestScratchDirectory -Label "wipe-dryrun"
+    $scratchRoots.Add($wipeDryRunRoot)
+    $wipeDryRunFile = Join-Path $wipeDryRunRoot "loose-file.txt"
+    Set-Content -LiteralPath $wipeDryRunFile -Value "content" -Encoding UTF8
+    $wipeDryRunPlan = Get-RevAgentBridgeTreeWipePlan -Root $wipeDryRunRoot -Anchors @()
+    $script:eu20RemoveActionCallCount = 0
+    $mockRemoveAction = { param([string]$ItemPath, [string]$ItemKind) $script:eu20RemoveActionCallCount++; return "removed" }
+    $wipeDryRunSteps = [System.Collections.Generic.List[object]]::new()
+    $wipeDryRunResults = Invoke-RevAgentBridgeTreeWipePlan -Plan $wipeDryRunPlan -DryRun $true -Steps $wipeDryRunSteps -RemoveItemAction $mockRemoveAction
+    Assert-Equal $script:eu20RemoveActionCallCount 0 "Tree-wipe dry-run must never invoke the removal action -- DryRun gating lives only in the guarded choke point."
+    Assert-True (Test-Path -LiteralPath $wipeDryRunFile -PathType Leaf) "Tree-wipe dry-run must perform zero deletions."
+    $wipeDryRunFileResult = @($wipeDryRunResults | Where-Object { $_.path -eq $wipeDryRunFile })[0]
+    Assert-Equal $wipeDryRunFileResult.disposition "would_remove" "Dry-run disposition for a plan 'remove' item must be 'would_remove'."
+    Assert-True ($wipeDryRunSteps.Count -gt 0) "Each planned removal must still be recorded as a guarded-mutation step even under dry-run."
+    Assert-True (@($wipeDryRunSteps | Where-Object { $_.status -ne "skipped_dry_run" }).Count -eq 0) "Every tree-wipe step under dry-run must be 'skipped_dry_run'."
+
+    # =====================================================================
+    Write-Host "Test a directory junction inside the legacy tree is not followed"
+    # =====================================================================
+    $junctionWalkRoot = New-TestScratchDirectory -Label "junction-walk"
+    $scratchRoots.Add($junctionWalkRoot)
+    $junctionLegacyRoot = Join-Path $junctionWalkRoot "legacy"
+    [void](New-Item -ItemType Directory -Path $junctionLegacyRoot -Force)
+    Set-Content -LiteralPath (Join-Path $junctionLegacyRoot "ordinary-file.txt") -Value "x" -Encoding UTF8
+    $junctionOutsideTarget = Join-Path $junctionWalkRoot "outside-target"
+    [void](New-Item -ItemType Directory -Path $junctionOutsideTarget -Force)
+    Set-Content -LiteralPath (Join-Path $junctionOutsideTarget "secret-marker.txt") -Value "do-not-touch" -Encoding UTF8
+    $junctionLinkPath = Join-Path $junctionLegacyRoot "evil-link"
+    [void](New-Item -ItemType Junction -Path $junctionLinkPath -Target $junctionOutsideTarget)
+
+    $junctionPlan = Get-RevAgentBridgeTreeWipePlan -Root $junctionLegacyRoot -Anchors @()
+    $junctionLinkEntry = @($junctionPlan | Where-Object { $_.path -eq $junctionLinkPath })[0]
+    Assert-Equal $junctionLinkEntry.disposition "kept_reparse_point" "A directory junction inside the legacy tree must be kept, never planned for removal by recursion."
+    $leakedMarkerEntries = @($junctionPlan | Where-Object { $_.path -like "*secret-marker.txt" })
+    Assert-Equal $leakedMarkerEntries.Count 0 "Contents behind a planted junction must never be enumerated into the wipe plan (the walk must not follow it)."
+
+    $junctionResults = Invoke-RevAgentBridgeTreeWipePlan -Plan $junctionPlan -DryRun $false
+    $failedJunctionResults = @($junctionResults | Where-Object { $_.disposition -eq "failed" })
+    Assert-Equal $failedJunctionResults.Count 0 "Wiping around a kept junction must not fail."
+    Assert-True (Test-Path -LiteralPath (Join-Path $junctionOutsideTarget "secret-marker.txt") -PathType Leaf) "The out-of-tree target behind the junction must survive completely untouched."
+    Assert-True (Test-Path -LiteralPath $junctionLinkPath) "The junction placeholder itself must survive (never deleted, never followed)."
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $junctionLegacyRoot "ordinary-file.txt"))) "An ordinary non-anchor file alongside the junction must still be removed."
 
     # =====================================================================
     Write-Host "Test uninstaller tree wipe structurally cannot remove a P-SEQ-2 rollback anchor"

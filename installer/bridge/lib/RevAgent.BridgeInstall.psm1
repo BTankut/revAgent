@@ -167,11 +167,14 @@ function New-RevAgentBridgeAddinManifestContract {
 # Single guarded mutation choke point.
 #
 # Every machine-mutating action in the installer/uninstaller routes through
-# this function. When DryRun is $true, Apply is never invoked -- only a
-# 'skipped_dry_run' plan entry is recorded. This is what makes "-WhatIf/dry-run
-# performs zero mutations" mechanically true rather than a documentation
-# promise: a test can pass an Apply scriptblock that throws, or that
-# increments a counter, and assert it never ran under DryRun.
+# this function -- including, per legacy-tree item, the uninstaller's
+# Invoke-RevAgentBridgeTreeWipePlan below, which has no dry-run branch of its
+# own precisely so this stays the only gate. When DryRun is $true, Apply is
+# never invoked -- only a 'skipped_dry_run' plan entry is recorded. This is
+# what makes "-WhatIf/dry-run performs zero mutations" mechanically true
+# rather than a documentation promise: a test can pass an Apply scriptblock
+# that throws, or that increments a counter, and assert it never ran under
+# DryRun.
 # ---------------------------------------------------------------------------
 
 function Invoke-RevAgentBridgeGuardedMutation {
@@ -492,16 +495,39 @@ function Get-RevAgentBridgeTreeWipePlan {
         return $false
     }
 
-    $allItems = @(Get-ChildItem -LiteralPath $rootFull -Recurse -Force -ErrorAction SilentlyContinue)
-    $sorted = $allItems | Sort-Object { $_.FullName.Length } -Descending
-    foreach ($item in $sorted) {
-        $full = $item.FullName
-        if (& $isKept $full) {
-            $plan.Add([pscustomobject][ordered]@{ path = $full; kind = if ($item.PSIsContainer) { 'directory' } else { 'file' }; disposition = 'kept_anchor' })
+    $rootItem = Get-Item -LiteralPath $rootFull -Force -ErrorAction Stop
+    if (($rootItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+        # The wipe root itself is a reparse point: refuse to walk through it
+        # at all rather than trust Get-ChildItem -Recurse's own link handling.
+        $plan.Add([pscustomobject][ordered]@{ path = $rootFull; kind = 'directory'; disposition = 'kept_reparse_point' })
+        return @($plan.ToArray())
+    }
+
+    # Manual iterative walk (never -Recurse): a directory reparse point
+    # (junction/symlink) is recorded as kept_reparse_point and its subtree is
+    # never enumerated, so a planted link inside the legacy tree cannot pull
+    # an out-of-tree path (or an infinite loop) into the removal plan.
+    $collected = [System.Collections.Generic.List[object]]::new()
+    $stack = [System.Collections.Generic.Stack[string]]::new()
+    $stack.Push($rootFull)
+    while ($stack.Count -gt 0) {
+        $currentDirectory = $stack.Pop()
+        foreach ($child in @(Get-ChildItem -LiteralPath $currentDirectory -Force -ErrorAction SilentlyContinue)) {
+            $isReparsePoint = (($child.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0)
+            $kind = if ($child.PSIsContainer) { 'directory' } else { 'file' }
+            $disposition =
+                if ($isReparsePoint) { 'kept_reparse_point' }
+                elseif (& $isKept $child.FullName) { 'kept_anchor' }
+                else { 'remove' }
+            [void]$collected.Add([pscustomobject][ordered]@{ path = $child.FullName; kind = $kind; disposition = $disposition })
+            if ($kind -eq 'directory' -and -not $isReparsePoint) {
+                [void]$stack.Push($child.FullName)
+            }
         }
-        else {
-            $plan.Add([pscustomobject][ordered]@{ path = $full; kind = if ($item.PSIsContainer) { 'directory' } else { 'file' }; disposition = 'remove' })
-        }
+    }
+
+    foreach ($item in ($collected | Sort-Object { $_.path.Length } -Descending)) {
+        [void]$plan.Add($item)
     }
 
     if (& $isKept $rootFull) {
@@ -514,47 +540,70 @@ function Get-RevAgentBridgeTreeWipePlan {
     return @($plan.ToArray())
 }
 
+# ---------------------------------------------------------------------------
+# Every per-item removal routes through the single guarded mutation choke
+# point (Invoke-RevAgentBridgeGuardedMutation): DryRun gating lives there and
+# only there -- this function no longer has its own separate dry-run branch.
+# The default RemoveItemAction is the real deletion primitive; tests inject
+# a mock to prove it is never invoked under DryRun.
+# ---------------------------------------------------------------------------
+
 function Invoke-RevAgentBridgeTreeWipePlan {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)][object[]]$Plan,
-        [Parameter(Mandatory = $true)][bool]$DryRun
+        [Parameter(Mandatory = $true)][bool]$DryRun,
+        [System.Collections.Generic.List[object]]$Steps,
+        [scriptblock]$RemoveItemAction
     )
+
+    if ($null -eq $RemoveItemAction) {
+        $RemoveItemAction = {
+            param([string]$ItemPath, [string]$ItemKind)
+            if (-not (Test-Path -LiteralPath $ItemPath)) {
+                return 'removed'
+            }
+            if ($ItemKind -eq 'directory') {
+                # Only ever reached once every kept descendant has already
+                # been excluded from the plan above -- remaining children, if
+                # any, are themselves 'remove' items processed first because
+                # the plan is sorted deepest-path-first.
+                $remainingChildren = @(Get-ChildItem -LiteralPath $ItemPath -Force -ErrorAction SilentlyContinue)
+                if ($remainingChildren.Count -gt 0) {
+                    return 'kept_non_empty'
+                }
+                Remove-Item -LiteralPath $ItemPath -Force -Recurse:$false -ErrorAction Stop
+                return 'removed'
+            }
+            Remove-Item -LiteralPath $ItemPath -Force -ErrorAction Stop
+            return 'removed'
+        }
+    }
 
     $results = [System.Collections.Generic.List[object]]::new()
     foreach ($item in $Plan) {
         if ($item.disposition -ne 'remove') {
-            $results.Add([pscustomobject][ordered]@{ path = $item.path; kind = $item.kind; disposition = $item.disposition })
+            [void]$results.Add([pscustomobject][ordered]@{ path = $item.path; kind = $item.kind; disposition = $item.disposition })
             continue
         }
-        if ($DryRun) {
-            $results.Add([pscustomobject][ordered]@{ path = $item.path; kind = $item.kind; disposition = 'would_remove' })
-            continue
-        }
+
+        $itemPath = $item.path
+        $itemKind = $item.kind
+        $capturedAction = $RemoveItemAction
         try {
-            if (Test-Path -LiteralPath $item.path) {
-                if ($item.kind -eq 'directory') {
-                    # Only ever reached once every kept descendant has already
-                    # been excluded from the plan above -- remaining children,
-                    # if any, are themselves 'remove' items processed first
-                    # because the plan is sorted deepest-path-first.
-                    $remainingChildren = @(Get-ChildItem -LiteralPath $item.path -Force -ErrorAction SilentlyContinue)
-                    if ($remainingChildren.Count -eq 0) {
-                        Remove-Item -LiteralPath $item.path -Force -Recurse:$false -ErrorAction Stop
-                    }
-                    else {
-                        $results.Add([pscustomobject][ordered]@{ path = $item.path; kind = $item.kind; disposition = 'kept_non_empty' })
-                        continue
-                    }
-                }
-                else {
-                    Remove-Item -LiteralPath $item.path -Force -ErrorAction Stop
-                }
+            $record = Invoke-RevAgentBridgeGuardedMutation -Target $itemPath -MutationAction 'remove_legacy_item' -DryRun $DryRun -Steps $Steps -Apply {
+                & $capturedAction $itemPath $itemKind
+            }.GetNewClosure()
+
+            $disposition = switch ($record.status) {
+                'skipped_dry_run' { 'would_remove' }
+                'applied' { if ($record.detail -eq 'kept_non_empty') { 'kept_non_empty' } else { 'removed' } }
+                default { 'failed' }
             }
-            $results.Add([pscustomobject][ordered]@{ path = $item.path; kind = $item.kind; disposition = 'removed' })
+            [void]$results.Add([pscustomobject][ordered]@{ path = $itemPath; kind = $itemKind; disposition = $disposition })
         }
         catch {
-            $results.Add([pscustomobject][ordered]@{ path = $item.path; kind = $item.kind; disposition = 'failed'; error = $_.Exception.Message })
+            [void]$results.Add([pscustomobject][ordered]@{ path = $itemPath; kind = $itemKind; disposition = 'failed'; error = $_.Exception.Message })
         }
     }
     return @($results.ToArray())
