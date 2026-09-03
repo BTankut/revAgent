@@ -49,7 +49,9 @@ fleet cutover, or M5 implementation. M5 through M10 remain unchanged.
    last live session, imported byte-for-byte. Its SHA-256 is attested in
    `M4_GATE_EVIDENCE.md`; it must never be edited in place.
 7. Earlier milestones: `M1_O1_FREEZE_EVIDENCE.md`, `M2_GATE_EVIDENCE.md`,
-   `M3_BRIDGE_GATE_EVIDENCE.md`.
+   `M3_BRIDGE_GATE_EVIDENCE.md`. `docs/plan/M5_GATE_EVIDENCE.md` records the
+   M5 evidence matrix and a recommended milestone-owner decision; it does not
+   itself change `MASTER_PLAN.md`'s M5 `not_started` state.
 8. **[WP-12 / WP-13 remediation closure](WP12_WP13_REMEDIATION_CLOSURE.md)**
    — the durable final engineering-evidence record and its explicit
    non-acceptance boundary.
