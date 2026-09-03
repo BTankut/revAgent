@@ -149,3 +149,31 @@ minimal cross-reference line in `docs/plan/00-INDEX.md`. It made no product,
 workflow, test, or `.orchestration/` changes, and it does not itself change
 `MASTER_PLAN.md`'s M5 state — that ledger update is a separate, later unit
 step gated on the milestone owner's acceptance above.
+
+## Acceptance record
+
+**Date:** 2026-09-03.
+
+**Approval sentence (verbatim):**
+
+> I accept M5 on protected main 28214c4e with the recorded gaps listed in
+> M5_GATE_EVIDENCE.md §4.
+
+**Decision:** ACCEPT WITH RECORDED GAPS.
+
+**Evidence anchor:** protected main SHA `28214c4ef714436c2810680b840bda76f81feda9`.
+
+**Merge commit / PR / CI run:** `35a18a1df3b45df59516a2a7612c6282150a5dd8` —
+squash merge of EU-13 PR #406 "[EU-13][M5] M5 closure and acceptance
+evidence"; post-merge CI run `33715481796` success.
+
+**Gap disposition:** unchanged from § "Red-result and gap disposition" above —
+the eight RLS-enabled tables without a dedicated cross-tenant negative
+(`tenants`, `users`, `sessions`, `device_credentials`, `module_licenses`,
+`seat_assignments`, `bridge_connections`, `bridge_dispatches`) remain parked
+for a future test-only slice.
+
+**Next unit:** EU-20 (M6-V1).
+
+This forward pointer submits the milestone-owner acceptance for ledger
+synchronization. It does not alter historical evidence recorded above.

@@ -7,8 +7,8 @@ to a **Bridge** running on the user's workstation, which drives a **Revit add-in
 against the live model. The `README.md` at the repository root documents the
 *legacy* workstation package; the migration is tracked here.
 
-**Programme state synchronized through protected-main M4 acceptance anchor
-**`fcf764e5c1149ebb425553fadef1265137f5d70d`** (2026-09-01).**
+**Programme state synchronized through protected-main M5 acceptance anchor
+**`35a18a1df3b45df59516a2a7612c6282150a5dd8`** (2026-09-03).**
 
 | Milestone | Subject | State |
 | --- | --- | --- |
@@ -17,6 +17,7 @@ against the live model. The `README.md` at the repository root documents the
 | M2 | Gateway core / conformance vectors | accepted |
 | M3 | Bridge + add-in live chain | accepted — proven live on a real Revit 2022 workstation |
 | M4 | Pre-production-auth vertical slice | **accepted 2026-09-01 — recorded evidence ceiling retained** |
+| M5 | OIDC/tenant isolation vertical slice | **accepted 2026-09-03 — recorded gaps retained** |
 
 **M4 acceptance, precisely.** The milestone owner accepted M4 on 2026-09-01 at
 protected-main anchor `fcf764e5c1149ebb425553fadef1265137f5d70d`. The canonical
@@ -29,6 +30,15 @@ engineering SHA `029a164b...`.
 
 Accepting M4 does not authorize deployment, release, NAS publication, pilot,
 fleet cutover, or M5 implementation. M5 through M10 remain unchanged.
+
+**M5 acceptance, precisely.** The milestone owner accepted M5 on 2026-09-03 at
+evidence anchor `28214c4ef714436c2810680b840bda76f81feda9`, with the current
+protected-main acceptance anchor at `35a18a1df3b45df59516a2a7612c6282150a5dd8`
+(EU-13, PR #406). The canonical [`M5_GATE_EVIDENCE.md`](M5_GATE_EVIDENCE.md)
+records the M5 evidence matrix and the acceptance record; eight RLS-enabled
+tables lack a dedicated cross-tenant negative test and are parked for a future
+test-only slice. Accepting M5 does not authorize deployment, release, NAS
+publication, pilot, or fleet cutover. M6 through M10 remain unchanged.
 
 ---
 
@@ -50,8 +60,8 @@ fleet cutover, or M5 implementation. M5 through M10 remain unchanged.
    `M4_GATE_EVIDENCE.md`; it must never be edited in place.
 7. Earlier milestones: `M1_O1_FREEZE_EVIDENCE.md`, `M2_GATE_EVIDENCE.md`,
    `M3_BRIDGE_GATE_EVIDENCE.md`. `docs/plan/M5_GATE_EVIDENCE.md` records the
-   M5 evidence matrix and a recommended milestone-owner decision; it does not
-   itself change `MASTER_PLAN.md`'s M5 `not_started` state.
+   M5 evidence matrix and the milestone-owner acceptance record (accepted
+   2026-09-03, with recorded gaps).
 8. **[WP-12 / WP-13 remediation closure](WP12_WP13_REMEDIATION_CLOSURE.md)**
    — the durable final engineering-evidence record and its explicit
    non-acceptance boundary.
@@ -131,8 +141,11 @@ re-deriving the list above:
 - **Concurrency and crash-recovery on the invoke path.** A recorded residual
   window exists: the conflict index knows holds, not in-flight uncertainty, so a
   mutation left `executing` by a crash installs no hold until redelivery.
-- **The M5 OAuth/entitlement design does not exist yet.** Everything about real
-  multi-tenant entitlement is unbuilt.
+- **Eight RLS-enabled tables lack a dedicated cross-tenant negative test**
+  (`tenants`, `users`, `sessions`, `device_credentials`, `module_licenses`,
+  `seat_assignments`, `bridge_connections`, `bridge_dispatches`) — see
+  `M5_GATE_EVIDENCE.md` → "Red-result and gap disposition". M5 OAuth/tenant
+  isolation itself is built and accepted.
 - **Replay semantics.** Review gates have historically caught real RBP replay
   defects that local suites missed; this is the project's known weak spot.
 - **Installer/uninstaller and migration** (M6) is specified but not built.

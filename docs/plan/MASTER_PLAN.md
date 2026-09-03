@@ -18,9 +18,19 @@ The accepted evidence retains its stated ceiling: live request-argument
 manifests are not retained, and the installed runtime was not mechanically
 bound to engineering SHA `029a164b8f9395c76052de65717f686b32d83234`.
 
+The milestone owner accepted M5 on 2026-09-03 with the recorded gaps listed
+in [`M5_GATE_EVIDENCE.md`](M5_GATE_EVIDENCE.md) § "Red-result and gap
+disposition" — eight RLS-enabled tables (`tenants`, `users`, `sessions`,
+`device_credentials`, `module_licenses`, `seat_assignments`,
+`bridge_connections`, `bridge_dispatches`) without a dedicated cross-tenant
+RLS negative, parked for a future test-only slice. The evidence anchor is
+protected-main SHA `28214c4ef714436c2810680b840bda76f81feda9`; the current
+protected-main acceptance anchor is `35a18a1df3b45df59516a2a7612c6282150a5dd8`
+(EU-13, PR #406). M6 through M10 remain unchanged.
+
 **Phase-0 exit:** passed on 2026-07-22; milestone-owner acceptance is not yet recorded
 
-**Last updated:** 2026-09-01
+**Last updated:** 2026-09-03
 
 This file is the operational milestone tracker for the migration described by `docs/TARGET_ARCHITECTURE.md` and `docs/implementation-plan/00-INDEX.md`. The index and its RES-* amendments are authoritative when package documents disagree. A draft PR or written artifact is evidence, but it does not close a demo gate by itself.
 
@@ -505,7 +515,7 @@ separately from engineering effort.
 | M2 | External-client Gateway core serves a capability index and deferred schemas through `tool_search`/`tool_schema`, exposes a small pinned callable set over north MCP, loads immutable hash-bound runtime/docs handlers without frozen-source relocation, and proves registry/policy/confirmation plus bridge/internal executor dispatch and production RBP ingress; Mode B remains interface stubs only | M1 | WP2 with WP5 P5-T4 and WP6 P6-T1 | 38d | 11.60h recorded for #356–#365; four earlier slices not recorded | not calculable for complete milestone | `accepted` |
 | M3 | Bridge + pre-pilot add-in adaptations connect, journal redelivery, and demonstrate sequential then capability-gated atomic batch behavior | M1 | WP3 | 15d | not recorded | not calculable | `accepted` |
 | M4 | **Pre-production-auth vertical slice:** an external MCP client (WP9 candidate) → Gateway → Bridge → live Revit executes one read and one confirm-class write with originating-preview/approval/commit audit evidence; this slice does not pass DP-10 OAuth or hands-on conformance | M2, M3 | WP1/WP2/WP3/WP5/WP9 | 5d | not recorded | not calculable | `accepted` |
-| M5 | OIDC, device enrollment, seats, tenant isolation, audit, event schema, and Postgres migrations pass two-tenant tests | M2 | WP4 | 8d | not recorded | not calculable | `not_started` |
+| M5 | OIDC, device enrollment, seats, tenant isolation, audit, event schema, and Postgres migrations pass two-tenant tests | M2 | WP4 | 8d | not recorded | not calculable | `accepted` |
 | M6 | Installer/uninstaller and signed bridge/add-in self-update lane pass lab install, update, crash-loop rollback, and signature checks | M3, M5 | WP3 with WP5 conventions | 12d | not recorded | not calculable | `not_started` |
 | M7 | Production Compose/tunnel, warm standby, blank-VM O10 restore drill, and O11 metric-parity gate pass with measured evidence | M4, M5 | WP5/WP7 | 6d | not recorded | not calculable | `not_started` |
 | M8 | Pilot uses the same client/add-in stack intended for cutover for at least five real working days; forced failures and one signed update pass | M4, M6, M7 | WP8/WP9 with pilot user | 8d | not recorded | not calculable | `not_started` |
