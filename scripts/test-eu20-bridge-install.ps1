@@ -45,6 +45,31 @@ function Assert-Equal {
     if ("$Actual" -ne "$Expected") { throw "$Message Expected '$Expected', got '$Actual'." }
 }
 
+function Get-RevAgentBridgeReportMissingSchemaFields {
+    # Lightweight required-field validation (top-level plus the nested
+    # install/uninstall objects the top-level loop does not reach) --
+    # not a full JSON Schema validator, but enough to prove a report with a
+    # missing required field (in particular the evidence-forgeability
+    # fields icaclsInvokerInjected/elevated) fails validation rather than
+    # silently passing.
+    param([Parameter(Mandatory = $true)][object]$Report, [Parameter(Mandatory = $true)][object]$Schema)
+    $missing = [System.Collections.Generic.List[string]]::new()
+    foreach ($field in $Schema.required) {
+        if ($null -eq $Report.PSObject.Properties[$field]) { [void]$missing.Add($field) }
+    }
+    if ($null -ne $Report.PSObject.Properties["install"] -and $null -ne $Report.install) {
+        foreach ($field in $Schema.properties.install.oneOf[1].required) {
+            if ($null -eq $Report.install.PSObject.Properties[$field]) { [void]$missing.Add("install.$field") }
+        }
+    }
+    if ($null -ne $Report.PSObject.Properties["uninstall"] -and $null -ne $Report.uninstall) {
+        foreach ($field in $Schema.properties.uninstall.oneOf[1].required) {
+            if ($null -eq $Report.uninstall.PSObject.Properties[$field]) { [void]$missing.Add("uninstall.$field") }
+        }
+    }
+    return @($missing.ToArray())
+}
+
 function Assert-ThrowsLike {
     param([scriptblock]$Action, [string]$Pattern, [string]$Message)
     $threw = $false
@@ -491,12 +516,25 @@ try {
     $schemaPath = Join-Path $RepoRoot "config\bridge-machine-report.schema.json"
     Assert-True (Test-Path -LiteralPath $schemaPath -PathType Leaf) "The machine-report schema must exist under config/."
     $schema = Get-Content -Raw -LiteralPath $schemaPath | ConvertFrom-Json
-    foreach ($requiredField in $schema.required) {
-        Assert-True ($null -ne ($happyReport.PSObject.Properties[$requiredField])) "Machine report is missing schema-required field '$requiredField'."
-    }
+    $happyMissingFields = Get-RevAgentBridgeReportMissingSchemaFields -Report $happyReport -Schema $schema
+    Assert-Equal $happyMissingFields.Count 0 "A schema-valid report (including nested install.*) must have zero missing required fields. Missing: $($happyMissingFields -join ',')"
     Assert-Equal $happyReport.schemaVersion 1 "Report schemaVersion must be 1."
     Assert-Equal $happyReport.app "revAgent" "Report app identity must be 'revAgent'."
     Assert-Equal $happyReport.component "bridge" "Report component must be 'bridge'."
+    Assert-True ($happyReport.install.PSObject.Properties["icaclsInvokerInjected"].Value -is [bool]) "install.icaclsInvokerInjected must be present and boolean."
+    Assert-Equal $happyReport.install.icaclsInvokerInjected $false "A dry-run happy-path install (no -IcaclsInvoker supplied) must record icaclsInvokerInjected=false."
+    Assert-True ($happyReport.install.PSObject.Properties["elevated"].Value -is [bool]) "install.elevated must be present and boolean."
+
+    # Negative: a report missing either evidence-forgeability field must
+    # fail this same validation, proving it is not silently accepted.
+    $happyReportMissingInjected = $happyReport | ConvertTo-Json -Depth 10 | ConvertFrom-Json
+    $happyReportMissingInjected.install.PSObject.Properties.Remove("icaclsInvokerInjected")
+    $missingInjectedFields = Get-RevAgentBridgeReportMissingSchemaFields -Report $happyReportMissingInjected -Schema $schema
+    Assert-True ($missingInjectedFields -contains "install.icaclsInvokerInjected") "A report missing install.icaclsInvokerInjected must fail schema validation."
+    $happyReportMissingElevated = $happyReport | ConvertTo-Json -Depth 10 | ConvertFrom-Json
+    $happyReportMissingElevated.install.PSObject.Properties.Remove("elevated")
+    $missingElevatedFields = Get-RevAgentBridgeReportMissingSchemaFields -Report $happyReportMissingElevated -Schema $schema
+    Assert-True ($missingElevatedFields -contains "install.elevated") "A report missing install.elevated must fail schema validation."
 
     # =====================================================================
     Write-Host "Test the elevation gate: without -IcaclsInvoker, a non-elevated real (non-dry-run) install fails closed before any mutation"
@@ -609,6 +647,11 @@ try {
     $realRunReport = Get-Content -Raw -LiteralPath $realRunReportPath | ConvertFrom-Json
     Assert-Equal $realRunReport.status "success" "A real (non-dry-run) install against valid fixtures must succeed end-to-end."
     Assert-Equal $realRunReport.dryRun $false "This run must be recorded as non-dry-run."
+    # Evidence-forgeability: a mocked-invoker run must disclose that fact so
+    # this report can never be mistaken for genuine machine-mutation
+    # evidence (docs/plan/M6_EU20_LAB_RUNBOOK.md Step 14 rejects any report
+    # with icaclsInvokerInjected=true as true-gate lab evidence).
+    Assert-Equal $realRunReport.install.icaclsInvokerInjected $true "A run with an injected -IcaclsInvoker must record icaclsInvokerInjected=true."
 
     # Verification method for "the installer never touches the real ACL":
     # compare InstallRoot's actual on-disk ACL (SDDL) before and after the
@@ -800,6 +843,10 @@ try {
     foreach ($anchorRecord in $uninstallReport.uninstall.anchors) {
         Assert-Equal $anchorRecord.preserved $true "Every anchor record in the dry-run report must show preserved=true: $($anchorRecord.path)"
     }
+    Assert-Equal $uninstallReport.uninstall.icaclsInvokerInjected $false "The uninstaller never calls icacls; its report must always record icaclsInvokerInjected=false."
+    Assert-True ($uninstallReport.uninstall.PSObject.Properties["elevated"].Value -is [bool]) "uninstall.elevated must be present and boolean."
+    $uninstallMissingFields = Get-RevAgentBridgeReportMissingSchemaFields -Report $uninstallReport -Schema $schema
+    Assert-Equal $uninstallMissingFields.Count 0 "The uninstaller report (including nested uninstall.*) must have zero missing required schema fields. Missing: $($uninstallMissingFields -join ',')"
 
     # =====================================================================
     Write-Host "Test bounded Codex config edit preserves everything outside the two managed sections byte-for-byte"

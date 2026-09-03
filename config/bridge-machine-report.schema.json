@@ -73,7 +73,9 @@
             "enrollmentAttempted",
             "enrollmentArtifactWritten",
             "alreadyEnrolled",
-            "serviceAlreadyInstalled"
+            "serviceAlreadyInstalled",
+            "icaclsInvokerInjected",
+            "elevated"
           ],
           "properties": {
             "revitVersion": { "type": "string" },
@@ -84,7 +86,15 @@
             "enrollmentAttempted": { "type": "boolean" },
             "enrollmentArtifactWritten": { "type": "boolean" },
             "alreadyEnrolled": { "type": "boolean" },
-            "serviceAlreadyInstalled": { "type": "boolean" }
+            "serviceAlreadyInstalled": { "type": "boolean" },
+            "icaclsInvokerInjected": {
+              "type": "boolean",
+              "description": "true when the caller substituted the ACL primitive (-IcaclsInvoker) instead of the real icacls.exe. A report with this true was not produced by a genuine machine mutation and must never be accepted as true-gate lab evidence regardless of status/dryRun."
+            },
+            "elevated": {
+              "type": "boolean",
+              "description": "Whether the installer process was running as an elevated Administrator. A real (non-dry-run, non-mocked) install can only reach status=success when this is true, because the elevation gate refuses otherwise before any mutation."
+            }
           }
         }
       ]
@@ -94,7 +104,7 @@
         { "type": "null" },
         {
           "type": "object",
-          "required": ["scheduledTasks", "legacyTrees", "codexConfig", "anchors", "serviceRemoved"],
+          "required": ["scheduledTasks", "legacyTrees", "codexConfig", "anchors", "serviceRemoved", "icaclsInvokerInjected", "elevated"],
           "properties": {
             "scheduledTasks": {
               "type": "array",
@@ -159,7 +169,15 @@
                 }
               }
             },
-            "serviceRemoved": { "type": "boolean" }
+            "serviceRemoved": { "type": "boolean" },
+            "icaclsInvokerInjected": {
+              "type": "boolean",
+              "description": "The uninstaller never calls icacls; always false. Present for symmetry with the install report's evidence-forgeability field."
+            },
+            "elevated": {
+              "type": "boolean",
+              "description": "Whether the uninstaller process was running as an elevated Administrator."
+            }
           }
         }
       ]

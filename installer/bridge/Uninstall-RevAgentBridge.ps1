@@ -50,12 +50,22 @@ $anchors = Get-RevAgentBridgeRollbackAnchors -ProgramDataRoot $ProgramDataRoot
 $keepList = Get-RevAgentBridgeKeepList -ProgramDataRoot $ProgramDataRoot
 $anchorHashesBefore = Get-RevAgentBridgeAnchorHashes -Anchors $anchors
 
+# Symmetric with Install-RevAgentBridge.ps1's evidence-forgeability fields
+# (config/bridge-machine-report.schema.json): this script never calls
+# icacls, so icaclsInvokerInjected is always false, but the process
+# elevation state is still recorded so the same true-gate-evidence
+# acceptance rule in docs/plan/M6_EU20_LAB_RUNBOOK.md applies uniformly to
+# both reports.
+$isCurrentlyElevated = [System.Security.Principal.WindowsPrincipal]::new([System.Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)
+
 $uninstallSummary = [ordered]@{
-    scheduledTasks   = @()
-    legacyTrees       = @()
-    codexConfig       = $null
-    anchors           = @()
-    serviceRemoved    = $false
+    scheduledTasks         = @()
+    legacyTrees             = @()
+    codexConfig             = $null
+    anchors                 = @()
+    serviceRemoved          = $false
+    icaclsInvokerInjected   = $false
+    elevated                = $isCurrentlyElevated
 }
 
 try {

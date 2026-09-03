@@ -86,6 +86,14 @@ $steps = [System.Collections.Generic.List[object]]::new()
 $reportStatus = 'success'
 $reportMessage = 'Install completed.'
 $errors = [System.Collections.Generic.List[string]]::new()
+# Computed once, unconditionally, so the report always records the real
+# process elevation state and whether the caller substituted the ACL
+# primitive -- regardless of dry-run/step-failure branching, so evidence
+# forgeability is bounded: a report cannot claim "success" from a mocked
+# ACL invoker without also disclosing icaclsInvokerInjected=true, and the
+# lab runbook rejects such a report as true-gate evidence (see
+# docs/plan/M6_EU20_LAB_RUNBOOK.md).
+$isCurrentlyElevated = [System.Security.Principal.WindowsPrincipal]::new([System.Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)
 $installSummary = [ordered]@{
     revitVersion            = $RevitVersion
     revitDetected            = $null
@@ -96,6 +104,8 @@ $installSummary = [ordered]@{
     enrollmentArtifactWritten = $false
     alreadyEnrolled          = $false
     serviceAlreadyInstalled  = $false
+    icaclsInvokerInjected    = ($null -ne $IcaclsInvoker)
+    elevated                 = $isCurrentlyElevated
 }
 
 function Get-BridgeLayoutArgs {
@@ -210,11 +220,8 @@ try {
     # Refuse up front instead. This check is skipped only when the caller
     # supplies -IcaclsInvoker (the test injection point above) or is
     # already in -DryRun (which performs zero mutations regardless).
-    if (-not $isDryRun -and $null -eq $IcaclsInvoker) {
-        $currentPrincipal = [System.Security.Principal.WindowsPrincipal]::new([System.Security.Principal.WindowsIdentity]::GetCurrent())
-        if (-not $currentPrincipal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)) {
-            throw 'not_elevated: this installer must run in an elevated (Administrator) process to apply the P-INST-1 ACL lockdown; refusing before any mutation.'
-        }
+    if (-not $isDryRun -and $null -eq $IcaclsInvoker -and -not $isCurrentlyElevated) {
+        throw 'not_elevated: this installer must run in an elevated (Administrator) process to apply the P-INST-1 ACL lockdown; refusing before any mutation.'
     }
 
     # --- 5. Install root + state root + credential directory (ACL'd) ---

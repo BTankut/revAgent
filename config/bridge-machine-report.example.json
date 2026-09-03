@@ -35,7 +35,9 @@
     "enrollmentAttempted": true,
     "enrollmentArtifactWritten": true,
     "alreadyEnrolled": false,
-    "serviceAlreadyInstalled": false
+    "serviceAlreadyInstalled": false,
+    "icaclsInvokerInjected": false,
+    "elevated": true
   },
   "uninstall": null,
   "errors": []

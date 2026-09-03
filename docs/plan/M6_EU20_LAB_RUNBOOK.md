@@ -288,6 +288,19 @@ Collect into the session evidence folder:
 Validate every report JSON against `config/bridge-machine-report.schema.json`
 before filing it as gate evidence.
 
+**Evidence-forgeability rule (mandatory before accepting any report as
+true-gate evidence):** every report carries `install.icaclsInvokerInjected`
+/ `uninstall.icaclsInvokerInjected` and `install.elevated` /
+`uninstall.elevated`. A test run can inject a mock ACL primitive
+(`-IcaclsInvoker`) to run hermetically without ever touching a real ACL —
+that is correct and expected in `scripts/test-eu20-bridge-install.ps1`,
+but it also means a report alone (`status: success`, `dryRun: false`, ACL
+steps `applied`) is not on its own distinguishable from a genuine machine
+mutation. **Reject any report as true-gate lab evidence if
+`icaclsInvokerInjected == true` or `elevated == false`.** Only a report
+with `icaclsInvokerInjected: false` and `elevated: true` may be filed as
+proof that Steps 3/11 actually ran against real machine state.
+
 **Satisfies:** Card Acceptance "machine report and exact review/checks
 green".
 
