@@ -137,6 +137,48 @@ function Get-RevAgentBridgeNormalizedFullPath {
     return $full.TrimEnd('\')
 }
 
+function Get-RevAgentBridgePathState {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    # [System.IO.File]::GetAttributes queries the filesystem entry AT this
+    # exact path without resolving/following a reparse point to its target
+    # (unlike Test-Path, Get-Item, [System.IO.Directory]::Exists, and
+    # [System.IO.File]::Exists, which all resolve through a directory
+    # junction/symlink to check whether the TARGET exists). A dangling or
+    # CI-runner-inaccessible junction target therefore makes those
+    # target-resolving checks report "does not exist", silently skipping
+    # every reparse-point check that gates on them and falling through to
+    # Directory.CreateDirectory -- which then fails (or, worse, succeeds by
+    # writing through the link) instead of refusing. GetAttributes succeeds
+    # and reports the reparse point's own attributes regardless of whether
+    # its target is valid, present, or accessible, so it is the only check
+    # used here to decide both existence and reparse-point-ness.
+    try {
+        $attributes = [System.IO.File]::GetAttributes($Path)
+        return [pscustomobject][ordered]@{
+            Exists         = $true
+            IsReparsePoint = (([int]$attributes -band [int][System.IO.FileAttributes]::ReparsePoint) -ne 0)
+            IsDirectory    = (([int]$attributes -band [int][System.IO.FileAttributes]::Directory) -ne 0)
+        }
+    }
+    catch [System.IO.DirectoryNotFoundException] {
+        return [pscustomobject][ordered]@{ Exists = $false; IsReparsePoint = $false; IsDirectory = $false }
+    }
+    catch [System.IO.FileNotFoundException] {
+        return [pscustomobject][ordered]@{ Exists = $false; IsReparsePoint = $false; IsDirectory = $false }
+    }
+    catch {
+        # GetAttributes failed for any other reason (UnauthorizedAccessException,
+        # or a filesystem/driver edge case around a broken link). This is not
+        # clean absence, and Directory.Exists/File.Exists cannot be trusted to
+        # disambiguate either -- they follow the very reparse point in
+        # question. Fail closed: report it as a reparse point so every caller
+        # refuses rather than guesses its way through an unreadable segment.
+        return [pscustomobject][ordered]@{ Exists = $true; IsReparsePoint = $true; IsDirectory = $false }
+    }
+}
+
 function Assert-RevAgentBridgeNoReparsePoint {
     [CmdletBinding()]
     param(
@@ -146,11 +188,11 @@ function Assert-RevAgentBridgeNoReparsePoint {
 
     $fullRoot = Get-RevAgentBridgeNormalizedFullPath -Path $GuardRoot
     $fullPath = Get-RevAgentBridgeNormalizedFullPath -Path $Path
-    if (-not (Test-Path -LiteralPath $fullRoot -PathType Container)) {
+    $rootState = Get-RevAgentBridgePathState -Path $fullRoot
+    if (-not $rootState.Exists -or -not $rootState.IsDirectory) {
         throw "bridge_guard_root_missing: $fullRoot"
     }
-    $rootItem = Get-Item -LiteralPath $fullRoot -Force -ErrorAction Stop
-    if (($rootItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+    if ($rootState.IsReparsePoint) {
         throw "bridge_guard_root_is_reparse_point: $fullRoot"
     }
     $rootPrefix = if ($fullRoot.EndsWith('\')) { $fullRoot } else { $fullRoot + '\' }
@@ -163,12 +205,16 @@ function Assert-RevAgentBridgeNoReparsePoint {
     $cursor = $fullRoot
     foreach ($segment in @($relative -split '\\' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })) {
         $cursor = Join-Path $cursor $segment
-        if (-not (Test-Path -LiteralPath $cursor)) {
-            break
+        $segmentState = Get-RevAgentBridgePathState -Path $cursor
+        if ($segmentState.IsReparsePoint) {
+            throw "bridge_path_contains_reparse_point: $cursor"
         }
-        $item = Get-Item -LiteralPath $cursor -Force -ErrorAction Stop
-        if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
-            throw "bridge_path_contains_reparse_point: $($item.FullName)"
+        if (-not $segmentState.Exists) {
+            # A segment that genuinely does not exist (clean
+            # DirectoryNotFoundException/FileNotFoundException, not an
+            # unreadable/dangling entry) means nothing deeper can exist
+            # either on a normal filesystem.
+            break
         }
     }
 
@@ -188,13 +234,25 @@ function New-RevAgentBridgeGuardedDirectory {
     $cursor = $fullRoot
     foreach ($segment in @($relative -split '\\' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })) {
         $cursor = Join-Path $cursor $segment
-        if (-not (Test-Path -LiteralPath $cursor)) {
-            [void][System.IO.Directory]::CreateDirectory($cursor)
+        # The reparse-point check runs BEFORE CreateDirectory is ever
+        # considered for this segment, using the same target-independent
+        # attribute probe -- a dangling or unreadable junction refuses here
+        # instead of falling through to a native CreateDirectory failure (or
+        # a silent write through the link).
+        $segmentState = Get-RevAgentBridgePathState -Path $cursor
+        if ($segmentState.IsReparsePoint) {
+            throw "bridge_path_contains_reparse_point: $cursor"
         }
-        if (-not (Test-Path -LiteralPath $cursor -PathType Container)) {
+        if (-not $segmentState.Exists) {
+            [void][System.IO.Directory]::CreateDirectory($cursor)
+            $segmentState = Get-RevAgentBridgePathState -Path $cursor
+            if ($segmentState.IsReparsePoint) {
+                throw "bridge_path_contains_reparse_point: $cursor"
+            }
+        }
+        if (-not $segmentState.IsDirectory) {
             throw "bridge_path_not_a_directory: $cursor"
         }
-        [void](Assert-RevAgentBridgeNoReparsePoint -Path $cursor -GuardRoot $fullRoot)
     }
 
     return $fullPath
@@ -965,6 +1023,7 @@ Export-ModuleMember -Function `
     Get-RevAgentBridgeLayout, `
     Get-RevAgentBridgeAddinLayout, `
     Get-RevAgentBridgeNormalizedFullPath, `
+    Get-RevAgentBridgePathState, `
     Assert-RevAgentBridgeNoReparsePoint, `
     New-RevAgentBridgeGuardedDirectory, `
     Write-RevAgentBridgeGuardedAtomicBytes, `

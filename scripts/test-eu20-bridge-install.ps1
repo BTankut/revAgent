@@ -326,39 +326,79 @@ try {
     Assert-True ($badTokenReport.message -match "enrollment_token_invalid_length") "Failure message must surface the exact fail-closed reason."
 
     # =====================================================================
-    Write-Host "Test installer refuses to write through a pre-planted junction at InstallRoot (fails closed before any write)"
+    Write-Host "Test installer refuses to write through a pre-planted junction at InstallRoot (fails closed before any write) -- both a live and a dangling target"
     # =====================================================================
-    $junctionInstallTemp = New-TestScratchDirectory -Label "junction-install"
-    $scratchRoots.Add($junctionInstallTemp)
-    $junctionInstallLayoutArgs = Get-BridgeTempLayoutArgs -Root $junctionInstallTemp
-    $installRootParent = Split-Path -Parent $junctionInstallLayoutArgs.InstallRoot
-    [void](New-Item -ItemType Directory -Path $installRootParent -Force)
-    $outsideLayoutTarget = Join-Path $junctionInstallTemp "outside-layout-root"
-    [void](New-Item -ItemType Directory -Path $outsideLayoutTarget -Force)
-    [void](New-Item -ItemType Junction -Path $junctionInstallLayoutArgs.InstallRoot -Target $outsideLayoutTarget)
-    $junctionInstallReportPath = Join-Path $junctionInstallTemp "report.json"
-    $junctionInstallThrew = $false
-    try {
-        & (Join-Path $bridgeRoot "Install-RevAgentBridge.ps1") `
-            -PackageRoot $goodFixture.PackageRoot `
-            -TrustedKeysPath $goodFixture.TrustedKeysPath `
-            -EnrollmentToken ("a" * 40) `
-            -EnrollmentTokenExpiresAtUtc ([datetime]::UtcNow.AddHours(1)) `
-            -InstallRoot $junctionInstallLayoutArgs.InstallRoot `
-            -StateRoot $junctionInstallLayoutArgs.StateRoot `
-            -AddinProgramFilesRoot $junctionInstallLayoutArgs.AddinProgramFilesRoot `
-            -RevitAddinsRoot $junctionInstallLayoutArgs.RevitAddinsRoot `
-            -MachineReportPath $junctionInstallReportPath `
-            -SkipRevitDetection `
-            -SkipServiceStart | Out-Null
+    # Verify junction creation actually works on this runner FIRST. If it
+    # doesn't, the two scenarios below would silently no-op past their
+    # New-Item calls and every assertion after them would pass for the
+    # wrong reason (no junction ever existed). Fail loudly and explicitly
+    # instead of silently passing.
+    $junctionCapabilityRoot = New-TestScratchDirectory -Label "junction-capability"
+    $scratchRoots.Add($junctionCapabilityRoot)
+    $junctionCapabilityTarget = Join-Path $junctionCapabilityRoot "target"
+    [void](New-Item -ItemType Directory -Path $junctionCapabilityTarget -Force)
+    $junctionCapabilityLink = Join-Path $junctionCapabilityRoot "link"
+    [void](New-Item -ItemType Junction -Path $junctionCapabilityLink -Target $junctionCapabilityTarget)
+    $junctionCapabilityItem = Get-Item -LiteralPath $junctionCapabilityLink -Force -ErrorAction SilentlyContinue
+    $junctionsSupported = ($null -ne $junctionCapabilityItem) -and (($junctionCapabilityItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0)
+    Assert-True $junctionsSupported "This runner must support directory junction creation (New-Item -ItemType Junction) for the link-guard tests below to mean anything; refusing to silently skip them."
+
+    foreach ($junctionScenario in @(
+            @{ Label = "live-target"; CreateTarget = $true },
+            @{ Label = "dangling-target"; CreateTarget = $false }
+        )) {
+        $junctionInstallTemp = New-TestScratchDirectory -Label "junction-install-$($junctionScenario.Label)"
+        $scratchRoots.Add($junctionInstallTemp)
+        $junctionInstallLayoutArgs = Get-BridgeTempLayoutArgs -Root $junctionInstallTemp
+        $installRootParent = Split-Path -Parent $junctionInstallLayoutArgs.InstallRoot
+        [void](New-Item -ItemType Directory -Path $installRootParent -Force)
+        $outsideLayoutTarget = Join-Path $junctionInstallTemp "outside-layout-root"
+        # New-Item -ItemType Junction requires the target to exist at
+        # creation time -- to get a genuinely DANGLING junction, create the
+        # target, link to it, then remove the target afterward, leaving the
+        # junction node behind pointing at nothing.
+        [void](New-Item -ItemType Directory -Path $outsideLayoutTarget -Force)
+        [void](New-Item -ItemType Junction -Path $junctionInstallLayoutArgs.InstallRoot -Target $outsideLayoutTarget)
+        if (-not $junctionScenario.CreateTarget) {
+            Remove-Item -LiteralPath $outsideLayoutTarget -Force -Recurse
+            Assert-True (-not (Test-Path -LiteralPath $outsideLayoutTarget)) "Fixture precondition ($($junctionScenario.Label)): the junction target must be gone (dangling) before the install is attempted."
+        }
+        # Use the same target-independent attribute probe the production
+        # code now uses (Get-Item/Test-Path follow a reparse point to its
+        # target and can misreport a dangling link as absent).
+        $plantedJunctionState = Get-RevAgentBridgePathState -Path $junctionInstallLayoutArgs.InstallRoot
+        Assert-True $plantedJunctionState.IsReparsePoint "Fixture precondition ($($junctionScenario.Label)): InstallRoot must actually be a reparse point before the install is attempted."
+
+        $junctionInstallReportPath = Join-Path $junctionInstallTemp "report.json"
+        $junctionInstallThrew = $false
+        try {
+            & (Join-Path $bridgeRoot "Install-RevAgentBridge.ps1") `
+                -PackageRoot $goodFixture.PackageRoot `
+                -TrustedKeysPath $goodFixture.TrustedKeysPath `
+                -EnrollmentToken ("a" * 40) `
+                -EnrollmentTokenExpiresAtUtc ([datetime]::UtcNow.AddHours(1)) `
+                -InstallRoot $junctionInstallLayoutArgs.InstallRoot `
+                -StateRoot $junctionInstallLayoutArgs.StateRoot `
+                -AddinProgramFilesRoot $junctionInstallLayoutArgs.AddinProgramFilesRoot `
+                -RevitAddinsRoot $junctionInstallLayoutArgs.RevitAddinsRoot `
+                -MachineReportPath $junctionInstallReportPath `
+                -SkipRevitDetection `
+                -SkipServiceStart | Out-Null
+        }
+        catch { $junctionInstallThrew = $true }
+        Assert-True $junctionInstallThrew "($($junctionScenario.Label)) A pre-planted junction at InstallRoot must make a real (non-dry-run) install fail closed."
+        $junctionInstallReport = Get-Content -Raw -LiteralPath $junctionInstallReportPath | ConvertFrom-Json
+        Assert-Equal $junctionInstallReport.status "failed" "($($junctionScenario.Label)) Report status must be 'failed' when InstallRoot is a pre-planted junction."
+        Assert-True ($junctionInstallReport.message -match "bridge_path_contains_reparse_point") "($($junctionScenario.Label)) Failure must be the guard's own reparse-point refusal, not some other error (got: $($junctionInstallReport.message))."
+        if ($junctionScenario.CreateTarget) {
+            Assert-True (-not (Test-Path -LiteralPath (Join-Path $outsideLayoutTarget "revagent-bridge-host.exe"))) "($($junctionScenario.Label)) Nothing may be written through the junction into the out-of-layout target."
+        }
+        else {
+            Assert-True (-not (Test-Path -LiteralPath $outsideLayoutTarget)) "($($junctionScenario.Label)) The dangling junction's target must still not exist -- nothing may be created through it."
+        }
+        $junctionInstallStepActions = @($junctionInstallReport.steps | ForEach-Object { $_.action })
+        Assert-True ($junctionInstallStepActions -notcontains "deploy_host_executable") "($($junctionScenario.Label)) No later step may run once the link guard throws on create_install_root."
     }
-    catch { $junctionInstallThrew = $true }
-    Assert-True $junctionInstallThrew "A pre-planted junction at InstallRoot must make a real (non-dry-run) install fail closed."
-    $junctionInstallReport = Get-Content -Raw -LiteralPath $junctionInstallReportPath | ConvertFrom-Json
-    Assert-Equal $junctionInstallReport.status "failed" "Report status must be 'failed' when InstallRoot is a pre-planted junction."
-    Assert-True (-not (Test-Path -LiteralPath (Join-Path $outsideLayoutTarget "revagent-bridge-host.exe"))) "Nothing may be written through the junction into the out-of-layout target."
-    $junctionInstallStepActions = @($junctionInstallReport.steps | ForEach-Object { $_.action })
-    Assert-True ($junctionInstallStepActions -notcontains "deploy_host_executable") "No later step may run once the link guard throws on create_install_root."
 
     # =====================================================================
     Write-Host "Test GatewayHostName guard rejects IPv6 literals (bracketed and bare), not just IPv4"
