@@ -7,10 +7,6 @@
     This module intentionally does not duplicate:
       - `installer/lib/RevAgent.DistributionIntegrity.psm1` (RS256 detached
         signature verification, frozen and reused read-only).
-      - `installer/lib/RevAgent.Reporting.psm1` (guarded path/atomic-write
-        primitives: Get-RevAgentNormalizedFullPath, Assert-RevAgentPathWithinRoot,
-        Assert-RevAgentExistingPathNoLink, New-RevAgentGuardedDirectory,
-        Write-RevAgentGuardedAtomicBytes).
       - `installer/lib/RevAgent.RevitVersions.psm1` (Resolve-RevitMcpInstallRoot
         Revit-install detection).
       - `installer/lib/RevAgent.CodexRegistration.psm1`
@@ -102,6 +98,151 @@ function Get-RevAgentBridgeAddinLayout {
         ManifestDirectory    = $manifestDirectory
         ManifestPath         = Join-Path $manifestDirectory 'revAgent.addin'
     }
+}
+
+# ---------------------------------------------------------------------------
+# Link-safe directory creation and atomic write.
+#
+# installer/lib/RevAgent.Reporting.psm1 has equivalent-shaped helpers
+# (Assert-RevAgentExistingPathNoLink, New-RevAgentGuardedDirectory,
+# Write-RevAgentGuardedAtomicBytes) but does not export them -- they are
+# that module's own private internals, reachable only from code physically
+# defined inside it. Calling them unqualified from here throws "term ... is
+# not recognized" (caught by a non-dry-run test; see
+# scripts/test-eu20-bridge-install.ps1). Rather than depend on another
+# module's unexported implementation details, this package owns a small,
+# self-contained equivalent: every existing path segment between GuardRoot
+# (which must already exist and must not itself be a reparse point) and the
+# target is checked for the reparse-point attribute before any directory is
+# created or any file is written, and the atomic write always goes through
+# a create-new temp file plus File.Replace/Move.
+# ---------------------------------------------------------------------------
+
+function Get-RevAgentBridgeNormalizedFullPath {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    # [System.IO.Path]::GetFullPath("C:\").TrimEnd('\') collapses a drive
+    # root to the 2-character "C:", which Windows treats as "current
+    # directory on drive C" -- a different, ambiguous path, NOT the drive
+    # root. This preserves the trailing backslash exactly when the path IS
+    # a drive root, and strips it everywhere else, mirroring the same
+    # drive-root edge case installer/lib/RevAgent.Reporting.psm1's own
+    # (unexported) Get-RevAgentNormalizedFullPath guards against.
+    $full = [System.IO.Path]::GetFullPath($Path)
+    $root = [System.IO.Path]::GetPathRoot($full)
+    if ([string]::Equals($full.TrimEnd('\'), $root.TrimEnd('\'), [System.StringComparison]::OrdinalIgnoreCase)) {
+        return $root
+    }
+    return $full.TrimEnd('\')
+}
+
+function Assert-RevAgentBridgeNoReparsePoint {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$GuardRoot
+    )
+
+    $fullRoot = Get-RevAgentBridgeNormalizedFullPath -Path $GuardRoot
+    $fullPath = Get-RevAgentBridgeNormalizedFullPath -Path $Path
+    if (-not (Test-Path -LiteralPath $fullRoot -PathType Container)) {
+        throw "bridge_guard_root_missing: $fullRoot"
+    }
+    $rootItem = Get-Item -LiteralPath $fullRoot -Force -ErrorAction Stop
+    if (($rootItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "bridge_guard_root_is_reparse_point: $fullRoot"
+    }
+    $rootPrefix = if ($fullRoot.EndsWith('\')) { $fullRoot } else { $fullRoot + '\' }
+    if (-not [string]::Equals($fullPath, $fullRoot, [System.StringComparison]::OrdinalIgnoreCase) -and
+        -not $fullPath.StartsWith($rootPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "bridge_path_escapes_guard_root: path=$fullPath root=$fullRoot"
+    }
+
+    $relative = if ([string]::Equals($fullPath, $fullRoot, [System.StringComparison]::OrdinalIgnoreCase)) { '' } else { $fullPath.Substring($fullRoot.Length).TrimStart('\') }
+    $cursor = $fullRoot
+    foreach ($segment in @($relative -split '\\' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })) {
+        $cursor = Join-Path $cursor $segment
+        if (-not (Test-Path -LiteralPath $cursor)) {
+            break
+        }
+        $item = Get-Item -LiteralPath $cursor -Force -ErrorAction Stop
+        if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "bridge_path_contains_reparse_point: $($item.FullName)"
+        }
+    }
+
+    return $fullPath
+}
+
+function New-RevAgentBridgeGuardedDirectory {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$GuardRoot
+    )
+
+    $fullPath = Assert-RevAgentBridgeNoReparsePoint -Path $Path -GuardRoot $GuardRoot
+    $fullRoot = Get-RevAgentBridgeNormalizedFullPath -Path $GuardRoot
+    $relative = if ([string]::Equals($fullPath, $fullRoot, [System.StringComparison]::OrdinalIgnoreCase)) { '' } else { $fullPath.Substring($fullRoot.Length).TrimStart('\') }
+    $cursor = $fullRoot
+    foreach ($segment in @($relative -split '\\' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })) {
+        $cursor = Join-Path $cursor $segment
+        if (-not (Test-Path -LiteralPath $cursor)) {
+            [void][System.IO.Directory]::CreateDirectory($cursor)
+        }
+        if (-not (Test-Path -LiteralPath $cursor -PathType Container)) {
+            throw "bridge_path_not_a_directory: $cursor"
+        }
+        [void](Assert-RevAgentBridgeNoReparsePoint -Path $cursor -GuardRoot $fullRoot)
+    }
+
+    return $fullPath
+}
+
+function Write-RevAgentBridgeGuardedAtomicBytes {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][byte[]]$Bytes,
+        [Parameter(Mandatory = $true)][string]$GuardRoot
+    )
+
+    $fullPath = Assert-RevAgentBridgeNoReparsePoint -Path $Path -GuardRoot $GuardRoot
+    $directory = Split-Path -Parent $fullPath
+    [void](New-RevAgentBridgeGuardedDirectory -Path $directory -GuardRoot $GuardRoot)
+    if (Test-Path -LiteralPath $fullPath) {
+        [void](Assert-RevAgentBridgeNoReparsePoint -Path $fullPath -GuardRoot $GuardRoot)
+    }
+
+    $leaf = [System.IO.Path]::GetFileName($fullPath)
+    $temporaryPath = Join-Path $directory (".{0}.{1}.tmp" -f $leaf, [guid]::NewGuid().ToString('N'))
+    $stream = $null
+    try {
+        $stream = [System.IO.FileStream]::new($temporaryPath, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+        $stream.Write($Bytes, 0, $Bytes.Length)
+        $stream.Flush($true)
+        $stream.Dispose()
+        $stream = $null
+        [void](Assert-RevAgentBridgeNoReparsePoint -Path $temporaryPath -GuardRoot $GuardRoot)
+
+        if (Test-Path -LiteralPath $fullPath -PathType Leaf) {
+            [void](Assert-RevAgentBridgeNoReparsePoint -Path $fullPath -GuardRoot $GuardRoot)
+            [System.IO.File]::Replace($temporaryPath, $fullPath, $null)
+        }
+        else {
+            [System.IO.File]::Move($temporaryPath, $fullPath)
+        }
+        [void](Assert-RevAgentBridgeNoReparsePoint -Path $fullPath -GuardRoot $GuardRoot)
+    }
+    finally {
+        if ($null -ne $stream) { $stream.Dispose() }
+        if (Test-Path -LiteralPath $temporaryPath -PathType Leaf) {
+            try { [System.IO.File]::Delete($temporaryPath) } catch {}
+        }
+    }
+
+    return $fullPath
 }
 
 # ---------------------------------------------------------------------------
@@ -413,6 +554,36 @@ function Get-RevAgentBridgeManagedCodexSectionNames {
     param()
 
     return @('revAgent', 'revAgent-api-docs')
+}
+
+# ---------------------------------------------------------------------------
+# Copies every top-level entry of SourceDirectory into DestinationDirectory
+# by exact LiteralPath, never via a wildcard. `Copy-Item -LiteralPath (Join-Path
+# $dir '*')` does not expand '*' -- LiteralPath is taken verbatim -- so it
+# looks for a literal file named '*' and throws on every real run; this is
+# the fix. The source directory itself is asserted not to be a reparse
+# point before enumeration, so a planted link at the payload source cannot
+# smuggle an arbitrary out-of-tree subtree into the copy.
+# ---------------------------------------------------------------------------
+
+function Copy-RevAgentBridgeDirectoryContents {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$SourceDirectory,
+        [Parameter(Mandatory = $true)][string]$DestinationDirectory
+    )
+
+    $sourceItem = Get-Item -LiteralPath $SourceDirectory -Force -ErrorAction Stop
+    if (-not $sourceItem.PSIsContainer) {
+        throw "copy_source_not_a_directory: $SourceDirectory"
+    }
+    if (($sourceItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "copy_source_is_reparse_point: $SourceDirectory"
+    }
+
+    foreach ($child in @(Get-ChildItem -LiteralPath $SourceDirectory -Force -ErrorAction Stop)) {
+        Copy-Item -LiteralPath $child.FullName -Destination $DestinationDirectory -Recurse -Force
+    }
 }
 
 function Get-RevAgentBridgeDirectoryTreeSha256 {
@@ -770,22 +941,33 @@ function Write-RevAgentBridgeMachineReport {
         return $null
     }
 
-    [void](New-RevAgentGuardedDirectory -Path $ReportsDirectory -GuardRoot $ReportsDirectory)
+    # ReportsDirectory (<StateRoot>\reports) does not exist yet on a fresh
+    # install, so it cannot guard its own creation -- guard from its parent
+    # (StateRoot), which by this point in either script has already been
+    # created and link-verified. New-RevAgentBridgeGuardedDirectory
+    # re-asserts that parent exists and is not a reparse point before
+    # creating anything under it.
+    $reportsParent = Split-Path -Parent $ReportsDirectory
+    [void](New-RevAgentBridgeGuardedDirectory -Path $ReportsDirectory -GuardRoot $reportsParent)
     $timestamp = ([datetime]::UtcNow).ToString('yyyyMMddTHHmmssZ')
     $fileName = "$($Report.action)-$timestamp.json"
     $path = Join-Path $ReportsDirectory $fileName
     $json = ($Report | ConvertTo-Json -Depth 10)
     $encoding = [System.Text.UTF8Encoding]::new($false, $true)
-    [void](Write-RevAgentGuardedAtomicBytes -Path $path -Bytes ($encoding.GetBytes($json)) -GuardRoot $ReportsDirectory)
+    [void](Write-RevAgentBridgeGuardedAtomicBytes -Path $path -Bytes ($encoding.GetBytes($json)) -GuardRoot $ReportsDirectory)
 
     $latestPath = Join-Path $ReportsDirectory "$($Report.action)-latest.json"
-    [void](Write-RevAgentGuardedAtomicBytes -Path $latestPath -Bytes ($encoding.GetBytes($json)) -GuardRoot $ReportsDirectory)
+    [void](Write-RevAgentBridgeGuardedAtomicBytes -Path $latestPath -Bytes ($encoding.GetBytes($json)) -GuardRoot $ReportsDirectory)
     return $path
 }
 
 Export-ModuleMember -Function `
     Get-RevAgentBridgeLayout, `
     Get-RevAgentBridgeAddinLayout, `
+    Get-RevAgentBridgeNormalizedFullPath, `
+    Assert-RevAgentBridgeNoReparsePoint, `
+    New-RevAgentBridgeGuardedDirectory, `
+    Write-RevAgentBridgeGuardedAtomicBytes, `
     New-RevAgentBridgeAddinManifestContract, `
     Invoke-RevAgentBridgeGuardedMutation, `
     Assert-RevAgentBridgeEnrollmentTokenShape, `
@@ -797,6 +979,7 @@ Export-ModuleMember -Function `
     Get-RevAgentBridgeManagedScheduledTaskNames, `
     Get-RevAgentBridgeManagedCodexSectionNames, `
     Get-RevAgentBridgeLegacyRemovalTargets, `
+    Copy-RevAgentBridgeDirectoryContents, `
     Get-RevAgentBridgeDirectoryTreeSha256, `
     Get-RevAgentBridgeAnchorHashes, `
     Get-RevAgentBridgeTreeWipePlan, `

@@ -44,6 +44,25 @@ emitted report before the committed run.
 | P5 | Operator has local Administrator rights on the target machine (service registration + ACL lockdown require it). | `whoami /groups` shows `BUILTIN\Administrators` enabled. | P-INST-1 |
 | P6 | Machine identity verified: confirm the actual `$env:COMPUTERNAME` on the console matches the machine named in P1, and is **not** `DESKTOP-OKNV128`. | `$env:COMPUTERNAME` on the target console. | Card "Environment" clause |
 
+## Lab-machine preflight card
+
+Run this whole card on the named machine's own console, in order, **before**
+Step 1. Every check must pass before the session proceeds; a failed check
+sends the operator back to the requesting party, not around this runbook.
+
+| # | Check | Command (run on the target console) | Pass condition |
+|---|---|---|---|
+| F1 | Hostname matches the P1 authorization exactly. | `$env:COMPUTERNAME` | Equals the named machine; is not `DESKTOP-OKNV128`. |
+| F2 | Machine is confirmed disposable (not a production/shared workstation such as `PETRUCCI` unless separately confirmed). | Operator's written authorization from P1. | Authorization text names this exact hostname as disposable. |
+| F3 | No `revAgentBridge` service already exists from a prior partial run. | `Get-Service -Name revAgentBridge -ErrorAction SilentlyContinue` | Returns nothing (fresh machine) **or**, if present, its state is understood before proceeding (see R1 if a prior session was interrupted). |
+| F4 | The three P-SEQ-2 rollback anchors are present and healthy before this session touches anything. | `Test-Path 'C:\ProgramData\DPE\revAgent\bootstrap'`; `Test-Path 'C:\ProgramData\DPE\revAgent\prestage\install-revagent-local-bootstrap.ps1'`; `Test-Path 'C:\ProgramData\DPE\revAgent\updater\config\release-trusted-keys.json'` | All three return `True`. Record their `Get-FileHash`/directory-tree hash now as the pre-session baseline for Step 12's before/after comparison. |
+| F5 | Revit 2022 is installed and closed (no running `Revit.exe` process). | `Resolve-RevitMcpInstallRoot -Version 2022`; `Get-Process Revit -ErrorAction SilentlyContinue` | Install root resolves; no running Revit process. |
+| F6 | Operator has local Administrator rights. | `([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)` | Returns `True`. |
+| F7 | No orphaned local process is bound to the legacy add-in TCP port range (8080-8085) that could collide with bridge discovery. | `Get-NetTCPConnection -LocalPort 8080-8085 -ErrorAction SilentlyContinue` | Empty, or every bound process is understood and expected (e.g. Revit's own add-in listener once running). |
+| F8 | The signed release payload and trusted-keys file for this session are staged locally and their directory is not shared/writable by other users. | `icacls <PackageRoot>` | Only the operator/Administrators have write access. |
+| F9 | The exact enrollment token and its expiry (P3) are in hand and have not been used elsewhere. | Operator's out-of-band record from the Gateway admin. | Token is unused; expiry leaves ≥ 50s and ≤ 24h+5s of remaining lifetime at the moment Step 3 will run (P-ENROLL-1 bound, re-checked by the installer itself). |
+| F10 | A rollback contact/escalation path is known in case R4 (full restore) is needed. | Operator's own runbook/on-call reference. | Named and reachable for the duration of the session. |
+
 ## Step 1 — Machine identity verification
 
 On the target console (not this repo's dev machine):
@@ -297,11 +316,94 @@ preparation (installer script, uninstaller script, tests, this runbook,
 and the machine-report schema) is complete and gated behind these two
 approvals.
 
-## Rollback reference
+## Rollback plan
 
-If Step 3 or Step 11 leaves the machine in an unexpected state, the
-existing frozen NAS-restore procedure remains the fallback (Section 8 step
-4 of the target architecture; `docs/ROLLBACK_CRITERION_DRAFT.md`). This
-package does not introduce a new rollback mechanism; it only guarantees
-(via Step 12) that the anchors that procedure depends on were never
-touched.
+This package introduces no new rollback mechanism of its own. Its entire
+contribution to rollback safety is Step 12's guarantee: the three P-SEQ-2
+anchors are structurally never selected for removal or rewrite (enforced by
+`Get-RevAgentBridgeTreeWipePlan`'s construction, not by care), so whatever
+happens during Steps 3-11, the machine's path back to the pre-cutover legacy
+stack stays intact. What the operator actually does with that path depends
+on where the failure occurred.
+
+### R1 — Install (Step 3) fails partway through
+
+1. Read the emitted `eu20-install-report.json`. Its `steps[]` array shows
+   exactly which guarded mutations reached `applied` before the failing one
+   is recorded `failed`; everything after that never ran (P-INST-1 disjoint
+   roots mean nothing here can have touched the legacy
+   `C:\ProgramData\DPE\revAgent` tree).
+2. Re-run `Install-RevAgentBridge.ps1` unchanged (no cleanup needed first).
+   Every step already `applied` is idempotent-safe to repeat (directory
+   creation, deterministic manifest content, service-registration
+   `skipped_already_registered`, enrollment `skipped_already_enrolled` once
+   a device credential exists) — see Step 9. If the SAME step fails again
+   with the same reason, stop and treat it as a real defect, not a transient
+   fault.
+3. If re-running is not desired (e.g., the failure indicates a bad payload
+   or a compromised machine), run `Uninstall-RevAgentBridge.ps1` — it only
+   ever removes what P-INST-1/P3-T9 created (`C:\Program
+   Files\revAgent\Bridge`, `C:\ProgramData\revAgent\bridge`, the add-in
+   payload/manifest) via the same anchor-preserving wipe planner, so a
+   partial install rolls back to a clean pre-EU-20 machine state without
+   ever touching the legacy stack or the anchors.
+4. The legacy stack (whatever the machine ran before this session) was
+   never modified by Step 3 — P-INST-1's complete root disjointness is the
+   reason no separate "restore the old install" step is needed here.
+
+### R2 — Enrollment (Step 5) succeeds but the device is rejected/misbehaves
+
+1. `revagent-bridge-host.exe doctor` reports the specific enrollment/auth
+   diagnostic. Do not re-run the installer with a new `-EnrollmentToken`
+   while a device credential already exists — that path is
+   `skipped_already_enrolled` by design (Step 6).
+2. Use the supported re-enrollment path instead: mint a fresh single-use
+   token for this machine's fingerprint from the Gateway, then run
+   `revagent-bridge-host.exe doctor --re-enroll` after placing the fresh
+   artifact (P3-T8's documented flow). This is a Gateway/Bridge-owned
+   operation, not something this runbook's scripts perform.
+3. If re-enrollment does not resolve it, fall through to R4 (full
+   uninstall) rather than leaving a half-trusted device credential in
+   place.
+
+### R3 — Uninstall (Step 11) fails partway through
+
+1. Read `eu20-uninstall-report.json`. `uninstall.anchors[]` is checked
+   **before** the report is marked `success`; a `failed` status here means
+   at least one anchor hash changed and the run stopped — treat this as a
+   stop-the-line event, capture the report, and escalate rather than
+   re-running blindly.
+2. If the failure is instead a `legacy_tree_wipe_incomplete` (some non-anchor
+   item could not be removed — e.g. a file locked by a running process),
+   close whatever holds the lock and re-run
+   `Uninstall-RevAgentBridge.ps1` unchanged: it is idempotent per item
+   (`Get-RevAgentBridgeTreeWipePlan` re-plans from current disk state each
+   time) and will simply skip everything already gone.
+3. Because the anchors are excluded from every wipe plan by construction,
+   an interrupted or partially failed uninstall can never itself be the
+   reason the legacy NAS-restore path (R4) becomes unavailable.
+
+### R4 — Full restore to the pre-cutover legacy stack
+
+Use this when the machine must be returned to exactly its pre-EU-20 state,
+regardless of what Steps 3-11 did:
+
+1. Run `Uninstall-RevAgentBridge.ps1` (committed, not dry-run) to remove
+   everything this package's installer created. Confirm
+   `uninstall.anchors[].preserved == true` for all three anchors in the
+   resulting report.
+2. Follow the existing frozen NAS-restore procedure (Section 8 step 4 of
+   the target architecture; `docs/ROLLBACK_CRITERION_DRAFT.md`) using the
+   preserved anchors as its starting point:
+   `C:\ProgramData\DPE\revAgent\bootstrap\` and
+   `prestage\install-revagent-local-bootstrap.ps1` re-establish the local
+   bootstrap trust chain, and `updater\config\release-trusted-keys.json`
+   re-establishes signature trust for the legacy updater, exactly as they
+   would have been found before this session ever ran — Step 12's
+   byte-identical hash proof is what makes "exactly as they would have
+   been found" true rather than assumed.
+3. Re-run the legacy stack's own health check (whatever the pre-cutover
+   updater/dashboard verification is) to confirm the restore succeeded.
+4. File the failure (report JSONs, the point of failure, and the restore
+   outcome) as gate evidence; do not silently retry the EU-20 install on
+   the same machine without understanding why R1-R3 were needed.

@@ -79,7 +79,14 @@ function New-BridgeReleaseFixture {
 
     $hostDirectory = Join-Path $PackageRoot "host"
     $workerDirectory = Join-Path $PackageRoot "worker"
-    $addinDirectory = Join-Path $PackageRoot "addin\revAgentPlugin"
+    # The signed package's addin component is the PARENT of the
+    # "revAgentPlugin" folder (not that folder itself): Copy-RevAgentBridgeDirectoryContents
+    # copies only the top-level entries of relativeDirectory into AddinBinRoot,
+    # and the deterministic manifest's AssemblyPath expects
+    # AddinBinRoot\revAgentPlugin\revAgentPlugin.dll -- so the "revAgentPlugin"
+    # subfolder itself must be one of those copied top-level entries.
+    $addinPackageDirectory = Join-Path $PackageRoot "addin"
+    $addinDirectory = Join-Path $addinPackageDirectory "revAgentPlugin"
     [void](New-Item -ItemType Directory -Path $hostDirectory -Force)
     [void](New-Item -ItemType Directory -Path $workerDirectory -Force)
     [void](New-Item -ItemType Directory -Path $addinDirectory -Force)
@@ -102,8 +109,8 @@ function New-BridgeReleaseFixture {
             sha256 = (Get-RevAgentBridgeDirectoryTreeSha256 -Path $workerDirectory)
         }
         addin = [ordered]@{
-            relativeDirectory = "addin\revAgentPlugin"
-            sha256 = (Get-RevAgentBridgeDirectoryTreeSha256 -Path $addinDirectory)
+            relativeDirectory = "addin"
+            sha256 = (Get-RevAgentBridgeDirectoryTreeSha256 -Path $addinPackageDirectory)
         }
     }
 
@@ -438,6 +445,98 @@ try {
     Assert-Equal $happyReport.schemaVersion 1 "Report schemaVersion must be 1."
     Assert-Equal $happyReport.app "revAgent" "Report app identity must be 'revAgent'."
     Assert-Equal $happyReport.component "bridge" "Report component must be 'bridge'."
+
+    # =====================================================================
+    Write-Host "Test end-to-end install (non-dry-run): payload files actually land, durable machine report is written"
+    # =====================================================================
+    # This is the regression test for the '*' literal-path copy bug and the
+    # ReportsDirectory-guards-itself bug: it is the only test in this suite
+    # that lets the real mutation Apply blocks run. Only the OS-level
+    # surfaces this installer would otherwise really touch outside its own
+    # temp roots -- icacls.exe (ACL lockdown) and the Get-Service
+    # registration probe -- are mocked; every directory/file operation
+    # (creation, link guards, payload copy, config/manifest/enrollment
+    # writes, the durable report) executes for real against the temp roots.
+    $realRunTemp = New-TestScratchDirectory -Label "real-run"
+    $scratchRoots.Add($realRunTemp)
+    $realRunLayoutArgs = Get-BridgeTempLayoutArgs -Root $realRunTemp
+    $realRunReportPath = Join-Path $realRunTemp "external-report.json"
+
+    # $global: (not $script:) is required here: Install-RevAgentBridge.ps1 is
+    # invoked below as a nested script file via '&', which gives it its own
+    # script-scope frame, so a '$script:' write inside a function that
+    # happens to run while that nested script is on the call stack lands in
+    # the NESTED script's scope, not this test file's -- $global: is the one
+    # unambiguous, single top-level counter regardless of which script frame
+    # is executing when the mock is invoked.
+    $global:eu20MockIcaclsCallCount = 0
+    function icacls.exe {
+        $global:eu20MockIcaclsCallCount++
+        $global:LASTEXITCODE = 0
+        return "mocked"
+    }
+    function Get-Service {
+        param([string]$Name, $ErrorAction)
+        return [pscustomobject]@{ Name = $Name; Status = "Stopped" }
+    }
+    try {
+        & (Join-Path $bridgeRoot "Install-RevAgentBridge.ps1") `
+            -PackageRoot $goodFixture.PackageRoot `
+            -TrustedKeysPath $goodFixture.TrustedKeysPath `
+            -EnrollmentToken ("a" * 40) `
+            -EnrollmentTokenExpiresAtUtc ([datetime]::UtcNow.AddHours(1)) `
+            -InstallRoot $realRunLayoutArgs.InstallRoot `
+            -StateRoot $realRunLayoutArgs.StateRoot `
+            -AddinProgramFilesRoot $realRunLayoutArgs.AddinProgramFilesRoot `
+            -RevitAddinsRoot $realRunLayoutArgs.RevitAddinsRoot `
+            -MachineReportPath $realRunReportPath `
+            -SkipRevitDetection `
+            -SkipServiceStart | Out-Null
+    }
+    finally {
+        Remove-Item -LiteralPath Function:\icacls.exe -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath Function:\Get-Service -ErrorAction SilentlyContinue
+    }
+
+    Assert-True ($global:eu20MockIcaclsCallCount -gt 0) "The real install path must reach ACL lockdown (proves it ran past directory creation, through the mocked icacls.exe)."
+    Remove-Variable -Name eu20MockIcaclsCallCount -Scope Global -ErrorAction SilentlyContinue
+    $realRunReport = Get-Content -Raw -LiteralPath $realRunReportPath | ConvertFrom-Json
+    Assert-Equal $realRunReport.status "success" "A real (non-dry-run) install against valid fixtures must succeed end-to-end."
+    Assert-Equal $realRunReport.dryRun $false "This run must be recorded as non-dry-run."
+
+    $realRunLayout = Get-RevAgentBridgeLayout @realRunLayoutArgs
+    Assert-True (Test-Path -LiteralPath (Join-Path $realRunLayout.CurrentWorkerDirectory "revagent-bridge.exe") -PathType Leaf) "The worker payload file must actually land in CurrentWorkerDirectory -- a literal '*' Copy-Item path would have thrown/no-op'd here."
+    $realRunAddinLayout = Get-RevAgentBridgeAddinLayout -Layout $realRunLayout -RevitVersion "2022"
+    Assert-True (Test-Path -LiteralPath (Join-Path $realRunAddinLayout.AddinBinRoot "revAgentPlugin\revAgentPlugin.dll") -PathType Leaf) "The add-in payload file, including its subdirectory, must actually land in AddinBinRoot."
+    Assert-True (Test-Path -LiteralPath $realRunLayout.HostExecutablePath -PathType Leaf) "The host executable must be deployed."
+    Assert-True (Test-Path -LiteralPath $realRunAddinLayout.ManifestPath -PathType Leaf) "The deterministic add-in manifest must be written."
+    Assert-True (Test-Path -LiteralPath $realRunLayout.EnrollmentArtifactPath -PathType Leaf) "The enrollment artifact must be written on a real run."
+
+    Assert-True (Test-Path -LiteralPath $realRunLayout.ReportsDirectory -PathType Container) "The durable <StateRoot>\reports directory must exist after a real install, not just the explicit -MachineReportPath copy."
+    $durableReportFiles = @(Get-ChildItem -LiteralPath $realRunLayout.ReportsDirectory -Filter "install-*.json" -File)
+    Assert-True ($durableReportFiles.Count -ge 1) "At least one durable install-<timestamp>.json report must have been written under <StateRoot>\reports."
+    $durableLatestPath = Join-Path $realRunLayout.ReportsDirectory "install-latest.json"
+    Assert-True (Test-Path -LiteralPath $durableLatestPath -PathType Leaf) "install-latest.json must exist under <StateRoot>\reports."
+    $durableReport = Get-Content -Raw -LiteralPath $durableLatestPath | ConvertFrom-Json
+    foreach ($requiredField in $schema.required) {
+        Assert-True ($null -ne $durableReport.PSObject.Properties[$requiredField]) "Durable machine report is missing schema-required field '$requiredField'."
+    }
+    Assert-Equal $durableReport.status "success" "The durable machine report must also record success."
+
+    # =====================================================================
+    Write-Host "Test Write-RevAgentBridgeMachineReport against a not-yet-existing reports directory"
+    # =====================================================================
+    $freshReportsRoot = New-TestScratchDirectory -Label "fresh-reports"
+    $scratchRoots.Add($freshReportsRoot)
+    $freshStateRoot = Join-Path $freshReportsRoot "StateRoot"
+    [void](New-Item -ItemType Directory -Path $freshStateRoot -Force)
+    $freshReportsDirectory = Join-Path $freshStateRoot "reports"
+    Assert-True (-not (Test-Path -LiteralPath $freshReportsDirectory)) "Fixture precondition: the reports directory must not exist yet."
+    $freshReport = New-RevAgentBridgeMachineReport -Action "install" -DryRun $false -StartedAtUtc ([datetime]::UtcNow) -CompletedAtUtc ([datetime]::UtcNow) -Status "success" -Message "unit test"
+    $freshWrittenPath = Write-RevAgentBridgeMachineReport -Report $freshReport -ReportsDirectory $freshReportsDirectory -DryRun $false
+    Assert-True (Test-Path -LiteralPath $freshReportsDirectory -PathType Container) "Write-RevAgentBridgeMachineReport must create a not-yet-existing reports directory (guarded from its parent, not from itself)."
+    Assert-True (Test-Path -LiteralPath $freshWrittenPath -PathType Leaf) "Write-RevAgentBridgeMachineReport must return the path it wrote."
+    Assert-True (Test-Path -LiteralPath (Join-Path $freshReportsDirectory "install-latest.json") -PathType Leaf) "install-latest.json must be written alongside the timestamped report."
 
     # =====================================================================
     Write-Host "Test idempotent re-run: an existing device credential skips enrollment-artifact write"

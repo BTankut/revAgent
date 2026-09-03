@@ -103,11 +103,13 @@ try {
     $layout = Get-RevAgentBridgeLayout @bridgeLayoutArgs
     $addinLayout = Get-RevAgentBridgeAddinLayout -Layout $layout -RevitVersion $RevitVersion
 
-    # Every directory create/write below is guarded (New-RevAgentGuardedDirectory /
-    # Write-RevAgentGuardedAtomicBytes / Assert-RevAgentExistingPathNoLink from
-    # installer\lib\RevAgent.Reporting.psm1), which refuses to walk through a
-    # reparse point (junction/symlink) anywhere between GuardRoot and the
-    # target and throws before any bytes are written. GuardRoot must already
+    # Every directory create/write below is guarded (New-RevAgentBridgeGuardedDirectory /
+    # Write-RevAgentBridgeGuardedAtomicBytes / Assert-RevAgentBridgeNoReparsePoint,
+    # this package's own link-safe primitives -- see the module for why they
+    # are not installer\lib\RevAgent.Reporting.psm1's equivalents, which are
+    # private to that module), which refuses to walk through a reparse point
+    # (junction/symlink) anywhere between GuardRoot and the target and throws
+    # before any bytes are written. GuardRoot must already
     # exist, so each top-level root is guarded from its own drive root (the
     # one ancestor guaranteed to pre-exist); once a root is created and
     # verified, deeper paths under it are guarded from that root instead.
@@ -190,34 +192,34 @@ try {
 
     # --- 5. Install root + state root + credential directory (ACL'd) ---
     [void](Invoke-RevAgentBridgeGuardedMutation -Target $layout.InstallRoot -MutationAction 'create_install_root' -DryRun $isDryRun -Steps $steps -Apply {
-            [void](New-RevAgentGuardedDirectory -Path $layout.InstallRoot -GuardRoot $installRootGuard)
+            [void](New-RevAgentBridgeGuardedDirectory -Path $layout.InstallRoot -GuardRoot $installRootGuard)
             Set-RevAgentBridgeDistributionAcl -Path $layout.InstallRoot
             return $layout.InstallRoot
         }.GetNewClosure())
     [void](Invoke-RevAgentBridgeGuardedMutation -Target $layout.CurrentWorkerDirectory -MutationAction 'create_worker_directory' -DryRun $isDryRun -Steps $steps -Apply {
-            [void](New-RevAgentGuardedDirectory -Path $layout.CurrentWorkerDirectory -GuardRoot $layout.InstallRoot)
+            [void](New-RevAgentBridgeGuardedDirectory -Path $layout.CurrentWorkerDirectory -GuardRoot $layout.InstallRoot)
             return $layout.CurrentWorkerDirectory
         })
     [void](Invoke-RevAgentBridgeGuardedMutation -Target $layout.StateRoot -MutationAction 'create_state_root' -DryRun $isDryRun -Steps $steps -Apply {
-            [void](New-RevAgentGuardedDirectory -Path $layout.StateRoot -GuardRoot $stateRootGuard)
+            [void](New-RevAgentBridgeGuardedDirectory -Path $layout.StateRoot -GuardRoot $stateRootGuard)
             Set-RevAgentBridgeDistributionAcl -Path $layout.StateRoot
             return $layout.StateRoot
         }.GetNewClosure())
     [void](Invoke-RevAgentBridgeGuardedMutation -Target $layout.CredentialDirectory -MutationAction 'create_credential_directory' -DryRun $isDryRun -Steps $steps -Apply {
-            [void](New-RevAgentGuardedDirectory -Path $layout.CredentialDirectory -GuardRoot $layout.StateRoot)
+            [void](New-RevAgentBridgeGuardedDirectory -Path $layout.CredentialDirectory -GuardRoot $layout.StateRoot)
             Set-RevAgentBridgeSystemOnlyAcl -Path $layout.CredentialDirectory
             return $layout.CredentialDirectory
         })
 
     # --- 6. Copy signed binaries into the disjoint install root ---
     [void](Invoke-RevAgentBridgeGuardedMutation -Target $layout.HostExecutablePath -MutationAction 'deploy_host_executable' -DryRun $isDryRun -Steps $steps -Apply {
-            [void](Assert-RevAgentExistingPathNoLink -Path $layout.HostExecutablePath -GuardRoot $layout.InstallRoot)
+            [void](Assert-RevAgentBridgeNoReparsePoint -Path $layout.HostExecutablePath -GuardRoot $layout.InstallRoot)
             Copy-Item -LiteralPath $hostSourcePath -Destination $layout.HostExecutablePath -Force
             return $layout.HostExecutablePath
         })
     [void](Invoke-RevAgentBridgeGuardedMutation -Target $layout.CurrentWorkerDirectory -MutationAction 'deploy_worker_payload' -DryRun $isDryRun -Steps $steps -Apply {
-            [void](Assert-RevAgentExistingPathNoLink -Path $layout.CurrentWorkerDirectory -GuardRoot $layout.InstallRoot)
-            Copy-Item -LiteralPath (Join-Path $workerSourceDirectory '*') -Destination $layout.CurrentWorkerDirectory -Recurse -Force
+            [void](Assert-RevAgentBridgeNoReparsePoint -Path $layout.CurrentWorkerDirectory -GuardRoot $layout.InstallRoot)
+            Copy-RevAgentBridgeDirectoryContents -SourceDirectory $workerSourceDirectory -DestinationDirectory $layout.CurrentWorkerDirectory
             return $layout.CurrentWorkerDirectory
         })
 
@@ -247,14 +249,14 @@ try {
             }
             $json = ($config | ConvertTo-Json)
             $encoding = [System.Text.UTF8Encoding]::new($false, $true)
-            [void](Write-RevAgentGuardedAtomicBytes -Path $layout.ConfigurationPath -Bytes ($encoding.GetBytes($json)) -GuardRoot $layout.StateRoot)
+            [void](Write-RevAgentBridgeGuardedAtomicBytes -Path $layout.ConfigurationPath -Bytes ($encoding.GetBytes($json)) -GuardRoot $layout.StateRoot)
             return $layout.ConfigurationPath
         })
 
     # --- 8. Add-in payload + deterministic manifest (P-INST-1 / P3-T9) ---
     [void](Invoke-RevAgentBridgeGuardedMutation -Target $addinLayout.AddinBinRoot -MutationAction 'deploy_addin_payload' -DryRun $isDryRun -Steps $steps -Apply {
-            [void](New-RevAgentGuardedDirectory -Path $addinLayout.AddinBinRoot -GuardRoot $addinProgramFilesGuard)
-            Copy-Item -LiteralPath (Join-Path $addinSourceDirectory '*') -Destination $addinLayout.AddinBinRoot -Recurse -Force
+            [void](New-RevAgentBridgeGuardedDirectory -Path $addinLayout.AddinBinRoot -GuardRoot $addinProgramFilesGuard)
+            Copy-RevAgentBridgeDirectoryContents -SourceDirectory $addinSourceDirectory -DestinationDirectory $addinLayout.AddinBinRoot
             Set-RevAgentBridgeDistributionAcl -Path $addinLayout.AddinBinRoot
             return $addinLayout.AddinBinRoot
         }.GetNewClosure())
@@ -262,8 +264,8 @@ try {
     $installSummary.addinManifestPath = $addinLayout.ManifestPath
     $installSummary.addinManifestSha256 = $manifestContract.sha256
     [void](Invoke-RevAgentBridgeGuardedMutation -Target $addinLayout.ManifestPath -MutationAction 'write_addin_manifest' -DryRun $isDryRun -Steps $steps -Apply {
-            [void](New-RevAgentGuardedDirectory -Path $addinLayout.ManifestDirectory -GuardRoot $revitAddinsGuard)
-            [void](Write-RevAgentGuardedAtomicBytes -Path $addinLayout.ManifestPath -Bytes $manifestContract.bytes -GuardRoot $addinLayout.ManifestDirectory)
+            [void](New-RevAgentBridgeGuardedDirectory -Path $addinLayout.ManifestDirectory -GuardRoot $revitAddinsGuard)
+            [void](Write-RevAgentBridgeGuardedAtomicBytes -Path $addinLayout.ManifestPath -Bytes $manifestContract.bytes -GuardRoot $addinLayout.ManifestDirectory)
             Set-RevAgentBridgeDistributionAcl -Path $addinLayout.ManifestDirectory
             return $manifestContract.sha256
         }.GetNewClosure())
@@ -297,7 +299,7 @@ try {
         $artifactBytes = New-RevAgentBridgeEnrollmentArtifactBytes -EnrollmentToken $EnrollmentToken -ExpiresAtUtc $EnrollmentTokenExpiresAtUtc
         $installSummary.enrollmentAttempted = $true
         [void](Invoke-RevAgentBridgeGuardedMutation -Target $layout.EnrollmentArtifactPath -MutationAction 'write_enrollment_artifact' -DryRun $isDryRun -Steps $steps -Apply {
-                [void](Write-RevAgentGuardedAtomicBytes -Path $layout.EnrollmentArtifactPath -Bytes $artifactBytes -GuardRoot $layout.CredentialDirectory)
+                [void](Write-RevAgentBridgeGuardedAtomicBytes -Path $layout.EnrollmentArtifactPath -Bytes $artifactBytes -GuardRoot $layout.CredentialDirectory)
                 Set-RevAgentBridgeSystemOnlyAcl -Path $layout.EnrollmentArtifactPath
                 return $layout.EnrollmentArtifactPath
             }.GetNewClosure())
