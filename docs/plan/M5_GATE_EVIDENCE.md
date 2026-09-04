@@ -177,3 +177,39 @@ for a future test-only slice.
 
 This forward pointer submits the milestone-owner acceptance for ledger
 synchronization. It does not alter historical evidence recorded above.
+
+## Post-acceptance erratum: production-auth-to-Bridge-ingress integration gap
+
+**Status:** OPEN — closed in this PR once integration and negative evidence
+are green.
+
+**Recorded by:** `EU-20-AUTH-INGRESS` (M5 production-auth-to-Bridge-ingress
+integration; EU-20 prerequisite card).
+
+This erratum is append-only. It does not amend, rewrite, or delete any
+historical M5 acceptance record above, including the Acceptance record's
+approval sentence and gap disposition.
+
+1. **Discovered during EU-20.** The gap was found while executing the EU-20
+   (M6-V1 clean-machine install to live read) parent unit, after the EU-20
+   PETRUCCI lab session halted at the lab-Gateway gate
+   (`eu20-lab-evidence/phase-b-lab-gateway-gate.md`).
+2. **Not covered by the original M5 evidence matrix.** The M5 evidence matrix
+   above evidences the EU-11 Postgres-backed enrollment/device control plane
+   (`packages/gateway/src/m5EnrollmentEntitlement.ts`) and the production
+   Bridge ingress (`startProductionGatewayHost`,
+   `GatewayBridgeSessionAuthority`) as separate surfaces. It does not evidence
+   that the two are connected: the ingress path validates sessions through
+   `createProductionIdentityAuthority` /
+   `StoreBackedProductionIdentityAuthority`, a distinct store-backed authority
+   from the Postgres-backed control plane that issues the enrolled device
+   credential, and `IdentityPort.authenticateDevice` is not wired to
+   `M5EnrollmentEntitlementControlPlane.openBridgeConnection`.
+3. **Blocks EU-20 live acceptance.** Because a genuinely enrolled Bridge
+   cannot establish a production Gateway session against its own issued
+   credential, EU-20's live-read acceptance cannot proceed until this
+   integration is bound and evidenced.
+4. **Historical M5 acceptance records are not rewritten or deleted.** The M5
+   milestone-owner decision, its accepted gap list, and the acceptance record
+   above stand as originally recorded; this erratum adds a new, later-
+   discovered fact rather than revising them.
