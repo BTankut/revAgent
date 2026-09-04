@@ -865,20 +865,14 @@ suite("EU-20-AUTH-INGRESS: M5-bound production Bridge identity authority", () =>
    * arbitrary async-identity latency over a real socket is tolerated
    * end-to-end; this drives the same real socket through the real M5 plane.
    */
-  // KNOWN OPEN ISSUE — captured evidence, not re-guessed (see report):
-  // hello_ack DOES arrive on the client (auth+registration via M5 succeed,
-  // proving the outcome 3+4+5 claim); the crash is strictly post-hello_ack,
-  // during connection teardown, in `sendSerialized`'s `appendEgress`
-  // callback (rbpIngress.ts:1670) calling `sendRaw` (rbpIngress.ts:1613)
-  // after the socket is no longer OPEN. It reproduces both when the client
-  // initiates a graceful close (code 1000) and when only `server.close()`
-  // is called (which then hangs 5s waiting on the still-open client, ruling
-  // that ordering out too). It does not reproduce for `http_sse` with the
-  // identical M5 identity/composition. Not marked as a proven product
-  // defect (no direct evidence which egress task fires during teardown, or
-  // whether it's specific to this test's harness), so no production code
-  // was changed. `it.fails` keeps the suite green and this failure visible.
-  it.fails("outcome 3+4+5 (wss): a real enrolled Bridge authenticates through the production RBP ingress exclusively via M5, and the north identity is never called", async () => {
+  // Root-caused: `hello_ack` arrives on the client (auth+registration via M5
+  // succeed); the failure was in `GatewayBridgeSessionAuthority`'s own
+  // shutdown drain, which sent a best-effort "goodbye" to this already-
+  // terminated client and, on that expected send failure, re-threw it as a
+  // fatal `drainFailure` from `authority.close()` — independent of M5. Fixed
+  // in `bridgeSession.ts`'s `#performClose` drain loop (see erratum); no
+  // O1/wire or reconnect-behaviour change.
+  it("outcome 3+4+5 (wss): a real enrolled Bridge authenticates through the production RBP ingress exclusively via M5, and the north identity is never called", async () => {
     const deviceId = "10000000-0000-4000-8000-00000000032a";
     const fingerprint = `sha256:${"aa".repeat(32)}` as GatewayMachineFingerprint;
     const deviceToken = await enroll(A_USER_1, deviceId, fingerprint);
@@ -970,12 +964,11 @@ suite("EU-20-AUTH-INGRESS: M5-bound production Bridge identity authority", () =>
       expect(helloAck.payload.connection_id).toEqual(expect.any(String));
       expect(northCalls).toEqual([]);
     } finally {
-      // Mirrors rbpIngress.test.ts's own pattern exactly: the client socket
-      // is torn down with `terminate()` here, but `server.close()` is not
-      // coupled to this same synchronous teardown (there, `server` is only
-      // pushed to a shared `handles` array closed by a *later*, separate
-      // `afterEach`) — coupling them here raced the server's own pending
-      // egress against this socket's close.
+      // The client socket is terminated first, then the server is closed
+      // separately below: `authority.close()`'s shutdown drain now sends its
+      // best-effort "goodbye" to this already-terminated connection without
+      // that expected send failure becoming a fatal `drainFailure` (see the
+      // `bridgeSession.ts` `#performClose` fix).
       if (socket.readyState !== WebSocket.CLOSED) socket.terminate();
     }
     await server.close();

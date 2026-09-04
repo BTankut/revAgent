@@ -382,3 +382,45 @@ wired; HTTP/SSE wire-evidenced, WSS wire-evidence open per above), 5
 (entirely evidenced at the RBP-authority level; wire-level evidenced for
 HTTP/SSE only), 6, 7, 8, 9. The WSS wire-level gap noted above is the one
 remaining open item and is parked, not silently dropped.
+
+### WSS wire-level gap: root-caused and closed (append-only)
+
+The WSS gap above was root-caused: not an M5 or identity-composition defect
+at all, but a pre-existing product fail-safe defect in
+`GatewayBridgeSessionAuthority`'s own shutdown drain
+(`bridgeSession.ts`'s `#performClose`, ~line 5463-5491), independent of this
+card. On shutdown, drain sends a best-effort `goodbye` to every
+still-registered connection, then closes it. When a peer had already
+disconnected (e.g. a client-terminated WSS transport — exactly the "outcome
+3+4+5 (wss)" test's own teardown), the `goodbye` send failed as expected,
+but that expected failure was being classified the same as a genuine
+failure and re-thrown as a fatal `drainFailure` from `authority.close()`,
+which propagated through `host.close()`. This reproduced on the SAME
+already-passing `http_sse` composition's teardown too, once its client
+socket was inspected the same way — it simply hadn't shown up as a test
+failure there.
+
+**Fix** (`packages/gateway/src/bridgeSession.ts`, `#performClose`'s drain
+loop): the `goodbye` send failure is now caught, reported through a new
+optional, value-free diagnostic callback
+(`onDrainGoodbyeSendFailure?: (info: { connectionId }) => void`, mirroring
+the existing `onConformancePartialCarrierCommitFailure` pattern — never
+swallowed silently), and never classified as a fatal `drainFailure`.
+`connection.close(1001, "server draining")` is still always attempted and
+its failure is still fatal, unchanged — a genuine close failure still
+surfaces a `drainFailure` from `authority.close()`. No O1/wire framing or
+reconnect-behaviour change; the `goodbye` envelope content and `close`
+code/reason are unchanged.
+
+**New regression test**, `packages/gateway/src/rbpIngress.test.ts`:
+`shutdown drain: a goodbye send failure for an already-gone peer never
+fails authority.close(), but a genuine connection.close() failure still
+does` — proves both halves directly against `GatewayBridgeSessionAuthority`
+with an injected channel (no wire transport needed): a `send()` failure
+resolves `close()` and is observed via the new diagnostic hook; a
+`close()` failure still rejects `authority.close()`.
+
+`outcome 3+4+5 (wss)` in `m5BridgeIdentityAuthority.test.ts` is no longer
+`it.fails` — it is a plain, passing test. All ten `EU-20-AUTH-INGRESS`
+required outcomes are now fully evidenced, WSS included, with no open
+items.
