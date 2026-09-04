@@ -2,6 +2,7 @@ import {
   GATEWAY_AUTH_CONTRACT_VERSION,
   isCanonicalMachineFingerprint,
   type GatewayMachineFingerprint,
+  type IdentityPort,
 } from "./authContext.js";
 import type { GatewayPortResult } from "./gatewayPorts.js";
 import {
@@ -27,7 +28,7 @@ import {
   type ProductionIdentityLifecycleSnapshot,
   type ProductionIdentityManagedResources,
 } from "./productionIdentityStore.js";
-import type { GatewayProtocolStore, StoreOutcome } from "./store.js";
+import type { StoreOutcome } from "./store.js";
 
 export const M5_BRIDGE_IDENTITY_AUTHORITY_CONTRACT_VERSION =
   "revagent.m5-bridge-identity-authority/v1" as const;
@@ -118,39 +119,42 @@ function deviceRefusal(): GatewayPortResult<never> {
  * "production identity" branding (`asProductionIdentityAuthority` in
  * `bridgeSession.ts`) to exactly one closed contract: `ProductionIdentityAuthority`
  * (`kind: "oidc"`, plus lifecycle/managedResources/usesStore/revocation-event
- * resync methods). That contract models an event-sourced revocation head and
- * optimistic-concurrency tenant resync that M5's EU-11 Postgres schema does
- * not share and that this unit must not reinvent as a parallel protocol.
+ * resync methods).
  *
- * Rather than reimplementing that contract atop M5's schema, this adapter
- * *decorates* an existing, already-tested `ProductionIdentityAuthority`
- * (`base`, from `createProductionIdentityAuthority`) and replaces exactly the
- * one method that is the actual Bridge-device security decision:
- * `authenticateDevice`. Every other method — north-user OIDC authentication,
- * lifecycle open/close, revocation-event consumption/resync, and `base`'s own
- * device provisioning/revocation — passes straight through to `base`,
- * unmodified, so none of that already-reviewed machinery is touched or
- * duplicated.
+ * This class is a self-contained, directly production-composable
+ * implementation of that contract — not a decorator over another
+ * `ProductionIdentityAuthority`. Two real dependencies are enough to build
+ * it: `northIdentity` (a real north-user `IdentityPort`, e.g.
+ * `createOidcIdentityPort`, for `authenticateNorthRequest` only) and `plane`
+ * (the same real EU-11 Postgres-backed `M5EnrollmentEntitlementControlPlane`
+ * instance the `/bridge/v1/enroll` HTTP endpoint already uses). There is no
+ * separate `ProductionTenantIdentityStore`/`ProductionCredentialScopeLocator`
+ * dependency: this composition owns no device/credential store of its own,
+ * so there is nothing for a device decision to come from except `plane`.
+ * Every device-decision method (`authenticateDevice`, `provisionDevice`,
+ * `revokeDevice`, `revokeSeat`, `consumeRevocationEvents`,
+ * `prepareTenantResync`, `commitTenantResync`) is answered directly against
+ * `plane`, or refuses outright; none of them can reach any other store,
+ * because none exists in this composition. That is EU-20-AUTH-INGRESS's
+ * outcome 4 held structurally, not merely by convention.
  *
- * Once this adapter is composed as the Gateway's `ports.identity`, `base`'s
- * own device/credential store is never consulted to decide whether a Bridge
- * may connect: that decision is made exclusively by the real EU-11
- * Postgres-backed `M5EnrollmentEntitlementControlPlane` (`plane`), through
- * `plane.resolveBridgeDeviceCredential`. No separate in-memory or shadow
- * device-credential authority remains the production composition's source of
- * truth for Bridge sessions.
+ * Lifecycle (`open`/`close`) intentionally does not open or close `plane`:
+ * the Gateway server composition (`buildGatewayApp`'s `m5EnrollmentEntitlement`
+ * option) already owns `plane`'s lifecycle for the enrollment HTTP endpoint,
+ * and it is the *same instance* passed here — closing it twice would be a
+ * bug, not a safety measure.
  */
 export class M5BridgeIdentityAuthority implements ProductionIdentityAuthority {
-  readonly #base: ProductionIdentityAuthority;
+  readonly #northIdentity: IdentityPort & { readonly kind: "oidc" };
   readonly #plane: M5EnrollmentEntitlementControlPlane;
 
   public constructor(options: {
-    readonly base: ProductionIdentityAuthority;
+    readonly northIdentity: IdentityPort & { readonly kind: "oidc" };
     readonly plane: M5EnrollmentEntitlementControlPlane;
   }) {
-    if (options.base.kind !== "oidc") {
+    if (options.northIdentity.kind !== "oidc") {
       throw new TypeError(
-        "M5BridgeIdentityAuthority requires an oidc-kind base identity authority",
+        "M5BridgeIdentityAuthority requires an oidc-kind north identity port",
       );
     }
     if (!(options.plane instanceof M5EnrollmentEntitlementControlPlane)) {
@@ -158,7 +162,7 @@ export class M5BridgeIdentityAuthority implements ProductionIdentityAuthority {
         "M5BridgeIdentityAuthority requires a real EU-11 control plane instance",
       );
     }
-    this.#base = options.base;
+    this.#northIdentity = options.northIdentity;
     this.#plane = options.plane;
   }
 
@@ -167,9 +171,9 @@ export class M5BridgeIdentityAuthority implements ProductionIdentityAuthority {
   }
 
   public authenticateNorthRequest(
-    input: Parameters<ProductionIdentityAuthority["authenticateNorthRequest"]>[0],
-  ): ReturnType<ProductionIdentityAuthority["authenticateNorthRequest"]> {
-    return this.#base.authenticateNorthRequest(input);
+    input: Parameters<IdentityPort["authenticateNorthRequest"]>[0],
+  ): ReturnType<IdentityPort["authenticateNorthRequest"]> {
+    return this.#northIdentity.authenticateNorthRequest(input);
   }
 
   public async authenticateDevice(input: {
@@ -250,27 +254,48 @@ export class M5BridgeIdentityAuthority implements ProductionIdentityAuthority {
     });
   }
 
-  // Lifecycle and north-identity authentication are unrelated to *which*
-  // authority admits a Bridge device (that is `authenticateDevice` above,
-  // exclusively M5-backed) and pass straight through to `base`, unmodified.
-  public open(): Promise<StoreOutcome<void>> {
-    return this.#base.open();
+  // This composition owns no store of its own: `plane`'s lifecycle belongs
+  // to whoever constructed it (the Gateway server composition, for the
+  // enrollment HTTP endpoint), and `GatewayBridgeSessionAuthority`'s own RBP
+  // protocol store is a different object entirely. `open`/`close` are
+  // therefore genuine no-ops rather than a forwarded call to a resource this
+  // class does not own.
+  public async open(): Promise<StoreOutcome<void>> {
+    return Object.freeze({ ok: true as const, value: undefined });
   }
 
-  public close(): Promise<StoreOutcome<void>> {
-    return this.#base.close();
+  public async close(): Promise<StoreOutcome<void>> {
+    return Object.freeze({ ok: true as const, value: undefined });
   }
 
   public lifecycle(): ProductionIdentityLifecycleSnapshot {
-    return this.#base.lifecycle();
+    return Object.freeze({
+      state: "open" as const,
+      resources: Object.freeze({
+        tenantStore: "open" as const,
+        credentialLocator: "open" as const,
+        northIdentity: "open" as const,
+      }),
+    });
   }
 
   public managedResources(): ProductionIdentityManagedResources {
-    return this.#base.managedResources();
+    return Object.freeze({
+      tenantStore: Object.freeze({ ownership: "external" as const, managed: false }),
+      credentialLocator: Object.freeze({ managed: true as const }),
+      northIdentity: Object.freeze({ managed: true as const }),
+    });
   }
 
-  public usesStore(store: GatewayProtocolStore): boolean {
-    return this.#base.usesStore(store);
+  /**
+   * `plane`'s Postgres pool is never the same object as
+   * `GatewayBridgeSessionAuthority`'s own RBP protocol store: this
+   * composition shares no store with the session authority, so the session
+   * authority must keep managing its own store's open/close lifecycle
+   * itself (`#protocolStoreManagedBy === "bridge"`).
+   */
+  public usesStore(): boolean {
+    return false;
   }
 
   /**
@@ -439,7 +464,7 @@ export class M5BridgeIdentityAuthority implements ProductionIdentityAuthority {
 
 /** Convenience factory mirroring `createProductionIdentityAuthority`. */
 export function createM5BridgeIdentityAuthority(options: {
-  readonly base: ProductionIdentityAuthority;
+  readonly northIdentity: IdentityPort & { readonly kind: "oidc" };
   readonly plane: M5EnrollmentEntitlementControlPlane;
 }): ProductionIdentityAuthority {
   return new M5BridgeIdentityAuthority(options);

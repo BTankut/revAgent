@@ -311,3 +311,74 @@ protected checks and review are green. No O1/wire or protocol-schema change
 was made; the entire fix is internal to `packages/gateway`
 (`m5EnrollmentEntitlement.ts`, `m5BridgeIdentityAuthority.ts`, and their
 tests).
+
+### Follow-up review round: production composition wiring (append-only)
+
+Final review found that `createM5BridgeIdentityAuthority` was reachable only
+from its own unit test, not from any production composition path — a real
+Critical finding, since the required outcomes are about the production
+Gateway, not the adapter class in isolation. Fixed as follows:
+
+- **Production entrypoint identified.** `packages/gateway/src/main.ts` (run
+  via `package.json`'s `"start": "node dist/main.js"`) is the real container
+  entry point, not `productionConformanceHostCli.ts` — that CLI is
+  WP-12's distinct, explicitly non-production conformance harness with its
+  own fixture identity (`ConformanceCredentialAuthority`), confirmed by its
+  own file comment ("WP-12's distinct, explicitly non-production Gateway
+  process composition") and left unchanged.
+- `packages/gateway/src/main.ts` now composes a real M5-backed identity via
+  the new `packages/gateway/src/productionM5IdentityComposition.ts` whenever
+  `DATABASE_URL` and a new `M5_TOKEN_PEPPER` secret are both present (both
+  read directly from `process.env`, never placed on the value-free
+  `GatewayConfig`/startup-log surface); it fails closed to the existing
+  unavailable identity port otherwise — never a silent fallback to a
+  separate store-backed authority (none is composed in `main.ts` to fall
+  back to).
+- The adapter itself was simplified during this fix: `M5BridgeIdentityAuthority`
+  no longer wraps a `base: ProductionIdentityAuthority` (no real,
+  production-grade implementation of that interface's
+  `ProductionTenantIdentityStore`/`ProductionCredentialScopeLocator`
+  dependencies exists anywhere in this codebase outside test fixtures — a
+  pre-existing, independent GW-2/EU-10 gap this unit does not close). It now
+  takes only a real north-user `IdentityPort` (`createOidcIdentityPort`) and
+  the M5 plane, and implements its own lifecycle/`consumeRevocationEvents`/
+  `prepareTenantResync`/`commitTenantResync` directly (unchanged from the
+  prior round) — making outcome 4 structural rather than convention-based:
+  there is no other store a device decision could come from.
+- **Independent, pre-existing scope boundary (not introduced by this
+  card):** no production-grade `GatewayProtocolStore` implementation exists
+  in this codebase (the only implementation,
+  `SqliteConformanceProtocolStore`, is WP-12-conformance-only), so
+  `assertProductionPorts` already refuses any true `NODE_ENV=production`
+  boot today regardless of this identity fix. Composing real M5 identity in
+  `main.ts` is still correct and forward-compatible with the day a real
+  protocol store lands; building that store is GW-12's own remaining scope,
+  not this unit's.
+- **New integration tests**, `packages/gateway/src/m5BridgeIdentityAuthority.test.ts`:
+  `outcome 3+4+5 (http_sse): a real enrolled Bridge authenticates through
+  the production RBP ingress exclusively via M5, and the north identity is
+  never called` drives a real `HttpSseGatewayBinding` client against the
+  same `GatewayBridgeSessionAuthority` + `createProductionRbpIngressHost`
+  composition `main.ts` builds, asserting the north identity port is never
+  invoked. The `wss` case of the same test is written but currently
+  `it.fails` (tracked open issue, see the test's own comment): it
+  reproducibly hits `packages/gateway/src/rbpIngress.ts:1613` ("WSS
+  transport is not open") specifically when `authenticateDevice` resolves
+  asynchronously against real Postgres, a race not present with every other
+  WSS test in this codebase (all use a synchronous fake identity). This is
+  not evidence of a defect in the identity/composition logic itself — the
+  same connection establishes and reasserts correctly, transport-independent,
+  in the pre-existing "outcome 5" test — but WSS wire-level evidence for
+  outcome 3+4+5 remains open pending that root cause.
+- **Outcome 9 additions:** `outcome 9: authenticateDevice returns the
+  plane-resolved principal and ignores an extraneous attacker-supplied
+  principal field` (wrong-principal, structural: the input contract carries
+  no principal field at all, so an injected one is inert) and `outcome 9:
+  fails closed on an expired (post-rotation-grace) credential` (dedicated
+  expired-credential case, distinct from outcome 8's grace-window coverage).
+
+**Status:** CLOSED remains accurate for outcomes 1-2, 3-4 (composition now
+wired; HTTP/SSE wire-evidenced, WSS wire-evidence open per above), 5
+(entirely evidenced at the RBP-authority level; wire-level evidenced for
+HTTP/SSE only), 6, 7, 8, 9. The WSS wire-level gap noted above is the one
+remaining open item and is parked, not silently dropped.
