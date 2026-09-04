@@ -26,9 +26,6 @@ import {
   type ProductionIdentityAuthority,
   type ProductionIdentityLifecycleSnapshot,
   type ProductionIdentityManagedResources,
-  type ProvisionIdentityDeviceInput,
-  type RevokeIdentityDeviceInput,
-  type RevokeIdentitySeatInput,
 } from "./productionIdentityStore.js";
 import type { GatewayProtocolStore, StoreOutcome } from "./store.js";
 
@@ -287,25 +284,19 @@ export class M5BridgeIdentityAuthority implements ProductionIdentityAuthority {
    * `revokeDevice`); this composition refuses them outright rather than
    * silently no-op them against an authority nothing else consults.
    */
-  public async provisionDevice(
-    _input: ProvisionIdentityDeviceInput,
-  ): Promise<IdentityMutationResult> {
+  public async provisionDevice(): Promise<IdentityMutationResult> {
     return identityUnavailable(
       "device provisioning is not performed through this composition; use the M5 enrollment endpoint",
     );
   }
 
-  public async revokeDevice(
-    _input: RevokeIdentityDeviceInput,
-  ): Promise<IdentityMutationResult> {
+  public async revokeDevice(): Promise<IdentityMutationResult> {
     return identityUnavailable(
       "device revocation is not performed through this composition; use M5EnrollmentEntitlementControlPlane.revokeDevice",
     );
   }
 
-  public async revokeSeat(
-    _input: RevokeIdentitySeatInput,
-  ): Promise<IdentityMutationResult> {
+  public async revokeSeat(): Promise<IdentityMutationResult> {
     return identityUnavailable(
       "seat revocation is not performed through this composition",
     );
