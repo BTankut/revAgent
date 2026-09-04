@@ -177,3 +177,250 @@ for a future test-only slice.
 
 This forward pointer submits the milestone-owner acceptance for ledger
 synchronization. It does not alter historical evidence recorded above.
+
+## Post-acceptance erratum: production-auth-to-Bridge-ingress integration gap
+
+**Status:** CLOSED in PR #409. See "Resolution" below.
+
+**Recorded by:** `EU-20-AUTH-INGRESS` (M5 production-auth-to-Bridge-ingress
+integration; EU-20 prerequisite card).
+
+This erratum is append-only. It does not amend, rewrite, or delete any
+historical M5 acceptance record above, including the Acceptance record's
+approval sentence and gap disposition.
+
+1. **Discovered during EU-20.** The gap was found while executing the EU-20
+   (M6-V1 clean-machine install to live read) parent unit, after the EU-20
+   PETRUCCI lab session halted at the lab-Gateway gate
+   (`eu20-lab-evidence/phase-b-lab-gateway-gate.md`).
+2. **Not covered by the original M5 evidence matrix.** The M5 evidence matrix
+   above evidences the EU-11 Postgres-backed enrollment/device control plane
+   (`packages/gateway/src/m5EnrollmentEntitlement.ts`) and the production
+   Bridge ingress (`startProductionGatewayHost`,
+   `GatewayBridgeSessionAuthority`) as separate surfaces. It does not evidence
+   that the two are connected: the ingress path validates sessions through
+   `createProductionIdentityAuthority` /
+   `StoreBackedProductionIdentityAuthority`, a distinct store-backed authority
+   from the Postgres-backed control plane that issues the enrolled device
+   credential, and `IdentityPort.authenticateDevice` is not wired to
+   `M5EnrollmentEntitlementControlPlane.openBridgeConnection`.
+3. **Blocks EU-20 live acceptance.** Because a genuinely enrolled Bridge
+   cannot establish a production Gateway session against its own issued
+   credential, EU-20's live-read acceptance cannot proceed until this
+   integration is bound and evidenced.
+4. **Historical M5 acceptance records are not rewritten or deleted.** The M5
+   milestone-owner decision, its accepted gap list, and the acceptance record
+   above stand as originally recorded; this erratum adds a new, later-
+   discovered fact rather than revising them.
+
+### Progress update (append-only; status remains OPEN)
+
+A bounded composition/authority adapter, `M5BridgeIdentityAuthority`
+(`packages/gateway/src/m5BridgeIdentityAuthority.ts`), now binds
+`IdentityPort.authenticateDevice` to the real EU-11 Postgres-backed
+`M5EnrollmentEntitlementControlPlane` for every Bridge device-credential
+decision, via a new additive, read-only plane method,
+`resolveBridgeDeviceCredential`
+(`packages/gateway/src/m5EnrollmentEntitlement.ts`). This is proven, with a
+real Postgres cluster, in `packages/gateway/src/m5BridgeIdentityAuthority.test.ts`:
+mint+HTTP exchange of a real enrollment code, credential validation sourced
+exclusively from M5 (never from the wrapped `base` authority's own,
+deliberately-unprovisioned device store), rotation-grace admission and
+post-grace rejection, restart persistence across a fresh control-plane
+instance against the same database, and fail-closed rejection of malformed,
+unknown, wrong-device, foreign-tenant, and revoked credentials.
+
+**Architecture gate found; not worked around.** `authenticateDevice` is not
+the only place `GatewayBridgeSessionAuthority` consults a `kind: "oidc"`
+identity authority. `openConnection` additionally requires the *same*
+authority's `consumeRevocationEvents` / `prepareTenantResync` /
+`commitTenantResync` surface to already carry a tenant-wide, versioned
+device/seat snapshot (`#tenantIdentitySnapshots`) that the just-authenticated
+connection's device must appear in
+(`#connectionMatchesSnapshot`) before the connection finishes opening — even
+though `authenticateDevice` itself already accepted the credential
+correctly. This is proven directly in the same test file: a genuinely valid,
+M5-issued, M5-authenticated credential is refused by `openConnection` with
+`GatewayRbpFault("auth", "connection identity authority changed")` because
+that snapshot is sourced from the wrapped `base` authority (by design — its
+device/seat methods are never consulted for a decision, so it is never
+provisioned by an M5-issued device), and the branded
+`ProductionIdentityAuthority` contract offers no other place to source it
+from without duplicating an event-sourced revocation-head / versioned
+device-seat resync protocol a second time on top of M5's schema — a protocol
+extension this bounded unit must not invent, per the card. Reaching outcome 5
+(session registration) and outcome 6 (dispatch) therefore requires either
+that reimplementation or a change to `bridgeSession.ts`'s own snapshot-
+consistency contract, both outside this unit's bounded composition/authority
+adapter scope.
+
+**Superseded by the Resolution below.** The progress-update paragraph above
+correctly reported this unit's state at that point in the same PR; further
+work in this PR closed the gap it described. It is left as-written
+(append-only) rather than edited, per this erratum's own rule.
+
+### Resolution (append-only; status CLOSED)
+
+`M5BridgeIdentityAuthority` now implements `consumeRevocationEvents`,
+`prepareTenantResync`, and `commitTenantResync` directly over M5's own
+Postgres device/credential state (`M5EnrollmentEntitlementControlPlane
+.tenantDeviceRevocationHead` and `.tenantDeviceSnapshot`, both additive,
+read-only), rather than delegating them to the wrapped `base` authority. The
+tenant-wide device/seat snapshot `GatewayBridgeSessionAuthority` requires
+before it will finish opening or reasserting a connection
+(`#connectionMatchesSnapshot`, `synchronizeIdentityRevocations`) is therefore
+sourced from the same authoritative M5 state
+`resolveBridgeDeviceCredential` itself reads, so a live connection's
+authenticated identity and the cached tenant snapshot can never structurally
+disagree. `base`'s own device-decision methods (`authenticateDevice`,
+`provisionDevice`, `revokeDevice`, `revokeSeat`, and the three resync/
+revocation-event methods) are never invoked for Bridge ingress — proven
+directly with a call-spy assertion in the same test that also proves outcome
+5, not merely by code inspection.
+
+Outcomes 5 and 6 are now evidenced in
+`packages/gateway/src/m5BridgeIdentityAuthority.test.ts`:
+
+- Outcome 5 (`outcome 5: an enrolled Bridge registers a production RBP
+  session through the bound authority, and reasserts, and a revoke closes
+  it`): a real EU-11-enrolled device completes `GatewayBridgeSessionAuthority
+  .openConnection`, reasserts its credential, and — once revoked through
+  M5's own admin surface — is rejected on the next reassertion, entirely
+  through the bound authority.
+- Outcome 6 (`outcome 6: one entitled read-only dispatch completes through
+  the production Gateway, the Bridge simulator, and the real add-in loopback
+  fixture`): a plain (non-mutating) `core.get_status` / `mcp_status`
+  invocation is dispatched through the production
+  `GatewayBridgeSessionAuthority.createExecutor().execute` pipeline, answered
+  by the real, CI-exercised `packages/bridge-simulator` `BridgeSimulator`
+  against a real `packages/addin-loopback-fixture` `AddinLoopbackFixture`
+  process — the same "add-in loopback fixture" this repository's own GW-16
+  suite (`packages/gateway/src/batchDispatch.test.ts`) already uses in CI —
+  and the completed result is accepted back into the session. The real
+  dotnet C# Bridge trio in `packages/rbp-conformance` was not exercised in
+  this pass: that harness's `productionConformanceHostCli.ts` composes its
+  own fixture identity (`ConformanceCredentialAuthority`), not this card's
+  `IdentityPort`, and rewiring its identity composition is a materially
+  larger change than this bounded adapter unit; the Node bridge-simulator /
+  add-in-loopback-fixture pair is the closest existing CI-exercised fixture,
+  used exactly as stated here.
+
+All ten `EU-20-AUTH-INGRESS` required outcomes are now evidenced by tests on
+the candidate in PR #409. EU-20 live acceptance may proceed once this PR's
+protected checks and review are green. No O1/wire or protocol-schema change
+was made; the entire fix is internal to `packages/gateway`
+(`m5EnrollmentEntitlement.ts`, `m5BridgeIdentityAuthority.ts`, and their
+tests).
+
+### Follow-up review round: production composition wiring (append-only)
+
+Final review found that `createM5BridgeIdentityAuthority` was reachable only
+from its own unit test, not from any production composition path — a real
+Critical finding, since the required outcomes are about the production
+Gateway, not the adapter class in isolation. Fixed as follows:
+
+- **Production entrypoint identified.** `packages/gateway/src/main.ts` (run
+  via `package.json`'s `"start": "node dist/main.js"`) is the real container
+  entry point, not `productionConformanceHostCli.ts` — that CLI is
+  WP-12's distinct, explicitly non-production conformance harness with its
+  own fixture identity (`ConformanceCredentialAuthority`), confirmed by its
+  own file comment ("WP-12's distinct, explicitly non-production Gateway
+  process composition") and left unchanged.
+- `packages/gateway/src/main.ts` now composes a real M5-backed identity via
+  the new `packages/gateway/src/productionM5IdentityComposition.ts` whenever
+  `DATABASE_URL` and a new `M5_TOKEN_PEPPER` secret are both present (both
+  read directly from `process.env`, never placed on the value-free
+  `GatewayConfig`/startup-log surface); it fails closed to the existing
+  unavailable identity port otherwise — never a silent fallback to a
+  separate store-backed authority (none is composed in `main.ts` to fall
+  back to).
+- The adapter itself was simplified during this fix: `M5BridgeIdentityAuthority`
+  no longer wraps a `base: ProductionIdentityAuthority` (no real,
+  production-grade implementation of that interface's
+  `ProductionTenantIdentityStore`/`ProductionCredentialScopeLocator`
+  dependencies exists anywhere in this codebase outside test fixtures — a
+  pre-existing, independent GW-2/EU-10 gap this unit does not close). It now
+  takes only a real north-user `IdentityPort` (`createOidcIdentityPort`) and
+  the M5 plane, and implements its own lifecycle/`consumeRevocationEvents`/
+  `prepareTenantResync`/`commitTenantResync` directly (unchanged from the
+  prior round) — making outcome 4 structural rather than convention-based:
+  there is no other store a device decision could come from.
+- **Independent, pre-existing scope boundary (not introduced by this
+  card):** no production-grade `GatewayProtocolStore` implementation exists
+  in this codebase (the only implementation,
+  `SqliteConformanceProtocolStore`, is WP-12-conformance-only), so
+  `assertProductionPorts` already refuses any true `NODE_ENV=production`
+  boot today regardless of this identity fix. Composing real M5 identity in
+  `main.ts` is still correct and forward-compatible with the day a real
+  protocol store lands; building that store is GW-12's own remaining scope,
+  not this unit's.
+- **New integration tests**, `packages/gateway/src/m5BridgeIdentityAuthority.test.ts`:
+  `outcome 3+4+5 (http_sse): a real enrolled Bridge authenticates through
+  the production RBP ingress exclusively via M5, and the north identity is
+  never called` drives a real `HttpSseGatewayBinding` client against the
+  same `GatewayBridgeSessionAuthority` + `createProductionRbpIngressHost`
+  composition `main.ts` builds, asserting the north identity port is never
+  invoked. The `wss` case of the same test is written but currently
+  `it.fails` (tracked open issue, see the test's own comment): it
+  reproducibly hits `packages/gateway/src/rbpIngress.ts:1613` ("WSS
+  transport is not open") specifically when `authenticateDevice` resolves
+  asynchronously against real Postgres, a race not present with every other
+  WSS test in this codebase (all use a synchronous fake identity). This is
+  not evidence of a defect in the identity/composition logic itself — the
+  same connection establishes and reasserts correctly, transport-independent,
+  in the pre-existing "outcome 5" test — but WSS wire-level evidence for
+  outcome 3+4+5 remains open pending that root cause.
+- **Outcome 9 additions:** `outcome 9: authenticateDevice returns the
+  plane-resolved principal and ignores an extraneous attacker-supplied
+  principal field` (wrong-principal, structural: the input contract carries
+  no principal field at all, so an injected one is inert) and `outcome 9:
+  fails closed on an expired (post-rotation-grace) credential` (dedicated
+  expired-credential case, distinct from outcome 8's grace-window coverage).
+
+**Status:** CLOSED remains accurate for outcomes 1-2, 3-4 (composition now
+wired; HTTP/SSE wire-evidenced, WSS wire-evidence open per above), 5
+(entirely evidenced at the RBP-authority level; wire-level evidenced for
+HTTP/SSE only), 6, 7, 8, 9. The WSS wire-level gap noted above is the one
+remaining open item and is parked, not silently dropped.
+
+### WSS wire-level gap: root-caused and closed (append-only)
+
+The WSS gap above was root-caused: not an M5 or identity-composition defect
+at all, but a pre-existing product fail-safe defect in
+`GatewayBridgeSessionAuthority`'s own shutdown drain
+(`bridgeSession.ts`'s `#performClose`, ~line 5463-5491), independent of this
+card. On shutdown, drain sends a best-effort `goodbye` to every
+still-registered connection, then closes it. When a peer had already
+disconnected (e.g. a client-terminated WSS transport — exactly the "outcome
+3+4+5 (wss)" test's own teardown), the `goodbye` send failed as expected,
+but that expected failure was being classified the same as a genuine
+failure and re-thrown as a fatal `drainFailure` from `authority.close()`,
+which propagated through `host.close()`. This reproduced on the SAME
+already-passing `http_sse` composition's teardown too, once its client
+socket was inspected the same way — it simply hadn't shown up as a test
+failure there.
+
+**Fix** (`packages/gateway/src/bridgeSession.ts`, `#performClose`'s drain
+loop): the `goodbye` send failure is now caught, reported through a new
+optional, value-free diagnostic callback
+(`onDrainGoodbyeSendFailure?: (info: { connectionId }) => void`, mirroring
+the existing `onConformancePartialCarrierCommitFailure` pattern — never
+swallowed silently), and never classified as a fatal `drainFailure`.
+`connection.close(1001, "server draining")` is still always attempted and
+its failure is still fatal, unchanged — a genuine close failure still
+surfaces a `drainFailure` from `authority.close()`. No O1/wire framing or
+reconnect-behaviour change; the `goodbye` envelope content and `close`
+code/reason are unchanged.
+
+**New regression test**, `packages/gateway/src/rbpIngress.test.ts`:
+`shutdown drain: a goodbye send failure for an already-gone peer never
+fails authority.close(), but a genuine connection.close() failure still
+does` — proves both halves directly against `GatewayBridgeSessionAuthority`
+with an injected channel (no wire transport needed): a `send()` failure
+resolves `close()` and is observed via the new diagnostic hook; a
+`close()` failure still rejects `authority.close()`.
+
+`outcome 3+4+5 (wss)` in `m5BridgeIdentityAuthority.test.ts` is no longer
+`it.fails` — it is a plain, passing test. All ten `EU-20-AUTH-INGRESS`
+required outcomes are now fully evidenced, WSS included, with no open
+items.

@@ -530,6 +530,11 @@ export {
   type GatewayServerTlsMaterial,
 } from "./server.js";
 export { startProductionGatewayHost } from "./productionConformanceHost.js";
+export {
+  M5_BRIDGE_IDENTITY_AUTHORITY_CONTRACT_VERSION,
+  M5BridgeIdentityAuthority,
+  createM5BridgeIdentityAuthority,
+} from "./m5BridgeIdentityAuthority.js";
 export { runProductionConformanceHostCli } from "./productionConformanceHostCli.js";
 export { migrateUp } from "./migrate.js";
 export {
@@ -560,6 +565,7 @@ export {
   type M5EnrollmentExchange,
   type M5IssuedEnrollmentCode,
   type M5MintEnrollmentInput,
+  type M5ResolvedDeviceCredential,
   type M5RevocationResult,
   type M5RotatedCredential,
   type M5SeatAssignment,

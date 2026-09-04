@@ -4907,6 +4907,9 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
   readonly #onConformancePartialCarrierCommitFailure:
     | ((failure: ConformancePartialCarrierCommitFailure) => void)
     | undefined;
+  readonly #onDrainGoodbyeSendFailure:
+    | ((info: { readonly connectionId: string }) => void)
+    | undefined;
   readonly #receiveTails = new Map<string, Promise<void>>();
   readonly #rsidCarrierReceiveTailBytes = new Map<string, number>();
   readonly #carrierReceiveTailObserver: CarrierReceiveTailObserver | undefined;
@@ -4988,6 +4991,15 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       readonly onConformancePartialCarrierCommitFailure?: (
         failure: ConformancePartialCarrierCommitFailure,
       ) => void;
+      /**
+       * Best-effort diagnostic only: a shutdown-drain "goodbye" send that
+       * failed (typically because the peer had already disconnected before
+       * drain reached it). Never affects `close()`'s own fatal/non-fatal
+       * classification of `drainFailure` — see `#performClose`.
+       */
+      readonly onDrainGoodbyeSendFailure?: (
+        info: { readonly connectionId: string },
+      ) => void;
     } = {},
   ) {
     this.#servingOwnership = options.servingOwnership ??
@@ -5024,6 +5036,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       NEVER_CONFORMANCE_ORIGIN_RESEND_POLICY;
     this.#onConformancePartialCarrierCommitFailure =
       options.onConformancePartialCarrierCommitFailure;
+    this.#onDrainGoodbyeSendFailure = options.onDrainGoodbyeSendFailure;
     this.#productionIdentity = asProductionIdentityAuthority(identity);
     this.#clock = options.clock ?? Date.now;
     this.#instanceId = options.instanceId ?? gatewayUuidV7(this.#clock());
@@ -5462,8 +5475,14 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     this.#preparedInboundBlobs.clear();
     const drained = await Promise.allSettled(
       connections.map(async (connection) => {
-        try {
-          if (this.#connectionIsCurrentlyAuthorized(connection)) {
+        // Best-effort only: a peer that already disconnected before drain
+        // reached it (e.g. a client-terminated WSS transport) cannot
+        // receive this goodbye, and that is not a genuine drain failure —
+        // it is reported diagnostically, never swallowed silently, but it
+        // must never be classified as a fatal `drainFailure` below. Only a
+        // failure of `close()` itself keeps that classification.
+        if (this.#connectionIsCurrentlyAuthorized(connection)) {
+          try {
             await connection.send(
               JSON.stringify({
                 v: 1,
@@ -5473,10 +5492,13 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
                 payload: { reason: "server_draining", retry_after_ms: 1_000 },
               } satisfies RbpEnvelope),
             );
+          } catch {
+            this.#onDrainGoodbyeSendFailure?.({
+              connectionId: connection.connectionId,
+            });
           }
-        } finally {
-          await connection.close(1001, "server draining");
         }
+        await connection.close(1001, "server draining");
       }),
     );
     try {

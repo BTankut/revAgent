@@ -32,6 +32,21 @@ const MODULES = new Set<GatewayModuleName>([
   "elec",
 ]);
 
+/**
+ * EU-20-AUTH-INGRESS: the exact `security_events.event_type` values that can
+ * change a device's authorization-relevant state (`devices.status`,
+ * `device_credentials.version`/`machine_fingerprint`, or add a new device).
+ * Used by {@link M5EnrollmentEntitlementControlPlane.tenantDeviceRevocationHead}
+ * and {@link M5EnrollmentEntitlementControlPlane.tenantDeviceSnapshot} as the
+ * change-detection counter's source; every mutation that can affect
+ * `resolveBridgeDeviceCredential`'s outcome logs one of these.
+ */
+const M5_DEVICE_AUTHORITY_EVENT_TYPES = Object.freeze([
+  "enrollment_code.exchange",
+  "device_credential.rotate",
+  "device.revoke",
+]);
+
 export type M5EnrollmentEntitlementFailureReason =
   | "invalid_request"
   | "admin_required"
@@ -117,6 +132,58 @@ export interface M5BridgeConnection {
   readonly deviceId: string;
   readonly credentialVersion: number;
   readonly usedPreviousCredential: boolean;
+}
+
+/**
+ * EU-20-AUTH-INGRESS: the shape returned by {@link
+ * M5EnrollmentEntitlementControlPlane.resolveBridgeDeviceCredential}. Unlike
+ * {@link M5BridgeConnection} this carries no `connectionId` and registers no
+ * `bridge_connections` row: it is a pure credential-resolution read used by
+ * the production `IdentityPort` adapter to answer "who is this device
+ * token", not a connection-opening call.
+ */
+export interface M5ResolvedDeviceCredential {
+  readonly contractVersion: typeof M5_ENROLLMENT_ENTITLEMENT_CONTRACT_VERSION;
+  readonly tenantId: string;
+  readonly principalUserId: string;
+  readonly deviceId: string;
+  readonly credentialVersion: number;
+  readonly usedPreviousCredential: boolean;
+  /**
+   * The device's *current* stored credential digest, tagged `sha256:` for
+   * shape compatibility with the frozen `DeviceAuthContext.deviceTokenDigest`
+   * field. This is M5's own internal HMAC digest (see `#secretDigest`), not
+   * a plain SHA-256 of the raw bearer: the raw token is never available
+   * outside one authentication call to recompute a plain hash of it later
+   * (e.g. from {@link tenantDeviceSnapshot}, which has no raw token at all),
+   * so both a live connection's auth context and the tenant-wide snapshot
+   * must derive this tag from the *same* already-stored value to ever agree.
+   * It is used only for the production identity authority's internal
+   * cache-coherency comparisons, never to re-verify a credential.
+   */
+  readonly currentTokenDigestTag: `sha256:${string}`;
+}
+
+/** One row of {@link M5EnrollmentEntitlementControlPlane.tenantDeviceSnapshot}. */
+export interface M5TenantDeviceSnapshotRow {
+  readonly deviceId: string;
+  readonly principalUserId: string;
+  readonly machineFingerprint: string;
+  readonly currentTokenDigestTag: `sha256:${string}`;
+  readonly credentialVersion: number;
+  readonly status: "active" | "revoked";
+}
+
+/**
+ * EU-20-AUTH-INGRESS: a full, current, tenant-wide read of every device's
+ * authorization-relevant state. This is the M5-backed source for the
+ * production identity authority's tenant resync snapshot
+ * (`prepareTenantResync` / `commitTenantResync`).
+ */
+export interface M5TenantDeviceSnapshot {
+  readonly headSequence: number;
+  readonly authorityDigest: `sha256:${string}`;
+  readonly devices: readonly M5TenantDeviceSnapshotRow[];
 }
 
 export interface M5SeatAssignment {
@@ -1064,6 +1131,127 @@ export class M5EnrollmentEntitlementControlPlane {
     }
   }
 
+  /**
+   * EU-20-AUTH-INGRESS: resolves and validates a bearer device token without
+   * requiring the caller to already know the owning tenant or principal, and
+   * without opening (or requiring an executor/close-control for) a bridge
+   * connection. This is the exact capability the production `IdentityPort`
+   * needs at initial `hello` and at every credential reassertion: locate the
+   * credential purely from the token digest, then confirm the caller's
+   * claimed device id, machine fingerprint, and active status all agree with
+   * this same authoritative table this instance already enforces inside
+   * {@link openBridgeConnection}. It performs no writes and registers no
+   * `bridge_connections` row, so calling it repeatedly (as a reassert does)
+   * never collides with a one-time connection-open.
+   */
+  public async resolveBridgeDeviceCredential(input: {
+    readonly deviceToken: string | undefined;
+    readonly claimedDeviceId: string | undefined;
+    readonly machineFingerprint: string | undefined;
+  }): Promise<M5EnrollmentEntitlementResult<M5ResolvedDeviceCredential>> {
+    if (
+      input.deviceToken === undefined ||
+      !visibleSecret(input.deviceToken) ||
+      input.claimedDeviceId === undefined ||
+      !uuid(input.claimedDeviceId) ||
+      input.machineFingerprint === undefined ||
+      !isCanonicalMachineFingerprint(input.machineFingerprint)
+    ) {
+      return failure("invalid_request");
+    }
+    const digest = this.#secretDigest("device", input.deviceToken);
+    try {
+      return await this.#locatedTransaction(
+        digest,
+        "device",
+        async (client, located) => {
+          if (located.device_id !== input.claimedDeviceId) {
+            await this.#event(client, {
+              tenantId: located.tenant_id,
+              eventType: "bridge.handshake",
+              actorDeviceId: located.device_id,
+              outcome: "denied",
+              reason: "device_binding_denied",
+            });
+            return failure("device_binding_denied");
+          }
+          const credential = await client.query<{
+            principal_user_id: string;
+            machine_fingerprint: string;
+            current_token_digest: string;
+            previous_token_digest: string | null;
+            previous_valid_until: Date | null;
+            version: number;
+            device_status: "active" | "revoked";
+            user_status: "active" | "disabled";
+          }>(
+            `SELECT dc.principal_user_id,dc.machine_fingerprint,
+                    dc.current_token_digest,dc.previous_token_digest,
+                    dc.previous_valid_until,dc.version,d.status AS device_status,
+                    u.status AS user_status
+             FROM device_credentials dc
+             JOIN devices d ON d.tenant_id=dc.tenant_id AND d.id=dc.device_id
+             JOIN users u ON u.tenant_id=dc.tenant_id AND u.id=dc.principal_user_id
+             WHERE dc.device_id=$1`,
+            [input.claimedDeviceId],
+          );
+          const record = credential.rows[0];
+          if (record === undefined) return failure("device_credential_denied");
+          const usedPrevious = record.previous_token_digest === digest;
+          const previousStillValid =
+            usedPrevious &&
+            record.previous_valid_until !== null &&
+            record.previous_valid_until.getTime() >= this.#now();
+          if (
+            (record.current_token_digest !== digest && !previousStillValid) ||
+            record.machine_fingerprint !== input.machineFingerprint ||
+            record.device_status !== "active" ||
+            record.user_status !== "active"
+          ) {
+            await this.#event(client, {
+              tenantId: located.tenant_id,
+              eventType: "bridge.handshake",
+              actorDeviceId: located.device_id,
+              outcome: "denied",
+              reason:
+                record.device_status === "revoked"
+                  ? "device_revoked"
+                  : "device_credential_denied",
+            });
+            return failure(
+              record.device_status === "revoked"
+                ? "device_revoked"
+                : "device_credential_denied",
+            );
+          }
+          await this.#event(client, {
+            tenantId: located.tenant_id,
+            eventType: "bridge.handshake",
+            actorDeviceId: located.device_id,
+            targetUserId: record.principal_user_id,
+            outcome: "completed",
+            details: {
+              credentialVersion: record.version,
+              usedPreviousCredential: previousStillValid,
+              mode: "identity_resolve",
+            },
+          });
+          return success({
+            contractVersion: M5_ENROLLMENT_ENTITLEMENT_CONTRACT_VERSION,
+            tenantId: located.tenant_id,
+            principalUserId: record.principal_user_id,
+            deviceId: located.device_id,
+            credentialVersion: record.version,
+            usedPreviousCredential: previousStillValid,
+            currentTokenDigestTag: `sha256:${record.current_token_digest}`,
+          });
+        },
+      );
+    } catch {
+      return failure("unavailable");
+    }
+  }
+
   public async capabilityIndex(input: {
     readonly tenantId: string;
     readonly principalUserId: string;
@@ -1516,6 +1704,108 @@ export class M5EnrollmentEntitlementControlPlane {
         maximumCloseLatencyMs,
         totalCloseElapsedMs,
         withinBound,
+      });
+    } catch {
+      return failure("unavailable");
+    }
+  }
+
+  /**
+   * EU-20-AUTH-INGRESS: a cheap, monotonically non-decreasing per-tenant
+   * counter that changes exactly when a device's authorization-relevant
+   * state can have changed (a device credential was first issued, rotated,
+   * or the device was revoked). M5 has no incremental revocation-event log
+   * of its own; the production identity authority contract this backs
+   * (`consumeRevocationEvents`) is satisfied honestly by reporting "nothing
+   * new" whenever this counter is unchanged since the caller's last observed
+   * value, and by directing the caller to a full {@link tenantDeviceSnapshot}
+   * resync whenever it has changed — never by fabricating an incremental
+   * per-event stream this plane does not maintain.
+   */
+  public async tenantDeviceRevocationHead(input: {
+    readonly tenantId: string;
+  }): Promise<M5EnrollmentEntitlementResult<{ readonly headSequence: number }>> {
+    if (!uuid(input.tenantId)) return failure("invalid_request");
+    try {
+      return await this.#tenantTransaction(input.tenantId, async (client) => {
+        const row = await client.query<{ n: string }>(
+          `SELECT count(*)::bigint AS n FROM security_events
+           WHERE tenant_id=$1 AND event_type = ANY($2::text[])`,
+          [input.tenantId, M5_DEVICE_AUTHORITY_EVENT_TYPES],
+        );
+        return success({ headSequence: Number(row.rows[0]!.n) });
+      });
+    } catch {
+      return failure("unavailable");
+    }
+  }
+
+  /**
+   * EU-20-AUTH-INGRESS: the full, current, tenant-wide device authorization
+   * snapshot this plane owns. Every field here is the same authoritative
+   * state {@link resolveBridgeDeviceCredential} itself reads, so a snapshot
+   * built here and a live connection authenticated through that method can
+   * never structurally disagree about the same device.
+   */
+  public async tenantDeviceSnapshot(input: {
+    readonly tenantId: string;
+  }): Promise<M5EnrollmentEntitlementResult<M5TenantDeviceSnapshot>> {
+    if (!uuid(input.tenantId)) return failure("invalid_request");
+    try {
+      return await this.#tenantTransaction(input.tenantId, async (client) => {
+        const headRow = await client.query<{ n: string }>(
+          `SELECT count(*)::bigint AS n FROM security_events
+           WHERE tenant_id=$1 AND event_type = ANY($2::text[])`,
+          [input.tenantId, M5_DEVICE_AUTHORITY_EVENT_TYPES],
+        );
+        const headSequence = Number(headRow.rows[0]!.n);
+        const rows = await client.query<{
+          device_id: string;
+          principal_user_id: string;
+          machine_fingerprint: string;
+          current_token_digest: string;
+          version: number;
+          device_status: "active" | "revoked";
+          user_status: "active" | "disabled";
+        }>(
+          `SELECT dc.device_id, dc.principal_user_id, dc.machine_fingerprint,
+                  dc.current_token_digest, dc.version, d.status AS device_status,
+                  u.status AS user_status
+           FROM device_credentials dc
+           JOIN devices d ON d.tenant_id=dc.tenant_id AND d.id=dc.device_id
+           JOIN users u ON u.tenant_id=dc.tenant_id AND u.id=dc.principal_user_id
+           WHERE dc.tenant_id=$1
+           ORDER BY dc.device_id`,
+          [input.tenantId],
+        );
+        const devices: M5TenantDeviceSnapshotRow[] = rows.rows.map((row) =>
+          Object.freeze({
+            deviceId: row.device_id,
+            principalUserId: row.principal_user_id,
+            machineFingerprint: row.machine_fingerprint,
+            currentTokenDigestTag: `sha256:${row.current_token_digest}` as const,
+            credentialVersion: row.version,
+            status:
+              row.device_status === "active" && row.user_status === "active"
+                ? ("active" as const)
+                : ("revoked" as const),
+          }),
+        );
+        const authorityDigest: `sha256:${string}` = `sha256:${publicDigest(
+          devices.map((device) => ({
+            deviceId: device.deviceId,
+            principalUserId: device.principalUserId,
+            machineFingerprint: device.machineFingerprint,
+            currentTokenDigestTag: device.currentTokenDigestTag,
+            credentialVersion: device.credentialVersion,
+            status: device.status,
+          })),
+        )}`;
+        return success({
+          headSequence,
+          authorityDigest,
+          devices: Object.freeze(devices),
+        });
       });
     } catch {
       return failure("unavailable");

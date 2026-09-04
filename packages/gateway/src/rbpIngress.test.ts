@@ -3648,4 +3648,63 @@ describe("GW-12 production RBP ingress", () => {
     );
     await restarted.close();
   });
+
+  it("shutdown drain: a goodbye send failure for an already-gone peer never fails authority.close(), but a genuine connection.close() failure still does", async () => {
+    // Non-fatal case: the channel's `send` throws (the peer already
+    // disconnected before drain reached it) — `close()` must still resolve,
+    // and the failure must still be observable via the diagnostic hook.
+    const goneRestartable = createRestartableTestStore();
+    const goodbyeFailures: string[] = [];
+    const goneIdentity = identity();
+    const goneAuthority = new GatewayBridgeSessionAuthority(
+      goneRestartable.store,
+      goneIdentity,
+      {
+        onDrainGoodbyeSendFailure: (info) => {
+          goodbyeFailures.push(info.connectionId);
+        },
+      },
+    );
+    await goneAuthority.open();
+    const goneOpened = await goneAuthority.openConnection({
+      deviceToken: "device-token",
+      binding: "wss",
+      hello: hello(),
+      channel: {
+        async send() {
+          throw new Error("peer already disconnected");
+        },
+        async close() {
+          // A real transport can still ack a close after send failed.
+        },
+      },
+    });
+    await expect(goneAuthority.close()).resolves.toBeUndefined();
+    expect(goodbyeFailures).toEqual([goneOpened.connectionId]);
+
+    // Fatal case: `connection.close()` itself throws for a genuine reason —
+    // `authority.close()` must still surface it.
+    const genuineRestartable = createRestartableTestStore();
+    const genuineAuthority = new GatewayBridgeSessionAuthority(
+      genuineRestartable.store,
+      identity(),
+    );
+    await genuineAuthority.open();
+    await genuineAuthority.openConnection({
+      deviceToken: "device-token",
+      binding: "wss",
+      hello: hello(),
+      channel: {
+        async send() {
+          // Goodbye succeeds; only close() fails.
+        },
+        async close() {
+          throw new Error("genuine transport close failure");
+        },
+      },
+    });
+    await expect(genuineAuthority.close()).rejects.toThrow(
+      "genuine transport close failure",
+    );
+  });
 });

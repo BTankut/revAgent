@@ -53,6 +53,12 @@ describe("WP-12 bounded retention current topology", () => {
     }
     expect(outside.sort()).toEqual([
       "batchDispatch.test.ts",
+      // EU-20-AUTH-INGRESS (PR #409): constructs `GatewayBridgeSessionAuthority`
+      // directly, with the ordinary `createRestartableTestStore` fixture (like
+      // the other entries here), to drive production-ingress evidence for the
+      // M5-backed identity adapter — it is not part of the retention/resource-
+      // authority-sensitive composition boundary this freeze protects.
+      "m5BridgeIdentityAuthority.test.ts",
       "preProductionIdentity.test.ts",
       "rbpIngress.test.ts",
       "server.test.ts",
