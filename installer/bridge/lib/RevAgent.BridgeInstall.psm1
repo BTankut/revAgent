@@ -600,20 +600,131 @@ function Set-RevAgentBridgeSystemOnlyAcl {
         [scriptblock]$IcaclsInvoker
     )
 
+    # Do not silently remove unrelated explicit permissions, or attempt to
+    # repair a deny ACE. Inherited allows are removed only after the intended
+    # explicit access is established. The same non-propagating policy applies
+    # to both the credential directory and each individually protected file.
+    $sidType = [System.Security.Principal.SecurityIdentifier]
+    $allowedSids = @('S-1-5-18', 'S-1-5-32-544')
+    [void](Assert-RevAgentBridgeNoReparsePoint -Path $Path -GuardRoot (Split-Path -Parent $Path))
+    $before = Get-Acl -LiteralPath $Path -ErrorAction Stop
+    foreach ($rule in $before.GetAccessRules($true, $true, $sidType)) {
+        if ($rule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow -or
+            (-not $rule.IsInherited -and $rule.IdentityReference.Value -notin $allowedSids)) {
+            throw 'bridge_credential_acl_unexpected_ace'
+        }
+    }
+
     if ($null -eq $IcaclsInvoker) {
         $IcaclsInvoker = {
             param([string[]]$Arguments)
-            $output = & icacls.exe @Arguments 2>&1
-            if ($LASTEXITCODE -ne 0) {
-                throw "icacls.exe failed (exit $LASTEXITCODE) for arguments [$($Arguments -join ' ')]: $output"
+            # Windows PowerShell turns native stderr into an ErrorRecord. Keep
+            # it nonterminating until we have captured the actual native exit.
+            $savedPreference = $ErrorActionPreference
+            try {
+                $ErrorActionPreference = 'Continue'
+                $output = & "$env:SystemRoot\System32\icacls.exe" @Arguments 2>&1
+                $nativeExit = $LASTEXITCODE
+            }
+            finally { $ErrorActionPreference = $savedPreference }
+            if ($nativeExit -ne 0) {
+                throw "bridge_credential_icacls_failed: exit=$nativeExit operation=$($Arguments[1])"
             }
             return $output
         }
     }
 
-    [void](& $IcaclsInvoker @($Path, '/setowner', 'NT AUTHORITY\SYSTEM', '/Q'))
+    [void](& $IcaclsInvoker @($Path, '/grant:r', '*S-1-5-18:(F)', '*S-1-5-32-544:(F)', '/Q'))
     [void](& $IcaclsInvoker @($Path, '/inheritance:r', '/Q'))
-    [void](& $IcaclsInvoker @($Path, '/grant:r', 'SYSTEM:(F)', '/grant:r', 'BUILTIN\Administrators:(F)', '/Q'))
+    [void](& $IcaclsInvoker @($Path, '/setowner', '*S-1-5-18', '/Q'))
+
+    Assert-RevAgentBridgeExactCredentialAcl -Security (Get-Acl -LiteralPath $Path -ErrorAction Stop)
+}
+
+function Assert-RevAgentBridgeExactCredentialAcl {
+    param([Parameter(Mandatory=$true)][System.Security.AccessControl.FileSystemSecurity]$Security,
+        [string[]]$AllowedOwnerSids = @('S-1-5-18'))
+    $sidType = [System.Security.Principal.SecurityIdentifier]
+    $rules = @($Security.GetAccessRules($true, $true, $sidType))
+    if (-not $Security.AreAccessRulesProtected -or $Security.GetOwner($sidType).Value -cnotin $AllowedOwnerSids -or $rules.Count -ne 2) {
+        throw 'bridge_credential_acl_verification_failed'
+    }
+    foreach ($sid in @('S-1-5-18', 'S-1-5-32-544')) {
+        $matches = @($rules | Where-Object { $_.IdentityReference.Value -ceq $sid })
+        if ($matches.Count -ne 1 -or $matches[0].IsInherited -or
+            $matches[0].AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow -or
+            $matches[0].FileSystemRights -ne [System.Security.AccessControl.FileSystemRights]::FullControl -or
+            $matches[0].InheritanceFlags -ne [System.Security.AccessControl.InheritanceFlags]::None -or
+            $matches[0].PropagationFlags -ne [System.Security.AccessControl.PropagationFlags]::None) {
+            throw 'bridge_credential_acl_verification_failed'
+        }
+    }
+}
+
+function Write-RevAgentBridgeCredentialArtifact {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)][string]$Path,
+        [Parameter(Mandatory=$true)][byte[]]$Bytes,
+        [Parameter(Mandatory=$true)][string]$GuardRoot,
+        [scriptblock]$IcaclsInvoker
+    )
+    $fullPath = Assert-RevAgentBridgeNoReparsePoint -Path $Path -GuardRoot $GuardRoot
+    $directory = Split-Path -Parent $fullPath
+    Assert-RevAgentBridgeExactCredentialAcl -Security (Get-Acl -LiteralPath $directory -ErrorAction Stop)
+    if (Test-Path -LiteralPath $fullPath) { throw 'bridge_credential_artifact_already_exists' }
+
+    # Passing security to CreateNew avoids the token default DACL, including
+    # its logon SID. The empty file is private from its first instant; only
+    # SYSTEM/Administrators may read bytes before ownership is finalized.
+    $security = [System.Security.AccessControl.FileSecurity]::new()
+    $security.SetOwner([System.Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'))
+    $security.SetAccessRuleProtection($true, $false)
+    foreach ($sid in @('S-1-5-18', 'S-1-5-32-544')) {
+        $security.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new(
+            [System.Security.Principal.SecurityIdentifier]::new($sid),
+            [System.Security.AccessControl.FileSystemRights]::FullControl,
+            [System.Security.AccessControl.AccessControlType]::Allow))
+    }
+    $temporaryPath = Join-Path $directory ('.enrollment.' + [guid]::NewGuid().ToString('N') + '.tmp')
+    $stream = $null
+    $created = $false
+    try {
+        if ($PSVersionTable.PSEdition -eq 'Desktop') {
+            $stream = [System.IO.FileStream]::new($temporaryPath, [System.IO.FileMode]::CreateNew,
+                [System.Security.AccessControl.FileSystemRights]::Write -bor [System.Security.AccessControl.FileSystemRights]::ReadPermissions,
+                [System.IO.FileShare]::None, 4096, [System.IO.FileOptions]::None, $security)
+            $created = $true
+            $createdSecurity = $stream.GetAccessControl()
+        }
+        else {
+            $stream = [System.IO.FileSystemAclExtensions]::Create([System.IO.FileInfo]::new($temporaryPath),
+                [System.IO.FileMode]::CreateNew,
+                [System.Security.AccessControl.FileSystemRights]::Write -bor [System.Security.AccessControl.FileSystemRights]::ReadPermissions,
+                [System.IO.FileShare]::None, 4096, [System.IO.FileOptions]::None, $security)
+            $created = $true
+            $createdSecurity = [System.IO.FileSystemAclExtensions]::GetAccessControl($stream)
+        }
+        Assert-RevAgentBridgeExactCredentialAcl -Security $createdSecurity -AllowedOwnerSids @('S-1-5-32-544')
+        if ($stream.Length -ne 0) { throw 'bridge_credential_creation_not_empty' }
+        Write-Verbose 'bridge_credential_private_empty_file_verified'
+        $stream.Write($Bytes, 0, $Bytes.Length)
+        $stream.Flush($true)
+        $stream.Dispose(); $stream = $null
+        Set-RevAgentBridgeSystemOnlyAcl -Path $temporaryPath -IcaclsInvoker $IcaclsInvoker
+        [void](Assert-RevAgentBridgeNoReparsePoint -Path $fullPath -GuardRoot $GuardRoot)
+        # Create-only publication: a concurrent or preexisting artifact wins.
+        [System.IO.File]::Move($temporaryPath, $fullPath)
+        Assert-RevAgentBridgeExactCredentialAcl -Security (Get-Acl -LiteralPath $fullPath -ErrorAction Stop)
+        return $fullPath
+    }
+    finally {
+        if ($null -ne $stream) { $stream.Dispose() }
+        if ($created -and (Test-Path -LiteralPath $temporaryPath -PathType Leaf)) {
+            [void](Assert-RevAgentBridgeNoReparsePoint -Path $temporaryPath -GuardRoot $GuardRoot)
+            [System.IO.File]::Delete($temporaryPath)
+        }
+    }
 }
 
 # ---------------------------------------------------------------------------
@@ -1116,6 +1227,7 @@ Export-ModuleMember -Function `
     Assert-RevAgentBridgeNoReparsePoint, `
     New-RevAgentBridgeGuardedDirectory, `
     Write-RevAgentBridgeGuardedAtomicBytes, `
+    Write-RevAgentBridgeCredentialArtifact, `
     Get-RevAgentBridgeConfigurationPlan, `
     Write-RevAgentBridgeConfigurationPlan, `
     New-RevAgentBridgeAddinManifestContract, `
