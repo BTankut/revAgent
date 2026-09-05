@@ -56,6 +56,11 @@ internal static class Program
                 if (!options.GenuineRestart)
                     await PrepareAndEnrollAsync(options).ConfigureAwait(false);
             }
+            // Start the bounded observer only after enrollment preparation,
+            // so bootstrap probes cannot exhaust the transport diagnostic budget.
+            using var genuineFailureObservation = options.GenuineCredentials
+                ? new GenuineFailureObservation()
+                : null;
             var recoveryObservations = new RecoveryCarrierObservationRing(
                 MaxRecoveryCarrierObservations,
                 MaxRecoveryCarrierObservationBytes);
@@ -117,6 +122,7 @@ internal static class Program
                 if (action.GetString() == "read_recovery_observations" &&
                     root.EnumerateObject().Count() == 3)
                 {
+                    RbpConnectionCoordinatorSnapshot snapshot = runtime.Coordinator.GetSnapshot();
                     await Console.Out.WriteLineAsync(JsonSerializer.Serialize(new
                     {
                         controlVersion = 1,
@@ -124,10 +130,13 @@ internal static class Program
                         ok = true,
                         result = new
                         {
+                            connectionGeneration = snapshot.ConnectionGeneration,
+                            hasActiveConnection = snapshot.HasActiveConnection,
+                            activeSessionCount = snapshot.ActiveRsids.Count,
+                            lifecyclePhase = (int)snapshot.Lifecycle.Phase,
                             observations = recoveryObservations.Snapshot(),
                             reconnectWatchObservations = reconnectObservations.Snapshot(),
-                            routeRebindProofGranted = runtime.Coordinator
-                                .GetSnapshot().RouteRebindProofGranted,
+                            routeRebindProofGranted = snapshot.RouteRebindProofGranted,
                         },
                     })).ConfigureAwait(false);
                     continue;

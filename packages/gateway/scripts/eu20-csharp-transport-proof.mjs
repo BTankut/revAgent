@@ -79,6 +79,11 @@ try {
   await writeFile(join(proofRoot,`csharp-${mode}-${binding}-read.json`),result);
   process.stdout.write(JSON.stringify({binding,actualCSharpProcess:true,actualImageCmd:true,entitledRead:true,addinFixtureExecutions:1,protectedFirstInstall:genuine?'passed':'not_exercised'})+'\n');
 } finally {
+  if(genuine&&workerExit===null&&stdout.includes('"ready":true')){
+    worker.stdin.write(JSON.stringify({controlVersion:1,id:'eu20-final-observation',action:'read_recovery_observations'})+'\n');
+    const observationDeadline=Date.now()+2000;
+    while(!stdout.includes('"id":"eu20-final-observation"')&&workerExit===null&&Date.now()<observationDeadline) await new Promise(r=>setTimeout(r,50));
+  }
   worker.stdin.write(JSON.stringify({controlVersion:1,id:'stop',action:'shutdown'})+'\n');
   await new Promise(resolve=>{if(workerExit!==null){resolve();return;} const timer=setTimeout(()=>{worker.kill();resolve();},10_000);worker.once('exit',()=>{clearTimeout(timer);resolve();});});
   // Value-free worker observations only; the existing harness never prints credentials.
