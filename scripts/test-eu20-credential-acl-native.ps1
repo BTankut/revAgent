@@ -74,9 +74,34 @@ try{
     $stage='native_error_propagation';$vanishing=Join-Path $root 'vanishing';[void][IO.Directory]::CreateDirectory($vanishing)
     # Remove only this empty owned fixture after its real preflight ACL read.
     # The producer must report the actual icacls nonzero exit, even in PS5.
-    function Get-Acl {param([string]$LiteralPath,$ErrorAction);$a=Microsoft.PowerShell.Security\Get-Acl -LiteralPath $LiteralPath -ErrorAction Stop;if($LiteralPath -ceq $vanishing){[IO.Directory]::Delete($vanishing,$false)};return $a}
+    # The runner is nested beneath the operator wrapper. A script-local
+    # function is invisible to the imported module in that invocation shape.
+    # Temporarily install a captured, exact-path global reader, restoring the
+    # original function even if native execution fails.
+    $priorGlobalReader=& (Get-Module RevAgent.BridgeInstall) { Get-Item Function:Get-Acl -ErrorAction SilentlyContinue }
+    $priorGlobalReaderBody=if($priorGlobalReader){$priorGlobalReader.ScriptBlock}else{$null}
+    $reader={param([string]$LiteralPath,$ErrorAction)
+        if($LiteralPath -cne $vanishing){
+            if($null -ne $priorGlobalReaderBody){return & $priorGlobalReaderBody @PSBoundParameters}
+            return Microsoft.PowerShell.Security\Get-Acl -LiteralPath $LiteralPath -ErrorAction Stop
+        }
+        $a=Microsoft.PowerShell.Security\Get-Acl -LiteralPath $LiteralPath -ErrorAction Stop
+        [IO.Directory]::Delete($vanishing,$false)
+        return $a
+    }.GetNewClosure()
+    Set-Item Function:global:Get-Acl -Value $reader
     $nativeFailed=$false
-    try{Set-RevAgentBridgeSystemOnlyAcl -Path $vanishing}catch{$nativeFailed=$_.Exception.Message -match '^bridge_credential_icacls_failed: exit=[1-9][0-9]* operation=/grant:r$'}finally{Remove-Item Function:\Get-Acl}
+    $nativeError=[ordered]@{caught=$false;code='none';exceptionType=$null;fixtureAbsent=$false}
+    try{Set-RevAgentBridgeSystemOnlyAcl -Path $vanishing}catch{
+        $nativeError.caught=$true;$nativeError.exceptionType=$_.Exception.GetType().FullName
+        $nativeFailed=$_.Exception.Message -match '^bridge_credential_icacls_failed: exit=[1-9][0-9]* operation=/grant:r$'
+        $nativeError.code=if($nativeFailed){$_.Exception.Message}else{'unexpected_exception'}
+    }finally{
+        if($null -ne $priorGlobalReaderBody){Set-Item Function:global:Get-Acl -Value $priorGlobalReaderBody}else{& (Get-Module RevAgent.BridgeInstall) { Remove-Item Function:Get-Acl }}
+        $nativeError.fixtureAbsent=-not(Test-Path -LiteralPath $vanishing)
+        $nativeError|ConvertTo-Json|Set-Content -LiteralPath (Join-Path $root 'native-error.json') -Encoding UTF8
+    }
+    Check $nativeError.fixtureAbsent 'owned empty fixture removed before native mutation'
     Check $nativeFailed 'real native error propagated'
     $stage='cleanup';[IO.File]::Delete($file);[IO.Directory]::Delete($credentials,$false)
     $passed=$true

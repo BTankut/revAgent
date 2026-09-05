@@ -81,3 +81,18 @@ now supports both runtimes' ACL-at-creation APIs and verifies the producer's
 empty private file checkpoint before bytes are written, final ownership,
 create-only collision preservation, failure cleanup and an actual competing
 publication. Both elevated runs are still pending at this source checkpoint.
+
+Both elevated `f7d35766` runs subsequently passed 31 checks covering the real
+producer and file/directory ACL behavior. Their final native-error fixture
+failed because a script-local `Get-Acl` shadow was invisible to the imported
+module under the operator wrapper's nested invocation. This was reproduced
+with a disposable local directory: top-level execution produced the expected
+native exit 2, while nested execution did not remove the fixture first.
+
+The test-only successor installs a captured, exact-path global reader and
+restores the original global function in `finally`, forwarding other reads.
+It records the actual closed native error and absence readback. The exact
+error-fixture block and full focused installer suite now pass through nested
+wrappers in PS5 and PS7; the existing metadata mock uses the same scope fix.
+Product source is unchanged from `f7d35766`. The two elevated full-run outcomes
+remain failed historical evidence until the corrected runner is executed.

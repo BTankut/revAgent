@@ -686,20 +686,24 @@ try {
     # verification to accommodate a non-admin fixture. The native suite is
     # the authority for actual owner/DACL behavior, and this report continues
     # to disclose icaclsInvokerInjected=true.
-    function Get-Acl {
-        param([string]$LiteralPath, $ErrorAction)
-        if ($LiteralPath -in @($realRunFixtureLayout.CredentialDirectory, $freshCredentialPath)) {
-            $security = [Security.AccessControl.DirectorySecurity]::new()
-            $security.SetSecurityDescriptorSddlForm('O:SYG:SYD:P(A;;FA;;;SY)(A;;FA;;;BA)')
-            return $security
-        }
-        return Microsoft.PowerShell.Security\Get-Acl -LiteralPath $LiteralPath -ErrorAction Stop
-    }
+    $priorGlobalAclReader = & (Get-Module RevAgent.BridgeInstall) { Get-Item Function:Get-Acl -ErrorAction SilentlyContinue }
+    $priorGlobalAclReaderBody = if ($priorGlobalAclReader) { $priorGlobalAclReader.ScriptBlock } else { $null }
     try {
         $freshRefusalRoot = New-TestScratchDirectory -Label 'fresh-identity-refusal'
         $scratchRoots.Add($freshRefusalRoot)
         $freshRefusalLayout = Get-BridgeTempLayoutArgs -Root $freshRefusalRoot
         $freshCredentialPath = (Get-RevAgentBridgeLayout @freshRefusalLayout).CredentialDirectory
+        $fixtureAclReader = {
+            param([string]$LiteralPath, $ErrorAction)
+            if ($LiteralPath -in @($realRunFixtureLayout.CredentialDirectory, $freshCredentialPath)) {
+                $security = [Security.AccessControl.DirectorySecurity]::new()
+                $security.SetSecurityDescriptorSddlForm('O:SYG:SYD:P(A;;FA;;;SY)(A;;FA;;;BA)')
+                return $security
+            }
+            if ($null -ne $priorGlobalAclReaderBody) { return & $priorGlobalAclReaderBody @PSBoundParameters }
+            return Microsoft.PowerShell.Security\Get-Acl -LiteralPath $LiteralPath -ErrorAction Stop
+        }.GetNewClosure()
+        Set-Item Function:global:Get-Acl -Value $fixtureAclReader
         $freshRefusalPath = Join-Path $freshRefusalRoot 'fresh-refusal.json'
         $freshRefused = $false
         try {
@@ -733,7 +737,8 @@ try {
     }
     finally {
         Remove-Item -LiteralPath Function:\Get-Service -ErrorAction SilentlyContinue
-        Remove-Item -LiteralPath Function:\Get-Acl -ErrorAction SilentlyContinue
+        if ($null -ne $priorGlobalAclReaderBody) { Set-Item Function:global:Get-Acl -Value $priorGlobalAclReaderBody }
+        else { & (Get-Module RevAgent.BridgeInstall) { Remove-Item Function:Get-Acl -ErrorAction SilentlyContinue } }
     }
 
     Assert-True ($global:eu20MockIcaclsCallCount -gt 0) "The real install path must reach ACL lockdown (proves it ran past directory creation, through the injected mock invoker)."
