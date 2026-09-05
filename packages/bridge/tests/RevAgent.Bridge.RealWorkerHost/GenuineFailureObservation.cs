@@ -28,10 +28,12 @@ internal sealed class GenuineFailureObservation : IDisposable
 
     internal void Record(Exception exception)
     {
-        if (Volatile.Read(ref _count) >= 32 ||
-            Interlocked.Exchange(ref _writing, 1) != 0) return;
+        if (Interlocked.Exchange(ref _writing, 1) != 0) return;
         try
         {
+            // Admission and the cap check share one gate: a delayed caller
+            // cannot use a count observed before another writer reached 32.
+            if (_count >= 32) return;
             string? classification = Classify(exception);
             if (classification is null) return;
             int ordinal = Interlocked.Increment(ref _count);

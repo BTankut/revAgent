@@ -67,6 +67,35 @@ public sealed class GenuineFailureObservationTests
         }
     }
 
+    [Fact]
+    public void ConcurrentAdmissionAtLastSlotNeverExceedsCap()
+    {
+        Exception error = MakeException("RevAgent.Bridge.Gateway.Storage.RbpJournalException",
+            "RevAgent.Bridge.Gateway.Storage.RbpJournalErrorCode");
+        for (int round = 0; round < 100; round++)
+        {
+            var rows = new System.Collections.Concurrent.ConcurrentQueue<string>();
+            Action<string> write = rows.Enqueue;
+            object observer = Activator.CreateInstance(ObserverType, BindingFlags.Instance | BindingFlags.NonPublic,
+                null, [write], null)!;
+            using ((IDisposable)observer)
+            {
+                for (int index = 0; index < 31; index++) Record(observer, error);
+                Parallel.For(0, 64, new ParallelOptions { MaxDegreeOfParallelism = 8 },
+                    _ => Record(observer, error));
+                Record(observer, error);
+            }
+            Assert.Equal(32, rows.Count);
+            string[] captured = rows.ToArray();
+            for (int index = 0; index < captured.Length; index++)
+            {
+                using JsonDocument row = JsonDocument.Parse(captured[index]);
+                Assert.Equal(index + 1, row.RootElement.GetProperty("ordinal").GetInt32());
+                Assert.Equal(index == 31, row.RootElement.GetProperty("truncated").GetBoolean());
+            }
+        }
+    }
+
     private static void Record(object observer, Exception error) =>
         ObserverType.GetMethod("Record", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(observer, [error]);
 
