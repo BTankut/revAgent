@@ -316,6 +316,12 @@ try {
     Assert-True $foreignRefused 'An explicit foreign ACE must refuse before any native mutation.'
     Assert-Equal $icaclsCalls.Count 0 'Foreign ACE refusal must issue no icacls calls.'
     Assert-Equal (Get-Acl -LiteralPath $aclChild).Sddl $foreignBefore 'Foreign permissions must remain unchanged on refusal.'
+    $artifactTarget = Join-Path $aclChild 'public-artifact.json'
+    $unsafeParentRefused = $false
+    try { Write-RevAgentBridgeCredentialArtifact -Path $artifactTarget -Bytes ([byte[]]@(1,2,3)) -GuardRoot $aclChild }
+    catch { $unsafeParentRefused = $_.Exception.Message -ceq 'bridge_credential_acl_verification_failed' }
+    Assert-True $unsafeParentRefused 'Credential writer must reject an unsafe parent before creating any file.'
+    Assert-Equal @(Get-ChildItem -LiteralPath $aclChild -Force).Count 0 'Parent refusal must create no artifact or temporary file.'
 
     $icaclsCalls.Clear()
     Set-RevAgentBridgeDistributionAcl -Path "C:\does-not-matter\Addin\2022" -IcaclsInvoker $mockInvoker

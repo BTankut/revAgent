@@ -388,8 +388,7 @@ try {
         $artifactBytes = New-RevAgentBridgeEnrollmentArtifactBytes -EnrollmentToken $EnrollmentToken -ExpiresAtUtc $EnrollmentTokenExpiresAtUtc
         $installSummary.enrollmentAttempted = $true
         [void](Invoke-RevAgentBridgeGuardedMutation -Target $layout.EnrollmentArtifactPath -MutationAction 'write_enrollment_artifact' -DryRun $isDryRun -Steps $steps -Apply {
-                [void](Write-RevAgentBridgeGuardedAtomicBytes -Path $layout.EnrollmentArtifactPath -Bytes $artifactBytes -GuardRoot $layout.CredentialDirectory)
-                Set-RevAgentBridgeSystemOnlyAcl -Path $layout.EnrollmentArtifactPath -IcaclsInvoker $IcaclsInvoker
+                [void](Write-RevAgentBridgeCredentialArtifact -Path $layout.EnrollmentArtifactPath -Bytes $artifactBytes -GuardRoot $layout.CredentialDirectory -IcaclsInvoker $IcaclsInvoker)
                 return $layout.EnrollmentArtifactPath
             }.GetNewClosure())
         $installSummary.enrollmentArtifactWritten = $true

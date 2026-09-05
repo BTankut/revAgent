@@ -58,3 +58,26 @@ refusal and real native failure propagation. It emits a source-hashed outcome
 and retains failed fixtures for diagnosis. No elevated pass or real installer
 acceptance is claimed before that runner actually succeeds. Broader delivery
 gates and protected review remain pending; active-hour totals are not measured.
+
+### Native creation finding and bounded correction
+
+The first actual elevated proof at `07c78879` passed six directory and
+idempotency checks, then correctly refused the ordinary file's default DACL:
+Windows added an explicit logon SID with read/execute access. That failed
+fixture and its metadata remain preserved. This is not authority to admit
+logon SIDs or weaken final verification.
+
+The slice therefore also covers the installer enrollment-artifact call site
+and a dedicated create-only credential writer. It must supply the protected
+SYSTEM/Administrators DACL atomically when creating its private temporary
+file, finalize and verify ownership before publication, and preserve any
+existing destination. Generic configuration/report writers are unchanged.
+The native proof must use this actual producer, retain arbitrary foreign-ACE
+refusal, and distinguish the first failed proof from its successor.
+
+The successor's focused installer suite passes in both Windows PowerShell 5.1
+and PowerShell 7, including unsafe-parent zero-write refusal. Native proof
+now supports both runtimes' ACL-at-creation APIs and verifies the producer's
+empty private file checkpoint before bytes are written, final ownership,
+create-only collision preservation, failure cleanup and an actual competing
+publication. Both elevated runs are still pending at this source checkpoint.

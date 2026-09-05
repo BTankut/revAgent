@@ -5,7 +5,6 @@
 [CmdletBinding()]
 param([Parameter(Mandatory=$true)][string]$EvidenceRoot)
 $ErrorActionPreference='Stop';Set-StrictMode -Version Latest
-if($PSVersionTable.PSEdition -cne 'Desktop'){throw 'native_acl_test_requires_windows_powershell_51'}
 if(-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)){throw 'native_acl_test_actual_administrator_required'}
 $repo=Split-Path $PSScriptRoot -Parent
 Import-Module (Join-Path $repo 'installer\bridge\lib\RevAgent.BridgeInstall.psm1') -Force
@@ -16,7 +15,7 @@ $security=[Security.AccessControl.DirectorySecurity]::new()
 $security.SetOwner([Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'))
 $security.SetAccessRuleProtection($true,$false)
 foreach($sid in @('S-1-5-18','S-1-5-32-544')){$security.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new([Security.Principal.SecurityIdentifier]::new($sid),'FullControl','ContainerInherit,ObjectInherit','None','Allow'))}
-[void][IO.Directory]::CreateDirectory($root,$security)
+if($PSVersionTable.PSEdition -eq 'Desktop'){[void][IO.Directory]::CreateDirectory($root,$security)}else{[IO.FileSystemAclExtensions]::Create([IO.DirectoryInfo]::new($root),$security)}
 $checks=[Collections.Generic.List[string]]::new();$stage='start';$passed=$false
 function Check([bool]$Value,[string]$Name){if(-not $Value){throw "native_acl_test_failed:$Name"};$checks.Add($Name)}
 function ExactAcl([string]$Path){
@@ -37,10 +36,32 @@ try{
     [IO.File]::WriteAllText($file,'public ACL regression fixture')
     $fileBefore=Get-Acl -LiteralPath $file
     @{sddl=$fileBefore.Sddl;explicitRules=@($fileBefore.GetAccessRules($true,$false,[Security.Principal.SecurityIdentifier])|ForEach-Object{@{sid=$_.IdentityReference.Value;rights=[string]$_.FileSystemRights}})}|ConvertTo-Json -Depth 5|Set-Content -LiteralPath (Join-Path $root 'file-baseline.json') -Encoding UTF8
-    Set-RevAgentBridgeSystemOnlyAcl -Path $file;ExactAcl $file
+    $foreignDefault=@($fileBefore.GetAccessRules($true,$false,[Security.Principal.SecurityIdentifier])|Where-Object{$_.IdentityReference.Value -notin @('S-1-5-18','S-1-5-32-544')})
+    if($foreignDefault.Count){$refused=$false;try{Set-RevAgentBridgeSystemOnlyAcl -Path $file}catch{$refused=$_.Exception.Message -ceq 'bridge_credential_acl_unexpected_ace'};Check $refused 'default logon ACE remains refused';Check ((Get-Acl -LiteralPath $file).Sddl -ceq $fileBefore.Sddl) 'default DACL refusal unchanged'}
+    [IO.File]::Delete($file)
+    $creation=@(Write-RevAgentBridgeCredentialArtifact -Path $file -Bytes ([Text.Encoding]::UTF8.GetBytes('public ACL regression fixture')) -GuardRoot $credentials -Verbose 4>&1)
+    Check (@($creation|Where-Object{$_ -is [Management.Automation.VerboseRecord] -and $_.Message -ceq 'bridge_credential_private_empty_file_verified'}).Count -eq 1) 'actual producer verified empty private file before writing bytes'
+    ExactAcl $file
     Check ([IO.File]::ReadAllText($file) -ceq 'public ACL regression fixture') 'file remains accessible'
     $fileSddl=(Get-Acl -LiteralPath $file).Sddl;Set-RevAgentBridgeSystemOnlyAcl -Path $file
     Check ((Get-Acl -LiteralPath $file).Sddl -ceq $fileSddl) 'file idempotent'
+    $existsRefused=$false;try{Write-RevAgentBridgeCredentialArtifact -Path $file -Bytes ([byte[]]@(1,2,3)) -GuardRoot $credentials}catch{$existsRefused=$_.Exception.Message -ceq 'bridge_credential_artifact_already_exists'}
+    Check $existsRefused 'existing artifact create-only refusal';Check ([IO.File]::ReadAllText($file) -ceq 'public ACL regression fixture') 'existing artifact bytes preserved'
+    $failedPath=Join-Path $credentials 'failed-public.txt';$writeFailed=$false
+    try{Write-RevAgentBridgeCredentialArtifact -Path $failedPath -Bytes ([byte[]]@(1,2,3)) -GuardRoot $credentials -IcaclsInvoker {throw 'test_owner_finalization_failure'}}catch{$writeFailed=$_.Exception.Message -ceq 'test_owner_finalization_failure'}
+    Check $writeFailed 'ownership finalization failure propagates';Check (-not(Test-Path -LiteralPath $failedPath)) 'failed writer never publishes';Check (@(Get-ChildItem -LiteralPath $credentials -Filter '.enrollment.*.tmp' -Force).Count -eq 0) 'failed writer removes only its private temporary file'
+    $stage='create_only_race';$racePath=Join-Path $credentials 'race-public.txt'
+    $competingWriter={
+        param([string[]]$Arguments)
+        $out=& "$env:SystemRoot\System32\icacls.exe" @Arguments 2>&1
+        if($LASTEXITCODE -ne 0){throw 'test_race_native_failure'}
+        if(-not(Test-Path -LiteralPath $racePath)){[void](Write-RevAgentBridgeCredentialArtifact -Path $racePath -Bytes ([Text.Encoding]::UTF8.GetBytes('competing public artifact')) -GuardRoot $credentials)}
+        return $out
+    }.GetNewClosure()
+    $raceRefused=$false
+    try{Write-RevAgentBridgeCredentialArtifact -Path $racePath -Bytes ([byte[]]@(4,5,6)) -GuardRoot $credentials -IcaclsInvoker $competingWriter}catch{$raceRefused=$_.Exception.InnerException -is [IO.IOException] -or $_.Exception -is [IO.IOException]}
+    Check $raceRefused 'concurrent artifact publication refuses overwrite';Check ([IO.File]::ReadAllText($racePath) -ceq 'competing public artifact') 'concurrent artifact bytes preserved';ExactAcl $racePath
+    Check (@(Get-ChildItem -LiteralPath $credentials -Filter '.enrollment.*.tmp' -Force).Count -eq 0) 'race loser removes its private temporary file';[IO.File]::Delete($racePath)
     $stage='foreign_ace_refusal'
     foreach($deny in @($false,$true)){
         $foreign=Join-Path $root ('foreign-'+$deny);[void][IO.Directory]::CreateDirectory($foreign);$a=Get-Acl -LiteralPath $foreign
@@ -61,7 +82,7 @@ try{
     $passed=$true
 }
 finally{
-    $outcome=[ordered]@{passed=$passed;stage=$stage;actualElevated=$true;checks=$checks.ToArray();checkCount=$checks.Count;moduleSha256=(Get-FileHash -LiteralPath (Join-Path $repo 'installer\bridge\lib\RevAgent.BridgeInstall.psm1')).Hash;fixtureCleanupComplete=$passed;failedFixturesPreserved=(-not $passed)}
+    $outcome=[ordered]@{passed=$passed;stage=$stage;actualElevated=$true;powerShellEdition=$PSVersionTable.PSEdition;powerShellVersion=$PSVersionTable.PSVersion.ToString();checks=$checks.ToArray();checkCount=$checks.Count;moduleSha256=(Get-FileHash -LiteralPath (Join-Path $repo 'installer\bridge\lib\RevAgent.BridgeInstall.psm1')).Hash;fixtureCleanupComplete=$passed;failedFixturesPreserved=(-not $passed)}
     $outcome|ConvertTo-Json -Depth 6|Set-Content -LiteralPath (Join-Path $root 'native-acl-result.json') -Encoding UTF8
     $outcome|ConvertTo-Json -Depth 6
 }
