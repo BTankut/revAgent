@@ -151,6 +151,31 @@ public sealed class BridgeCredentialStoreTests
             fixture.Reader.Load()!.MachineFingerprint);
     }
 
+    [Theory]
+    [InlineData(0x00)]
+    [InlineData(0xFB)]
+    [InlineData(0xFF)]
+    public void PreparedIdentity_RoundTripsEveryBase64AlphabetCategory(int seedByte)
+    {
+        // Fixed synthetic bytes cover ordinary, plus, and slash Base64 text.
+        // This tests persistence serialization, not the production RNG or ACL.
+        using var fixture = CredentialFixture.Create(
+            Enumerable.Repeat((byte)seedByte, 32).ToArray());
+        string fingerprint;
+        using (BridgeMachineIdentity created = fixture.Mutator.GetOrCreateMachineIdentity())
+            fingerprint = created.MachineFingerprint;
+
+        using BridgeMachineIdentity prepared =
+            fixture.Mutator.GetRequiredUnenrolledMachineIdentity();
+        using BridgeMachineIdentity reopened =
+            fixture.Mutator.GetOrCreateMachineIdentity();
+
+        Assert.Equal(fingerprint, prepared.MachineFingerprint);
+        Assert.Equal(fingerprint, reopened.MachineFingerprint);
+        Assert.Equal(1, fixture.RandomCalls);
+        Assert.False(File.Exists(fixture.Layout.DeviceCredentialPath));
+    }
+
     [Fact]
     public void RuntimeRoundTrip_ReturnsFingerprintWithoutSeedCapability()
     {
@@ -815,12 +840,12 @@ public sealed class BridgeCredentialStoreTests
 
         internal int RandomCalls { get; private set; }
 
-        internal static CredentialFixture Create()
+        internal static CredentialFixture Create(byte[]? seed = null)
         {
             string rootPath = Path.Combine(
                 Path.GetTempPath(),
                 $"revagent-bridge-credential-tests-{Guid.NewGuid():N}");
-            byte[] seed = Enumerable.Range(0, 32)
+            seed ??= Enumerable.Range(0, 32)
                 .Select(value => (byte)value)
                 .ToArray();
             return new CredentialFixture(

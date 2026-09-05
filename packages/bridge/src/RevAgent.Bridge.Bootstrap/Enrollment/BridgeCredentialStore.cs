@@ -1302,7 +1302,9 @@ internal sealed class BridgeCredentialPersistence
                 writer.WriteString(
                     "machine_fingerprint",
                     identity.MachineFingerprint);
-                writer.WriteString("fingerprint_seed", encodedSeed);
+                // The string writer escapes '+' as \u002B, which violates
+                // the strict reader's canonical, unescaped Base64 contract.
+                writer.WriteBase64String("fingerprint_seed", seed);
                 writer.WriteEndObject();
                 writer.Flush();
             }
