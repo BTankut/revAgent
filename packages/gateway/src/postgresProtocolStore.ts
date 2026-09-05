@@ -161,13 +161,15 @@ export class PostgresProtocolStore implements GatewayProtocolStore {
   }
 
   async #inventoryTenants(limit: number): Promise<StoreOutcome<readonly string[]>> {
-    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 10_001) return fail("invalid_record", "invalid inventory bound");
+    // The SQL function caps at 10,001, reserving one row to detect overflow.
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 10_000) return fail("invalid_record", "invalid inventory bound");
     let client: PoolClient | undefined;
     try {
       client = await this.#client();
       await this.#fence(client);
-      const rows = await client.query<{ tenant_id: string }>("SELECT tenant_id FROM protocol_inventory_tenants($1)", [limit]);
+      const rows = await client.query<{ tenant_id: string }>("SELECT tenant_id FROM protocol_inventory_tenants($1)", [limit + 1]);
       await client.query("COMMIT");
+      if (rows.rows.length > limit) return fail("invalid_record", "protocol tenant inventory exceeds requested limit");
       return ok(rows.rows.map(row => row.tenant_id));
     } catch { if (client) await client.query("ROLLBACK").catch(() => {}); return fail("unavailable", "protocol tenant inventory unavailable"); }
     finally { client?.release(); }
@@ -179,8 +181,9 @@ export class PostgresProtocolStore implements GatewayProtocolStore {
     try {
       client = await this.#client(tenantId);
       await this.#fence(client);
-      const rows = await client.query<{ key: string }>("SELECT key FROM protocol_records WHERE namespace=$1 ORDER BY key LIMIT $2", [namespace, limit]);
+      const rows = await client.query<{ key: string }>("SELECT key FROM protocol_records WHERE namespace=$1 ORDER BY key LIMIT $2", [namespace, limit + 1]);
       await client.query("COMMIT");
+      if (rows.rows.length > limit) return fail("invalid_record", "protocol key inventory exceeds requested limit");
       return ok(rows.rows.map(row => row.key));
     } catch { if (client) await client.query("ROLLBACK").catch(() => {}); return fail("unavailable", "protocol key inventory unavailable"); }
     finally { client?.release(); }

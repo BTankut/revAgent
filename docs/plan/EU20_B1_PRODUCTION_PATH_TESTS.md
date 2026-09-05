@@ -74,6 +74,20 @@ persisted credential and executes an HTTP/SSE read. The add-in endpoint is an
 explicit loopback fixture; the Gateway entry point and Bridge protocol pipeline
 are real. `candidate.json` records head/tree, image id, dirty-state and proof scope.
 
+Before generating secrets, the runner creates and reads back a private Windows
+DACL owned by the current user and allowing only that user, SYSTEM and
+Administrators FullControl. Existing/reparse/hardlink paths are refused; ancestor
+ACLs are not changed. Generated files inherit that private policy.
+
+Every long-lived test container/network carries a unique run label and its
+creation id is retained. Cleanup verifies id/name/run ownership, checks native
+exit codes and verifies resource absence, including a final run-label inventory.
+`actualImageAndCSharpRead` retains the real check result; `cleanup` and
+`overallOutcome` are separate. Incomplete cleanup fails the process and overall
+outcome even when a read passed. `scripts/test-eu20-proof-safety.ps1`, also called
+by `test-ci.ps1`, tests real private ACLs and eight simulated cleanup failure/state
+cases; simulations are not represented as native Docker or privileged evidence.
+
 `-Mode transport` runs the image/OIDC/M5 negatives and real C# WSS/HTTP reads with
 explicit synthetic enrolled test credentials. It always records
 `protectedFirstInstall: not_exercised`. This mode is runnable without elevation

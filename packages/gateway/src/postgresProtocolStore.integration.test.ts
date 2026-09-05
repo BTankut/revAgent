@@ -4,6 +4,8 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { migrateUp } from "./migrate.js";
 import { PostgresProtocolStore } from "./postgresProtocolStore.js";
 import { GatewayServingOwnership } from "./gatewayServingOwnership.js";
+import { GatewayBridgeSessionAuthority, GATEWAY_RBP_SESSION_NAMESPACE } from "./bridgeSession.js";
+import { createUnavailableIdentityPort } from "./authContext.js";
 
 const url = process.env.EU20_DATABASE_URL;
 const suite = url === undefined ? describe.skip : describe.sequential;
@@ -90,10 +92,28 @@ suite("production PostgreSQL protocol store", () => {
     expect(await owner.protocolStore.startupCoordinator.listKeys(a,"case",10)).toEqual({ ok: true, value: ["raced","same"] });
     expect(await owner.protocolStore.startupCoordinator.listTenantIds(0)).toMatchObject({ ok: false });
   });
+  it("returns complete inventory at the exact limit and refuses limit-plus-one rows", async () => {
+    expect(await owner.protocolStore.startupCoordinator.listTenantIds(2)).toEqual({ ok: true, value: [a,b].sort() });
+    expect(await owner.protocolStore.startupCoordinator.listTenantIds(1)).toMatchObject({ ok: false, code: "invalid_record" });
+    expect(await owner.protocolStore.startupCoordinator.listKeys(a,"case",2)).toEqual({ ok: true, value: ["raced","same"] });
+    expect(await owner.protocolStore.startupCoordinator.listKeys(a,"case",1)).toMatchObject({ ok: false, code: "invalid_record" });
+    expect(await owner.protocolStore.startupCoordinator.listTenantIds(10_001)).toMatchObject({ ok: false, code: "invalid_record" });
+  });
   it("rejects non-JSON values without silently converting or committing them", async () => {
     expect(await owner.protocolStore.transact({ tenantId: a }, tx => {
       tx.stage({ namespace: "case", key: "invalid", value: { value: Number.NaN }, expect: { kind: "absent" } });
     })).toMatchObject({ ok: false, code: "invalid_record" });
     expect(await owner.protocolStore.transact({ tenantId: a }, tx => tx.read("case", "invalid"))).toEqual({ ok: true, value: null });
+  });
+  it("refuses actual Bridge startup readiness when a session inventory overflows", async () => {
+    await owner.close();
+    await admin.query("INSERT INTO protocol_records(tenant_id,namespace,key,value_json,version,updated_at_ms) SELECT $1,$2,'overflow-'||i,'{}',1,1 FROM generate_series(1,10001) i", [a, GATEWAY_RBP_SESSION_NAMESPACE]);
+    owner = new GatewayServingOwnership({ protocolStore: new PostgresProtocolStore(runtimeUrl), profile: "refuse_dispatch" });
+    // No authentication is attempted; the real startup inventory must refuse
+    // before malformed sentinel rows can be imported or readiness published.
+    const authority = new GatewayBridgeSessionAuthority(owner.protocolStore, createUnavailableIdentityPort(), { servingOwnership: owner });
+    await expect(authority.open()).rejects.toMatchObject({ message: "protocol key inventory exceeds requested limit" });
+    expect(authority.lifecycle().state).not.toBe("open");
+    await authority.close();
   });
 });

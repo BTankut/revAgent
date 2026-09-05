@@ -64,3 +64,15 @@ variance remain open while the required privileged chain is unexecuted.
 Acceptance: pending. Park List: none; the privileged chain is a required
 prerequisite, not parked work. Programme remains 4/11; M6 remains 0/2. Neither
 this code candidate nor transport-only evidence marks B1 ready or promotes M6.
+
+## Independent review correction
+
+The follow-up to `ae36529f` addresses the three Medium findings only: startup
+inventories fetch one overflow row and fail rather than return truncated success;
+proof secrets receive a verified private DACL before writing; and owned Docker
+cleanup must succeed and prove absence before the overall proof can pass.
+Focused PostgreSQL coverage is now nine cases, including actual readiness refusal
+on overflow. Private ACL checks use the real Windows API; cleanup failure tests
+are explicitly simulations. The two superseded generated proof roots were
+privatized without changing non-secret evidence bytes or ancestor/lab ACLs.
+The genuine Administrator first-install chain remains required and unexecuted.

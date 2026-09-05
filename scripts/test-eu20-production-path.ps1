@@ -20,6 +20,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $RepoRoot = [IO.Path]::GetFullPath($RepoRoot)
 $EvidenceRoot = [IO.Path]::GetFullPath($EvidenceRoot)
+Import-Module (Join-Path $PSScriptRoot 'lib/Eu20ProofSafety.psm1') -Force
 if ($Mode -eq 'genuine' -and (-not $IsWindows -or -not [Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))) {
     throw 'genuine_first_install_unproven: run from an existing elevated disposable Windows test process; no elevation or service installation is performed by this script'
 }
@@ -29,10 +30,13 @@ $names = @('revagent-eu20-b1-pg','revagent-eu20-b1-issuer','revagent-eu20-b1-gat
 $existing = @(docker ps -a --format '{{.Names}}')
 if ($LASTEXITCODE -ne 0) { throw 'Docker is unavailable' }
 foreach ($name in $names) { if ($existing -contains $name) { throw "Isolated test resource already exists: $name" } }
-if (@(docker network ls --format '{{.Name}}') -contains 'revagent-eu20-b1-private') { throw 'Isolated test network already exists' }
+$networks = @(docker network ls --format '{{.Name}}')
+if ($LASTEXITCODE -ne 0) { throw 'Docker network inventory unavailable' }
+if ($networks -contains 'revagent-eu20-b1-private') { throw 'Isolated test network already exists' }
 $status = @(git -C $RepoRoot status --porcelain)
 if ($status.Count -gt 0 -and -not $AllowDirtyCandidate) { throw 'Commit the exact candidate before collecting final proof' }
-New-Item -ItemType Directory -Path $EvidenceRoot | Out-Null
+$EvidenceRoot = New-Eu20PrivateProofRoot -Path $EvidenceRoot
+$runId = [guid]::NewGuid().ToString('N')
 $candidate = [ordered]@{
     head = (git -C $RepoRoot rev-parse HEAD)
     tree = (git -C $RepoRoot rev-parse 'HEAD^{tree}')
@@ -40,16 +44,27 @@ $candidate = [ordered]@{
     mode = $Mode
     nodeVersion = (& $NodePath --version)
     protectedFirstInstall = 'pending'
+    actualImageAndCSharpRead = 'pending'
+    overallOutcome = 'pending'
+    proofRunId = $runId
+    privateEvidenceAclVerified = $true
 }
 $candidate | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $EvidenceRoot 'candidate.json')
 function Invoke-ProofCommand([string]$Name, [scriptblock]$Action) {
     & $Action 2>&1 | Tee-Object -FilePath (Join-Path $EvidenceRoot "$Name.log")
     if ($LASTEXITCODE -ne 0) { throw "$Name failed (exit $LASTEXITCODE); proof remains incomplete" }
 }
-$created = [Collections.Generic.List[string]]::new()
-$networkCreated = $false
+$created = [Collections.Generic.List[object]]::new()
+$network = $null
+function Register-OwnedProofResource([object]$Result, [string]$Name, [string]$Kind) {
+    if ($Result.ExitCode -ne 0) { throw "Private $Kind creation failed" }
+    $id = @($Result.Output | Where-Object { $_ -cmatch '^[0-9a-f]{64}$' }) | Select-Object -Last 1
+    if ([string]::IsNullOrWhiteSpace($id)) { throw "Private $Kind creation did not return an exact resource id" }
+    return [pscustomobject]@{ Id = $id; Name = $Name; Kind = $Kind }
+}
 Push-Location $RepoRoot
 try {
+    [void](Assert-Eu20PrivateProofAcl -Path $EvidenceRoot)
     $rsa = [Security.Cryptography.RSA]::Create(2048)
     try {
         $request = [Security.Cryptography.X509Certificates.CertificateRequest]::new('CN=revagent-eu20-private-proof', $rsa, [Security.Cryptography.HashAlgorithmName]::SHA256, [Security.Cryptography.RSASignaturePadding]::Pkcs1)
@@ -84,12 +99,8 @@ try {
     $candidate.imageId = (docker image inspect revagent-eu20-b1-gateway:local --format '{{.Id}}')
     $cmd = (docker image inspect revagent-eu20-b1-gateway:local --format '{{json .Config.Cmd}}') | ConvertFrom-Json
     if (($cmd -join ' ') -ne 'node packages/gateway/dist/main.js') { throw 'Actual image CMD differs from production main' }
-    docker network create --internal --label revagent.test=eu20-b1 revagent-eu20-b1-private | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw 'Private network creation failed' }
-    $networkCreated = $true
-    docker run -d --name $names[0] --network revagent-eu20-b1-private --label revagent.test=eu20-b1 --env-file (Join-Path $EvidenceRoot 'postgres.env') postgres:16 | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw 'Private Postgres start failed' }
-    $created.Add($names[0])
+    $network = Register-OwnedProofResource (Invoke-Eu20DockerCommand -Arguments @('network','create','--internal','--label','revagent.test=eu20-b1','--label',"revagent.proof_run=$runId",'revagent-eu20-b1-private')) 'revagent-eu20-b1-private' 'network'
+    $created.Add((Register-OwnedProofResource (Invoke-Eu20DockerCommand -Arguments @('run','-d','--name',$names[0],'--network','revagent-eu20-b1-private','--label','revagent.test=eu20-b1','--label',"revagent.proof_run=$runId",'--env-file',(Join-Path $EvidenceRoot 'postgres.env'),'postgres:16')) $names[0] 'container'))
     $ready = $false
     for ($attempt=0; $attempt -lt 30; $attempt++) {
         docker exec $names[0] pg_isready -U postgres 2>$null | Out-Null
@@ -100,12 +111,8 @@ try {
     Invoke-ProofCommand 'image-migrations' { docker run --rm --network revagent-eu20-b1-private --env-file (Join-Path $EvidenceRoot 'test.env') revagent-eu20-b1-gateway:local node packages/gateway/dist/migrate.js }
     Invoke-ProofCommand 'image-migrations-rerun' { docker run --rm --network revagent-eu20-b1-private --env-file (Join-Path $EvidenceRoot 'test.env') revagent-eu20-b1-gateway:local node packages/gateway/dist/migrate.js }
     $scriptsMount = (Join-Path $RepoRoot 'packages/gateway/scripts') + ':/app/packages/gateway/scripts:ro'
-    docker run -d --name $names[1] --network revagent-eu20-b1-private --label revagent.test=eu20-b1 -v "${EvidenceRoot}:/proof:ro" -v $scriptsMount revagent-eu20-b1-gateway:local node packages/gateway/scripts/eu20-test-issuer.mjs | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw 'Private issuer start failed' }
-    $created.Add($names[1])
-    docker run -d --name $names[2] --network revagent-eu20-b1-private --label revagent.test=eu20-b1 --env-file (Join-Path $EvidenceRoot 'gateway.env') -v "${EvidenceRoot}:/proof:ro" revagent-eu20-b1-gateway:local | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw 'Actual image startup failed' }
-    $created.Add($names[2])
+    $created.Add((Register-OwnedProofResource (Invoke-Eu20DockerCommand -Arguments @('run','-d','--name',$names[1],'--network','revagent-eu20-b1-private','--label','revagent.test=eu20-b1','--label',"revagent.proof_run=$runId",'-v',"${EvidenceRoot}:/proof:ro",'-v',$scriptsMount,'revagent-eu20-b1-gateway:local','node','packages/gateway/scripts/eu20-test-issuer.mjs')) $names[1] 'container'))
+    $created.Add((Register-OwnedProofResource (Invoke-Eu20DockerCommand -Arguments @('run','-d','--name',$names[2],'--network','revagent-eu20-b1-private','--label','revagent.test=eu20-b1','--label',"revagent.proof_run=$runId",'--env-file',(Join-Path $EvidenceRoot 'gateway.env'),'-v',"${EvidenceRoot}:/proof:ro",'revagent-eu20-b1-gateway:local')) $names[2] 'container'))
     $ready=$false
     for ($attempt=0; $attempt -lt 30; $attempt++) {
         docker exec $names[2] node --input-type=module -e "const r=await fetch('https://localhost:8080/healthz');if(r.status!==200)process.exit(1)" 2>$null | Out-Null
@@ -122,14 +129,19 @@ try {
     $candidate.protectedFirstInstall = if ($Mode -eq 'genuine') { 'passed' } else { 'not_exercised' }
     $candidate.actualImageAndCSharpRead = 'passed'
 } finally {
-    $cleanupNames = $created.ToArray()
-    [array]::Reverse($cleanupNames)
-    foreach ($name in $cleanupNames) {
-        docker logs $name 2>&1 | Set-Content -LiteralPath (Join-Path $EvidenceRoot "$name.log")
-        docker stop --time 20 $name | Out-Null
-        docker rm -v $name | Out-Null
+    try {
+        foreach ($resource in $created) {
+            try {
+                $logs = Invoke-Eu20DockerCommand -Arguments @('logs', $resource.Id)
+                $logs.Output | Set-Content -LiteralPath (Join-Path $EvidenceRoot "$($resource.Name).log")
+                if ($logs.ExitCode -ne 0) { $candidate.logCaptureIncomplete = $true }
+            }
+            catch { $candidate.logCaptureIncomplete = $true }
+        }
+        $cleanup = Invoke-Eu20OwnedDockerCleanup -Containers $created.ToArray() -Network $network -RunId $runId
+        Set-Eu20ProofOverallOutcome -Candidate $candidate -Cleanup $cleanup
+        $candidate | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $EvidenceRoot 'candidate.json')
+        Assert-Eu20ProofCleanupComplete -Cleanup $cleanup
     }
-    if ($networkCreated) { docker network rm revagent-eu20-b1-private | Out-Null }
-    $candidate | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $EvidenceRoot 'candidate.json')
-    Pop-Location
+    finally { Pop-Location }
 }
