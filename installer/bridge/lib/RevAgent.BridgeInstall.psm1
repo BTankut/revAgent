@@ -321,6 +321,17 @@ function Get-RevAgentBridgeConfigurationPlan {
     $fullPath = Assert-RevAgentBridgeNoReparsePoint -Path $Path -GuardRoot $GuardRoot
     $gatewayUri = $null
     if (-not [string]::IsNullOrEmpty($GatewayHostName)) {
+        # Preserve the installer's existing IP-literal refusal/report contract.
+        $hostForIpCheck = $GatewayHostName
+        if ($hostForIpCheck.StartsWith('[') -and $hostForIpCheck.EndsWith(']')) {
+            $hostForIpCheck = $hostForIpCheck.Substring(1, $hostForIpCheck.Length - 2)
+        }
+        $zone = $hostForIpCheck.IndexOf('%')
+        if ($zone -ge 0) { $hostForIpCheck = $hostForIpCheck.Substring(0, $zone) }
+        $parsedIp = $null
+        if ([System.Net.IPAddress]::TryParse($hostForIpCheck, [ref]$parsedIp)) {
+            throw "gateway_host_must_not_be_ip: $GatewayHostName"
+        }
         # DNS authority with optional port; no scheme, IP literal or suffix.
         if ($GatewayHostName.Trim() -cne $GatewayHostName -or
             $GatewayHostName -notmatch '^[^:\s/\\?#@%]+(?::[0-9]{1,5})?$') {

@@ -66,3 +66,15 @@ acceptance remain separate. Production C# reader/worker sources are unchanged.
 Forecast remains1-2 active engineering hours; no complete active-time ledger was
 collected, so actual/variance are not invented from wall-clock time. Park List:
 none.
+
+The existing installer/uninstaller script contract suite also passed under
+Windows PowerShell 5.1 and PowerShell 7. Four non-dry-run fixtures now provide
+the required DNS endpoint so they continue testing their original junction,
+elevation and identity guards. The configuration planner preserves the existing
+`gateway_host_must_not_be_ip` refusal code for IP literals. The compiled
+producer/reader matrix passed again (78 passed, zero skipped) after this
+compatibility correction; see `ip-refusal-contract-green.trx` and
+`installer-contract-ps5-01.log` / `installer-contract-ps7-03.log` in the same
+artifact root. Earlier failing fixture logs remain retained. Subsequent full
+gate manifests bind their own exact source head and outcome; this record does
+not anticipate those results.
