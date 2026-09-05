@@ -600,20 +600,59 @@ function Set-RevAgentBridgeSystemOnlyAcl {
         [scriptblock]$IcaclsInvoker
     )
 
+    # Do not silently remove unrelated explicit permissions, or attempt to
+    # repair a deny ACE. Inherited allows are removed only after the intended
+    # explicit access is established. The same non-propagating policy applies
+    # to both the credential directory and each individually protected file.
+    $sidType = [System.Security.Principal.SecurityIdentifier]
+    $allowedSids = @('S-1-5-18', 'S-1-5-32-544')
+    [void](Assert-RevAgentBridgeNoReparsePoint -Path $Path -GuardRoot (Split-Path -Parent $Path))
+    $before = Get-Acl -LiteralPath $Path -ErrorAction Stop
+    foreach ($rule in $before.GetAccessRules($true, $true, $sidType)) {
+        if ($rule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow -or
+            (-not $rule.IsInherited -and $rule.IdentityReference.Value -notin $allowedSids)) {
+            throw 'bridge_credential_acl_unexpected_ace'
+        }
+    }
+
     if ($null -eq $IcaclsInvoker) {
         $IcaclsInvoker = {
             param([string[]]$Arguments)
-            $output = & icacls.exe @Arguments 2>&1
-            if ($LASTEXITCODE -ne 0) {
-                throw "icacls.exe failed (exit $LASTEXITCODE) for arguments [$($Arguments -join ' ')]: $output"
+            # Windows PowerShell turns native stderr into an ErrorRecord. Keep
+            # it nonterminating until we have captured the actual native exit.
+            $savedPreference = $ErrorActionPreference
+            try {
+                $ErrorActionPreference = 'Continue'
+                $output = & "$env:SystemRoot\System32\icacls.exe" @Arguments 2>&1
+                $nativeExit = $LASTEXITCODE
+            }
+            finally { $ErrorActionPreference = $savedPreference }
+            if ($nativeExit -ne 0) {
+                throw "bridge_credential_icacls_failed: exit=$nativeExit operation=$($Arguments[1])"
             }
             return $output
         }
     }
 
-    [void](& $IcaclsInvoker @($Path, '/setowner', 'NT AUTHORITY\SYSTEM', '/Q'))
+    [void](& $IcaclsInvoker @($Path, '/grant:r', '*S-1-5-18:(F)', '*S-1-5-32-544:(F)', '/Q'))
     [void](& $IcaclsInvoker @($Path, '/inheritance:r', '/Q'))
-    [void](& $IcaclsInvoker @($Path, '/grant:r', 'SYSTEM:(F)', '/grant:r', 'BUILTIN\Administrators:(F)', '/Q'))
+    [void](& $IcaclsInvoker @($Path, '/setowner', '*S-1-5-18', '/Q'))
+
+    $after = Get-Acl -LiteralPath $Path -ErrorAction Stop
+    $rules = @($after.GetAccessRules($true, $true, $sidType))
+    if (-not $after.AreAccessRulesProtected -or $after.GetOwner($sidType).Value -cne 'S-1-5-18' -or $rules.Count -ne 2) {
+        throw 'bridge_credential_acl_verification_failed'
+    }
+    foreach ($sid in $allowedSids) {
+        $matches = @($rules | Where-Object { $_.IdentityReference.Value -ceq $sid })
+        if ($matches.Count -ne 1 -or $matches[0].IsInherited -or
+            $matches[0].AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow -or
+            $matches[0].FileSystemRights -ne [System.Security.AccessControl.FileSystemRights]::FullControl -or
+            $matches[0].InheritanceFlags -ne [System.Security.AccessControl.InheritanceFlags]::None -or
+            $matches[0].PropagationFlags -ne [System.Security.AccessControl.PropagationFlags]::None) {
+            throw 'bridge_credential_acl_verification_failed'
+        }
+    }
 }
 
 # ---------------------------------------------------------------------------

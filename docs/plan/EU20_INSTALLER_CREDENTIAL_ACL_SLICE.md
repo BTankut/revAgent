@@ -32,3 +32,29 @@ token or model operation occurred. Unit and milestone acceptance remain open.
 
 Park List: none. Active actual/variance and final evidence will be recorded
 without relabeling earlier evidence or inventing unmeasured active time.
+
+## Focused candidate
+
+The credential producer now grants numeric SYSTEM/Administrators SIDs before
+removing inheritance and transfers ownership last. It rejects any deny ACE
+or foreign explicit ACE before mutation and verifies exact protected owner,
+two non-propagating FullControl allows, and absence of other entries afterward.
+Distribution permissions are unchanged. Windows PowerShell native stderr is
+captured without losing the checked exit code.
+
+The non-admin installer suite passed under Windows PowerShell 5.1. Its existing
+copy/report fixture now explicitly mocks credential metadata as well as its
+already-mocked native invoker; it is not native ACL evidence. A separate test
+proves a no-op invoker fails actual postcondition verification. An initial
+test assertion matched `Users` in the temporary path; that assertion now checks
+the denied grant SID precisely. Both terminal logs remain under local
+`artifacts/EU-20/astra-b1/credential-acl-focused*.log`.
+
+`scripts/test-eu20-credential-acl-native.ps1 -EvidenceRoot <fresh-private-path>`
+is the pending elevated Windows PowerShell 5.1 proof. It tests a fresh
+inherited-only directory, a real public file created inside that resulting
+non-propagating credential parent, exact permissions, idempotency, foreign/deny
+refusal and real native failure propagation. It emits a source-hashed outcome
+and retains failed fixtures for diagnosis. No elevated pass or real installer
+acceptance is claimed before that runner actually succeeds. Broader delivery
+gates and protected review remain pending; active-hour totals are not measured.

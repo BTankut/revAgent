@@ -285,12 +285,37 @@ try {
         $icaclsCalls.Add(($Arguments -join " "))
         return "mocked"
     }.GetNewClosure()
-    Set-RevAgentBridgeSystemOnlyAcl -Path "C:\does-not-matter\enrollment.json" -IcaclsInvoker $mockInvoker
-    Assert-Equal $icaclsCalls.Count 3 "The narrow SYSTEM-only ACL must issue exactly setowner + inheritance:r + grant:r."
-    Assert-True ($icaclsCalls[0] -match "setowner") "First narrow-ACL call must set the owner."
-    Assert-True (($icaclsCalls -join "|") -match "SYSTEM:\(F\)") "Narrow ACL must grant SYSTEM FullControl."
-    Assert-True (($icaclsCalls -join "|") -match "BUILTIN\\Administrators:\(F\)") "Narrow ACL must grant Administrators FullControl."
-    Assert-True (($icaclsCalls -join "|") -notmatch "Users") "Narrow credential ACL must not grant interactive Users any access."
+    $aclRoot = New-TestScratchDirectory -Label 'acl-order'
+    $scratchRoots.Add($aclRoot)
+    $aclChild = Join-Path $aclRoot 'inherited'
+    [void][IO.Directory]::CreateDirectory($aclChild)
+    $aclBefore = (Get-Acl -LiteralPath $aclChild).Sddl
+    $verificationRefused = $false
+    try { Set-RevAgentBridgeSystemOnlyAcl -Path $aclChild -IcaclsInvoker $mockInvoker }
+    catch { $verificationRefused = $_.Exception.Message -ceq 'bridge_credential_acl_verification_failed' }
+    Assert-True $verificationRefused 'A no-op native invoker must not satisfy the real ACL postcondition.'
+    Assert-Equal $icaclsCalls.Count 3 'Narrow ACL order must be grant, inheritance removal, owner transfer.'
+    Assert-True ($icaclsCalls[0] -match '/grant:r') 'Establish explicit access before removing inherited access.'
+    Assert-True ($icaclsCalls[1] -match '/inheritance:r') 'Remove inheritance only after granting access.'
+    Assert-True ($icaclsCalls[2] -match '/setowner \*S-1-5-18') 'Transfer ownership last using a numeric SID.'
+    Assert-True (($icaclsCalls -join '|') -match '\*S-1-5-18:\(F\)') 'Grant SYSTEM FullControl by SID.'
+    Assert-True (($icaclsCalls -join '|') -match '\*S-1-5-32-544:\(F\)') 'Grant Administrators FullControl by SID.'
+    Assert-True (($icaclsCalls -join '|') -notmatch '\*S-1-5-32-545:') 'Narrow credential ACL must not grant interactive Users any access.'
+    Assert-Equal (Get-Acl -LiteralPath $aclChild).Sddl $aclBefore 'No-op invoker must leave real ACL unchanged.'
+    $failurePropagated = $false
+    try { Set-RevAgentBridgeSystemOnlyAcl -Path $aclChild -IcaclsInvoker { throw 'injected_native_failure' } }
+    catch { $failurePropagated = $_.Exception.Message -ceq 'injected_native_failure' }
+    Assert-True $failurePropagated 'Native invocation failure must propagate without a later success.'
+    $foreignAcl = Get-Acl -LiteralPath $aclChild
+    $foreignAcl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new([Security.Principal.SecurityIdentifier]::new('S-1-1-0'),'Read','Allow'))
+    Set-Acl -LiteralPath $aclChild -AclObject $foreignAcl
+    $foreignBefore = (Get-Acl -LiteralPath $aclChild).Sddl
+    $icaclsCalls.Clear();$foreignRefused=$false
+    try { Set-RevAgentBridgeSystemOnlyAcl -Path $aclChild -IcaclsInvoker $mockInvoker }
+    catch { $foreignRefused = $_.Exception.Message -ceq 'bridge_credential_acl_unexpected_ace' }
+    Assert-True $foreignRefused 'An explicit foreign ACE must refuse before any native mutation.'
+    Assert-Equal $icaclsCalls.Count 0 'Foreign ACE refusal must issue no icacls calls.'
+    Assert-Equal (Get-Acl -LiteralPath $aclChild).Sddl $foreignBefore 'Foreign permissions must remain unchanged on refusal.'
 
     $icaclsCalls.Clear()
     Set-RevAgentBridgeDistributionAcl -Path "C:\does-not-matter\Addin\2022" -IcaclsInvoker $mockInvoker
@@ -650,10 +675,25 @@ try {
         param([string]$Name, $ErrorAction)
         return [pscustomobject]@{ Name = $Name; Status = "Stopped" }
     }
+    # This file-copy/report fixture already mocks the native ACL primitive.
+    # Mock its credential metadata boundary too; never weaken production
+    # verification to accommodate a non-admin fixture. The native suite is
+    # the authority for actual owner/DACL behavior, and this report continues
+    # to disclose icaclsInvokerInjected=true.
+    function Get-Acl {
+        param([string]$LiteralPath, $ErrorAction)
+        if ($LiteralPath -in @($realRunFixtureLayout.CredentialDirectory, $freshCredentialPath)) {
+            $security = [Security.AccessControl.DirectorySecurity]::new()
+            $security.SetSecurityDescriptorSddlForm('O:SYG:SYD:P(A;;FA;;;SY)(A;;FA;;;BA)')
+            return $security
+        }
+        return Microsoft.PowerShell.Security\Get-Acl -LiteralPath $LiteralPath -ErrorAction Stop
+    }
     try {
         $freshRefusalRoot = New-TestScratchDirectory -Label 'fresh-identity-refusal'
         $scratchRoots.Add($freshRefusalRoot)
         $freshRefusalLayout = Get-BridgeTempLayoutArgs -Root $freshRefusalRoot
+        $freshCredentialPath = (Get-RevAgentBridgeLayout @freshRefusalLayout).CredentialDirectory
         $freshRefusalPath = Join-Path $freshRefusalRoot 'fresh-refusal.json'
         $freshRefused = $false
         try {
@@ -687,6 +727,7 @@ try {
     }
     finally {
         Remove-Item -LiteralPath Function:\Get-Service -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath Function:\Get-Acl -ErrorAction SilentlyContinue
     }
 
     Assert-True ($global:eu20MockIcaclsCallCount -gt 0) "The real install path must reach ACL lockdown (proves it ran past directory creation, through the injected mock invoker)."
