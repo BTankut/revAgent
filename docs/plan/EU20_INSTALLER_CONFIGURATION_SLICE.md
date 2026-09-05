@@ -78,3 +78,17 @@ compatibility correction; see `ip-refusal-contract-green.trx` and
 artifact root. Earlier failing fixture logs remain retained. Subsequent full
 gate manifests bind their own exact source head and outcome; this record does
 not anticipate those results.
+
+Full `test-all.ps1` passed at `4239d074b8bcfc043dbeb7f065a14f1416eae024`
+on 2026-09-05 (12:25:47-12:40:59 UTC), including payload freshness. The first
+`test-ci.ps1` at that same head failed in the C39 causal-checkpoint fixture:
+its recording sink exposed a `List` being appended by a background callback
+while `Assert.Single` enumerated it. The two private test observation sinks
+now synchronize append and return snapshots. Both deterministic
+append-during-enumeration regressions reproduced the exception before the
+repair, then passed with the original C39 checkpoint test (three passed).
+Production source and installer behavior remain identical to `4239d074`;
+its test-all evidence retains that source anchor. The successor's final
+test-ci result is recorded separately in its exact-head gate manifest.
+No causal-checkpoint assertion, production observer, retention contract or
+timeout was weakened.
