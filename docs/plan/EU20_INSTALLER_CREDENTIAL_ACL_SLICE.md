@@ -96,3 +96,22 @@ error-fixture block and full focused installer suite now pass through nested
 wrappers in PS5 and PS7; the existing metadata mock uses the same scope fix.
 Product source is unchanged from `f7d35766`. The two elevated full-run outcomes
 remain failed historical evidence until the corrected runner is executed.
+
+### Native proof completed
+
+The reviewed parent-run `394a090c` native proof passed all 33 checks in both
+Windows PowerShell 5.1 and PowerShell 7 on 2026-09-05, with exit 0 and fixture
+cleanup verified. Exact evidence filenames under local `astra-b1` are
+`credential-acl-native-394a090c-20260905T161621Z-69e7d050b821463081c112d4b989269d.json`
+and
+`credential-acl-native-394a090c-20260905T161622Z-c10165b105514c4d9ed1bc25ab3fa71f.json`.
+These are two runtime executions of the same checks, not 66 unique tests.
+Product source still equals `f7d35766`; this documentation closeout changes
+neither product nor runner. Final gate manifests outside the worktree and the
+PR body will record the ensuing exact-head freshness, test-all and test-ci
+outcomes without requiring a documentation-only retest loop.
+
+Native proof is passed evidence, not real installer/B2 acceptance. Protected
+review, delivery and a fresh restored-lab installer attempt remain separate.
+Forecast remains 1–2 active engineering hours; active actual/variance were not
+instrumented. Park List: none.
