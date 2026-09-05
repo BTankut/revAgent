@@ -1468,21 +1468,74 @@ public sealed partial class RbpConnectionCoordinatorTests
         }
     }
 
+    [Fact]
+    public async Task RecoveryObservationSnapshotRemainsStableAcrossConcurrentAppend()
+    {
+        var sink = new RecordingRecoveryCarrierObservationSink();
+        var first = new RbpRecoveryCarrierObservation(
+            RbpRecoveryCarrierObservationPhase.Materialized, "hash", 1, "digest", 1);
+        sink.Observe(first);
+        using IEnumerator<RbpRecoveryCarrierObservation> snapshot = sink.Rows.GetEnumerator();
+        await Task.Run(() => sink.Observe(first with { Ordinal = 2 }));
+        Assert.True(snapshot.MoveNext());
+        Assert.Same(first, snapshot.Current);
+        Assert.False(snapshot.MoveNext());
+        Assert.Equal(new long[] { 1, 2 }, sink.Rows.Select(row => row.Ordinal));
+    }
+
+    [Fact]
+    public async Task ReconnectObservationSnapshotRemainsStableAcrossConcurrentAppend()
+    {
+        var sink = new RecordingReconnectObservationSink();
+        var first = new RbpReconnectObservation(
+            RbpReconnectObservationPhase.ResumeAcknowledgementApplied,
+            1, 1, "rsid-hash", "binding-digest", "connection-digest");
+        sink.Observe(first);
+        using IEnumerator<RbpReconnectObservation> snapshot = sink.Rows.GetEnumerator();
+        await Task.Run(() => sink.Observe(first with { Ordinal = 2 }));
+        Assert.True(snapshot.MoveNext());
+        Assert.Same(first, snapshot.Current);
+        Assert.False(snapshot.MoveNext());
+        Assert.Equal(new long[] { 1, 2 }, sink.Rows.Select(row => row.Ordinal));
+    }
+
     private sealed class RecordingRecoveryCarrierObservationSink :
         IRbpRecoveryCarrierObservationSink
     {
-        internal List<RbpRecoveryCarrierObservation> Rows { get; } = [];
+        private readonly object _sync = new();
+        private readonly List<RbpRecoveryCarrierObservation> _rows = [];
 
-        public void Observe(RbpRecoveryCarrierObservation observation) =>
-            Rows.Add(observation);
+        internal IReadOnlyList<RbpRecoveryCarrierObservation> Rows
+        {
+            get
+            {
+                lock (_sync) { return _rows.ToArray(); }
+            }
+        }
+
+        public void Observe(RbpRecoveryCarrierObservation observation)
+        {
+            lock (_sync) { _rows.Add(observation); }
+        }
     }
 
     private sealed class RecordingReconnectObservationSink :
         IRbpReconnectObservationSink
     {
-        internal List<RbpReconnectObservation> Rows { get; } = [];
+        private readonly object _sync = new();
+        private readonly List<RbpReconnectObservation> _rows = [];
 
-        public void Observe(RbpReconnectObservation observation) =>
-            Rows.Add(observation);
+        internal IReadOnlyList<RbpReconnectObservation> Rows
+        {
+            get
+            {
+                lock (_sync) { return _rows.ToArray(); }
+            }
+        }
+
+        public void Observe(RbpReconnectObservation observation)
+        {
+            lock (_sync) { _rows.Add(observation); }
+        }
     }
 }

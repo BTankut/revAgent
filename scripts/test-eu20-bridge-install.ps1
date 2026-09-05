@@ -417,6 +417,7 @@ try {
                 -StateRoot $junctionInstallLayoutArgs.StateRoot `
                 -AddinProgramFilesRoot $junctionInstallLayoutArgs.AddinProgramFilesRoot `
                 -RevitAddinsRoot $junctionInstallLayoutArgs.RevitAddinsRoot `
+                -GatewayHostName 'gateway.dpe.internal' `
                 -MachineReportPath $junctionInstallReportPath `
                 -SkipRevitDetection `
                 -SkipServiceStart `
@@ -579,6 +580,7 @@ try {
                 -StateRoot $notElevatedLayoutArgs.StateRoot `
                 -AddinProgramFilesRoot $notElevatedLayoutArgs.AddinProgramFilesRoot `
                 -RevitAddinsRoot $notElevatedLayoutArgs.RevitAddinsRoot `
+                -GatewayHostName 'gateway.dpe.internal' `
                 -MachineReportPath $notElevatedReportPath `
                 -SkipRevitDetection `
                 -SkipServiceStart | Out-Null
@@ -655,7 +657,7 @@ try {
         $freshRefusalPath = Join-Path $freshRefusalRoot 'fresh-refusal.json'
         $freshRefused = $false
         try {
-            & (Join-Path $bridgeRoot 'Install-RevAgentBridge.ps1') -PackageRoot $goodFixture.PackageRoot -TrustedKeysPath $goodFixture.TrustedKeysPath -EnrollmentToken ('a' * 40) -EnrollmentTokenExpiresAtUtc ([datetime]::UtcNow.AddHours(1)) @freshRefusalLayout -MachineReportPath $freshRefusalPath -SkipRevitDetection -SkipServiceStart -IcaclsInvoker $mockIcaclsInvoker | Out-Null
+            & (Join-Path $bridgeRoot 'Install-RevAgentBridge.ps1') -PackageRoot $goodFixture.PackageRoot -TrustedKeysPath $goodFixture.TrustedKeysPath -GatewayHostName 'gateway.dpe.internal' -EnrollmentToken ('a' * 40) -EnrollmentTokenExpiresAtUtc ([datetime]::UtcNow.AddHours(1)) @freshRefusalLayout -MachineReportPath $freshRefusalPath -SkipRevitDetection -SkipServiceStart -IcaclsInvoker $mockIcaclsInvoker | Out-Null
         }
         catch { $freshRefused = $true }
         Assert-True $freshRefused 'A redirected fresh-install fixture must not invoke canonical host identity preparation.'
@@ -670,6 +672,7 @@ try {
             -StateRoot $realRunLayoutArgs.StateRoot `
             -AddinProgramFilesRoot $realRunLayoutArgs.AddinProgramFilesRoot `
             -RevitAddinsRoot $realRunLayoutArgs.RevitAddinsRoot `
+            -GatewayHostName 'gateway.dpe.internal' `
             -MachineReportPath $realRunReportPath `
             -SkipRevitDetection `
             -SkipServiceStart `

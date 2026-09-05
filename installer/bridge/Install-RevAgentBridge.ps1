@@ -56,6 +56,12 @@
 
 .PARAMETER EnrollmentHandoffTimeoutSeconds
     Bound the protected-file handoff wait to 1-900 seconds (default 300).
+
+.PARAMETER GatewayHostName
+    DNS hostname with optional port, such as eu20-gateway.lab:8443. A fresh
+    committed install requires it and emits wss://<authority>/bridge/v1.
+    Existing configuration is preserved byte-for-byte. A dry run may report
+    an unresolved endpoint; that does not claim a usable configuration.
 #>
 
 [CmdletBinding(SupportsShouldProcess = $true)]
@@ -122,6 +128,7 @@ $installSummary = [ordered]@{
     serviceAlreadyInstalled  = $false
     icaclsInvokerInjected    = ($null -ne $IcaclsInvoker)
     elevated                 = $isCurrentlyElevated
+    configurationDisposition = 'not_planned'
 }
 
 function Get-BridgeLayoutArgs {
@@ -225,6 +232,12 @@ try {
     $deviceCredentialAlreadyExists = Test-Path -LiteralPath $layout.DeviceCredentialPath -PathType Leaf
     $installSummary.alreadyEnrolled = $deviceCredentialAlreadyExists
 
+    # Resolve configuration before the first directory/ACL/binary mutation.
+    $configurationPlan = Get-RevAgentBridgeConfigurationPlan -Path $layout.ConfigurationPath `
+        -GuardRoot $stateRootGuard -GatewayHostName $GatewayHostName -AllowUnresolved:$isDryRun
+    $installSummary.configurationDisposition = $configurationPlan.Disposition
+    [void]$steps.Add([pscustomobject][ordered]@{ target = $layout.ConfigurationPath; action = 'plan_bridge_config'; status = 'verified'; detail = $configurationPlan.Disposition })
+
     # --- Elevation gate (fails closed before any mutation) ---
     # P-INST-1's ACL lockdown (icacls /inheritance:r + /grant:r, and
     # /setowner NT AUTHORITY\SYSTEM for the credential directory) requires
@@ -273,34 +286,11 @@ try {
             return $layout.CurrentWorkerDirectory
         })
 
-    # --- 7. bridge-config.json (Gateway DNS name only, never an IP -- P-INST-1) ---
-    # Uses [System.Net.IPAddress]::TryParse (not a hand-rolled regex) so both
-    # IPv4 and every IPv6 literal form (bracketed "[fe80::1]", bare "::1",
-    # zone-qualified "fe80::1%eth0") are refused, not just dotted-quad IPv4.
-    if ($GatewayHostName) {
-        $gatewayHostForIpCheck = $GatewayHostName
-        if ($gatewayHostForIpCheck.StartsWith('[') -and $gatewayHostForIpCheck.EndsWith(']') -and $gatewayHostForIpCheck.Length -ge 2) {
-            $gatewayHostForIpCheck = $gatewayHostForIpCheck.Substring(1, $gatewayHostForIpCheck.Length - 2)
-        }
-        $zoneIndex = $gatewayHostForIpCheck.IndexOf('%')
-        if ($zoneIndex -ge 0) {
-            $gatewayHostForIpCheck = $gatewayHostForIpCheck.Substring(0, $zoneIndex)
-        }
-        $parsedGatewayIp = $null
-        if ([System.Net.IPAddress]::TryParse($gatewayHostForIpCheck, [ref]$parsedGatewayIp)) {
-            throw "gateway_host_must_not_be_ip: $GatewayHostName"
-        }
-    }
+    # --- 7. Strict configuration; existing settings are never replaced. ---
     [void](Invoke-RevAgentBridgeGuardedMutation -Target $layout.ConfigurationPath -MutationAction 'write_bridge_config' -DryRun $isDryRun -Steps $steps -Apply {
-            $config = [ordered]@{
-                schemaVersion  = 1
-                gatewayHostName = $GatewayHostName
-                revitVersion    = $RevitVersion
-            }
-            $json = ($config | ConvertTo-Json)
-            $encoding = [System.Text.UTF8Encoding]::new($false, $true)
-            [void](Write-RevAgentBridgeGuardedAtomicBytes -Path $layout.ConfigurationPath -Bytes ($encoding.GetBytes($json)) -GuardRoot $layout.StateRoot)
-            return $layout.ConfigurationPath
+            $disposition = Write-RevAgentBridgeConfigurationPlan -Plan $configurationPlan -GuardRoot $layout.StateRoot
+            $installSummary.configurationDisposition = $disposition
+            return $disposition
         })
 
     # --- 8. Add-in payload + deterministic manifest (P-INST-1 / P3-T9) ---
