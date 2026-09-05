@@ -27,6 +27,7 @@ public sealed class HostCommandTests
     [InlineData("install", (int)HostCommandKind.Install)]
     [InlineData("uninstall", (int)HostCommandKind.Uninstall)]
     [InlineData("doctor", (int)HostCommandKind.Doctor)]
+    [InlineData("prepare-enrollment", (int)HostCommandKind.PrepareEnrollment)]
     [InlineData("--version", (int)HostCommandKind.Version)]
     public void SingleTokenCommandsAreExact(
         string token,

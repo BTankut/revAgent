@@ -55,6 +55,29 @@ public sealed class WindowsBridgeEnrollmentArtifactSourceTests
     }
 
     [Fact]
+    public void FirstInstallFactory_PinsMachineOwnershipInsteadOfTheCurrentCaller()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        TestFixture fixture = CreateProtectedFixture();
+        try
+        {
+            var source = WindowsBridgeEnrollmentArtifactSource.CreateFirstInstall();
+            if (WindowsIdentity.GetCurrent().IsSystem)
+            {
+                using var lease = source.Open(fixture.ArtifactPath);
+                Assert.True(lease.DeleteAndProveAbsent());
+            }
+            else
+            {
+                var error = Assert.Throws<BridgeEnrollmentArtifactSourceException>(() => source.Open(fixture.ArtifactPath));
+                Assert.Equal(WindowsBridgeEnrollmentArtifactSource.InvalidAccessError, error.ErrorCode);
+                Assert.True(File.Exists(fixture.ArtifactPath));
+            }
+        }
+        finally { DeleteTestRoot(fixture.RootPath); }
+    }
+
+    [Fact]
     public void BroadFileAcl_IsRefusedWithoutLeakingPathOrContent()
     {
         if (!OperatingSystem.IsWindows())

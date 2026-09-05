@@ -7,6 +7,7 @@ internal enum HostCommandKind
     Uninstall,
     RunConsole,
     Doctor,
+    PrepareEnrollment,
     Version,
 }
 
@@ -35,7 +36,7 @@ internal static class HostCommandParser
 {
     internal const string Usage =
         "usage: revagent-bridge-host.exe install | uninstall | " +
-        "run --console | doctor [--re-enroll] | --version";
+        "run --console | doctor [--re-enroll] | prepare-enrollment | --version";
 
     internal static HostCommandParseResult Parse(
         IReadOnlyList<string> args,
@@ -60,6 +61,7 @@ internal static class HostCommandParser
                 "install" => HostCommandKind.Install,
                 "uninstall" => HostCommandKind.Uninstall,
                 "doctor" => HostCommandKind.Doctor,
+                "prepare-enrollment" => HostCommandKind.PrepareEnrollment,
                 "--version" => HostCommandKind.Version,
                 _ => null,
             };

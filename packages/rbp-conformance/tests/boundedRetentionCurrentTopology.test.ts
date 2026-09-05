@@ -30,6 +30,7 @@ describe("WP-12 bounded retention current topology", () => {
       source("packages/gateway/src/northMcpEndpoint.ts"),
       source("packages/gateway/src/server.ts"),
       source("packages/gateway/src/preProductionServing.ts"),
+      source("packages/gateway/src/productionGatewayComposition.ts"),
     ].join("\n");
     expect(supervisor).not.toContain("gateway.rbp-session/v2");
     expect(supervisor).toContain("readRbpSessionV3Readiness");
@@ -43,7 +44,22 @@ describe("WP-12 bounded retention current topology", () => {
       "bridgeSessionUnregister.test.ts", "preProductionComposition.ts",
       "productionConformanceHost.test.ts", "productionConformanceHostCli.test.ts",
       "productionConformanceHostCli.ts", "recoveryAuthority.test.ts",
+      // EU-20 B1 owns real PostgreSQL lifecycle/retention readiness. These
+      // consumers belong inside the ownership-sensitive boundary, not among
+      // the ordinary restartable-memory fixtures frozen below.
+      "productionGatewayComposition.ts", "postgresProtocolStore.integration.test.ts",
     ]);
+    for (const [file, profile, owner] of [
+      ["productionGatewayComposition.ts", "production_private", "ownership"],
+      ["postgresProtocolStore.integration.test.ts", "refuse_dispatch", "owner"],
+    ] as const) {
+      const text = source(`packages/gateway/src/${file}`);
+      expect(text).toContain("new PostgresProtocolStore(");
+      expect(text).toContain("new GatewayServingOwnership(");
+      expect(text).toContain(`profile: "${profile}"`);
+      expect(text).toContain(`servingOwnership: ${owner}`);
+      expect(text.match(/new GatewayBridgeSessionAuthority\(/gu)).toHaveLength(1);
+    }
     const outside: string[] = [];
     for (const entry of readdirSync(gatewaySource, { withFileTypes: true })) {
       if (!entry.isFile() || !entry.name.endsWith(".ts")) continue;

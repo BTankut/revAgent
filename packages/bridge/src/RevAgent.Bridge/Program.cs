@@ -363,7 +363,22 @@ internal static class Program
                             observation)),
                 services.GetRequiredService<IHostApplicationLifetime>(),
                 services.GetRequiredService<IBridgeLog>(),
-                services.GetRequiredService<WorkerExitState>()));
+                services.GetRequiredService<WorkerExitState>(),
+                beforeConnect: async cancellation =>
+                {
+                    // Enrollment is background work: the supervised control
+                    // channel becomes ready without waiting for network IO.
+                    var result = await RunBoundedEnrollmentArtifactCommandAsync(
+                        async bounded =>
+                        {
+                            using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellation, bounded);
+                            return await BridgeFirstInstallEnrollment.ConsumeProductionAsync(
+                                layout, configuration.GatewayUri, linked.Token).ConfigureAwait(false);
+                        }, EnrollmentArtifactCommandTimeout,
+                        EnrollmentArtifactCancellationLead).ConfigureAwait(false);
+                    if (!result.Ok && result.Error != WindowsBridgeEnrollmentArtifactSource.MissingError)
+                        throw new InvalidOperationException("First-install enrollment refused: " + result.Error);
+                }));
 
         using IHost host = builder.Build();
         await host.RunAsync().ConfigureAwait(false);

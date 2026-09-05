@@ -1,6 +1,6 @@
 import { loadGatewayConfig, startupLogFields } from "./config.js";
-import { composeProductionM5Identity } from "./productionM5IdentityComposition.js";
-import { createFailClosedPorts, startGatewayServer } from "./server.js";
+import { composeProductionGateway } from "./productionGatewayComposition.js";
+import { startGatewayServer } from "./server.js";
 
 /**
  * The container entry point (GW-2).
@@ -32,23 +32,7 @@ async function main(): Promise<void> {
   }
 
   const config = loaded.value;
-  const failClosedPorts = createFailClosedPorts();
-  // EU-20-AUTH-INGRESS: when the M5 Postgres control plane is configured
-  // (DATABASE_URL + M5_TOKEN_PEPPER), a real, enrolled Bridge device is
-  // authenticated exclusively against it, on both the WSS and HTTP/SSE
-  // ingress `ports.rbpIngress` shares one `GatewayBridgeSessionAuthority`
-  // for. When it is not configured, `ports.identity` stays the existing
-  // fail-closed port — never a silent fallback to a separate store-backed
-  // authority (none exists in this composition to fall back to).
-  const m5 = composeProductionM5Identity(config);
-  const handle = await startGatewayServer({
-    config,
-    ports:
-      m5 === null
-        ? failClosedPorts
-        : Object.freeze({ ...failClosedPorts, identity: m5.identity }),
-    ...(m5 === null ? {} : { m5EnrollmentEntitlement: m5.plane }),
-  });
+  const handle = await startGatewayServer(await composeProductionGateway(config));
 
   handle.app.log.info(
     { msg: "gateway.startup", ...startupLogFields(config) },
@@ -86,4 +70,9 @@ async function main(): Promise<void> {
   process.on("SIGTERM", shutdown);
 }
 
-await main();
+try { await main(); }
+catch {
+  // Startup failures must never serialize a database URL, token, or TLS key.
+  process.stderr.write(`${JSON.stringify({ level: "fatal", msg: "gateway.production_startup_refused" })}\n`);
+  process.exit(78);
+}

@@ -6,6 +6,45 @@ namespace RevAgent.Bridge.Tests.Gateway.Storage;
 
 public sealed class RbpJournalUnregisterTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task CleanupDoesNotSuppressUnknownReferencesOrDeleteFaults(bool unknownForeignKey)
+    {
+        using var directory = new RbpJournalTestDirectory();
+        await using RbpJournalStore store = RbpJournalStore.Open(
+            directory.JournalPath, new TestResumeTokenProtector(), RbpJournalTestData.Options());
+        _ = await store.PersistRegisteredSessionAsync(RbpJournalTestData.Registration());
+        _ = await store.RecordUnregisterIntentAsync("rs-test", RbpSessionUnregisterReason.OperatorRequested);
+        RbpJournalException premature = await Assert.ThrowsAsync<RbpJournalException>(() =>
+            store.CompleteConfirmedUnregisterAsync("rs-test"));
+        Assert.Equal(RbpJournalErrorCode.CleanupIncomplete, premature.ErrorCode);
+        _ = await store.ActivateConnectionGenerationAsync(1);
+        _ = await store.ApplyHeartbeatFenceAcknowledgementAsync(new RbpHeartbeatFence(1, [], [], ["rs-test"]));
+        _ = await store.ExecuteImmediateAsync(context =>
+        {
+            using SqliteCommand command = context.CreateCommand(unknownForeignKey
+                ? """
+                  CREATE TABLE test_unknown_reference(rsid TEXT REFERENCES rbp_sessions(rsid) ON DELETE RESTRICT);
+                  INSERT INTO test_unknown_reference VALUES('rs-test');
+                  """
+                : """
+                  CREATE TRIGGER test_delete_failure BEFORE DELETE ON rbp_sessions
+                  BEGIN SELECT RAISE(ABORT, 'test-only cleanup failure'); END;
+                  """);
+            _ = command.ExecuteNonQuery();
+            return true;
+        });
+
+        RbpJournalException failure = await Assert.ThrowsAsync<RbpJournalException>(() =>
+            store.CompleteConfirmedUnregisterAsync("rs-test"));
+        Assert.Equal(RbpJournalErrorCode.CleanupIncomplete, failure.ErrorCode);
+        Assert.IsType<SqliteException>(failure.InnerException);
+        Assert.NotNull(await store.GetStoredSessionAsync("rs-test"));
+        Assert.Equal(RbpUnregisterPhase.Confirmed, (await store.GetUnregisterTombstoneAsync("rs-test"))!.Phase);
+        Assert.Empty((await store.LoadRecoveryPlanAsync()).ResumeCandidates);
+    }
+
     [Fact]
     public async Task UnregisterNeedsJournalHandoffThenHeartbeatConfirmation()
     {

@@ -14,6 +14,13 @@ internal interface IBridgeCredentialMutator
 {
     BridgeMachineIdentity GetOrCreateMachineIdentity();
 
+    BridgeMachineIdentity GetRequiredUnenrolledMachineIdentity() =>
+        throw new NotSupportedException("First-install enrollment is unsupported by this mutator.");
+
+    BridgeAtomicWriteResult SaveFirstDeviceCredential(
+        string expectedMachineFingerprint, BridgeDeviceCredential credential) =>
+        throw new NotSupportedException("First-install enrollment is unsupported by this mutator.");
+
     BridgeMachineIdentity GetRequiredMachineIdentity();
 
     BridgeAtomicWriteResult SaveDeviceCredential(
@@ -235,6 +242,36 @@ internal sealed class BridgeCredentialMutator : IBridgeCredentialMutator
             return _persistence.WriteDeviceCredential(
                 identity.MachineFingerprint,
                 deviceCredential);
+        }
+    }
+
+    public BridgeMachineIdentity GetRequiredUnenrolledMachineIdentity()
+    {
+        BridgeMachineIdentity identity = GetRequiredMachineIdentity();
+        try
+        {
+            lock (_gate)
+            {
+                if (_persistence.ClassifyCredentialEntries().DeviceCredentialExists)
+                    throw InvalidState("First-install enrollment requires no existing device credential.");
+            }
+            return identity;
+        }
+        catch { identity.Dispose(); throw; }
+    }
+
+    public BridgeAtomicWriteResult SaveFirstDeviceCredential(
+        string expectedMachineFingerprint, BridgeDeviceCredential credential)
+    {
+        ArgumentNullException.ThrowIfNull(credential);
+        lock (_gate)
+        {
+            using IDisposable lease = _enrollmentLock.AcquireForMutation();
+            _persistence.RecoverAtomicResidue();
+            using BridgeMachineIdentity identity = ReadRequiredIdentity(expectedMachineFingerprint);
+            if (_persistence.ClassifyCredentialEntries().DeviceCredentialExists)
+                throw InvalidState("First-install enrollment cannot replace a device credential.");
+            return _persistence.WriteDeviceCredential(identity.MachineFingerprint, credential);
         }
     }
 
@@ -1265,7 +1302,9 @@ internal sealed class BridgeCredentialPersistence
                 writer.WriteString(
                     "machine_fingerprint",
                     identity.MachineFingerprint);
-                writer.WriteString("fingerprint_seed", encodedSeed);
+                // The string writer escapes '+' as \u002B, which violates
+                // the strict reader's canonical, unescaped Base64 contract.
+                writer.WriteBase64String("fingerprint_seed", seed);
                 writer.WriteEndObject();
                 writer.Flush();
             }

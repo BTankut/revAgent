@@ -29,6 +29,7 @@ export interface SessionDurabilityProfileV1 {
 }
 
 export type GatewayServingProfileKind =
+  | "production_private"
   | "preproduction_private"
   | "production_conformance"
   | "bundled_test"

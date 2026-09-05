@@ -286,7 +286,9 @@ function Write-RevAgentBridgeGuardedAtomicBytes {
 
         if (Test-Path -LiteralPath $fullPath -PathType Leaf) {
             [void](Assert-RevAgentBridgeNoReparsePoint -Path $fullPath -GuardRoot $GuardRoot)
-            [System.IO.File]::Replace($temporaryPath, $fullPath, $null)
+            # PowerShell binds untyped $null to an empty string for this string
+            # parameter. Explicit NullString preserves the no-backup overload.
+            [System.IO.File]::Replace($temporaryPath, $fullPath, [NullString]::Value)
         }
         else {
             [System.IO.File]::Move($temporaryPath, $fullPath)

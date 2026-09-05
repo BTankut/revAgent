@@ -510,6 +510,14 @@ internal sealed partial class RbpJournalStore
                         }
 
                         EnsureTransportStateDeleted(context, rsid);
+                        // Confirmed transport retirement does not authorize
+                        // deleting retained invocation/recovery evidence. Keep
+                        // its non-resumable parent and tombstone until the
+                        // existing retention authority removes those children.
+                        if (HasRetainedSessionArtifacts(context, rsid))
+                        {
+                            return false;
+                        }
                         using SqliteCommand delete = context.CreateCommand(
                             """
                             DELETE FROM rbp_sessions WHERE rsid=$rsid;
@@ -912,6 +920,24 @@ internal sealed partial class RbpJournalStore
                 RbpJournalErrorCode.CleanupIncomplete,
                 "Confirmed unregister transport state has not been removed.");
         }
+    }
+
+    private static bool HasRetainedSessionArtifacts(
+        RbpJournalWriteContext context,
+        string rsid)
+    {
+        using SqliteCommand command = context.CreateCommand(
+            """
+            SELECT EXISTS(SELECT 1 FROM rbp_invocations WHERE rsid=$rsid)
+              OR EXISTS(SELECT 1 FROM rbp_verification_holds WHERE rsid=$rsid)
+              OR EXISTS(SELECT 1 FROM rbp_batches WHERE rsid=$rsid)
+              OR EXISTS(SELECT 1 FROM rbp_recovery_payloads WHERE rsid=$rsid)
+              OR EXISTS(SELECT 1 FROM rbp_recovery_carrier_reservations WHERE rsid=$rsid)
+              OR EXISTS(SELECT 1 FROM rbp_recovery_sequence_tombstones WHERE rsid=$rsid)
+              OR EXISTS(SELECT 1 FROM rbp_recovery_terminal_plans WHERE rsid=$rsid);
+            """);
+        command.Parameters.AddWithValue("$rsid", rsid);
+        return Convert.ToInt64(command.ExecuteScalar()) != 0;
     }
 
     private static bool HasPendingInboundHandoff(
