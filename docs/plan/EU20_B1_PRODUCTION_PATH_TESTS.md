@@ -99,3 +99,22 @@ failure, never PASS.
 The fixture directory contains ephemeral test credentials/private TLS material.
 Keep it private and outside release packages; attach only value-free logs and
 public candidate metadata to review evidence.
+
+## Recorded complete fixture proof
+
+The genuine profile passed on 2026-09-05 at product head
+`86e9b16379bcf2fd0dc6de1e88fbf40a76d51656`, tree
+`7eb317150e0109567d2d3e848e541d1dde1b25af`, using image
+`sha256:d5e78bb40f2ae3865a5cfa32e2569cad79555c3a4bd6e024e89fd95d3118d007`.
+The value-free candidate, WSS/read and persisted HTTP/SSE restart/read evidence
+is under `.orchestration/autopilot-v2/artifacts/EU-20/astra-b1/exact-86e9b163-genuine-admin-20260905T090914Z`.
+Both bindings passed the license-revocation negative; private ACL verification
+and cleanup of four owned transient Docker resources also passed. This does
+not promote the separate signed installer/SCM/live-machine acceptance.
+
+The corresponding `test-all` gate passed with payload freshness; exact gate
+manifests are under `.orchestration/autopilot-v2/artifacts/EU-20/astra-b1/final-86e9b163-gates/`.
+Later fixture/documentation successors require explicit product-source equality,
+their own focused tests and final gate/review records; historical results are
+never silently assigned a newer head. See the slice completion record for
+the failed-attempt provenance and remaining delivery/acceptance boundaries.

@@ -31,48 +31,67 @@ The runtime image omits migrations; production main replaces only identity while
 
 One isolated writer, followed by one independent read-only reviewer. Scope-record commit and draft PR precede implementation. No live-lab mutation is authorized by this code slice. Existing lab assets, private TLS/key material, R-D rollback and archives stay preserved. Network/TLS/B2/live read/uninstall/restoration evidence belongs to the recorded EU-20 laboratory sequence.
 
-## Completion record
+## Completion record (2026-09-05)
 
-Implementation: a review candidate is implemented. `test-all.ps1` and
-`test-ci.ps1` passed locally. Gateway package tests passed 956 cases; the
-separate affected PostgreSQL run passed 32 cases with one unchanged,
-externally configured Keycloak-provisioning case skipped. The new protocol
-store accounts for seven of those PostgreSQL cases. Windows-only elevated
-ACL/DPAPI proof is explicitly skipped under the coordinator's unelevated token.
+The complete repository fixture passed on product candidate
+`86e9b16379bcf2fd0dc6de1e88fbf40a76d51656`, tree
+`7eb317150e0109567d2d3e848e541d1dde1b25af`. Evidence root:
+`.orchestration/autopilot-v2/artifacts/EU-20/astra-b1/exact-86e9b163-genuine-admin-20260905T090914Z`.
+The actual production image was
+`sha256:d5e78bb40f2ae3865a5cfa32e2569cad79555c3a4bd6e024e89fd95d3118d007`.
+Its ten migrations applied to blank PostgreSQL and reran idempotently. Genuine
+C# identity preparation, OIDC/M5 mint/exchange, protected artifact consumption,
+LocalMachine DPAPI persistence, WSS entitled read and HTTP/SSE persisted restart
+read passed. Both reads reached the add-in fixture once and refused a subsequent
+revoked-license request without another execution. The private evidence ACL and
+absence of all four owned transient Docker resources were verified; read,
+cleanup and overall outcomes are separate passed fields in `candidate.json`.
 
-The final F1 service-order correction (the existing host `install` command
-starts SCM) places identity and artifact completion before that command.
-Post-correction installer ordering/handoff tests passed in PowerShell 7 and
-Windows PowerShell 5.1. Earlier broad results are not represented as covering
-later edits; these focused reruns cover the changed installer boundary.
+Two real-path defects were corrected before that pass: the identity writer now
+uses canonical unescaped Base64, and confirmed unregister cleanup defers while
+known retention-owned child evidence still references the retired session.
+The latter preserves the seven-day floor/fourteen-day default, never reactivates
+the tombstoned session, and does not suppress unknown FK or delete failures.
+The exact lifecycle candidate passed 207 focused SQLite/coordinator cases.
 
-The exact committed candidate's image/transport proof is collected outside the
-repository by `scripts/test-eu20-production-path.ps1`; its `candidate.json`
-records head, tree, image id and whether protected first installation was
-actually exercised. Intermediate genuine C# WSS/HTTP reads used synthetic
-enrolled transport credentials and do not satisfy the full first-install chain.
-The reviewable `-Mode genuine` command requires an already elevated disposable
-Windows test process and is still required acceptance evidence.
+`test-all.ps1` passed on the same clean product candidate from 09:14:56 to
+09:29:38 UTC, including payload freshness. Its Bridge suites reported 1305
+passed/one elevated fixture skip, Contracts 312 passed and real-worker host
+31 passed. The skipped unit case is distinct from the actual elevated complete
+fixture above. An earlier attempt failed because the executor selected an
+oversized TEMP path; the short isolated TEMP rerun passed without product edits.
+The logs and exact start/end/head/tree manifests are under
+`.orchestration/autopilot-v2/artifacts/EU-20/astra-b1/final-86e9b163-gates/`.
+Final delivery relies on the recorded gate manifests and exact-head CI/review;
+this record does not claim a future `test-ci.ps1` outcome.
 
-Forecast remains 10–14 active engineering hours, excluding CI/review waits.
-Observed implementation windows began at 00:07 UTC and resumed at 05:04 UTC on
-2026-09-05; the approximately 00:33–05:04 pending-init interruption is not active
-engineering effort. About one hour of active implementation/test work was
-observed by 05:36 UTC, excluding the earlier read-only trace. Final actual and
-variance remain open while the required privileged chain is unexecuted.
+A subsequent fixture-only correction confines added diagnostic snapshot fields
+to genuine EU-20 mode. The original C39 three-field IPC shape and strict reader
+remain unchanged. Together with this documentation update, it changes no
+production source, migration or image configuration. Exact product-tree equality
+and any fresh final-candidate proof are recorded separately; the successful
+86e9b163 run is not relabeled as evidence from a later head.
 
-Acceptance: pending. Park List: none; the privileged chain is a required
-prerequisite, not parked work. Programme remains 4/11; M6 remains 0/2. Neither
-this code candidate nor transport-only evidence marks B1 ready or promotes M6.
+Historical evidence remains anchored: `ae36529f` carried the earlier full local
+gates, 956 Gateway tests and 32 affected DB cases/one externally configured
+Keycloak skip; `870dc6e6` added nine PostgreSQL cases, real private-ACL checks,
+eight explicitly simulated cleanup cases and transport-only image evidence.
+Those transport runs explicitly did not exercise protected first installation.
+The F1 installer ordering was separately tested in PowerShell 7 and 5.1: artifact
+completion precedes the host install command that starts SCM.
 
-## Independent review correction
+The controller reviewed the final product correction after the separate native
+reviewer could not be reopened because of an agent thread limit. The executor
+independently reviewed only the controller-authored operator wrapper. Neither is
+represented as the mandatory protected independent final PR review.
 
-The follow-up to `ae36529f` addresses the three Medium findings only: startup
-inventories fetch one overflow row and fail rather than return truncated success;
-proof secrets receive a verified private DACL before writing; and owned Docker
-cleanup must succeed and prove absence before the overall proof can pass.
-Focused PostgreSQL coverage is now nine cases, including actual readiness refusal
-on overflow. Private ACL checks use the real Windows API; cleanup failure tests
-are explicitly simulations. The two superseded generated proof roots were
-privatized without changing non-secret evidence bytes or ancestor/lab ACLs.
-The genuine Administrator first-install chain remains required and unexecuted.
+Forecast remains 10-14 active engineering hours, excluding CI/review waits.
+Active-time actual and variance have not been reconstructed from wall-clock
+duration; gate start/end times are recorded. The 00:33-05:04 pending-init pause
+is excluded from active effort. Park List: none.
+
+Acceptance remains pending. Repository fixture success does not prove the signed
+installer/SCM/live Revit/PETRUCCI/uninstall/R-D restoration sequence. Network
+policy configuration does not prove effective peer isolation. Programme and
+milestone promotion, protected final review, merge and production signing/CD
+scope decisions remain separate.

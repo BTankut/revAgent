@@ -128,16 +128,11 @@ internal static class Program
                         controlVersion = 1,
                         id = id.GetString(),
                         ok = true,
-                        result = new
-                        {
-                            connectionGeneration = snapshot.ConnectionGeneration,
-                            hasActiveConnection = snapshot.HasActiveConnection,
-                            activeSessionCount = snapshot.ActiveRsids.Count,
-                            lifecyclePhase = (int)snapshot.Lifecycle.Phase,
-                            observations = recoveryObservations.Snapshot(),
-                            reconnectWatchObservations = reconnectObservations.Snapshot(),
-                            routeRebindProofGranted = snapshot.RouteRebindProofGranted,
-                        },
+                        result = RecoveryObservationResult(options.GenuineCredentials,
+                            recoveryObservations.Snapshot(), reconnectObservations.Snapshot(),
+                            snapshot.RouteRebindProofGranted, snapshot.ConnectionGeneration,
+                            snapshot.HasActiveConnection, snapshot.ActiveRsids.Count,
+                            (int)snapshot.Lifecycle.Phase),
                     })).ConfigureAwait(false);
                     continue;
                 }
@@ -335,6 +330,23 @@ internal static class Program
         if (entitlementSignal.RootElement.GetProperty("action").GetString() != "entitlement_ready")
             throw new InvalidOperationException("genuine fixture entitlement handoff missing");
     }
+
+    private static object RecoveryObservationResult(bool genuine,
+        object[] observations, object[] reconnectWatchObservations,
+        bool routeRebindProofGranted, long connectionGeneration,
+        bool hasActiveConnection, int activeSessionCount, int lifecyclePhase) =>
+        genuine
+            ? new
+            {
+                observations,
+                reconnectWatchObservations,
+                routeRebindProofGranted,
+                connectionGeneration,
+                hasActiveConnection,
+                activeSessionCount,
+                lifecyclePhase
+            }
+            : (object)new { observations, reconnectWatchObservations, routeRebindProofGranted };
 
     private static IDisposable PrepareGenuineStateRoot(string stateRoot)
     {
