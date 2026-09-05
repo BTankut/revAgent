@@ -26,3 +26,43 @@ Scope-record commit and draft PR precede implementation. One isolated writer, so
 Network proof continues separately using only coordinator and PETRUCCI with accurately labeled controlled-negative evidence. Existing package/key/TLS/R-D/archive/rollback assets stay preserved. EU-20 and milestone acceptance remain open until the real signed install, live read, uninstall and restoration predicates pass.
 
 Forecast/actual/variance and Park List will be recorded from observed evidence; no active-time total is invented from waiting time. Initial Park List: none.
+
+## Implementation and targeted evidence
+
+The installer now plans configuration before its first guarded machine mutation.
+A fresh committed install requires `GatewayHostName` as a DNS authority, with
+an optional port (for example `eu20-gateway.lab:8443`). The producer constructs
+`wss://<authority>/bridge/v1` and emits the existing strict schema. Defaults use
+the frozen add-in range8080-8085 and the production stable Host's10MiB/seven-file
+logging policy. No hostname is invented when input is omitted.
+
+Dry-run may retain `unresolved_endpoint` as an explicit planning disposition;
+it creates no configuration and does not claim a usable endpoint. Existing
+regular configuration is preserved byte-for-byte, with `preserved_existing`
+reported explicitly. A config appearing after planning also wins; create-only
+atomic promotion cannot replace it. Existing malformed configuration is not
+silently repaired or accepted: the unchanged strict compiled reader still
+rejects it. IP literals, scheme/path/userinfo/query/fragment input and invalid
+ports are refused by fresh-input validation.
+
+The new compiled xUnit contract tests execute the actual installer's
+`write_bridge_config` command/Apply block from its source AST through the real
+guarded mutation primitive in isolated scratch roots. They then call
+`BridgeConfigurationLoader.Load` directly from the normal compiled test
+assembly. No product DLL is reflectively loaded by PowerShell, and no full
+installation, service, live model or signing-key operation is performed.
+The original producer reproduced the reader's `Unknown property
+'gatewayHostName' at $.` error. The corrected producer matrix and existing
+strict-reader suite passed78 cases, with no skips, across Windows PowerShell5.1
+and PowerShell7. Coverage includes both DNS endpoint forms, custom-byte
+preservation, malformed/BOM rejection, unresolved dry-run, planning-before-write
+ordering, and create-only collision protection. Formatting and diff checks
+passed. Raw TRX evidence is under
+`.orchestration/autopilot-v2/artifacts/EU-20/installer-configuration/`.
+
+These are targeted repository results. Required delivery gates, independent
+protected review, merge/signing-effect authorization and signed/live-machine
+acceptance remain separate. Production C# reader/worker sources are unchanged.
+Forecast remains1-2 active engineering hours; no complete active-time ledger was
+collected, so actual/variance are not invented from wall-clock time. Park List:
+none.

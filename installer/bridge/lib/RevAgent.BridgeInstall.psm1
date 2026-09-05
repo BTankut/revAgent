@@ -263,7 +263,8 @@ function Write-RevAgentBridgeGuardedAtomicBytes {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
         [Parameter(Mandatory = $true)][byte[]]$Bytes,
-        [Parameter(Mandatory = $true)][string]$GuardRoot
+        [Parameter(Mandatory = $true)][string]$GuardRoot,
+        [switch]$CreateOnly
     )
 
     $fullPath = Assert-RevAgentBridgeNoReparsePoint -Path $Path -GuardRoot $GuardRoot
@@ -284,7 +285,11 @@ function Write-RevAgentBridgeGuardedAtomicBytes {
         $stream = $null
         [void](Assert-RevAgentBridgeNoReparsePoint -Path $temporaryPath -GuardRoot $GuardRoot)
 
-        if (Test-Path -LiteralPath $fullPath -PathType Leaf) {
+        if ($CreateOnly) {
+            # A config that appeared after planning must never be replaced.
+            [System.IO.File]::Move($temporaryPath, $fullPath)
+        }
+        elseif (Test-Path -LiteralPath $fullPath -PathType Leaf) {
             [void](Assert-RevAgentBridgeNoReparsePoint -Path $fullPath -GuardRoot $GuardRoot)
             # PowerShell binds untyped $null to an empty string for this string
             # parameter. Explicit NullString preserves the no-backup overload.
@@ -303,6 +308,77 @@ function Write-RevAgentBridgeGuardedAtomicBytes {
     }
 
     return $fullPath
+}
+
+function Get-RevAgentBridgeConfigurationPlan {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$GuardRoot,
+        [string]$GatewayHostName = '',
+        [switch]$AllowUnresolved
+    )
+    $fullPath = Assert-RevAgentBridgeNoReparsePoint -Path $Path -GuardRoot $GuardRoot
+    $gatewayUri = $null
+    if (-not [string]::IsNullOrEmpty($GatewayHostName)) {
+        # DNS authority with optional port; no scheme, IP literal or suffix.
+        if ($GatewayHostName.Trim() -cne $GatewayHostName -or
+            $GatewayHostName -notmatch '^[^:\s/\\?#@%]+(?::[0-9]{1,5})?$') {
+            throw 'gateway_host_invalid: supply a DNS hostname with an optional port'
+        }
+        [System.Uri]$parsed = $null
+        if (-not [System.Uri]::TryCreate("wss://$GatewayHostName/bridge/v1", [System.UriKind]::Absolute, [ref]$parsed) -or
+            $parsed.HostNameType -ne [System.UriHostNameType]::Dns -or
+            [System.Uri]::CheckHostName($parsed.DnsSafeHost) -ne [System.UriHostNameType]::Dns -or
+            $parsed.DnsSafeHost.StartsWith('.') -or $parsed.DnsSafeHost.EndsWith('.') -or
+            $parsed.Port -lt 1 -or $parsed.Port -gt 65535 -or $parsed.UserInfo -or $parsed.Query -or $parsed.Fragment -or
+            $parsed.AbsolutePath -cne '/bridge/v1') {
+            throw 'gateway_host_invalid: an absolute DNS-only WSS endpoint is required'
+        }
+        $gatewayUri = $parsed.AbsoluteUri
+    }
+    $state = Get-RevAgentBridgePathState -Path $fullPath
+    if ($state.Exists) {
+        if ($state.IsDirectory) { throw 'bridge_configuration_path_is_directory' }
+        # Preserve bytes; this is not a claim that they passed the strict reader.
+        return [pscustomobject]@{ Path = $fullPath; Disposition = 'preserved_existing'; Bytes = $null }
+    }
+    if ($null -eq $gatewayUri) {
+        if (-not $AllowUnresolved) { throw 'gateway_host_required_for_fresh_configuration' }
+        return [pscustomobject]@{ Path = $fullPath; Disposition = 'unresolved_endpoint'; Bytes = $null }
+    }
+    $config = [ordered]@{
+        schemaVersion = 1
+        gateway = [ordered]@{ uri = $gatewayUri }
+        addin = [ordered]@{ scanStartPort = 8080; scanEndPort = 8085 }
+        # Existing production stable Host rolling-log policy.
+        logging = [ordered]@{ maxFileBytes = 10 * 1024 * 1024; retainedFileCount = 7 }
+    }
+    $encoding = [System.Text.UTF8Encoding]::new($false, $true)
+    return [pscustomobject]@{ Path = $fullPath; Disposition = 'create'; Bytes = $encoding.GetBytes(($config | ConvertTo-Json -Depth 4)) }
+}
+
+function Write-RevAgentBridgeConfigurationPlan {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][object]$Plan, [Parameter(Mandatory = $true)][string]$GuardRoot)
+    $path = Assert-RevAgentBridgeNoReparsePoint -Path $Plan.Path -GuardRoot $GuardRoot
+    $state = Get-RevAgentBridgePathState -Path $path
+    if ($state.Exists) {
+        if ($state.IsDirectory) { throw 'bridge_configuration_path_is_directory' }
+        return 'preserved_existing'
+    }
+    if ($Plan.Disposition -ne 'create' -or $null -eq $Plan.Bytes) { throw 'bridge_configuration_plan_has_no_fresh_endpoint' }
+    try {
+        [void](Write-RevAgentBridgeGuardedAtomicBytes -Path $path -Bytes $Plan.Bytes -GuardRoot $GuardRoot -CreateOnly)
+        return 'created'
+    }
+    catch [System.IO.IOException] {
+        # A concurrent regular config wins; link/directory failures stay closed.
+        [void](Assert-RevAgentBridgeNoReparsePoint -Path $path -GuardRoot $GuardRoot)
+        $state = Get-RevAgentBridgePathState -Path $path
+        if ($state.Exists -and -not $state.IsDirectory) { return 'preserved_existing' }
+        throw
+    }
 }
 
 # ---------------------------------------------------------------------------
@@ -1029,6 +1105,8 @@ Export-ModuleMember -Function `
     Assert-RevAgentBridgeNoReparsePoint, `
     New-RevAgentBridgeGuardedDirectory, `
     Write-RevAgentBridgeGuardedAtomicBytes, `
+    Get-RevAgentBridgeConfigurationPlan, `
+    Write-RevAgentBridgeConfigurationPlan, `
     New-RevAgentBridgeAddinManifestContract, `
     Invoke-RevAgentBridgeGuardedMutation, `
     Assert-RevAgentBridgeEnrollmentTokenShape, `
