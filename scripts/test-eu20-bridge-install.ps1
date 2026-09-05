@@ -512,6 +512,25 @@ try {
     Assert-Equal $nonSkippedSteps.Count 0 "Every mutating step under -DryRun must be 'skipped_dry_run' (or a read-only 'verified' step)."
     Assert-True (-not (Test-Path -LiteralPath $happyLayoutArgs.InstallRoot)) "DryRun must not create the install root."
     Assert-True (-not (Test-Path -LiteralPath $happyLayoutArgs.StateRoot)) "DryRun must not create the state root."
+    $happyActions = @($happyReport.steps | ForEach-Object { $_.action })
+    Assert-True ([array]::IndexOf($happyActions, 'prepare_enrollment_identity') -lt [array]::IndexOf($happyActions, 'write_enrollment_artifact')) 'The genuine identity must precede the token artifact.'
+    Assert-True ([array]::IndexOf($happyActions, 'write_enrollment_artifact') -lt [array]::IndexOf($happyActions, 'register_service')) 'Host install starts SCM, so the token artifact must precede service registration.'
+
+    Write-Host "Test same-invocation enrollment handoffs plan identity before token input without prompting or writing in dry-run"
+    foreach ($handoffMode in @('PromptForEnrollment', 'WaitForEnrollmentArtifact')) {
+        $handoffRoot = New-TestScratchDirectory -Label 'handoff-dry-run'
+        $scratchRoots.Add($handoffRoot)
+        $handoffLayoutArgs = Get-BridgeTempLayoutArgs -Root $handoffRoot
+        $handoffReportPath = Join-Path $handoffRoot 'report.json'
+        $handoffOptions = @{}
+        $handoffOptions[$handoffMode] = $true
+        & (Join-Path $bridgeRoot 'Install-RevAgentBridge.ps1') -PackageRoot $goodFixture.PackageRoot -TrustedKeysPath $goodFixture.TrustedKeysPath @handoffLayoutArgs @handoffOptions -MachineReportPath $handoffReportPath -SkipRevitDetection -DryRun | Out-Null
+        $handoffReport = Get-Content -Raw -LiteralPath $handoffReportPath | ConvertFrom-Json
+        Assert-Equal $handoffReport.status 'success' 'A dry-run handoff needs no invented fingerprint or token.'
+        Assert-Equal @($handoffReport.steps | Where-Object { $_.action -eq 'prepare_enrollment_identity' -and $_.status -eq 'skipped_dry_run' }).Count 1 'Identity preparation must be explicit and skipped.'
+        Assert-True (-not (Test-Path -LiteralPath $handoffLayoutArgs.StateRoot)) 'Handoff dry run must not create credential state.'
+        Assert-True ($null -eq $handoffReport.install.machineFingerprint) 'Dry run must never invent a machine fingerprint.'
+    }
 
     $schemaPath = Join-Path $RepoRoot "config\bridge-machine-report.schema.json"
     Assert-True (Test-Path -LiteralPath $schemaPath -PathType Leaf) "The machine-report schema must exist under config/."
@@ -575,7 +594,7 @@ try {
     }
 
     # =====================================================================
-    Write-Host "Test end-to-end install (non-dry-run): payload files actually land, durable machine report is written, real ACL is never touched"
+    Write-Host "Test idempotent install (non-dry-run): payload files actually land, durable machine report is written, real ACL is never touched"
     # =====================================================================
     # This is the regression test for the '*' literal-path copy bug and the
     # ReportsDirectory-guards-itself bug: it is the only test in this suite
@@ -606,6 +625,12 @@ try {
     # would be nothing to compare against.
     [void](New-Item -ItemType Directory -Path $realRunLayoutArgs.InstallRoot -Force)
     $installRootAclBefore = (Get-Acl -LiteralPath $realRunLayoutArgs.InstallRoot).Sddl
+    # This file-copy/report fixture is explicitly already enrolled. A fresh
+    # install must invoke genuine canonical C# identity preparation, which must
+    # never be redirected from these temporary roots into machine state.
+    $realRunFixtureLayout = Get-RevAgentBridgeLayout @realRunLayoutArgs
+    [void](New-Item -ItemType Directory -Path $realRunFixtureLayout.CredentialDirectory -Force)
+    [IO.File]::WriteAllText($realRunFixtureLayout.DeviceCredentialPath, 'not-a-real-credential-fixture')
 
     # $global: (not $script:) is required for the call counter:
     # Install-RevAgentBridge.ps1 is invoked below as a nested script file
@@ -624,6 +649,18 @@ try {
         return [pscustomobject]@{ Name = $Name; Status = "Stopped" }
     }
     try {
+        $freshRefusalRoot = New-TestScratchDirectory -Label 'fresh-identity-refusal'
+        $scratchRoots.Add($freshRefusalRoot)
+        $freshRefusalLayout = Get-BridgeTempLayoutArgs -Root $freshRefusalRoot
+        $freshRefusalPath = Join-Path $freshRefusalRoot 'fresh-refusal.json'
+        $freshRefused = $false
+        try {
+            & (Join-Path $bridgeRoot 'Install-RevAgentBridge.ps1') -PackageRoot $goodFixture.PackageRoot -TrustedKeysPath $goodFixture.TrustedKeysPath -EnrollmentToken ('a' * 40) -EnrollmentTokenExpiresAtUtc ([datetime]::UtcNow.AddHours(1)) @freshRefusalLayout -MachineReportPath $freshRefusalPath -SkipRevitDetection -SkipServiceStart -IcaclsInvoker $mockIcaclsInvoker | Out-Null
+        }
+        catch { $freshRefused = $true }
+        Assert-True $freshRefused 'A redirected fresh-install fixture must not invoke canonical host identity preparation.'
+        $freshRefusal = Get-Content -Raw -LiteralPath $freshRefusalPath | ConvertFrom-Json
+        Assert-True ($freshRefusal.message -match 'identity_preparation_requires_canonical_layout') 'The redirected identity boundary must fail closed before host execution.'
         & (Join-Path $bridgeRoot "Install-RevAgentBridge.ps1") `
             -PackageRoot $goodFixture.PackageRoot `
             -TrustedKeysPath $goodFixture.TrustedKeysPath `
@@ -637,6 +674,13 @@ try {
             -SkipRevitDetection `
             -SkipServiceStart `
             -IcaclsInvoker $mockIcaclsInvoker | Out-Null
+    }
+    catch {
+        if (Test-Path -LiteralPath $realRunReportPath) {
+            $failedRun = Get-Content -Raw -LiteralPath $realRunReportPath | ConvertFrom-Json
+            Write-Host ($failedRun.steps[-1] | ConvertTo-Json -Compress -Depth 4)
+        }
+        throw
     }
     finally {
         Remove-Item -LiteralPath Function:\Get-Service -ErrorAction SilentlyContinue
@@ -667,7 +711,8 @@ try {
     Assert-True (Test-Path -LiteralPath (Join-Path $realRunAddinLayout.AddinBinRoot "revAgentPlugin\revAgentPlugin.dll") -PathType Leaf) "The add-in payload file, including its subdirectory, must actually land in AddinBinRoot."
     Assert-True (Test-Path -LiteralPath $realRunLayout.HostExecutablePath -PathType Leaf) "The host executable must be deployed."
     Assert-True (Test-Path -LiteralPath $realRunAddinLayout.ManifestPath -PathType Leaf) "The deterministic add-in manifest must be written."
-    Assert-True (Test-Path -LiteralPath $realRunLayout.EnrollmentArtifactPath -PathType Leaf) "The enrollment artifact must be written on a real run."
+    Assert-True (-not (Test-Path -LiteralPath $realRunLayout.EnrollmentArtifactPath)) "An already-enrolled file-copy fixture must not write an enrollment artifact."
+    Assert-Equal $realRunReport.install.alreadyEnrolled $true "The fixture must be honestly classified as an idempotent install."
 
     Assert-True (Test-Path -LiteralPath $realRunLayout.ReportsDirectory -PathType Container) "The durable <StateRoot>\reports directory must exist after a real install, not just the explicit -MachineReportPath copy."
     $durableReportFiles = @(Get-ChildItem -LiteralPath $realRunLayout.ReportsDirectory -Filter "install-*.json" -File)

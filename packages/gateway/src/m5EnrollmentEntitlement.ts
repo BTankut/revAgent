@@ -1286,6 +1286,32 @@ export class M5EnrollmentEntitlementControlPlane {
     }
   }
 
+  /** Bounded production routing candidates, derived from the same live seats
+   * and licenses as capabilityIndex. More than one device is not auto-picked. */
+  public async entitledDeviceIds(input: {
+    readonly tenantId: string;
+    readonly principalUserId: string;
+    readonly toolName: string;
+  }): Promise<M5EnrollmentEntitlementResult<readonly string[]>> {
+    const capability = this.#capabilityByName.get(input.toolName);
+    if (!uuid(input.tenantId) || !uuid(input.principalUserId) || capability === undefined) return failure("invalid_request");
+    try {
+      return await this.#tenantTransaction(input.tenantId, async client => {
+        const rows = await client.query<{ device_id: string }>(
+          `SELECT DISTINCT sa.device_id FROM seat_assignments sa
+           JOIN module_licenses ml ON ml.tenant_id=sa.tenant_id AND ml.id=sa.license_id
+           JOIN devices d ON d.tenant_id=sa.tenant_id AND d.id=sa.device_id
+           JOIN device_credentials dc ON dc.tenant_id=sa.tenant_id AND dc.device_id=sa.device_id
+           JOIN users u ON u.tenant_id=sa.tenant_id AND u.id=sa.user_id
+           WHERE sa.user_id=$1 AND sa.module_name=$2 AND sa.status='active'
+             AND ml.status='active' AND d.status='active' AND u.status='active'
+             AND dc.principal_user_id=sa.user_id ORDER BY sa.device_id LIMIT 2`,
+          [input.principalUserId, capability.module]);
+        return success(Object.freeze(rows.rows.map(row => row.device_id)));
+      });
+    } catch { return failure("unavailable"); }
+  }
+
   public async rotateDeviceCredential(
     actor: AuthContext,
     input: { readonly deviceId: string },

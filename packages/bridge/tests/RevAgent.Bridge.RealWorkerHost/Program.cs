@@ -5,6 +5,8 @@ using System.Net.Security;
 using System.Net.WebSockets;
 using System.Security.Cryptography.X509Certificates;
 using System.Security.Cryptography;
+using System.Security.Principal;
+using System.Runtime.Versioning;
 using System.Text;
 using System.Text.Json;
 using RevAgent.Bridge.AddinLoopback;
@@ -38,6 +40,22 @@ internal static class Program
         try
         {
             Options options = Options.Parse(args);
+            if (options.GenuineCredentials)
+            {
+                if (!OperatingSystem.IsWindows() ||
+                    !new WindowsPrincipal(WindowsIdentity.GetCurrent()).IsInRole(WindowsBuiltInRole.Administrator))
+                {
+                    await Console.Out.WriteLineAsync("{\"skipped\":true,\"reason\":\"genuine_first_install_requires_elevated_fixture_process\"}");
+                    return 77;
+                }
+                string canonical = Path.GetFullPath(BridgeInstallLayout.Canonical.StateRoot);
+                string isolated = Path.GetFullPath(options.StateRoot);
+                if (isolated.StartsWith(canonical, StringComparison.OrdinalIgnoreCase) ||
+                    canonical.StartsWith(isolated, StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidOperationException("genuine fixture requires an isolated state root");
+                if (!options.GenuineRestart)
+                    await PrepareAndEnrollAsync(options).ConfigureAwait(false);
+            }
             var recoveryObservations = new RecoveryCarrierObservationRing(
                 MaxRecoveryCarrierObservations,
                 MaxRecoveryCarrierObservationBytes);
@@ -72,7 +90,7 @@ internal static class Program
                 bindings = new[] { options.Binding },
                 state_root_redacted = true,
                 program_data_touched = false,
-                dpapi_used = false,
+                dpapi_used = options.GenuineCredentials,
                 external_endpoint = false,
             })).ConfigureAwait(false);
 
@@ -178,8 +196,11 @@ internal static class Program
     {
         var layout = new BridgeInstallLayout(options.InstallRoot, options.StateRoot);
         Directory.CreateDirectory(layout.StateRoot);
-        var enrollment = new StaticEnrollment(options.DeviceId, options.DeviceToken, options.Fingerprint);
-        RbpJournalStore journal = WorkerGatewayComposition.OpenJournal(layout, new TestResumeProtector());
+        IRbpEnrollmentStateProvider enrollment = options.GenuineCredentials
+            ? WorkerGatewayComposition.CreateEnrollmentStateProvider(layout)
+            : new StaticEnrollment(options.DeviceId, options.DeviceToken, options.Fingerprint);
+        RbpJournalStore journal = WorkerGatewayComposition.OpenJournal(layout,
+            options.GenuineCredentials ? WorkerResumeTokenProtector.CreateProduction() : new TestResumeProtector());
         try
         {
             var transport = new AddinTcpTransport();
@@ -202,7 +223,9 @@ internal static class Program
                     fixtureAttestor),
                 router,
                 Configuration(options),
-                () => new StaticCredentialProvider(options.DeviceId, options.DeviceToken, options.Fingerprint),
+                () => options.GenuineCredentials
+                    ? BridgeDeviceCredentialProvider.CreateProduction(layout)
+                    : new StaticCredentialProvider(options.DeviceId, options.DeviceToken, options.Fingerprint),
                 async (rsid, token) => (await journal.GetStoredSessionAsync(rsid, token).ConfigureAwait(false))?.LocalSessionKey,
                 "wp12-real-worker-host", hostname: "localhost", credentialClaims: claims);
             RbpArtifactCarrierProducer? carrier = null;
@@ -255,6 +278,52 @@ internal static class Program
             journal.DisposeAsync().AsTask().GetAwaiter().GetResult();
             throw;
         }
+    }
+
+    [SupportedOSPlatform("windows")]
+    private static async Task PrepareAndEnrollAsync(Options options)
+    {
+        var layout = new BridgeInstallLayout(options.InstallRoot, options.StateRoot);
+        // A test process never selects canonical workstation state or installs
+        // a service. The production store still owns real randomness and ACLs.
+        string canonical = Path.GetFullPath(BridgeInstallLayout.Canonical.StateRoot);
+        string isolated = Path.GetFullPath(layout.StateRoot);
+        if (isolated.StartsWith(canonical, StringComparison.OrdinalIgnoreCase) ||
+            canonical.StartsWith(isolated, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("genuine fixture requires an isolated state root");
+        var mutator = BridgeCredentialMutator.CreateProduction(layout);
+        using (BridgeMachineIdentity identity = mutator.GetOrCreateMachineIdentity())
+        {
+            await Console.Out.WriteLineAsync(JsonSerializer.Serialize(new
+            {
+                action = "enrollment_handoff_ready",
+                machineFingerprint = identity.MachineFingerprint,
+                genuineFirstInstall = true,
+            })).ConfigureAwait(false);
+        }
+        string? line = await Console.In.ReadLineAsync().WaitAsync(TimeSpan.FromMinutes(2)).ConfigureAwait(false);
+        using JsonDocument signal = JsonDocument.Parse(line ?? "{}");
+        if (signal.RootElement.GetProperty("action").GetString() != "enrollment_artifact_ready")
+            throw new InvalidOperationException("genuine fixture enrollment handoff missing");
+        string artifact = Path.Combine(layout.CredentialDirectory, "enrollment.json");
+        new WindowsBridgeCredentialAccessControl().ProtectFile(artifact);
+        var endpoint = BridgeEnrollmentExchangeClient.CreateEnrollmentEndpoint(options.GatewayUri);
+        var result = await BridgeFirstInstallEnrollment.ConsumeAsync(artifact,
+            WindowsBridgeEnrollmentArtifactSource.CreateFirstInstall(),
+            new BridgeEnrollmentCoordinator(mutator, new BridgeEnrollmentExchangeClient(endpoint,
+                () => new HttpClientHandler
+                {
+                    UseProxy = false,
+                    ServerCertificateCustomValidationCallback = (_, certificate, _, errors) =>
+                        errors == SslPolicyErrors.None || CertificateMatches(certificate, options.CertificateSha256),
+                })),
+            false, CancellationToken.None).ConfigureAwait(false);
+        if (!result.Ok) throw new InvalidOperationException("genuine fixture first enrollment refused: " + result.Error);
+        await Console.Out.WriteLineAsync("{\"firstInstallEnrolled\":true,\"protectedArtifactConsumed\":true,\"dpapiUsed\":true}").ConfigureAwait(false);
+        string? entitlementLine = await Console.In.ReadLineAsync().WaitAsync(TimeSpan.FromMinutes(1)).ConfigureAwait(false);
+        using JsonDocument entitlementSignal = JsonDocument.Parse(entitlementLine ?? "{}");
+        if (entitlementSignal.RootElement.GetProperty("action").GetString() != "entitlement_ready")
+            throw new InvalidOperationException("genuine fixture entitlement handoff missing");
     }
 
     /// <summary>
@@ -766,8 +835,9 @@ internal static class Program
         }
     }
 
-    private sealed record Options(Uri GatewayUri, int AddinPort, int FixtureProcessId, string InstallRoot, string StateRoot, string DeviceId, string DeviceToken, string Fingerprint, string CertificateSha256, string Binding, int TestHeartbeatIntervalMilliseconds, string C39Profile)
+    private sealed record Options(Uri GatewayUri, int AddinPort, int FixtureProcessId, string InstallRoot, string StateRoot, string DeviceId, string DeviceToken, string Fingerprint, string CertificateSha256, string Binding, int TestHeartbeatIntervalMilliseconds, string C39Profile, bool GenuineFirstInstall, bool GenuineRestart)
     {
+        internal bool GenuineCredentials => GenuineFirstInstall || GenuineRestart;
         internal bool TestC39D0PostWriteFault =>
             string.Equals(C39Profile, "d0_postwrite_once", StringComparison.Ordinal);
         internal bool TestC39TerminalPrePeerFault =>
@@ -775,13 +845,18 @@ internal static class Program
 
         public static Options Parse(IReadOnlyList<string> args)
         {
-            if (args.Count is not (22 or 24)) throw new ArgumentException("real worker host requires fixed --key value pairs");
+            if (args.Count is not (18 or 20 or 22 or 24)) throw new ArgumentException("real worker host requires fixed --key value pairs");
             var values = new Dictionary<string, string>(StringComparer.Ordinal);
             for (int index = 0; index < args.Count; index += 2)
             {
                 if (!args[index].StartsWith("--", StringComparison.Ordinal) || !values.TryAdd(args[index], args[index + 1])) throw new ArgumentException("invalid real worker host arguments");
             }
             string Required(string key) => values.Remove(key, out string? value) && !string.IsNullOrWhiteSpace(value) ? value : throw new ArgumentException($"missing {key}");
+            bool genuine = values.Remove("--genuine-first-install", out string? genuineValue);
+            if (genuine && genuineValue != "true") throw new ArgumentException("invalid genuine first-install fixture option");
+            bool restart = values.Remove("--genuine-enrolled-restart", out string? restartValue);
+            if (restart && (restartValue != "true" || genuine)) throw new ArgumentException("invalid genuine restart fixture option");
+            bool genuineCredentials = genuine || restart;
             string binding = Required("--binding");
             if (binding is not ("wss" or "streamable_http_sse")) throw new ArgumentException("invalid binding");
             Uri endpoint = new(Required("--gateway-uri"), UriKind.Absolute);
@@ -794,8 +869,8 @@ internal static class Program
                 ? profile ?? throw new ArgumentException("invalid C39 test profile")
                 : "none";
             if (c39Profile is not ("none" or "d0_postwrite_once" or "c39_terminal_prepeer_once")) throw new ArgumentException("invalid C39 test profile");
-            Options result = new(endpoint, port, fixturePid, Required("--install-root"), Required("--state-root"), Required("--device-id"), Required("--device-token"), Required("--fingerprint"), Required("--certificate-sha256"), binding, testHeartbeatIntervalMilliseconds, c39Profile);
-            if (values.Count != 0 || !result.Fingerprint.StartsWith("sha256:", StringComparison.Ordinal) || result.CertificateSha256.Length != 64) throw new ArgumentException("invalid test identity or certificate pin");
+            Options result = new(endpoint, port, fixturePid, Required("--install-root"), Required("--state-root"), genuineCredentials ? "" : Required("--device-id"), genuineCredentials ? "" : Required("--device-token"), genuineCredentials ? "" : Required("--fingerprint"), Required("--certificate-sha256"), binding, testHeartbeatIntervalMilliseconds, c39Profile, genuine, restart);
+            if (values.Count != 0 || (!genuineCredentials && !result.Fingerprint.StartsWith("sha256:", StringComparison.Ordinal)) || result.CertificateSha256.Length != 64 || (genuineCredentials && c39Profile != "none")) throw new ArgumentException("invalid test identity or certificate pin");
             return result;
         }
     }

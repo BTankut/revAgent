@@ -1,5 +1,6 @@
 using RevAgent.Bridge.Bootstrap;
 using RevAgent.Bridge.Bootstrap.Logging;
+using RevAgent.Bridge.Bootstrap.Enrollment;
 using RevAgent.Bridge.Host.Hosting;
 using RevAgent.Bridge.Host.Install;
 using System.Reflection;
@@ -62,6 +63,8 @@ internal sealed class HostCommandDispatcher
                     cancellationToken).ConfigureAwait(false),
                 HostCommandKind.Version => await VersionAsync()
                     .ConfigureAwait(false),
+                HostCommandKind.PrepareEnrollment => await PrepareEnrollmentAsync()
+                    .ConfigureAwait(false),
                 _ => throw new ArgumentOutOfRangeException(nameof(command)),
             };
         }
@@ -100,6 +103,22 @@ internal sealed class HostCommandDispatcher
                 cancellationToken).ConfigureAwait(false);
             return (int)HostExitCode.DoctorFailed;
         }
+    }
+
+    private async Task<int> PrepareEnrollmentAsync()
+    {
+        // The signed installer calls this before requesting a fingerprint-bound
+        // token. The existing protected store owns all randomness and DPAPI IO.
+        using BridgeMachineIdentity identity =
+            BridgeCredentialMutator.CreateProduction(_layout)
+                .GetOrCreateMachineIdentity();
+        await _standardOutput.WriteLineAsync(JsonSerializer.Serialize(new
+        {
+            ok = true,
+            action = "prepare_bridge_enrollment",
+            machineFingerprint = identity.MachineFingerprint,
+        })).ConfigureAwait(false);
+        return (int)HostExitCode.Success;
     }
 
     private async Task<int> InstallAsync(CancellationToken cancellationToken)

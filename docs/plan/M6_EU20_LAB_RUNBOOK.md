@@ -39,7 +39,7 @@ emitted report before the committed run.
 |---|---|---|---|
 | P1 | Operator has named and authorized one specific disposable Windows/Revit 2022 lab machine for this session. | Written authorization naming the exact machine (hostname + confirmation it is disposable). | True gate (below) |
 | P2 | The signed Bridge release payload (`bridge-release.json` + `.json.sig`, host/worker/addin binaries) is available and its `trusted-keys.json` is the pinned production/lab key set. | `Test-RevitMcpDetachedJsonSignatureFile` succeeds against the payload (the installer performs this itself and fails closed if not). | P-INST-2, P3-T9 |
-| P3 | A single-use P-ENROLL-1 enrollment token has been minted by an admin against the EU-11 Gateway (short TTL, ≤ 24h) and its exact expiry (UTC) is known. | Token string + expiry handed to the operator out-of-band (never committed to the repo). | P-ENROLL-1, R9 |
+| P3 | An admin is ready to mint a single-use P-ENROLL-1 token against the public fingerprint emitted during the installer invocation (short TTL, ≤ 24h). | Protected-file handoff or secure prompt is selected; token and expiry never enter repository evidence. Pre-minted tokens require the existing matching identity. | P-ENROLL-1, R9 |
 | P4 | Target machine has Revit 2022 installed at a location `Resolve-RevitMcpInstallRoot -Version 2022` can find (registry or `config/revit-versions.json` candidate paths). | `installer/bridge/Install-RevAgentBridge.ps1` step 3 (Revit detection) succeeds without `-SkipRevitDetection`. | P3-T9 |
 | P5 | Operator has local Administrator rights on the target machine (service registration + ACL lockdown require it). | `whoami /groups` shows `BUILTIN\Administrators` enabled. | P-INST-1 |
 | P6 | Machine identity verified: confirm the actual `$env:COMPUTERNAME` on the console matches the machine named in P1, and is **not** `DESKTOP-OKNV128`. | `$env:COMPUTERNAME` on the target console. | Card "Environment" clause |
@@ -60,7 +60,7 @@ sends the operator back to the requesting party, not around this runbook.
 | F6 | Operator has local Administrator rights. | `([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)` | Returns `True`. |
 | F7 | No orphaned local process is bound to the legacy add-in TCP port range (8080-8085) that could collide with bridge discovery. | `Get-NetTCPConnection -LocalPort 8080-8085 -ErrorAction SilentlyContinue` | Empty, or every bound process is understood and expected (e.g. Revit's own add-in listener once running). |
 | F8 | The signed release payload and trusted-keys file for this session are staged locally and their directory is not shared/writable by other users. | `icacls <PackageRoot>` | Only the operator/Administrators have write access. |
-| F9 | The exact enrollment token and its expiry (P3) are in hand and have not been used elsewhere. | Operator's out-of-band record from the Gateway admin. | Token is unused; expiry leaves ≥ 50s and ≤ 24h+5s of remaining lifetime at the moment Step 3 will run (P-ENROLL-1 bound, re-checked by the installer itself). |
+| F9 | The P3 admin is available for the bounded fingerprint-to-token handoff; no old enrollment artifact is present. | Operator's out-of-band coordination and canonical artifact absence. | The newly minted token is unused and leaves ≥ 50s and ≤ 24h+5s lifetime when consumed. The actual token is bound after genuine C# preparation inside Step 3. |
 | F10 | A rollback contact/escalation path is known in case R4 (full restore) is needed. | Operator's own runbook/on-call reference. | Named and reachable for the duration of the session. |
 
 ## Step 1 — Machine identity verification
@@ -85,8 +85,8 @@ unconfirmed machine.
 $Report = & "installer\bridge\Install-RevAgentBridge.ps1" `
   -PackageRoot "<path to the extracted signed payload>" `
   -TrustedKeysPath "<path to trusted-keys.json>" `
-  -EnrollmentToken "<the P-ENROLL-1 token>" `
-  -EnrollmentTokenExpiresAtUtc (Get-Date "<token expiry, UTC>") `
+  -WaitForEnrollmentArtifact `
+  -EnrollmentHandoffTimeoutSeconds 300 `
   -RevitVersion "2022" `
   -GatewayHostName "<gateway.dpe.internal-style DNS name, never an IP>" `
   -MachineReportPath "C:\Temp\eu20-install-dryrun-report.json" `
@@ -134,7 +134,14 @@ BUILTIN\Users ReadAndExecute.
 
 ## Step 5 — One-time enrollment
 
-Enrollment is driven by Step 3 itself: the installer writes
+Enrollment is driven by the same Step 3 invocation. The signed host first
+prepares the genuine C# identity and emits only its public fingerprint. The
+admin mints a token for that fingerprint and atomically supplies the protected
+canonical artifact within the bounded wait. Interactive setup may instead use
+`-PromptForEnrollment`; no manual bootstrap plus doctor re-enrollment is counted
+as a fresh install. See [the production-path verification guide](EU20_B1_PRODUCTION_PATH_TESTS.md).
+
+The installer or protected handoff supplies
 `C:\ProgramData\revAgent\bridge\credentials\enrollment.json` (the exact M4
 artifact contract `BridgeEnrollmentArtifactConsumer` expects) before
 starting the service. On first start the bridge worker consumes and deletes

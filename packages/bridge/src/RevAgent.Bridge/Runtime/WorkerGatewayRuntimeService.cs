@@ -68,6 +68,7 @@ internal sealed class WorkerGatewayRuntimeService : IHostedService,
     private readonly IBridgeLog _log;
     private readonly WorkerExitState _exitState;
     private readonly TimeSpan _stopBudget;
+    private readonly Func<CancellationToken, Task>? _beforeConnect;
 
     private WorkerGatewayRuntime? _runtime;
     private readonly object _disposeSync = new();
@@ -82,7 +83,8 @@ internal sealed class WorkerGatewayRuntimeService : IHostedService,
         IHostApplicationLifetime applicationLifetime,
         IBridgeLog log,
         WorkerExitState exitState,
-        TimeSpan? stopBudget = null)
+        TimeSpan? stopBudget = null,
+        Func<CancellationToken, Task>? beforeConnect = null)
     {
         _runtimeFactory = runtimeFactory ??
             throw new ArgumentNullException(nameof(runtimeFactory));
@@ -92,6 +94,7 @@ internal sealed class WorkerGatewayRuntimeService : IHostedService,
         _exitState = exitState ??
             throw new ArgumentNullException(nameof(exitState));
         _stopBudget = stopBudget ?? DefaultStopBudget;
+        _beforeConnect = beforeConnect;
         if (_stopBudget <= TimeSpan.Zero)
         {
             throw new ArgumentOutOfRangeException(nameof(stopBudget));
@@ -337,6 +340,8 @@ internal sealed class WorkerGatewayRuntimeService : IHostedService,
         WorkerGatewayRuntime runtime = Volatile.Read(ref _runtime)!;
         try
         {
+            if (_beforeConnect is not null)
+                await _beforeConnect(cancellationToken).ConfigureAwait(false);
             await runtime.RunAsync(cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException)

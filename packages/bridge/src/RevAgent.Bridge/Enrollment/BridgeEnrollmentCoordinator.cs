@@ -61,6 +61,19 @@ internal sealed class BridgeEnrollmentCoordinator
                     credential),
             cancellationToken);
 
+    // First-install handoff must use the identity whose public fingerprint was
+    // given to the minting admin. It must neither create a replacement identity
+    // nor replace an already issued device credential.
+    internal Task<BridgeEnrollmentOutcome> EnrollPreparedIdentityAsync(
+        BridgeEnrollmentToken enrollmentToken,
+        CancellationToken cancellationToken = default) =>
+        RunAsync(
+            enrollmentToken,
+            static mutator => mutator.GetRequiredUnenrolledMachineIdentity(),
+            static (mutator, fingerprint, credential) =>
+                mutator.SaveFirstDeviceCredential(fingerprint, credential),
+            cancellationToken);
+
     /// <summary>
     /// Re-enrolls only when the durable Bridge identity already exists.
     /// Protected-file consumption uses this path so a missing or displaced

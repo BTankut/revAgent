@@ -56,6 +56,19 @@ internal sealed class WindowsBridgeEnrollmentArtifactSource :
         _afterReleaseBeforeDelete = afterReleaseBeforeDelete;
     }
 
+    /// <summary>First-install artifacts belong to the machine, not the admin
+    /// currently running setup. Pin SYSTEM ownership and SYSTEM/Administrators
+    /// FullControl. The operating system still checks the caller's access to
+    /// the real no-follow read/delete handle. A2 re-enrollment retains its
+    /// existing current-user policy through the ordinary constructor.</summary>
+    internal static WindowsBridgeEnrollmentArtifactSource CreateFirstInstall()
+    {
+        if (!OperatingSystem.IsWindows())
+            throw new PlatformNotSupportedException("First-install enrollment requires Windows.");
+        var owner = new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null);
+        return new WindowsBridgeEnrollmentArtifactSource(currentUserResolver: () => owner);
+    }
+
     public IBridgeEnrollmentArtifactLease Open(string filePath)
     {
         if (!OperatingSystem.IsWindows())

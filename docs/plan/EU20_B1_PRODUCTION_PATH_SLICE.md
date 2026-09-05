@@ -33,4 +33,34 @@ One isolated writer, followed by one independent read-only reviewer. Scope-recor
 
 ## Completion record
 
-Implementation: pending. Acceptance: pending. Actual effort and variance: pending. Park List: none at slice start; active prerequisites may not be parked to claim completion. Programme remains 4/11; M6 remains 0/2.
+Implementation: a review candidate is implemented. `test-all.ps1` and
+`test-ci.ps1` passed locally. Gateway package tests passed 956 cases; the
+separate affected PostgreSQL run passed 32 cases with one unchanged,
+externally configured Keycloak-provisioning case skipped. The new protocol
+store accounts for seven of those PostgreSQL cases. Windows-only elevated
+ACL/DPAPI proof is explicitly skipped under the coordinator's unelevated token.
+
+The final F1 service-order correction (the existing host `install` command
+starts SCM) places identity and artifact completion before that command.
+Post-correction installer ordering/handoff tests passed in PowerShell 7 and
+Windows PowerShell 5.1. Earlier broad results are not represented as covering
+later edits; these focused reruns cover the changed installer boundary.
+
+The exact committed candidate's image/transport proof is collected outside the
+repository by `scripts/test-eu20-production-path.ps1`; its `candidate.json`
+records head, tree, image id and whether protected first installation was
+actually exercised. Intermediate genuine C# WSS/HTTP reads used synthetic
+enrolled transport credentials and do not satisfy the full first-install chain.
+The reviewable `-Mode genuine` command requires an already elevated disposable
+Windows test process and is still required acceptance evidence.
+
+Forecast remains 10–14 active engineering hours, excluding CI/review waits.
+Observed implementation windows began at 00:07 UTC and resumed at 05:04 UTC on
+2026-09-05; the approximately 00:33–05:04 pending-init interruption is not active
+engineering effort. About one hour of active implementation/test work was
+observed by 05:36 UTC, excluding the earlier read-only trace. Final actual and
+variance remain open while the required privileged chain is unexecuted.
+
+Acceptance: pending. Park List: none; the privileged chain is a required
+prerequisite, not parked work. Programme remains 4/11; M6 remains 0/2. Neither
+this code candidate nor transport-only evidence marks B1 ready or promotes M6.

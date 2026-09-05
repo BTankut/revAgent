@@ -67,6 +67,30 @@ public sealed class BridgeEnrollmentCoordinatorTests
     }
 
     [Fact]
+    public async Task FirstInstall_RequiresPreparedIdentityAndNeverOverwritesCredential()
+    {
+        using var fixture = EnrollmentStoreFixture.CreateWithXorProtector();
+        var exchange = new FakeExchangeClient("device-51", FirstIssuedToken);
+        var coordinator = new BridgeEnrollmentCoordinator(fixture.Mutator, exchange);
+        using BridgeEnrollmentToken missingToken = BridgeEnrollmentToken.Parse(EnrollmentTokenValue);
+        await Assert.ThrowsAsync<BridgeCredentialStoreException>(() => coordinator.EnrollPreparedIdentityAsync(missingToken));
+        Assert.Equal(0, exchange.CallCount);
+        Assert.False(File.Exists(fixture.Layout.MachineIdentityPath));
+        string fingerprint;
+        using (BridgeMachineIdentity identity = fixture.Mutator.GetOrCreateMachineIdentity())
+            fingerprint = identity.MachineFingerprint;
+        using BridgeEnrollmentToken token = BridgeEnrollmentToken.Parse(EnrollmentTokenValue);
+        var outcome = await coordinator.EnrollPreparedIdentityAsync(token);
+        Assert.Equal(fingerprint, outcome.MachineFingerprint);
+        using BridgeEnrollmentToken repeated = BridgeEnrollmentToken.Parse(EnrollmentTokenValue);
+        await Assert.ThrowsAsync<BridgeCredentialStoreException>(() => coordinator.EnrollPreparedIdentityAsync(repeated));
+        Assert.Equal(1, exchange.CallCount);
+        Assert.False(repeated.IsConsumed);
+        using BridgeRuntimeCredentialState state = fixture.Reader.Load()!;
+        Assert.Equal(FirstIssuedToken, state.DeviceCredential!.DeviceToken.Reveal());
+    }
+
+    [Fact]
     public async Task ReEnrollAsync_RepairsACorruptCredentialAndReExchanges()
     {
         using var fixture = EnrollmentStoreFixture.CreateWithXorProtector();

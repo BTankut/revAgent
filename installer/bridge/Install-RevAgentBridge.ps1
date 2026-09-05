@@ -44,6 +44,18 @@
 .PARAMETER EnrollmentTokenExpiresAtUtc
     The token's absolute expiry (UTC). Must leave at least 50 seconds and at
     most 24h+5s of remaining lifetime at write time (P-ENROLL-1 TTL cap).
+
+.PARAMETER PromptForEnrollment
+    Prepare the genuine machine identity, display its public fingerprint and
+    request a bound token with a secure prompt inside this same invocation.
+
+.PARAMETER WaitForEnrollmentArtifact
+    Prepare the genuine identity, emit only a public fingerprint readiness
+    record, and wait for an out-of-band admin to atomically supply the canonical
+    SYSTEM/Administrators enrollment.json. Never reads the secret in PowerShell.
+
+.PARAMETER EnrollmentHandoffTimeoutSeconds
+    Bound the protected-file handoff wait to 1-900 seconds (default 300).
 #>
 
 [CmdletBinding(SupportsShouldProcess = $true)]
@@ -52,6 +64,9 @@ param(
     [Parameter(Mandatory = $true)][string]$TrustedKeysPath,
     [string]$EnrollmentToken = '',
     [Nullable[datetime]]$EnrollmentTokenExpiresAtUtc = $null,
+    [switch]$PromptForEnrollment,
+    [switch]$WaitForEnrollmentArtifact,
+    [ValidateRange(1,900)][int]$EnrollmentHandoffTimeoutSeconds = 300,
     [string]$RevitVersion = '2022',
     [string]$GatewayHostName = '',
     [string]$InstallRoot = '',
@@ -102,6 +117,7 @@ $installSummary = [ordered]@{
     serviceName              = 'revAgentBridge'
     enrollmentAttempted      = $false
     enrollmentArtifactWritten = $false
+    machineFingerprint       = $null
     alreadyEnrolled          = $false
     serviceAlreadyInstalled  = $false
     icaclsInvokerInjected    = ($null -ne $IcaclsInvoker)
@@ -304,28 +320,77 @@ try {
             return $manifestContract.sha256
         }.GetNewClosure())
 
-    # --- 9. Service registration (reuses the Bridge Host's own `install` verb -- P3-T2) ---
-    if (-not $serviceAlreadyExists) {
-        [void](Invoke-RevAgentBridgeGuardedMutation -Target $layout.ServiceName -MutationAction 'register_service' -DryRun $isDryRun -Steps $steps -Apply {
-                $output = & $layout.HostExecutablePath 'install' 2>&1
-                if ($LASTEXITCODE -ne 0) {
-                    throw "bridge_host_install_failed: exit=$LASTEXITCODE output=$output"
-                }
-                return "$($layout.HostExecutablePath) install"
-            })
-    }
-    else {
-        [void]$steps.Add([pscustomobject][ordered]@{ target = $layout.ServiceName; action = 'register_service'; status = 'skipped_already_registered'; detail = $null })
-    }
-
-    # --- 10. One-time enrollment: write the M4 artifact for the bridge to consume on first start ---
+    # --- 9. Prepare identity and enrollment before the first service start ---
     if ($deviceCredentialAlreadyExists) {
         [void]$steps.Add([pscustomobject][ordered]@{ target = $layout.EnrollmentArtifactPath; action = 'write_enrollment_artifact'; status = 'skipped_already_enrolled'; detail = $null })
     }
-    elseif ([string]::IsNullOrWhiteSpace($EnrollmentToken)) {
+    elseif ([string]::IsNullOrWhiteSpace($EnrollmentToken) -and -not $PromptForEnrollment -and -not $WaitForEnrollmentArtifact) {
         throw "enrollment_token_required: no device credential exists yet and -EnrollmentToken was not supplied."
     }
     else {
+        if ($WaitForEnrollmentArtifact -and ($PromptForEnrollment -or -not [string]::IsNullOrWhiteSpace($EnrollmentToken) -or $null -ne $EnrollmentTokenExpiresAtUtc)) {
+            throw 'ambiguous_enrollment_source'
+        }
+        if ($WaitForEnrollmentArtifact -and (Test-Path -LiteralPath $layout.EnrollmentArtifactPath)) {
+            throw 'enrollment_handoff_already_present'
+        }
+        [void](Invoke-RevAgentBridgeGuardedMutation -Target $layout.CredentialDirectory -MutationAction 'prepare_enrollment_identity' -DryRun $isDryRun -Steps $steps -Apply {
+                $canonicalLayout = Get-RevAgentBridgeLayout
+                if (-not [string]::Equals($layout.StateRoot, $canonicalLayout.StateRoot, [StringComparison]::OrdinalIgnoreCase) -or
+                    -not [string]::Equals($layout.InstallRoot, $canonicalLayout.InstallRoot, [StringComparison]::OrdinalIgnoreCase)) {
+                    throw 'identity_preparation_requires_canonical_layout'
+                }
+                $preparedOutput = & $layout.HostExecutablePath 'prepare-enrollment' 2>$null
+                if ($LASTEXITCODE -ne 0) { throw 'bridge_identity_preparation_failed' }
+                $prepared = ($preparedOutput -join "`n") | ConvertFrom-Json
+                if ($prepared.ok -ne $true -or $prepared.action -ne 'prepare_bridge_enrollment' -or $prepared.machineFingerprint -cnotmatch '^sha256:[0-9a-f]{64}$') {
+                    throw 'bridge_identity_preparation_invalid'
+                }
+                $installSummary.machineFingerprint = $prepared.machineFingerprint
+                return $prepared.machineFingerprint
+            })
+        if ($WaitForEnrollmentArtifact) {
+            [void](Invoke-RevAgentBridgeGuardedMutation -Target $layout.EnrollmentArtifactPath -MutationAction 'await_enrollment_artifact' -DryRun $isDryRun -Steps $steps -Apply {
+                    # Public metadata only. The admin mints against this identity
+                    # and atomically delivers the protected artifact out-of-band.
+                    Write-Host (ConvertTo-Json -Compress -InputObject ([ordered]@{
+                        action = 'enrollment_handoff_ready'
+                        machineFingerprint = $installSummary.machineFingerprint
+                    }))
+                    $handoffDeadline = [datetime]::UtcNow.AddSeconds($EnrollmentHandoffTimeoutSeconds)
+                    while (-not (Test-Path -LiteralPath $layout.EnrollmentArtifactPath -PathType Leaf)) {
+                        if ([datetime]::UtcNow -ge $handoffDeadline) { throw 'enrollment_handoff_timeout' }
+                        Start-Sleep -Milliseconds 250
+                    }
+                    # The real worker validates ACL, no-follow handle, size/TTL,
+                    # cleanup and exchange. The installer never reads this token.
+                    return 'protected_artifact_handed_off'
+                })
+        }
+        if ($PromptForEnrollment -and [string]::IsNullOrWhiteSpace($EnrollmentToken)) {
+            if ($isDryRun) {
+                # The minting admin cannot bind a not-yet-created fingerprint.
+                # Dry run plans the handoff without prompting or inventing one.
+                [void]$steps.Add([pscustomobject][ordered]@{ target = $layout.EnrollmentArtifactPath; action = 'request_bound_enrollment_token'; status = 'skipped_dry_run'; detail = $null })
+            }
+            else {
+                Write-Host "revAgent machine fingerprint: $($installSummary.machineFingerprint)"
+                Write-Host 'Mint a single-use enrollment token for this fingerprint, then enter it below.'
+                $secureEnrollmentToken = Read-Host 'Enrollment token' -AsSecureString
+                try {
+                    $EnrollmentToken = [System.Net.NetworkCredential]::new('', $secureEnrollmentToken).Password
+                    $EnrollmentTokenExpiresAtUtc = [datetime]::Parse((Read-Host 'Token expiry (UTC ISO 8601)'), [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::AdjustToUniversal)
+                }
+                finally { $secureEnrollmentToken.Dispose() }
+            }
+        }
+        if ($WaitForEnrollmentArtifact) {
+            $installSummary.enrollmentAttempted = -not $isDryRun
+        }
+        elseif ($PromptForEnrollment -and $isDryRun -and [string]::IsNullOrWhiteSpace($EnrollmentToken)) {
+            [void]$steps.Add([pscustomobject][ordered]@{ target = $layout.EnrollmentArtifactPath; action = 'write_enrollment_artifact'; status = 'skipped_dry_run'; detail = $null })
+        }
+        else {
         if ($null -eq $EnrollmentTokenExpiresAtUtc) {
             throw "enrollment_token_expiry_required: -EnrollmentTokenExpiresAtUtc must accompany -EnrollmentToken."
         }
@@ -338,6 +403,22 @@ try {
                 return $layout.EnrollmentArtifactPath
             }.GetNewClosure())
         $installSummary.enrollmentArtifactWritten = $true
+        }
+        $EnrollmentToken = ''
+    }
+
+    # --- 10. Register/start the service only after the enrollment artifact is ready ---
+    if (-not $serviceAlreadyExists) {
+        [void](Invoke-RevAgentBridgeGuardedMutation -Target $layout.ServiceName -MutationAction 'register_service' -DryRun $isDryRun -Steps $steps -Apply {
+                $output = & $layout.HostExecutablePath 'install' 2>&1
+                if ($LASTEXITCODE -ne 0) {
+                    throw "bridge_host_install_failed: exit=$LASTEXITCODE output=$output"
+                }
+                return "$($layout.HostExecutablePath) install"
+            })
+    }
+    else {
+        [void]$steps.Add([pscustomobject][ordered]@{ target = $layout.ServiceName; action = 'register_service'; status = 'skipped_already_registered'; detail = $null })
     }
 
     # --- 11. Start the service so the worker consumes the artifact and connects ---

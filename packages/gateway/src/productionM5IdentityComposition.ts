@@ -33,17 +33,8 @@ import type { ProductionIdentityAuthority } from "./productionIdentityStore.js";
  * value already is nowhere on `GatewayConfig` (only its *presence* is,
  * `config.credentialsPresent.databaseUrl`).
  *
- * When both are absent, this returns `null` and the caller must keep the
- * existing fail-closed identity port — never silently compose a working
- * identity port from partial configuration. `main.ts`'s other production
- * ports (`protocolStore`, `rbpIngress`, ...) remain the existing fail-closed
- * stubs regardless: no production-grade `GatewayProtocolStore` exists in
- * this codebase yet (the only implementation, `SqliteConformanceProtocolStore`,
- * is explicitly WP-12-conformance-only), so `assertProductionPorts` already
- * refuses to start a true `NODE_ENV=production` process today independent of
- * this identity wiring. That is a pre-existing GW-12 gap this bounded unit
- * does not close; composing a real identity here is still correct and
- * forward-compatible with the day a real protocol store lands.
+ * Missing configuration returns null; the production composition rejects it.
+ * productionGatewayComposition.ts owns the real store, ingress and read path.
  *
  * The returned `plane` is the *same instance* the caller must pass to
  * `startGatewayServer`'s `m5EnrollmentEntitlement` option, so the
@@ -53,21 +44,14 @@ import type { ProductionIdentityAuthority } from "./productionIdentityStore.js";
 export interface ProductionM5IdentityComposition {
   readonly identity: ProductionIdentityAuthority;
   readonly plane: M5EnrollmentEntitlementControlPlane;
+  readonly repository: PostgresTenantStore;
 }
 
-/**
- * The minimal production dispatch-entitlement catalog this composition
- * grants through M5. Which tool/module capabilities a deployed Gateway
- * exposes is a product/licensing decision orthogonal to this card's scope
- * (device-credential *authentication*, not dispatch *entitlement*): this
- * lists exactly the one already-real, already-exercised read-only tool this
- * unit's own tests dispatch against the real add-in loopback fixture
- * (`m5BridgeIdentityAuthority.test.ts`, `core.get_status` /
- * `mcp_status`), as a safe, honestly-scoped starting catalog rather than an
- * invented product decision. A real deployment should replace this with its
- * actual module capability list.
- */
+/** M5 retains the existing status capability and the established core UI read.
+ * The production north composition exposes only core.ui.state for this bounded
+ * install-to-read slice; every request rechecks its live seat and license. */
 const PRODUCTION_M5_CAPABILITIES: readonly M5Capability[] = Object.freeze([
+  Object.freeze({ name: "core.ui.state", module: "core", summary: "Read the current Revit UI state." }),
   Object.freeze({
     name: "core.get_status",
     module: "core",
@@ -94,17 +78,18 @@ export function composeProductionM5Identity(
     tokenPepper,
     capabilities: PRODUCTION_M5_CAPABILITIES,
   });
+  const repository = new PostgresTenantStore(databaseUrl);
   const northIdentity: IdentityPort & { readonly kind: "oidc" } =
     config.oidc?.configured === true
       ? createOidcIdentityPort({
           issuer: config.oidc.issuerUrl!,
           audience: config.oidc.clientId!,
           jwksUri: config.oidc.jwksUri!,
-          repository: new PostgresTenantStore(databaseUrl),
+          repository,
         })
       : failClosedOidcNorthIdentity();
   const identity = createM5BridgeIdentityAuthority({ northIdentity, plane });
-  return Object.freeze({ identity, plane });
+  return Object.freeze({ identity, plane, repository });
 }
 
 /**
