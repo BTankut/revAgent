@@ -89,6 +89,51 @@ public sealed class RbpJournalStoreRetentionTests
     }
 
     [Fact]
+    public async Task ConfirmedUnregisterDefersRetainedReadEvidenceAcrossRestart()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        RbpInvocationIdentity read = ReadIdentity("0197a3c2-0000-7000-8000-0000000000a3");
+        await using (RbpJournalStore store = OpenStore(directory))
+        {
+            _ = await store.PersistRegisteredSessionAsync(RbpJournalTestData.Registration());
+            await CompleteReadAsync(store, read);
+            _ = await store.RecordUnregisterIntentAsync("rs-test", RbpSessionUnregisterReason.OperatorRequested);
+            _ = await store.PersistRegisteredSessionAsync(RbpJournalTestData.Registration(
+                rsid: "rs-live", localSessionKey: "port:8081:pid:11", resumeToken: "live-token"));
+            _ = await store.ActivateConnectionGenerationAsync(1);
+            _ = await store.ApplyHeartbeatFenceAcknowledgementAsync(new RbpHeartbeatFence(
+                1, ["rs-live"], [new RbpSessionAcknowledgement("rs-live", 0)], ["rs-test"]));
+
+            Assert.False(await store.CompleteConfirmedUnregisterAsync("rs-test"));
+            Assert.Equal(RbpInvocationState.Completed, (await store.GetInvocationAsync(read.IdempotencyKey))!.State);
+            Assert.Equal(RbpUnregisterPhase.Confirmed, (await store.GetUnregisterTombstoneAsync("rs-test"))!.Phase);
+        }
+
+        await using RbpJournalStore reopened = OpenStore(directory);
+        Assert.False(await reopened.CompleteConfirmedUnregisterAsync("rs-test"));
+        RbpJournalRecoveryPlan plan = await reopened.LoadRecoveryPlanAsync();
+        Assert.Equal("rs-live", Assert.Single(plan.ResumeCandidates).Session.Rsid);
+        Assert.Equal("rs-test", Assert.Single(plan.ConfirmedCleanup).Rsid);
+        RbpInvocationIdentity liveRead = ReadIdentity("0197a3c2-0000-7000-8000-0000000000a5") with { Rsid = "rs-live" };
+        _ = await reopened.AdmitInvocationAsync(liveRead);
+        Assert.Equal(RbpInvocationState.Received, (await reopened.GetInvocationAsync(liveRead.IdempotencyKey))!.State);
+        RbpJournalException revoked = await Assert.ThrowsAsync<RbpJournalException>(() =>
+            reopened.QueueOutboundDataAsync("rs-test", RbpJournalTestData.Outbound(
+                "0197a3c2-0000-7000-8000-0000000000a4", 1)));
+        Assert.Equal(RbpJournalErrorCode.SessionConflict, revoked.ErrorCode);
+
+        AdvanceDays(10);
+        Assert.Equal(0, (await reopened.ApplyRetentionAsync()).PrunedInvocations);
+        Assert.False(await reopened.CompleteConfirmedUnregisterAsync("rs-test"));
+        AdvanceDays(5);
+        Assert.Equal(1, (await reopened.ApplyRetentionAsync()).PrunedInvocations);
+        Assert.True(await reopened.CompleteConfirmedUnregisterAsync("rs-test"));
+        Assert.Null(await reopened.GetStoredSessionAsync("rs-test"));
+        Assert.Null(await reopened.GetUnregisterTombstoneAsync("rs-test"));
+        Assert.NotNull(await reopened.GetInvocationAsync(liveRead.IdempotencyKey));
+    }
+
+    [Fact]
     public async Task ParentRetentionPruneRemovesItsRecoveryChildWithoutExtendingParent()
     {
         using var directory = new RbpJournalTestDirectory();

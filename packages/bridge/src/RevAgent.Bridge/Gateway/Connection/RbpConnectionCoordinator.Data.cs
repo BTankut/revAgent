@@ -718,16 +718,11 @@ internal sealed partial class RbpConnectionCoordinator
                 CurrentOperationResult<bool> cleanupCompleted =
                     await TryRunCurrentOperationAsync(
                             context,
-                            async () =>
-                            {
-                                _ = await _journal
-                                    .CompleteConfirmedUnregisterAsync(
-                                        rsid, context.Token)
-                                    .ConfigureAwait(false);
-                            })
+                            () => _journal.CompleteConfirmedUnregisterAsync(
+                                rsid, context.Token))
                         .ConfigureAwait(false);
                 if (!cleanupCompleted.Started) return;
-                if (cleanupSession is not null)
+                if (cleanupCompleted.Value && cleanupSession is not null)
                 {
                     if (!TryCommitCurrent(context, () =>
                             MarkRegistrationCleanupCompleted(
