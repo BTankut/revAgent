@@ -43,8 +43,9 @@ try {
     const deadline=Date.now()+20_000;
     while(!stdout.includes('enrollment_handoff_ready')&&workerExit===null&&Date.now()<deadline) await new Promise(r=>setTimeout(r,100));
     if(workerExit===77) {process.stdout.write('{"genuineFirstInstall":"unproven","reason":"requires_elevated_fixture_process"}\n');process.exitCode=77;throw new Error('genuine first-install proof requires an existing elevated fixture runner');}
+    assert.equal(workerExit,null,`genuine C# preparation exited ${workerExit} before fingerprint readiness; see csharp-${mode}-${binding}-worker.log`);
     const ready=stdout.split(/\r?\n/u).filter(Boolean).map(line=>JSON.parse(line)).find(row=>row.action==='enrollment_handoff_ready');
-    assert.ok(ready?.genuineFirstInstall && /^sha256:[0-9a-f]{64}$/u.test(ready.machineFingerprint));
+    assert.ok(ready?.genuineFirstInstall && /^sha256:[0-9a-f]{64}$/u.test(ready.machineFingerprint),'genuine C# fingerprint readiness was absent or invalid before its deadline');
     const runPrivate=scriptArgs=>new Promise((resolve,reject)=>{
       const child=spawn('docker',['run','--rm','--network','revagent-eu20-b1-private','--env-file',join(proofRoot,'gateway.env'),'-v',`${proofRoot}:/proof:ro`,'-v',`${join(root,'packages/gateway/scripts')}:/app/packages/gateway/scripts:ro`,'revagent-eu20-b1-gateway:local','node',...scriptArgs],{windowsHide:true});
       let output='';child.stdout.on('data',c=>{output+=String(c);});child.stderr.resume();

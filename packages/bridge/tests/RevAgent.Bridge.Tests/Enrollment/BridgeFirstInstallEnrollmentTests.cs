@@ -30,6 +30,8 @@ public sealed class BridgeFirstInstallEnrollmentTests
         string artifact = Path.Combine(layout.CredentialDirectory, "enrollment.json");
         try
         {
+            // Match installer staging before the credential guard pins its parent.
+            Directory.CreateDirectory(layout.StateRoot);
             var mutator = BridgeCredentialMutator.CreateProduction(layout);
             string fingerprint;
             using (BridgeMachineIdentity identity = mutator.GetOrCreateMachineIdentity())

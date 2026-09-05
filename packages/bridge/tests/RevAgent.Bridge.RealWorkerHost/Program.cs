@@ -291,6 +291,7 @@ internal static class Program
         if (isolated.StartsWith(canonical, StringComparison.OrdinalIgnoreCase) ||
             canonical.StartsWith(isolated, StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("genuine fixture requires an isolated state root");
+        using IDisposable statePin = PrepareGenuineStateRoot(layout.StateRoot);
         var mutator = BridgeCredentialMutator.CreateProduction(layout);
         using (BridgeMachineIdentity identity = mutator.GetOrCreateMachineIdentity())
         {
@@ -324,6 +325,24 @@ internal static class Program
         using JsonDocument entitlementSignal = JsonDocument.Parse(entitlementLine ?? "{}");
         if (entitlementSignal.RootElement.GetProperty("action").GetString() != "entitlement_ready")
             throw new InvalidOperationException("genuine fixture entitlement handoff missing");
+    }
+
+    private static IDisposable PrepareGenuineStateRoot(string stateRoot)
+    {
+        string fullPath = BridgeCredentialPathPolicy.NormalizeLocalFileSystemPath(stateRoot);
+        string parent = Path.GetDirectoryName(fullPath) ??
+            throw new InvalidDataException("The genuine fixture state root has no parent.");
+        var fileSystem = new BridgeCredentialFileSystem();
+        // The installer stages StateRoot before invoking the signed host. The
+        // fixture must do the same before the unchanged credential guard pins
+        // that parent to create credentials. Create only the declared child.
+        using IDisposable parentPin = fileSystem.PinDirectory(parent);
+        BridgePathEntryKind kind = fileSystem.Classify(fullPath);
+        if (kind == BridgePathEntryKind.Missing)
+            Directory.CreateDirectory(fullPath);
+        else if (kind != BridgePathEntryKind.Directory)
+            throw new InvalidDataException("The genuine fixture state root is not a directory.");
+        return fileSystem.PinDirectory(fullPath);
     }
 
     /// <summary>
